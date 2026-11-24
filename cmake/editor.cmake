@@ -31,6 +31,7 @@ function(atelier_add_editor)
         "${PROJECT_SOURCE_DIR}/modules/editor/core/src/session.cpp"
         "${PROJECT_SOURCE_DIR}/modules/editor/core/src/session_materials.cpp"
         "${PROJECT_SOURCE_DIR}/modules/editor/core/src/session_graphs.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/core/src/graph_patch.cpp"
         "${PROJECT_SOURCE_DIR}/modules/editor/core/src/camera.cpp"
         "${PROJECT_SOURCE_DIR}/modules/editor/core/src/operator_parameters.cpp"
         "${PROJECT_SOURCE_DIR}/modules/editor/core/src/viewport_tool.cpp")

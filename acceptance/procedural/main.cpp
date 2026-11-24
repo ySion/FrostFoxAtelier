@@ -1,6 +1,7 @@
 #include "memory/fatal.hpp"
 #include "../helpers.hpp"
 #include "boolean_profile.hpp"
+#include "foundation/map.hpp"
 #include "foundation/result.hpp"
 #include "procedural/bvh.hpp"
 #include "procedural/evaluator.hpp"
@@ -24,7 +25,6 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
-#include <map>
 #include <numbers>
 #include <optional>
 #include <string>
@@ -116,13 +116,12 @@ void ray_node() {
 }
 
 struct Meshes final : Resources {
-    std::map<std::string, geometry::MeshRef, std::less<>> meshes;
+    Map<String, geometry::MeshRef> meshes;
 
     Result<geometry::MeshRef> mesh(StringView key) const noexcept override {
-        const auto found = meshes.find(key.std_view());
-        if (found == meshes.end())
-            return std::unexpected(Error{ErrorCode::invalid_member, "Unknown mesh."});
-        return found->second;
+        if (const auto* found = meshes.find(key))
+            return *found;
+        return std::unexpected(Error{ErrorCode::invalid_member, "Unknown mesh."});
     }
 
     std::uint64_t revision() const noexcept override { return 1; }
@@ -135,6 +134,107 @@ TypeId type(Runtime& runtime) {
 
 FieldId field(Runtime& runtime, TypeId owner, const char* name) {
     return take(runtime.find_field(owner, name));
+}
+
+void grouped_wall_surfaces() {
+    auto wall = take(box({2, 2, 2}));
+    // Deliberately contradictory shading normals. The selection must follow polygon winding.
+    take(wall.remove("N"));
+    take(wall.add<Vector3>("N", Layer::point, {0, -1, 0}));
+    const auto upper = take(build_group(wall, {.group = "upper", .max_angle = 90.f}));
+    const auto top = take(build_group(upper, {.group = "top", .max_angle = 0.f}));
+    const auto count = [](const Geometry& g, StringView group, Layer layer = Layer::primitive) {
+        return std::ranges::count(*take(g.read<bool>(group, layer)), true);
+    };
+    require(count(top, "upper") == 5 && count(top, "top") == 1 && !wall.find("upper"),
+            "Box winding, inclusive angle boundaries, or input isolation changed.");
+    const auto combine = [&](GroupOperation op) {
+        return take(build_group(top, {.group = "upper",
+                                      .criterion = GroupCriterion::existing,
+                                      .source_group = "top",
+                                      .operation = op,
+                                      .base_group = "upper"}));
+    };
+    require(count(combine(GroupOperation::subtract), "upper") == 4 &&
+                count(combine(GroupOperation::intersect), "upper") == 1 &&
+                count(combine(GroupOperation::unite), "upper") == 5 && count(top, "upper") == 5,
+            "In-place named group algebra changed its operands or selected the wrong faces.");
+
+    auto painted = top;
+    take(group_box(painted, "left", {-2, -2, -2}, {0, 2, 2}));
+    const auto points =
+        take(build_group(painted, {.group = "keep", .criterion = GroupCriterion::existing, .source_group = "left"}));
+    require(count(points, "keep", Layer::point) == 4 && same(std::get<SharedArray<bool>>(points.find("keep")->data),
+                                                             std::get<SharedArray<bool>>(painted.find("left")->data)),
+            "Copying a GroupBox point group lost its layer or duplicated its mask.");
+    const auto mismatch =
+        build_group(points, {.group = "upper", .operation = GroupOperation::intersect, .base_group = "keep"});
+    const auto missing = build_group(points, {.criterion = GroupCriterion::existing, .source_group = "missing"});
+    const auto wrong_type = build_group(points, {.criterion = GroupCriterion::existing, .source_group = "P"});
+    const auto degenerate = take(Geometry::polygons({{0, 0, 0}, {1, 0, 0}, {2, 0, 0}}, {0, 1, 2}, {0, 3}));
+    const auto bad_face = build_group(degenerate);
+    require(!mismatch && mismatch.error().message.find("different layer") != std::string::npos && !missing &&
+                missing.error().message.find("missing") != std::string::npos && !wrong_type &&
+                wrong_type.error().message.find("bool") != std::string::npos &&
+                !build_group(points, {.group = "keep"}) && !build_group(points, {.direction = {}}) &&
+                !build_group(points, {.max_angle = 181.f}) && !bad_face &&
+                bad_face.error().message == "Group primitive 0: Polygon has zero area." && count(points, "upper") == 5,
+            "Group accepted an invalid selection, lost the first diagnostic, or overwrote a prior group.");
+    const auto path = take(take(Geometry::points({{0, 0, 0}, {1, 0, 0}})).connect_points());
+    require(count(take(build_group(path, {.max_angle = 180.f})), "selected") == 0,
+            "An open path acquired a surface normal.");
+}
+
+void resampled_wall_and_post_paths() {
+    // A five-metre wall turning after three metres: the same path feeds regularly spaced posts
+    // and, with preserved turns, the swept wall. Subdividing a straight span must change neither.
+    const auto path = take(take(Geometry::points({{0, 0, 0}, {3, 0, 0}, {3, 0, 2}})).connect_points());
+    const auto split = take(take(Geometry::points({{0, 0, 0}, {1, 0, 0}, {3, 0, 0}, {3, 0, 2}})).connect_points());
+    const ResampleSettings spacing{.spacing = 2.f};
+    const auto posts = take(resample(path, spacing));
+    require(posts.same_value(take(resample(split, spacing))) && posts.count(Layer::point) == 4 &&
+                posts.positions()[1] == Vector3{2, 0, 0} && posts.positions()[2] == Vector3{3, 0, 1} &&
+                posts.positions()[3] == Vector3{3, 0, 2} && column<float>(posts, "arclength", Layer::point)[3] == 5.f,
+            "Fixed-distance post stations drifted or lost the short tail.");
+
+    const ResampleSettings keep{.spacing = 2.f, .preserve_corners = true};
+    require(take(resample(path, keep)).same_value(take(resample(split, keep))),
+            "Corner preservation introduced a redundant collinear control point.");
+    auto painted = path;
+    take(painted.set(String::literal<"pscale">(), Layer::point, SharedArray<float>{Array<float>{1, 4, 6}}));
+    take(painted.set(String::literal<"wall">(), Layer::primitive, SharedArray<bool>{Array<bool>{true}}));
+    const auto wall = take(resample(painted, keep));
+    require(wall.count(Layer::point) == 5 && wall.positions()[2] == Vector3{3, 0, 0} &&
+                column<float>(wall, "pscale", Layer::point)[1] == 3.f &&
+                column<float>(wall, "pscale", Layer::point)[3] == 5.f &&
+                column<bool>(wall, "wall", Layer::primitive)[0] &&
+                column<float>(wall, "curveu", Layer::point)[2] == 0.6f &&
+                column<Vector3>(wall, "tangent", Layer::point)[2] == Vector3{0, 0, 1} &&
+                take(sweep(wall)).count(Layer::point) == 20,
+            "Preserved wall corner, outgoing tangent or interpolated Sweep width is incorrect.");
+
+    // Two primitives sharing a control point: each restarts arc length. The closed loop shares
+    // its start point, while its two seam corners retain their distinct authored vertex values.
+    auto loop = take(Geometry::primitives({{0, 0, 0}, {2, 0, 0}, {2, 0, 2}, {0, 0, 2}}, {0, 1, 2, 3, 0, 0, 0, 1},
+                                          {0, 5, 8}, {PrimitiveKind::polyline, PrimitiveKind::polyline}));
+    take(loop.set(String::literal<"seam">(), Layer::vertex,
+                  SharedArray<float>{Array<float>{0, 2, 4, 6, 8, 10, 10, 12}}));
+    const auto ring = take(resample(loop, {.mode = ResampleMode::segments, .segments = 8}));
+    const auto& seam = column<float>(ring, "seam", Layer::vertex);
+    require(ring.count(Layer::point) == 17 && ring.count(Layer::vertex) == 18 &&
+                ring.vertex_points()[8] == ring.vertex_points()[0] && seam[1] == 1.f && seam[8] == 8.f &&
+                seam[9] == 10.f && column<float>(ring, "arclength", Layer::point)[8] == 0.f &&
+                column<float>(ring, "curveu", Layer::point)[16] == 1.f,
+            "Closed seam, corner attributes or independent second primitive were lost.");
+    const auto decimal = take(take(Geometry::points({{0, 0, 0}, {0.3f, 0, 0}})).connect_points());
+    require(take(resample(decimal, {.spacing = 0.1f})).count(Layer::point) == 4,
+            "An unrepresentable decimal tail duplicated the last station.");
+    const auto zero = take(take(Geometry::points({{0, 0, 0}, {0, 0, 0}})).connect_points());
+    const auto too_many = resample(path, {.spacing = std::numeric_limits<float>::min()});
+    require(!resample(zero) && !resample(path, {.spacing = 0.f}) &&
+                !resample(loop, {.mode = ResampleMode::segments, .segments = 2}) && !resample(take(box({1, 1, 1}))) &&
+                !too_many && too_many.error().message == "Resample exceeds the Geometry vertex limit.",
+            "Invalid curve or unrepresentable sample count did not fail before output publication.");
 }
 
 void connectivity_modeling() {
@@ -558,7 +658,7 @@ void graph_evaluation() {
 
     Meshes resources;
     auto cube = geometry::cube_mesh();
-    resources.meshes["fixture/a"] = cube;
+    resources.meshes.insert_or_assign(String::literal<"fixture/a">(), cube);
     const auto graph_root = take(runtime.create(type<Graph>(runtime)));
     const auto graph = graph_root.id();
     const auto add = [&](TypeId node_type) { return take(add_node(runtime, graph, node_type)); };
@@ -707,13 +807,14 @@ class game.FrameInputs : procedural.Node {
             "Source Node ports(runtime, type) failed without Program.");
 
     Meshes resources;
-    resources.meshes["fixture/cube"] = geometry::cube_mesh();
+    resources.meshes.insert_or_assign(String::literal<"fixture/cube">(), geometry::cube_mesh());
     const auto graph_root = take(runtime.create(type<Graph>(runtime)));
     const auto graph = graph_root.id();
     take(runtime.write(graph, field(runtime, type<Graph>(runtime), "seed"), Scalar{std::uint32_t{11}}));
     const auto add = [&](TypeId node_type) { return take(add_node(runtime, graph, node_type)); };
     const auto grid_n = add(type<Grid>(runtime));
-    const auto group_n = add(type<GroupBox>(runtime));
+    const auto bounds_n = add(type<GroupBox>(runtime));
+    const auto group_n = add(type<Group>(runtime));
     const auto jitter_n = add(jitter_type);
     const auto rscale_n = add(rscale_type);
     const auto align_n = add(align_type);
@@ -736,7 +837,13 @@ class game.FrameInputs : procedural.Node {
         n.columns = 2;
         return {};
     }));
-    take(runtime.with_native<GroupBox>(group_n.id(), [](GroupBox& n) -> Result<void> {
+    take(runtime.with_native<Group>(group_n.id(), [](Group& n) -> Result<void> {
+        n.criterion = GroupCriterion::existing;
+        n.source_group = String::literal<"within_bounds">();
+        return {};
+    }));
+    take(runtime.with_native<GroupBox>(bounds_n.id(), [](GroupBox& n) -> Result<void> {
+        n.group = String::literal<"within_bounds">();
         n.minimum = {0.0f, -1.0f, -2.0f};
         n.maximum = {2.0f, 1.0f, 2.0f};
         return {};
@@ -759,7 +866,8 @@ class game.FrameInputs : procedural.Node {
         return {};
     }));
 
-    take(connect(runtime, graph, grid_n.id(), 0, group_n.id(), 0));
+    take(connect(runtime, graph, grid_n.id(), 0, bounds_n.id(), 0));
+    take(connect(runtime, graph, bounds_n.id(), 0, group_n.id(), 0));
     take(connect(runtime, graph, group_n.id(), 0, jitter_n.id(), 0));
     take(connect(runtime, graph, jitter_n.id(), 0, rscale_n.id(), 0));
     take(connect(runtime, graph, rscale_n.id(), 0, align_n.id(), 0));
@@ -1243,8 +1351,8 @@ void profile(const char* path) {
     Runtime runtime;
     take(register_types(runtime));
     Meshes resources;
-    resources.meshes["profile/terrain"] = terrain;
-    resources.meshes["profile/rock"] = geometry::cube_mesh();
+    resources.meshes.insert_or_assign(String::literal<"profile/terrain">(), terrain);
+    resources.meshes.insert_or_assign(String::literal<"profile/rock">(), geometry::cube_mesh());
     const auto graph_root = take(runtime.create(type<Graph>(runtime)));
     const auto graph = graph_root.id();
     const auto add = [&](TypeId node_type) { return take(add_node(runtime, graph, node_type)); };
@@ -1587,7 +1695,7 @@ void asset_subgraph_and_cache_pool_contracts() {
     Runtime runtime;
     take(register_types(runtime));
     Meshes resources;
-    resources.meshes.insert_or_assign("project/pillar", geometry::cube_mesh());
+    resources.meshes.insert_or_assign(String::literal<"project/pillar">(), geometry::cube_mesh());
 
     // 1. Standalone GraphInput fallback vs subgraph external input override, GraphOutput decoupling from Display,
     //    shared CachePool reuse across distinct AssetNodes, and MeshImport dependency bubbling.
@@ -1943,6 +2051,8 @@ int main(int argc, char** argv) {
     }
     require(argc == 1, "Usage: atelier_procedural_acceptance [--profile-procedural|--profile-boolean new-output.json]");
     ray_node();
+    grouped_wall_surfaces();
+    resampled_wall_and_post_paths();
     connectivity_modeling();
     boolean_modeling();
     boolean_contact_sweep();

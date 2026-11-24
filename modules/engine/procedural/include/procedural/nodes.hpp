@@ -280,6 +280,59 @@ public:
     [[nodiscard]] Result<void> process(const Geometry& points, Geometry& output) const noexcept;
 };
 
+ACLASS(Name = "procedural.Resample", DESC = "沿每条折线按弧长重采样，生成 arclength、curveu 和切向 tangent。")
+class Resample : public Node {
+    AGENERATED_BODY(Resample)
+
+public:
+    AFIELD(Label = "Mode", DESC = "选择固定间距或固定段数。")
+    ResampleMode mode{ResampleMode::spacing};
+
+    AFIELD(Label = "Spacing", Meta("ui.visible_when", "mode=spacing"), DESC = "沿原折线的采样间距，单位 m。")
+    float spacing{1.f};
+
+    AFIELD(Label = "Segments", Min = "1", Max = "256", LockMin, Meta("ui.visible_when", "mode=segments"),
+           DESC = "每条折线沿弧长均分的段数。")
+    std::uint32_t segments{8};
+
+    AFIELD(Label = "Preserve Corners", DESC = "额外保留原折线的转折点；等距布点节奏不变。")
+    bool preserve_corners{};
+
+    AFUNCTION(DESC = "沿输入折线重采样并传递属性。")
+    [[nodiscard]] Result<void> process(const Geometry& curves, Geometry& output) const noexcept;
+};
+
+ACLASS(Name = "procedural.Group", DESC = "按几何面法线或已有布尔组选择元素，可与同层组组合。")
+class Group : public Node {
+    AGENERATED_BODY(Group)
+
+public:
+    AFIELD(Label = "Output Group", DESC = "写入的 bool 属性名，可与输入组同名。")
+    String group = String::literal<"selected">();
+
+    AFIELD(Label = "Criterion", DESC = "选择几何面法线，或使用一个已有组。")
+    GroupCriterion criterion{GroupCriterion::normal};
+
+    AFIELD(Label = "Direction", Meta("ui.visible_when", "criterion=normal"), DESC = "几何局部空间的朝向轴。")
+    math::Vector3 direction{0.f, 1.f, 0.f};
+
+    AFIELD(Label = "Max Angle", Min = "0", Max = "180", LockMin, LockMax, Meta("ui.visible_when", "criterion=normal"),
+           DESC = "面法线与方向的最大夹角（度），含边界。")
+    float max_angle{45.f};
+
+    AFIELD(Label = "Source Group", Meta("ui.visible_when", "criterion=existing"), DESC = "提供条件的已有 bool 组。")
+    String source_group{};
+
+    AFIELD(Label = "Operation", DESC = "replace 写入条件，unite 并集，intersect 交集，subtract 从基组扣除条件。")
+    GroupOperation operation{GroupOperation::replace};
+
+    AFIELD(Label = "Base Group", Meta("ui.visible_when", "operation!=replace"), DESC = "组合的左操作数，须与条件同层。")
+    String base_group{};
+
+    AFUNCTION(DESC = "把组合后的选择写成一个命名布尔组。")
+    [[nodiscard]] Result<void> process(const Geometry& input, Geometry& output) const noexcept;
+};
+
 ACLASS(Name = "procedural.GroupBox", DESC = "按闭区间包围盒选点，写入或替换一个 point 层 bool 组。")
 class GroupBox : public Node {
     AGENERATED_BODY(GroupBox)

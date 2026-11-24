@@ -419,7 +419,7 @@ struct NewProceduralGraph {
     AFIELD(DESC = "工程 Content 下的 .procgraph 路径；交互调用留空时打开原生选择器。")
     String path;
 
-    AFIELD(DESC = "可选的初始 v3 JSON 文本；留空时生成标准空白图。")
+    AFIELD(DESC = "可选的 .procgraph JSON 文本；留空时生成标准空白图。")
     String source;
 };
 

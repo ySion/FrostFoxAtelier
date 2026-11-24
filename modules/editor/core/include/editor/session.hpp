@@ -487,6 +487,8 @@ public:
 
     void bind_project_code(const ProjectCode* code) noexcept;
 
+    Result<std::optional<GraphNodeCatalogEntry>> procedural_node_type(std::string_view name, Project* project);
+
     Result<std::vector<GraphNodeCatalogEntry>> procedural_node_types(Project* project = nullptr,
                                                                      std::string_view exclude_graph_key = {});
 
@@ -615,9 +617,14 @@ public:
 
     Result<void> graph_remove_boxes(std::string_view key, std::span<const std::string> names);
 
+    // Apply one text edit to the open graph. Returns whether an undo step was published.
+    Result<bool> graph_apply(std::string_view key, json::Value patch, Project* project = nullptr);
+
+    Result<json::Document> graph_node_properties(std::string_view key, std::string_view name);
+
     Result<void> graph_set_properties(std::string_view key, std::string_view node_name, json::Value properties);
 
-    Result<std::vector<GraphPromotedParameterView>> graph_promoted_parameters(std::string_view key) const;
+    Result<std::vector<GraphPromotedParameterView>> graph_promoted_parameters(std::string_view key, Project* project = nullptr) const;
 
     Result<std::vector<GraphPromotedParameterView>>
     graph_asset_node_parameters(std::string_view key, std::string_view node_name, Project* project = nullptr) const;
@@ -1357,6 +1364,8 @@ private:
     Result<const source::Program*> ensure_procedural_program();
 
     Result<OpenGraph*> editable_graph(std::string_view key, bool need_program = false);
+
+    Result<void> apply_graph_patch(std::string_view key, json::Value patch, Project* project);
 
     Result<std::string> add_graph_node_impl(std::string_view key, std::string_view type_name,
                                             std::string_view desired_name, std::array<float, 2> position,

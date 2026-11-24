@@ -148,6 +148,8 @@ inline constexpr ui::ControlKey viewport_geometry_hud = 1244;
 
 inline constexpr ui::ControlKey viewport_scene_overlay = 1245;
 
+inline constexpr ui::ControlKey display_sop_group = 1246;
+
 inline constexpr ui::ControlKey inline_rename = 1023;
 
 // Colour editor popup and its fields (fixed keys; one editor at a time).
@@ -336,7 +338,8 @@ struct Workspace {
             graph_param_text,
             graph_param_override_toggle,
             graph_param_submenu,
-            graph_node_asset_slot
+            graph_node_asset_slot,
+            group_guide
         };
 
         ui::ControlKey key{};
@@ -427,6 +430,8 @@ struct Workspace {
     bool sop_show_bounds{};
 
     bool sop_show_info{true};
+
+    GeometryGroupGuide sop_group;
 
     bool effective_show_points(const procedural::Geometry* geometry) const noexcept;
 

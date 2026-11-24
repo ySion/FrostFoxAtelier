@@ -87,6 +87,8 @@ G／R／S 通过同一 ViewportTool 与 Session 事务预览、提交和撤销 T
 
 Scene View 左侧 38 DIP 工具栏以 32 DIP 单元排列选择、通用、移动、旋转、缩放，选择与手柄工具之间及底部吸附开关前各有 `#4d4d4d` 细分隔，选中态 `#5d7289`。工具图标使用 [Tabler 掩码](../../../assets/icons/README.md) 与原生超采样矢量图标栅格化，沿原生符号栅格化、主题着色和缓存链绘制，不复制 Houdini 专有图标素材。视口右侧显示栏（34 DIP）包含参考网格、原点轴、线框叠加、纯线框、三角边、背面绕序青蓝高亮（Backface Winding Tint，工作室着色下启用）、Cavity、Scene Lit、FPS；在 SOP 图上下文或世界态选中 `ProceduralGeneratorEntity` 时，右侧显示栏与 Guides 菜单同步展开 6 项程序化几何诊断开关：点标记（纯点云节点默认自动开启，点击后转为显式开关，支持 `Cd` 点色与半球深度消隐）、点法线（`N`）、图元面法线、姿态与缩放环（`orient` + `pscale`）、包围盒与实例空间分块（AABB + Chunks）以及右上角几何信息 HUD 卡片（汇总点数/顶点数/图元数/实例数/尺寸/属性列表与求值耗时）。全工作区工具栏、停靠栏、显示栏与节点检索面板按钮统一挂载“英文控件标题（含快捷键）+ 中文功能说明”悬停提示。每个显示栏按钮只改其对应的一项视图或诊断设置，与头部着色段、Guides 菜单和 Z 饼菜单同源同步，不进入场景历史。
 
+Guides → Highlight Group 列出当前显示几何的点组和图元组。选择点组显示琥珀色点，选择面组显示面心和内缩轮廓；共享边两侧仍可辨认。折线组沿开放线段绘制。Geometry Info HUD 显示完整的成员数 / 层元素总数；超过 2048 个成员时按成员顺序均匀抽样并标出抽样数。每帧最多绘制 16384 段组轮廓，超出预算的图元仍有中心标记。切换显示节点后按同名同层列重新取值，列缺失时高亮消失。
+
 视口头部（32 DIP 一行）融合 Blender 的语义分组：路径之后依次为交互模式图标菜单、**View / Select / Add / Object** 平铺文字菜单、枢轴下拉、吸附开关+步长、叠加层（Guides）下拉、Cavity、四段着色按钮（Wireframe / Solid / MatCap / Scene Lit，与 Z 饼菜单同一组预设）及完整显示菜单箭头。View 菜单含 Focus Selection、Frame All、Viewpoint 子菜单、工具选项栏与 FPS 开关；Select 菜单含 Select All / None / Invert、Box Select 和选择模式子菜单；Add 列出全部创建命令（同 Shift+A）；Object 菜单含 Duplicate、Delete、Clear（Location/Rotation/Scale，同 Alt+G/R/S）、Snap 子菜单与 Transform 增删。面板宽度不足 660 DIP 时文字菜单与 Cavity 折叠，W 菜单和主菜单 View 仍可达。
 
 吸附菜单按 Blender 吸附面板分节（带灰色节标题）：总开关、步长（0.1/0.2/0.5/1 m）、Affect（Move/Rotate/Scale 各自是否随吸附开关吸附）、旋转步长（1°/5°/15°/45°）、选择/游标对齐；G/R/S 的 Ctrl 仍临时反转吸附，缩放步长 0.1。操作栏的 Global/Local 下拉即 Blender 变换朝向：Local 时移动/旋转手柄与 X/Y/Z 约束沿活动 Entity 的自身轴，网格吸附只在 Global 下生效（网格是世界格）；缩放始终沿局部轴。Normal/View/Cursor/Parent 朝向尚未实现，不在菜单中显示。

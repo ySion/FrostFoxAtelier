@@ -218,6 +218,15 @@ struct SurfaceBuilder {
     }
 };
 
+Result<const Attribute*> require_group(const Geometry& geometry, StringView name) {
+    const auto* attribute = geometry.find(name);
+    if (!attribute)
+        return failure("Group attribute " + std::string{name.std_view()} + " was not found.");
+    if (!std::holds_alternative<SharedArray<bool>>(attribute->data))
+        return failure("Group attribute " + std::string{name.std_view()} + " must be bool.");
+    return attribute;
+}
+
 Result<void> set_optional_group(Geometry& geometry, StringView group_name, Array<bool>&& flags) {
     if (group_name.empty())
         return {};
@@ -228,6 +237,88 @@ Result<void> set_optional_group(Geometry& geometry, StringView group_name, Array
 }
 
 } // namespace
+
+Result<Geometry> build_group(const Geometry& input, const GroupSettings& settings) {
+    ATELIER_TRY(Geometry::admit_name(settings.group));
+    Layer layer = Layer::primitive;
+    const SharedArray<bool>* source = nullptr;
+    Vector3d axis{};
+    double cosine{};
+    switch (settings.criterion) {
+    case GroupCriterion::normal: {
+        if (!math::is_finite(settings.direction) || !std::isfinite(settings.max_angle) || settings.max_angle < 0.f ||
+            settings.max_angle > 180.f)
+            return failure("Group normal requires a finite direction and an angle between 0 and 180 degrees.");
+        axis = Vector3d(settings.direction);
+        const double length = math::length(axis);
+        if (length == 0.)
+            return failure("Group normal direction must be nonzero.");
+        axis = axis / length;
+        cosine = std::cos(settings.max_angle * (std::numbers::pi / 180.));
+        break;
+    }
+    case GroupCriterion::existing: {
+        ATELIER_TRY_BIND(attr, require_group(input, settings.source_group));
+        source = &std::get<SharedArray<bool>>((*attr)->data);
+        layer = (*attr)->layer;
+        break;
+    }
+    default:
+        return failure("Unknown Group criterion.");
+    }
+
+    const Array<bool>* base = nullptr;
+    switch (settings.operation) {
+    case GroupOperation::replace:
+        break;
+    case GroupOperation::unite:
+    case GroupOperation::intersect:
+    case GroupOperation::subtract: {
+        ATELIER_TRY_BIND(attr, require_group(input, settings.base_group));
+        if ((*attr)->layer != layer)
+            return failure("Base group " + std::string{settings.base_group.std_view()} +
+                           " belongs to a different layer.");
+        base = &std::get<SharedArray<bool>>((*attr)->data).array();
+        break;
+    }
+    default:
+        return failure("Unknown Group operation.");
+    }
+
+    Geometry output = input;
+    auto name = *String::from_utf8(settings.group); // admit_name has checked the ASCII identifier.
+    if (source && !base) {
+        ATELIER_TRY(output.set(std::move(name), layer, *source));
+        return output;
+    }
+    ATELIER_TRY(input.read<bool>(settings.group, layer));
+    Array<bool> flags;
+    const auto size = input.count(layer);
+    flags.reserve(size);
+    for (std::uint32_t i = 0; i < size; ++i) {
+        bool match = false;
+        if (source) {
+            match = source->array()[i];
+        } else if (const auto face = input.primitive(i); face.kind == PrimitiveKind::polygon) {
+            auto normal = compute_polygon_normal(input, face);
+            if (!normal)
+                return failure("Group primitive " + std::to_string(i) + ": " + normal.error().message);
+            // Include the boundary even when normalization and cosine round in opposite directions.
+            match = math::dot(*normal, axis) >= cosine - 4. * std::numeric_limits<double>::epsilon();
+        }
+        if (base) {
+            if (settings.operation == GroupOperation::unite)
+                match = (*base)[i] || match;
+            else if (settings.operation == GroupOperation::intersect)
+                match = (*base)[i] && match;
+            else
+                match = (*base)[i] && !match;
+        }
+        flags.add(match);
+    }
+    ATELIER_TRY(output.set(std::move(name), layer, SharedArray<bool>{std::move(flags)}));
+    return output;
+}
 
 Result<Geometry> extrude(const Geometry& surface, const ExtrudeSettings& settings) {
     if (surface.count(Layer::instance) > 0)
@@ -260,11 +351,8 @@ Result<Geometry> extrude(const Geometry& surface, const ExtrudeSettings& setting
 
     std::vector<bool> selected(prim_count, true);
     if (!settings.group.empty()) {
-        const auto* group_attr = surface.find(settings.group);
-        if (!group_attr)
-            return failure("Extrude group attribute " + std::string{settings.group.std_view()} + " was not found.");
-        if (!std::holds_alternative<SharedArray<bool>>(group_attr->data))
-            return failure("Extrude group " + std::string{settings.group.std_view()} + " must be a bool attribute.");
+        ATELIER_TRY_BIND(found, require_group(surface, settings.group));
+        const auto* group_attr = *found;
         const auto& flags = std::get<SharedArray<bool>>(group_attr->data).array();
         if (group_attr->layer == Layer::primitive) {
             for (std::uint32_t p = 0; p < prim_count; ++p)

@@ -2927,7 +2927,8 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
                 append_procedural_guides(*shown, viewport_view,
                                          {workspace_.effective_show_points(shown), workspace_.sop_show_normals,
                                           workspace_.sop_show_face_normals, workspace_.sop_show_orient,
-                                          workspace_.sop_show_bounds, true},
+                                          workspace_.sop_show_bounds, true, 0.f, math::Matrix4::identity(),
+                                          &workspace_.sop_group},
                                          overlay_);
             }
         } else {
@@ -2958,7 +2959,8 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
                     append_procedural_guides(*geom, viewport_view,
                                              {workspace_.effective_show_points(geom), workspace_.sop_show_normals,
                                               workspace_.sop_show_face_normals, workspace_.sop_show_orient,
-                                              workspace_.sop_show_bounds, true, chunk_size, world_mtx},
+                                              workspace_.sop_show_bounds, true, chunk_size, world_mtx,
+                                              &workspace_.sop_group},
                                              overlay_);
                 }
             }

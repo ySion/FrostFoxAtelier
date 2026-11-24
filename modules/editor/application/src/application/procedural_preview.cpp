@@ -1,4 +1,5 @@
 #include "application/procedural_preview.hpp"
+#include "editor/procedural_panes.hpp"
 #include "material/resources.hpp"
 #include "platform/utf.hpp"
 #include <algorithm>
@@ -462,6 +463,42 @@ void append_procedural_guides(const procedural::Geometry& geometry, const editor
                         prev = cur;
                     }
                 }
+            }
+        }
+    }
+    if (options.group && options.group->resolve(geometry)) {
+        constexpr ui::Color amber{1.f, .68f, .12f, .96f};
+        const auto world_point = [&](std::uint32_t point) {
+            return transform_point_row(positions[point], options.world_transform, identity_world);
+        };
+        std::size_t edge_budget = 16384;
+        for (const auto member : options.group->samples()) {
+            if (options.group->layer() == procedural::Layer::point) {
+                guides.point(world_point(member), amber, 7.f);
+                continue;
+            }
+            const auto prim = geometry.primitive(member);
+            const auto points = geometry.vertex_points().subspan(prim.first, prim.count);
+            math::Vector3d sum{};
+            for (const auto p : points)
+                sum += math::Vector3d(positions[p]);
+            const auto center = transform_point_row(math::Vector3(sum / static_cast<double>(points.size())),
+                                                    options.world_transform, identity_world);
+            guides.point(center, amber, 5.f);
+            const bool closed = prim.kind == procedural::PrimitiveKind::polygon;
+            const auto edges = closed ? prim.count : prim.count - 1;
+            if (edges > edge_budget)
+                continue;
+            edge_budget -= edges;
+            const auto outline_point = [&](std::uint32_t index) {
+                const auto world = world_point(points[index]);
+                return closed ? world + (center - world) * .08f : world;
+            };
+            auto start = outline_point(0);
+            for (std::uint32_t i = 0; i < edges; ++i) {
+                const auto end = outline_point(i + 1 == prim.count ? 0 : i + 1);
+                guides.segment(start, end, amber, 2.f);
+                start = end;
             }
         }
     }

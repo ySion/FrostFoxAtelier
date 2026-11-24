@@ -1,5 +1,6 @@
 #include "editor/graph_format.hpp"
 #include "editor/properties.hpp"
+#include "foundation/map.hpp"
 #include "procedural/nodes.hpp"
 #include <algorithm>
 #include <cmath>
@@ -7,14 +8,10 @@
 #include <map>
 #include <optional>
 #include <set>
-#include <unordered_map>
 
 namespace atelier::editor {
-namespace {
-constexpr std::uint32_t graph_format_version = 4;
-
 // "node.output", or nothing when malformed.
-std::optional<std::pair<std::string_view, std::string_view>> endpoint(json::Value value) {
+std::optional<std::pair<std::string_view, std::string_view>> graph_endpoint(json::Value value) {
     if (value.kind() != json::Kind::string)
         return std::nullopt;
     const std::string_view text = *value.string();
@@ -24,6 +21,9 @@ std::optional<std::pair<std::string_view, std::string_view>> endpoint(json::Valu
         return std::nullopt;
     return std::pair{text.substr(0, dot), text.substr(dot + 1)};
 }
+
+namespace {
+constexpr std::uint32_t graph_format_version = 4;
 
 Result<void> append_vec2(json::Builder& builder, json::Value parent, std::string_view key,
                          const std::array<float, 2>& v) {
@@ -529,7 +529,8 @@ Result<GraphDocument> clone_graph_document(Runtime& runtime, const GraphDocument
     ATELIER_TRY(copy_object_author_fields(runtime, src_graph, dst_graph, *graph_type));
 
     ATELIER_TRY_BIND(src_contents, procedural::contents(runtime, src_graph));
-    std::unordered_map<ObjectId, ObjectId> id_map;
+    Map<ObjectId, ObjectId> id_map;
+    id_map.reserve(src_contents->nodes().size());
     cloned.nodes.reserve(source.nodes.size());
     for (const auto& src_item : source.nodes) {
         GraphNode dst_item;
@@ -562,7 +563,7 @@ Result<GraphDocument> clone_graph_document(Runtime& runtime, const GraphDocument
                 ATELIER_TRY_BIND(snap, procedural::frozen_output(runtime, sid));
                 ATELIER_TRY(procedural::set_frozen(runtime, did, true, *snap));
             }
-            id_map.emplace(sid, did);
+            id_map.try_emplace(sid, did);
             dst_item.node = std::move(*created_node);
         }
         cloned.nodes.push_back(std::move(dst_item));
@@ -573,21 +574,21 @@ Result<GraphDocument> clone_graph_document(Runtime& runtime, const GraphDocument
         if (!src_item.node.registered())
             continue;
         const ObjectId sid = src_item.node.id();
-        const ObjectId did = id_map.at(sid);
+        const ObjectId did = *id_map.find(sid);
         ATELIER_TRY_BIND(conns, procedural::inputs(runtime, *src_contents, sid));
         for (const auto& in : *conns) {
-            if (const auto from_it = id_map.find(in.from); from_it != id_map.end())
-                ATELIER_TRY(procedural::connect(runtime, dst_graph, from_it->second, in.output, did, in.input));
+            if (const auto* from = id_map.find(in.from))
+                ATELIER_TRY(procedural::connect(runtime, dst_graph, *from, in.output, did, in.input));
         }
     }
 
     if (src_contents->display() != ObjectId{}) {
-        if (const auto disp_it = id_map.find(src_contents->display()); disp_it != id_map.end())
-            ATELIER_TRY(procedural::set_display(runtime, dst_graph, disp_it->second));
+        if (const auto* display = id_map.find(src_contents->display()))
+            ATELIER_TRY(procedural::set_display(runtime, dst_graph, *display));
     }
     if (source.template_node != ObjectId{}) {
-        if (const auto tmpl_it = id_map.find(source.template_node); tmpl_it != id_map.end())
-            cloned.template_node = tmpl_it->second;
+        if (const auto* target = id_map.find(source.template_node))
+            cloned.template_node = *target;
     }
     cloned.parameters = source.parameters;
     cloned.notes = source.notes;
@@ -838,9 +839,9 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
                 if (value.kind() == json::Kind::array) {
                     const auto connections = *value.array();
                     for (auto connection : connections)
-                        shaped &= endpoint(connection).has_value();
+                        shaped &= graph_endpoint(connection).has_value();
                 } else
-                    shaped &= endpoint(value).has_value();
+                    shaped &= graph_endpoint(value).has_value();
                 if (!shaped)
                     return std::unexpected(
                         value.error(json::Fault::type, "A connection is \"node.output\", or an array of those."));
@@ -1159,7 +1160,8 @@ Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document) 
     ATELIER_TRY_BIND(content_result, procedural::contents(runtime, graph));
     const auto& contents = *content_result;
     std::map<std::string_view, const GraphNode*> by_name;
-    std::unordered_map<ObjectId, const GraphNode*> by_node;
+    Map<ObjectId, const GraphNode*> by_node;
+    by_node.reserve(contents.nodes().size());
     for (const auto& item : document.nodes) {
         if (!valid_graph_identifier(item.name) || !by_name.emplace(item.name, &item).second)
             return std::unexpected(
@@ -1174,7 +1176,7 @@ Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document) 
             return std::unexpected(
                 Error{ErrorCode::argument_mismatch, item.name + ": AssetNode cannot save a scratch graph asset key."});
         const auto saved_type = item.kept.root().find("type");
-        if (item.node.registered() ? !by_node.emplace(item.node.id(), &item).second : !saved_type || !*saved_type)
+        if (item.node.registered() ? !by_node.try_emplace(item.node.id(), &item).inserted : !saved_type || !*saved_type)
             return std::unexpected(Error{ErrorCode::argument_mismatch,
                                          item.name + ": an entry names a loaded node once, or keeps a saved one."});
         if (!item.overrides.root().is_null() && item.overrides.root().kind() != json::Kind::object)
@@ -1264,9 +1266,9 @@ Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document) 
     result.set_validated(result.root(), "settings", settings->root());
     const auto settings_node = *result.root().at("settings");
     if (contents.display() != ObjectId{})
-        result.set_validated(settings_node, "display", by_node.at(contents.display())->name);
+        result.set_validated(settings_node, "display", (*by_node.find(contents.display()))->name);
     if (document.template_node != ObjectId{})
-        result.set_validated(settings_node, "template", by_node.at(document.template_node)->name);
+        result.set_validated(settings_node, "template", (*by_node.find(document.template_node))->name);
     assets::json_format::overlay(result, settings_node, document.kept.root());
 
     if (!document.parameters.empty()) {
@@ -1313,7 +1315,7 @@ Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document) 
                 if (input.output >= from->outputs.size())
                     return std::unexpected(
                         Error{ErrorCode::argument_mismatch, "Graph input names a missing output port."});
-                auto connection = by_node.at(input.from)->name + "." + from->outputs[input.output];
+                auto connection = (*by_node.find(input.from))->name + "." + from->outputs[input.output];
                 const auto& port_name = ports.inputs.at(input.input);
                 if (ports.multiple[input.input]) {
                     const auto found = *inputs.find(port_name);

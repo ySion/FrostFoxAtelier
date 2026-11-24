@@ -383,6 +383,7 @@ Result<void> Workspace::reset_layout() {
 }
 
 void Workspace::reset_document(bool preserve_view) {
+    sop_group = {};
     camera_flying = false;
     color_edit.reset();
     category_keys_.clear();
@@ -902,6 +903,11 @@ Result<bool> Workspace::apply_view(Session& session, OperatorHost& host, const u
     if (action.kind != ui::ActionKind::activate)
         return false;
     const auto key = action.key;
+    if (const auto* target = binding(key); target && target->kind == Binding::Kind::group_guide) {
+        sop_group.select(static_cast<procedural::Layer>(target->index), target->slot);
+        ++view_revision_;
+        return true;
+    }
     if (key >= control::shading_preset_first && key < control::shading_preset_first + 4) {
         const auto preset = key - control::shading_preset_first;
         ATELIER_TRY(
@@ -2085,6 +2091,14 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                 hud.enabled = false;
                 hud.text =
                     application::format_geometry_info_hud(hud_title, *shown_geom, pts_auto, hud_cook_ms, hud_chunks);
+                if (sop_group.resolve(*shown_geom)) {
+                    const auto layer = sop_group.layer();
+                    hud.text += std::format(L"\n{}  {} / {} {}", platform::utf8_to_utf16_validated(sop_group.name()),
+                                            sop_group.count(), shown_geom->count(layer),
+                                            layer == procedural::Layer::point ? L"points" : L"primitives");
+                    if (sop_group.samples().size() < sop_group.count())
+                        hud.text += std::format(L" ({} shown)", sop_group.samples().size());
+                }
                 hud.layout.out_of_flow = true;
                 hud.layout.anchor_x = 1.f;
                 hud.layout.pivot_x = 1.f;
@@ -5038,9 +5052,48 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     items.push_back(
                         {control::display_sop_bounds, L"Bounds & Spatial Chunks", true, sop_show_bounds, {}});
                     items.push_back({control::display_sop_info, L"Geometry Info HUD", true, sop_show_info, {}});
+                    if (menu_geom) {
+                        std::vector<ui::MenuItem> groups;
+                        const auto add_group = [&](procedural::Layer layer, std::string_view name,
+                                                   std::wstring title) -> atelier::Result<void> {
+                            ATELIER_TRY_BIND(key, bind_row(
+                                                      binding_cursor_,
+                                                      [&](const Binding& row) {
+                                                          return row.kind == Binding::Kind::group_guide &&
+                                                                 row.slot == name &&
+                                                                 row.index == static_cast<std::size_t>(layer);
+                                                      },
+                                                      [&](ui::ControlKey id) {
+                                                          Binding row{id, {}, {}, Binding::Kind::group_guide};
+                                                          row.slot = name;
+                                                          row.index = static_cast<std::size_t>(layer);
+                                                          return row;
+                                                      }));
+                            const bool selected = name.empty() ? !sop_group.resolve(*menu_geom)
+                                                               : name == sop_group.name() && layer == sop_group.layer();
+                            ui::MenuItem item{*key, std::move(title), true, selected, {}};
+                            item.behavior = ui::MenuBehavior::radio;
+                            item.radio_group = control::display_sop_group;
+                            groups.push_back(std::move(item));
+                            return {};
+                        };
+                        ATELIER_TRY(add_group(procedural::Layer::primitive, {}, L"None"));
+                        for (const auto& attr : menu_geom->attributes()) {
+                            if ((attr.layer == procedural::Layer::point ||
+                                 attr.layer == procedural::Layer::primitive) &&
+                                std::holds_alternative<SharedArray<bool>>(attr.data))
+                                ATELIER_TRY(add_group(
+                                    attr.layer, attr.name.view().std_view(),
+                                    platform::utf8_to_utf16_validated(attr.name.view().std_view()) +
+                                        (attr.layer == procedural::Layer::point ? L"  (points)" : L"  (primitives)")));
+                        }
+                        if (groups.size() > 1 || !sop_group.name().empty())
+                            items.push_back(submenu(control::display_sop_group, L"Highlight Group", std::move(groups)));
+                    }
                 }
                 for (auto& item : items)
-                    item.behavior = ui::MenuBehavior::checkbox;
+                    if (item.children.empty())
+                        item.behavior = ui::MenuBehavior::checkbox;
             } else if (!items.empty()) {
             } else if (source->kind == ControlKind::combo && source->key == workbench_control::mode) {
                 for (std::size_t i = 0; i < ControlWorkbench::mode_names.size(); ++i)

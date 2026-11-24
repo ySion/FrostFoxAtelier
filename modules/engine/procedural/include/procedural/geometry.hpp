@@ -41,6 +41,18 @@ enum class RayMode : std::uint32_t { project, minimum };
 AENUM(Name = "procedural.BooleanOperation", DESC = "闭合实体的并集、交集或差集 A 减 B。")
 enum class BooleanOperation : std::uint32_t { unite, intersect, subtract };
 
+AENUM(Name = "procedural.GroupCriterion", DESC = "按面的几何法线选择，或读取已有的 bool 组。")
+enum class GroupCriterion : std::uint32_t { normal, existing };
+
+AENUM(Name = "procedural.GroupOperation", DESC = "直接使用条件结果，或与指定的同层基组求并、交、差。")
+enum class GroupOperation : std::uint32_t { replace, unite, intersect, subtract };
+
+AENUM(Name = "procedural.ResampleMode", DESC = "用固定弧长间距或固定段数重采样每条折线。")
+enum class ResampleMode : std::uint32_t {
+    AMETA(Label = "Spacing", DESC = "从起点按间距取样，末端保留余段。") spacing,
+    AMETA(Label = "Segments", DESC = "按总弧长平分为指定段数。") segments
+};
+
 AENUM(Name = "procedural.SweepProfile",
       DESC = "沿折线扫掠的截面轮廓：rectangle 矩形，tube 圆形多边形管，custom 来自辅助端口的截面。")
 enum class SweepProfile : std::uint32_t { rectangle, tube, custom };

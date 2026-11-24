@@ -63,7 +63,7 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 | op.call graph.add_node / graph.delete_node / graph.rename_node / graph.move_node / graph.layout / graph.extract_asset / graph.set_node_asset | 编辑活动或显式 `asset` 图文档并记入该图的独立 128 步撤销栈（不改场景历史计数）：`add_node {type, name, position}` 添加内置 C++、`.source` `procedural.Node` 派生实例或 `"asset:<key>"` 数字资产实例；`delete_node {name}` 删除指定节点或当前画布多选节点（保活 `ObjectRoot` 以供撤销复用求值缓存，自动同步 `parameters` 目标）；`rename_node {node, name}` 重命名节点并同步连线、display、template 与 `parameters` 目标；`move_node {node, position}` 更新二维画布坐标；`layout {asset}` 自上而下自动拓扑排布全部节点；`extract_asset {asset, nodes, path, name}` 校验连通凸子图后提取保存为独立 `.procgraph` 数字资产（自动生成 `GraphInput`/`GraphOutput` 并保留内部提升参数）且原位替换为已连线 `AssetNode`（单步图撤销）；`set_node_asset {asset, node, target_asset}` 切换 `AssetNode` 绑定的 `.procgraph` 资产并按端口名重对齐连线 |
 | op.call graph.expose_parameter / graph.bind_parameter / graph.unbind_parameter / graph.update_parameter / graph.remove_parameter / graph.set_parameter / graph.set_override | 管理 `.procgraph` v4 声明式多目标提升参数与 `AssetNode` 实例差量覆写：`expose_parameter {asset, node, path, name, label, category, description}` 提升节点字段为图级公开参数；`bind_parameter` / `unbind_parameter` 追加同 `TypeId` 目标（求硬边界交集并对齐首目标值）或解除绑定；`update_parameter` / `remove_parameter` 调整元数据、排序或移除参数；`set_parameter {asset, parameter, value_json}` 同步写入全部绑定目标；`set_override {asset, node, parameter, clear, value_json}` 设置或清除 `AssetNode` 实例覆写 |
 | op.call graph.connect / graph.disconnect / graph.set_display / graph.set_template / graph.set_bypass / graph.set_frozen / graph.set_appearance / graph.select | `connect {from_node, from_port, to_node, to_port}` 与 `disconnect {from_node, from_port, to_node, to_port}` 维护端口连线；`set_display {node}` 与 `set_template {node}` 设置或清空持久化 Display / Template 标记；`set_bypass {node, bypass}` 切换节点直通跳过；`set_frozen {node, frozen}` 在当前会话中锁定或解冻节点已求值的几何输出快照（记一步撤销，撤销和重做复用原冻结快照）；`set_appearance {node, shape, color, comment}` 设置节点形状预设、24 色/自定义 `#RRGGBB` 颜色与备注；`select {node}` 设置 Workspace 当前选中节点（空字符串选中图根 `seed` 设置，不写撤销栈） |
-| graph.inspect / graph.set_properties / graph.create_scratch | `graph.inspect {asset, node, timings, samples, spatial, reference_node}` 评估并返回图的节点列表（含 `display`/`template`/`bypass`/`frozen`/`shape`/`color`/`comment` 及 `AssetNode` 的 `asset`/`asset_label`/非空 `overrides`）、`external_ports`、声明式提升参数 `parameters`、端口、连线、`notes`、`boxes`、每节点求值/缓存计数与错误、Display 几何统计及可选任意 `node` 的独立几何统计与可用节点类型目录 `node_types`（每项带 name、description、native、inputs 和 outputs，空图也可查询）。`spatial` 默认 `true`（传 `false` 可省略），在几何摘要 `spatial` 下输出四组客观空间体检：`topology`（多边形/折线数、退化图元数、单次出现的 `open_boundary_edges` 开口边与同向或超过两用的 `non_manifold_edges`）、`spacing`（点云或实例原点的最近邻间距 `min/p5/p50/p95` 与 `<=1e-4 m` 重合计数）、`instance_overlaps`（实例世界对齐 AABB 保守宽阶段重叠对数、重叠实例数/比例与最大最小轴穿插深度 `max_penetration_depth`，严贴合边 `0` 深度不误判重叠），以及指定同图多边形节点 `reference_node` 时的 `surface_clearance`（经 `Bvh::acquire` 统计底部锚点贴地 `|gap|<=0.05 m`、悬空 `gap>0.05 m`、埋地 `gap<-0.05 m`、脱离水平投影 `off_surface_count` 及有向间隙分位数）。Boolean 节点的 `status.boolean` 记录最近一次实际调用的 `input_faces`、`prepared_input_hits`（A、B 分别占第 0、1 位）、`candidate_pairs`、`ray_candidates`、`splits`、`peak_face_scratch_bytes` 和各阶段耗时（`prepare_ms`、`arrange_ms`、`sew_ms`、`publish_ms`）。即使关闭 `timings` 也采集；调用失败保留本次已完成的工作，Bypass、缓存命中或上游阻塞保留上次调用的数据，尚未调用则省略此字段；`graph.set_properties {asset, node, properties}` 以完整 JSON 属性补丁支持含 `String` 与 `Array<String>` 在内的任意节点/图根字段并记一步图撤销；`graph.create_scratch {key}` 创建无需磁盘文件的内存临时图（默认 `scratch/procedural`）并进入 SOP 上下文 |
+| graph.inspect / graph.apply / graph.create_scratch | `graph.inspect {asset, node, timings, samples, spatial, reference_node}` 评估并返回图的节点列表（含 `display`/`template`/`bypass`/`frozen`/`shape`/`color`/`comment` 及 `AssetNode` 的 `asset`/`asset_label`/非空 `overrides`）、`external_ports`、声明式提升参数 `parameters`、端口、连线、`notes`、`boxes`、每节点求值/缓存计数与错误、Display 几何统计及可选任意 `node` 的独立几何统计与可用节点类型目录 `node_types`（每项带 name、description、native、inputs 和 outputs，空图也可查询）。`spatial` 默认 `true`（传 `false` 可省略），在几何摘要 `spatial` 下输出四组客观空间体检：`topology`（多边形/折线数、退化图元数、单次出现的 `open_boundary_edges` 开口边与同向或超过两用的 `non_manifold_edges`）、`spacing`（点云或实例原点的最近邻间距 `min/p5/p50/p95` 与 `<=1e-4 m` 重合计数）、`instance_overlaps`（实例世界对齐 AABB 保守宽阶段重叠对数、重叠实例数/比例与最大最小轴穿插深度 `max_penetration_depth`，严贴合边 `0` 深度不误判重叠），以及指定同图多边形节点 `reference_node` 时的 `surface_clearance`（经 `Bvh::acquire` 统计底部锚点贴地 `|gap|<=0.05 m`、悬空 `gap>0.05 m`、埋地 `gap<-0.05 m`、脱离水平投影 `off_surface_count` 及有向间隙分位数）。Boolean 节点的 `status.boolean` 记录最近一次实际调用的 `input_faces`、`prepared_input_hits`（A、B 分别占第 0、1 位）、`candidate_pairs`、`ray_candidates`、`splits`、`peak_face_scratch_bytes` 和各阶段耗时（`prepare_ms`、`arrange_ms`、`sew_ms`、`publish_ms`）。即使关闭 `timings` 也采集；调用失败保留本次已完成的工作，Bypass、缓存命中或上游阻塞保留上次调用的数据，尚未调用则省略此字段；`graph.apply` 的局部补丁见下文；`graph.create_scratch {key}` 创建无需磁盘文件的内存临时图（默认 `scratch/procedural`）并进入 SOP 上下文 |
 | op.call asset.import | kind: texture / mesh，path 为图片或 OBJ/glTF；模型导入生成普通 MI 和网格默认关联，结果记录带 asset 键，重复请求由既有 request_id 合同处理 |
 | op.call asset.reimport | context.asset 与源文件 path；同身份更新并发布精确内容，不进入参数 Undo，模型按槽名保留用户 MI |
 | material.inspect | 保留：无重复 operator；材质编辑随 O2 的 preview/commit 一起迁移。按资产 GUID 或对象句柄读取 MS/MI 的声明、有效值、本地稀疏项、父关系、诊断与保存状态；asset 冷路径可能加载并发布资源、增加文档 revision，后续观察可能更新 state token 或取消活动渲染任务，因此整体标为 direct，仍不要求 state token，不承诺纯只读查询 |
@@ -89,13 +89,53 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 
 Transform、parent_set 和 space_reference_set 的 Context 目标必须是 Entity，组件不接受 TRS。parent_set 的 parent 为 Entity 句柄，null 或省略表示顶层；keep_world 默认 true，index 可省略。space_reference_set 的 origin 为 null 时继承组合祖先，world_space: true 表示世界，Entity 句柄表示显式空间参考；keep_world 默认 true。
 
-程序化图的属性补丁按请求中的字段顺序处理。字段被拒绝时，`graph.set_properties` 返回 `operation_failed` 和首个字段的诊断，保留整次修改之前的值，以及图的撤销和重做位置。非对象形状的 `properties` 返回 `invalid_request`。
+程序化图补丁拒绝字段时，`graph.apply` 返回 `operation_failed` 和含字段路径的首个诊断，并恢复提交前的属性、连线以及撤销/重做位置。
 
 完整 inspect 的 Entity 包含 parent（顶层为空字符串）、children 句柄数组、可选 transform 和 space_reference（null / 空字符串 / 句柄）。实体与组件句柄和分页目录一致。组件记录沿用单对象详情，包含反射参数与材质。完整查询读取场景层级、对象详情或组件类型目录失败时，返回 `operation_failed` 和底层首条诊断，响应中没有 `result`。组件记录不含 TRS。创建子实体复用 op.call scene.add 和 scene.parent_set；没有第二套 create_child 工厂或对象身份。
 
 `editor.inspect` 的普通对象记录带 `type_description` 和反射 `properties`。每条属性的 `description` 来自 Runtime 的字段描述；Vector 分量沿用聚合字段的说明，未声明说明时返回空字符串。名称、类型、值和可选枚举 `choices` 保持原有语义；声明了范围的属性另附 `range`，只列出已声明的端点：`ui_min`/`ui_max` 为常用范围（面板滑条），`hard_min`/`hard_max` 为写入时夹值的边界，Vector 分量沿用聚合字段的范围。材质不以固定 Runtime 字段表达参数，改用下述 `declarations` 与 `entries`。说明不包含可执行入口，查询不改变作者值或历史。
 
-### 资产目录分页
+### 用文本读写程序化图
+
+Agent 从 `{"op":"capabilities","args":{"scope":"graph"}}` 获取精简目录。常用的五项是 `asset.new_procedural_graph`、`graph.open`、`graph.inspect`、`graph.apply`、`graph.save`；第六项 `graph.create_scratch` 用于临时实验。目录中 `op:"op.call"` 的条目以 `id` 标明操作符，`args` 描述内层参数。例如创建资产可以发送 `{"op":"op.call","args":{"id":"asset.new_procedural_graph","args":{"path":"Content/Roof.procgraph"}}}`，写请求另带 `state_token`。专用操作符（如重命名、追加多输入连线、资产提取）可通过 `op.list` 发现。
+
+查算子可在打开图之前进行。已打开的文档可用 `asset` 指定，省略时使用当前图。通过 CLI 将 JSON 文件交给 `--request`。补丁编辑内存文档；工程图通过 `op.call graph.save` 保存。
+
+| 目的 | 请求 | 返回 |
+| --- | --- | --- |
+| 列算子 | `graph.inspect {"view":"catalog"}` | 返回内置 SOP、已发布的 Source SOP 和工程数字资产的名称、说明、来源和端口。 |
+| 查算子说明 | `graph.inspect {"view":"catalog","type":"procedural.Group"}` | 精确查类型。普通 SOP 列出可写字段的路径、类型、枚举值、数组元素类型、范围及声明元数据；向量的分量路径如 `direction.x` 对应补丁里的嵌套对象。数字资产按 `asset:<key>` 查其端口和公开的提升参数。发现请求不选择节点、不触发几何求值。 |
+| 看结构 | `graph.inspect {"view":"topology"}` | 一层节点与端口、有序连线、显示节点、模板节点、子图资产键和可撤销/重做状态。未解析的已保存输入列在对应节点的 `kept_inputs` 中。只读作者拓扑，不发起 cook；可沿 `asset` 打开子图继续查询。 |
+| 看字段 | `graph.inspect {"view":"node","node":"upper"}` | 所选已解析节点当前的可编辑属性 `properties`，不求值。 |
+| 核对产物 | `graph.inspect {"node":"upper","samples":0,"spatial":false}` | 默认 `full` 视图求值并返回几何统计。布尔属性的 `count` 为层元素总数，`selected_count` 为完整成员数，均与样本上限无关。 |
+| 修改图 | `graph.apply` | 成功返回 `asset` 和 `changed`。一个有效修改对应一步图撤销；原样重发返回 `changed:false`。 |
+
+例如，已打开的图里有 `roof` 和 `extrude` 时，下面是一次 `graph.apply` 的 `args`。它在已有屋面和挤出之间插入选择节点。
+
+```json
+{
+  "nodes": {
+    "upper": {
+      "type": "procedural.Group",
+      "properties": { "group": "roof_faces", "max_angle": 45 },
+      "inputs": { "input": "roof.output" }
+    },
+    "extrude": {
+      "properties": { "group": "roof_faces" },
+      "inputs": { "surface": "upper.output" }
+    }
+  },
+  "settings": { "display": "extrude" }
+}
+```
+
+- `{"settings":{"seed":17}}` 修改图根种子。根字段、`settings.display` 和 `nodes` 可以放在同一次补丁里，全部成功后共占一步撤销。例如只修改某个节点的种子，写 `{"nodes":{"noise":{"properties":{"seed":17}}}}`。
+- 节点名是局部编辑的身份。新节点必须提供 `type`。已有节点可省略类型，也可提供相同类型作为断言。`position` 是二元坐标，`asset` 是 AssetNode 引用，`properties` 遵守现有反射字段及提升参数的编辑约束。
+- 只替换明确写出的端口。同一补丁内可以前向引用。单输入写 `"node.port"`，多输入写有序端点数组，`null` 清空指定端口。空数组也可清空多输入。未涉及的连线、节点、字段和保存的待修复数据沿用原值。
+- `remove:["node_name"]` 显式删除节点及关联连线。同一节点不能同时出现在 `nodes` 和 `remove`。`settings.display:""` 清除显示标记。
+- 失败返回首个诊断，例如 `nodes.extrude.inputs.surface: unknown output 'roof.typo'`。失败不会发布部分修改，也不截断已有重做历史。补丁沿用编辑器的图操作和对象身份；图能否生成有效几何通过后续 `graph.inspect` 的完整视图检查。
+
+## 资产目录分页
 
 ```json
 {"op":"editor.inspect","args":{"detail":"assets","limit":64}}

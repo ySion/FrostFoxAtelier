@@ -9,6 +9,7 @@ function(atelier_add_procedural)
         modules/engine/procedural/src/volume.cpp
         modules/engine/procedural/src/instances.cpp
         modules/engine/procedural/src/bvh.cpp
+        modules/engine/procedural/src/resample.cpp
         modules/engine/procedural/src/modeling.cpp
         modules/engine/procedural/src/graph.cpp
         modules/engine/procedural/src/nodes.cpp

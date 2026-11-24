@@ -176,6 +176,22 @@ void verify_graph_format() {
     require(out != nullptr && out->count(procedural::Layer::point) == 6 &&
                 take(out->read<float>("nval", procedural::Layer::point)) != nullptr,
             "Reloaded C++/Source procedural graph did not evaluate to 6 noisy points.");
+    // Persist a wall asset and cook it from its saved graph, including enum and named ports.
+    const auto wall = take(editor::load_graph(runtime, R"({"version":4,"settings":{"display":"wall"},"nodes":{
+      "line":{"type":"procedural.Line","properties":{"end":{"x":6,"y":0,"z":0},"count":7}},
+      "path":{"type":"procedural.Polyline","inputs":{"points":"line.output"}},
+      "stations":{"type":"procedural.Resample","properties":{"mode":"segments","segments":4,"preserve_corners":true},
+                  "inputs":{"curves":"path.output"}},
+      "wall":{"type":"procedural.Sweep","inputs":{"backbone":"stations.output"}}}})"));
+    require(wall.issues.empty(), "Wall graph failed to bind Resample parameters or ports.");
+    const auto wall_text = take(editor::save_graph(runtime, wall));
+    const auto reopened = take(editor::load_graph(runtime, wall_text));
+    require(reopened.issues.empty() && take(editor::save_graph(runtime, reopened)) == wall_text,
+            "Wall graph was not stable across save/reopen.");
+    procedural::Evaluator walls{runtime, reopened.graph, resources, program.get()};
+    take(walls.evaluate());
+    require(walls.output() && walls.output()->count(procedural::Layer::point) == 20,
+            "Line -> Polyline -> Resample -> Sweep should build five rectangular wall stations.");
 }
 
 Result<void> verify_scene_recovery(editor::Project& project) {
@@ -214,6 +230,91 @@ Result<void> verify_scene_recovery(editor::Project& project) {
                 again.error().message == failure.error().message && document.dirty() &&
                 take(assets::read_file(original)) == before,
             "A failed recovery replaced its first error or the original scene");
+    return {};
+}
+
+Result<void> verify_roof_group(editor::Session& doc, editor::Project& project, editor::Workspace& workspace,
+                               editor::OperatorHost& host) {
+    using procedural::Layer;
+    const auto key = take(project.create_procedural_graph(L"Content/Graphs/Roof.procgraph", R"({
+      "version":4,"settings":{"display":"working"},"nodes":{
+        "roof":{"type":"procedural.Wedge","properties":{"size":{"x":2,"y":1,"z":2}}},
+        "upper":{"type":"procedural.Group","properties":{"group":"roof_faces","max_angle":45},"inputs":{"input":"roof.output"}},
+        "protected":{"type":"procedural.Group","properties":{"group":"protected_side","direction":{"x":1,"y":1,"z":0},"max_angle":0},
+                     "inputs":{"input":"upper.output"}},
+        "working":{"type":"procedural.Group","properties":{"group":"work_area","criterion":"existing",
+                   "source_group":"protected_side","operation":"subtract","base_group":"roof_faces"},"inputs":{"input":"protected.output"}},
+        "raise":{"type":"procedural.Extrude","properties":{"group":"work_area","distance":0.5,"output_back":false,"front_group":"raised"},
+                 "inputs":{"surface":"working.output"}}}})"));
+    ATELIER_TRY(host.open_graph_context(key));
+    workspace.dock.select(editor::control::scene_tab);
+    workspace.menu = ui::ContextMenuRequest{editor::control::scene_guides, 0, 0, 0};
+    const auto describe = [&]() {
+        auto rows = take(workspace.describe(doc, {1400, 900}, nullptr, &project));
+        take(workspace.commit_ui_controls());
+        return rows;
+    };
+    describe();
+    const auto chooser =
+        std::ranges::find(workspace.menu_items, editor::control::display_sop_group, &ui::MenuItem::key);
+    require(chooser != workspace.menu_items.end(), "Guides menu did not offer group selection for the roof.");
+    const auto choice = std::ranges::find(chooser->children, L"work_area  (primitives)", &ui::MenuItem::text);
+    require(choice != chooser->children.end() &&
+                take(workspace.apply_view(doc, host, {ui::ActionKind::activate, choice->key, {}})),
+            "Could not highlight the cooked work_area through the real viewport menu.");
+    workspace.menu.reset();
+    const auto rows = describe();
+    const auto hud = std::ranges::find(rows, editor::control::viewport_geometry_hud, &ui::Control::key);
+    require(hud != rows.end() && hud->text.find(L"work_area  1 / 5 primitives") != std::wstring::npos,
+            "Roof HUD did not report the same one-of-five selection as the cook.");
+
+    const auto original = take(doc.evaluate_graph(key, &project)).preview_output;
+    require(original && workspace.sop_group.resolve(*original) && workspace.sop_group.samples().size() == 1 &&
+                workspace.sop_group.samples().front() == 2,
+            "The unprotected left roof slope was not selected.");
+    const auto center = [](const procedural::Geometry& g, std::uint32_t index) {
+        const auto face = g.primitive(index);
+        math::Vector3 sum{};
+        for (auto p : g.vertex_points().subspan(face.first, face.count))
+            sum += g.positions()[p];
+        return sum / static_cast<float>(face.count);
+    };
+    editor::Camera camera;
+    camera.frame({}, 3.f);
+    const auto view = editor::ViewportView::make(camera, {0, 0, 800, 600}, 1.f);
+    std::vector<renderer::OverlayShape> overlay;
+    application::append_procedural_guides(*original, view, {.group = &workspace.sop_group}, overlay);
+    const auto screen = view.project(center(*original, 2));
+    require(screen && overlay.size() == 5 && std::abs(overlay.front().points[0] - screen->x) < .01f &&
+                std::abs(overlay.front().points[1] - screen->y) < .01f,
+            "Viewport did not outline the selected quad and mark its projected center.");
+
+    ATELIER_TRY(doc.graph_set_display(key, "raise"));
+    const auto extruded = take(doc.evaluate_graph(key, &project));
+    require(extruded.display_output && extruded.display_output->count(Layer::primitive) == 9,
+            "Extrude did not produce the expected raised slope and four side faces.");
+    const auto& g = *extruded.display_output;
+    const auto raised = take(g.read<bool>("raised", Layer::primitive));
+    const auto protected_side = take(g.read<bool>("protected_side", Layer::primitive));
+    require(raised && protected_side && std::ranges::count(*raised, true) == 1 &&
+                std::ranges::count(*protected_side, true) == 1,
+            "Roof groups did not survive the extrusion.");
+    const auto face_index = [](const auto& mask) {
+        return static_cast<std::uint32_t>(std::ranges::find(mask, true) - mask.begin());
+    };
+    const auto delta = center(g, face_index(*raised)) - center(*original, 2);
+    require(math::length(delta - math::Vector3{-.35355339f, .35355339f, 0}) < 1e-5f &&
+                math::length(center(g, face_index(*protected_side)) - center(*original, 1)) < 1e-5f &&
+                workspace.sop_group.resolve(g) && workspace.sop_group.count() == 5,
+            "Extrusion disagreed with the highlighted face, moved the protected slope, or left a stale guide.");
+    ATELIER_TRY(doc.graph_set_display(key, "roof"));
+    const auto bare = take(doc.evaluate_graph(key, &project));
+    require(bare.display_output && !workspace.sop_group.resolve(*bare.display_output) &&
+                workspace.sop_group.samples().empty(),
+            "Switching to a node without the group retained a stale highlight.");
+    workspace.sop_group = {};
+    ATELIER_TRY(doc.save_graph(project, key));
+    host.exit_graph_context();
     return {};
 }
 
@@ -343,6 +444,8 @@ class game.DiagnosticSop : procedural.Node {
     }
 
     const auto catalog = take(doc.procedural_node_types());
+    require(std::ranges::any_of(catalog, [](const auto& c) { return c.name == "procedural.Resample" && c.native; }),
+            "Resample was missing from the editor SOP catalog.");
     require(std::ranges::any_of(catalog, [](const auto& c) { return c.name == "procedural.Grid" && c.native; }) &&
                 std::ranges::any_of(catalog, [](const auto& c) { return c.name == "game.TerraceWave" && !c.native; }),
             "Session procedural node catalog did not include both native C++ and project .source SOPs.");
@@ -474,6 +577,7 @@ class game.DiagnosticSop : procedural.Node {
             }
         }
     } host{doc, project, workspace};
+    ATELIER_TRY(verify_roof_group(doc, project, workspace, host));
 
     const auto parse_doc = [](std::string_view json_text) { return take(json::Document::parse(json_text, {65536})); };
     const auto take_ui = [](auto result) {

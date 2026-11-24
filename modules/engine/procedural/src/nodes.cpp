@@ -115,9 +115,24 @@ Result<void> Polyline::process(const Geometry& points, Geometry& output) const n
     return {};
 }
 
+Result<void> Resample::process(const Geometry& curves, Geometry& output) const noexcept {
+    ATELIER_TRY_BIND(result, invocation_result(resample(curves, {mode, spacing, segments, preserve_corners})));
+    output = std::move(*result);
+    return {};
+}
+
+Result<void> Group::process(const Geometry& input, Geometry& output) const noexcept {
+    ATELIER_TRY_BIND(result, invocation_result(build_group(input, {group, criterion, direction, max_angle, source_group,
+                                                                   operation, base_group})));
+    output = std::move(*result);
+    return {};
+}
+
 Result<void> GroupBox::process(const Geometry& input, Geometry& output) const noexcept {
-    output = input;
-    return invocation_result(group_box(output, group, minimum, maximum));
+    Geometry result = input;
+    ATELIER_TRY(invocation_result(group_box(result, group, minimum, maximum)));
+    output = std::move(result);
+    return {};
 }
 
 Result<void> Connectivity::process(const Geometry& input, Geometry& output) const noexcept {

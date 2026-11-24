@@ -340,11 +340,6 @@ Result<json::Document> discover_editor(const Process& editor, const std::filesys
     return fixture_failure("Editor did not publish its endpoint");
 }
 
-Result<Driver> connect_editor(const Process& editor, const std::filesystem::path& directory) {
-    ATELIER_TRY_BIND(instance, discover_editor(editor, directory));
-    return Driver::connect(std::move(*instance));
-}
-
 struct SmokeLog {
     std::filesystem::path directory;
 
@@ -622,7 +617,7 @@ Result<void> prune_passed_smoke_runs(const std::filesystem::path& base, std::siz
     return {};
 }
 
-struct ArtifactCli {
+struct ControlCli {
     const std::filesystem::path& executable;
     const std::filesystem::path& directory;
     std::string instance;
@@ -672,7 +667,7 @@ struct ArtifactCli {
     }
 };
 
-Result<void> verify_capture(ArtifactCli& cli) {
+Result<void> verify_capture(ControlCli& cli) {
     ATELIER_TRY_BIND(
         invalid, cli.call("render.capture", 1, json::Document::literal<R"({"sample_frames":[2,1],"timeout_ms":0})">()));
     if (invalid->root().string({"status"}) != "error" ||
@@ -740,7 +735,7 @@ Result<void> verify_capture(ArtifactCli& cli) {
     return {};
 }
 
-Result<void> verify_repro(ArtifactCli& cli, const std::filesystem::path& project) {
+Result<void> verify_repro(ControlCli& cli, const std::filesystem::path& project) {
     const auto oversized = project / "Source/export-budget.bin";
     if (!std::ofstream(oversized, std::ios::binary))
         return fixture_failure("Could not create the export budget fixture");
@@ -1586,6 +1581,192 @@ Result<void> verify_inspect_read_errors(const std::filesystem::path& directory, 
     return require_control_error(inspect(full), "operation_failed", "World is closed.");
 }
 
+Result<void> verify_graph_discovery_cli(ControlCli& cli) {
+    ATELIER_TRY_BIND(profile, cli.call("capabilities", 0, json::Document::literal<R"({"scope":"graph"})">()));
+    const auto ops = *profile->root().at("result")->at("operations")->array();
+    std::vector<std::string> names;
+    for (const auto item : ops) {
+        const auto op = *item.string({"op"});
+        names.emplace_back(op == "op.call" ? *item.string({"id"}) : op);
+        if (!*item.find("args") || !*item.find("requires_state_token"))
+            return fixture_failure("Graph tool is missing its invocation contract");
+    }
+    if (names != std::vector<std::string>{"asset.new_procedural_graph", "graph.open", "graph.inspect", "graph.apply",
+                                          "graph.save", "graph.create_scratch"})
+        return fixture_failure("Unexpected graph authoring tool set");
+    ATELIER_TRY_BIND(all, cli.call("capabilities", 0));
+    for (const auto item : *all->root().at("result")->at("operations")->array())
+        if (item.string({"op"}) == "graph.set_properties")
+            return fixture_failure("Retired graph property request is still advertised");
+    ATELIER_TRY_BIND(types, cli.call("graph.inspect", 0, json::Document::literal<R"({"view":"catalog"})">()));
+    bool group_listed = false;
+    for (const auto entry : *types->root().at("result")->at("node_types")->array())
+        group_listed |= entry.string({"name"}) == "procedural.Group";
+    if (!group_listed || *types->root().at("result")->find("display_summary"))
+        return fixture_failure("Expected the SOP catalog before opening a graph");
+    ATELIER_TRY_BIND(schema, cli.call("graph.inspect", 0,
+                                      json::Document::literal<R"({"view":"catalog","type":"procedural.Group"})">()));
+    const auto type = *schema->root().at("result");
+    bool has_subtract = false;
+    bool has_max_angle = false;
+    for (const auto field : *type.at("fields")->array()) {
+        if (field.string({"path"}) == "operation")
+            for (const auto choice : *field.at("enum")->array())
+                has_subtract |= choice.string() == "subtract";
+        if (field.string({"path"}) == "max_angle")
+            has_max_angle = field.number({"range", "hard_max"}) == 180 &&
+                            field.string({"metadata", "ui.visible_when"}) == "criterion=normal";
+    }
+    if (!has_subtract || !has_max_angle || type.at("inputs")->at(0)->string({"name"}) != "input" ||
+        type.at("outputs")->at(0)->string() != "output")
+        return fixture_failure("Reflected Group catalog lost port, enum, condition or range metadata");
+    ATELIER_TRY_BIND(
+        source_type,
+        cli.call("graph.inspect", 0, json::Document::literal<R"({"view":"catalog","type":"procedural.Noise"})">()));
+    if (source_type->root().boolean({"result", "native"}) != false ||
+        !source_type->root().at("result")->at("fields")->size())
+        return fixture_failure("Source SOP schema discovery failed");
+    ATELIER_TRY_BIND(
+        missing, cli.call("graph.inspect", 1, json::Document::literal<R"({"view":"catalog","type":"missing.SOP"})">()));
+    if (missing->root().string({"error", "code"}) != "invalid_request")
+        return fixture_failure("Unknown SOP did not return a discovery error");
+    ATELIER_TRY_BIND(source, cli.call("graph.inspect", 0,
+                                      json::Document::literal<R"({"view":"catalog","type":"procedural.Noise"})">()));
+    if (source->root().boolean({"result", "native"}) != false || !source->root().at("result")->at("fields")->size())
+        return fixture_failure("Published Source SOP fields are missing from type discovery");
+
+    json::Builder create;
+    create.set_validated(create.root(), "id", "asset.new_procedural_graph");
+    const auto args = create.object_validated(create.root(), "args");
+    create.set_validated(args, "path", "Content/Discovery.procgraph");
+    create.set_validated(
+        args, "source",
+        R"({"version":4,"settings":{"display":"grid"},"parameters":[{"name":"width","targets":["grid.columns"]}],"nodes":{"grid":{"type":"procedural.Grid"}}})");
+    ATELIER_TRY_BIND(created, cli.call("op.call", 0, create.finish()));
+    const auto asset = created->root().string({"result", "result", "asset"});
+    if (!asset || asset->empty())
+        return fixture_failure("Graph creation did not return an asset key");
+    json::Builder query;
+    query.set_validated(query.root(), "view", "catalog");
+    query.set_validated(query.root(), "type", "asset:" + std::string(*asset));
+    ATELIER_TRY_BIND(digital, cli.call("graph.inspect", 0, query.finish()));
+    const auto parameters = *digital->root().at("result")->at("parameters");
+    if (parameters.size() != 1 || parameters.at(0)->string({"name"}) != "width" || !*parameters.at(0)->find("type"))
+        return fixture_failure("Digital asset catalog did not resolve its promoted parameter");
+
+    return {};
+}
+
+Result<void> verify_graph_patch_cli(ControlCli& cli) {
+    ATELIER_TRY(verify_graph_discovery_cli(cli));
+    ATELIER_TRY(cli.call("graph.create_scratch", 0, json::Document::literal<R"({"key":"scratch/roof"})">()));
+    const auto topology = json::Document::literal<R"({"view":"topology"})">();
+    const auto base = json::Document::literal<
+        R"({"nodes":{"roof":{"type":"procedural.Wedge","properties":{"size":{"x":2,"y":1,"z":2}}}},"settings":{"seed":17}})">();
+    ATELIER_TRY(cli.call("graph.apply", 0, base));
+    ATELIER_TRY_BIND(original, cli.call("graph.inspect", 0, topology));
+    const auto roof = *original->root().at("result")->at("nodes")->at(0);
+    const auto patch = json::Document::literal<R"({
+      "nodes":{
+        "raise":{"type":"procedural.Extrude","properties":{"group":"work_area","output_back":false,"front_group":"raised"},"inputs":{"surface":"working.output"}},
+        "upper":{"type":"procedural.Group","properties":{"group":"roof_faces","max_angle":45},"inputs":{"input":"roof.output"}},
+        "protected":{"type":"procedural.Group","properties":{"group":"protected_side","direction":{"x":1,"y":1,"z":0},"max_angle":0},"inputs":{"input":"upper.output"}},
+        "working":{"type":"procedural.Group","properties":{"group":"work_area","criterion":"existing","source_group":"protected_side","operation":"subtract","base_group":"roof_faces"},"inputs":{"input":"protected.output"}},
+        "ordered":{"type":"procedural.Merge","inputs":{"inputs":["working.output","roof.output"]}}
+      },"settings":{"display":"raise","seed":91}})">();
+    ATELIER_TRY_BIND(applied, cli.call("graph.apply", 0, patch));
+    ATELIER_TRY_BIND(repeated, cli.call("graph.apply", 0, patch));
+    if (applied->root().boolean({"result", "changed"}) != true ||
+        repeated->root().boolean({"result", "changed"}) != false)
+        return fixture_failure("An identical graph patch created another edit");
+    ATELIER_TRY_BIND(edited, cli.call("graph.inspect", 0, topology));
+    const auto structure = *edited->root().at("result");
+    if (structure.string({"display"}) != "raise" || structure.at("nodes")->size() != 6 ||
+        *structure.find("parameters") || *structure.find("display_summary") || *structure.find("node_types"))
+        return fixture_failure("Expected a structure-only roof graph");
+    std::vector<std::string> order;
+    for (const auto edge : *structure.at("connections")->array())
+        if (edge.string({"to_node"}) == "ordered")
+            order.emplace_back(*edge.string({"from_node"}));
+    if (order != std::vector<std::string>{"working", "roof"})
+        return fixture_failure("Topology changed the order of a multi-input port");
+    ATELIER_TRY_BIND(props,
+                     cli.call("graph.inspect", 0, json::Document::literal<R"({"view":"node","node":"working"})">()));
+    if (props->root().string({"result", "properties", "base_group"}) != "roof_faces")
+        return fixture_failure("Could not read just the requested node's parameters");
+    ATELIER_TRY_BIND(cooked, cli.call("graph.inspect", 0,
+                                      json::Document::literal<R"({"node":"working","samples":0,"spatial":false})">()));
+    const auto result = *cooked->root().at("result");
+    const auto selected = [](json::Value summary, std::string_view group) {
+        for (const auto attr : *summary.at("attributes")->array())
+            if (attr.string({"name"}) == group)
+                return attr.u64({"selected_count"}).value_or(0);
+        return std::uint64_t{};
+    };
+    if (result.u64({"seed"}) != 91 || result.u64({"display_summary", "counts", "primitive"}) != 9 ||
+        selected(*result.at("display_summary"), "raised") != 1 ||
+        selected(*result.at("inspected_summary"), "work_area") != 1)
+        return fixture_failure("The CLI patch did not extrude precisely the unprotected roof slope");
+
+    ATELIER_TRY(cli.call("op.call", 0, json::Document::literal<R"({"id":"edit.undo"})">()));
+    ATELIER_TRY_BIND(undone, cli.call("graph.inspect", 0, topology));
+    const auto prior = *undone->root().at("result");
+    if (prior.at("nodes")->size() != 1 || *prior.at("nodes")->at(0) != roof || prior.boolean({"can_redo"}) != true)
+        return fixture_failure("Undo did not restore the roof handle and complete prior topology in one step");
+    const auto bad = json::Document::literal<
+        R"({"nodes":{"new_node":{"type":"procedural.Group","inputs":{"no_such_port":"roof.output"}}},"settings":{"seed":222}})">();
+    ATELIER_TRY_BIND(rejected, cli.call("graph.apply", 1, bad));
+    if (rejected->root().string({"error", "code"}) != "operation_failed" ||
+        rejected->root().string({"error", "message"}).value_or("").find("nodes.new_node.inputs.no_such_port") ==
+            std::string_view::npos)
+        return fixture_failure("Invalid patch lost its input port diagnostic");
+    ATELIER_TRY_BIND(after_bad, cli.call("graph.inspect", 0, topology));
+    const auto check_seed = json::Document::literal<R"({"samples":0,"spatial":false})">();
+    ATELIER_TRY_BIND(after_failure, cli.call("graph.inspect", 0, check_seed));
+    if (after_failure->root().u64({"result","seed"}) != 17)
+        return fixture_failure("A rejected mixed patch or undo left a partial graph-root edit");
+    if (*after_bad->root().at("result") != prior)
+        return fixture_failure("Failed patch changed the graph or consumed existing redo history");
+    ATELIER_TRY(cli.call("op.call", 0, json::Document::literal<R"({"id":"edit.redo"})">()));
+    ATELIER_TRY_BIND(redone, cli.call("graph.inspect", 0, topology));
+    ATELIER_TRY_BIND(after_redo, cli.call("graph.inspect", 0, check_seed));
+    if (after_redo->root().u64({"result","seed"}) != 91)
+        return fixture_failure("Redo failed to restore graph seed with the SOP edits");
+    if (*redone->root().at("result") != structure)
+        return fixture_failure("Redo lost graph identities, display, or ordered inputs");
+    // Invalid final cycle after valid field edits must restore both old wiring and old parameters.
+    ATELIER_TRY_BIND(
+        cycle,
+        cli.call("graph.apply", 1,
+                 json::Document::literal<
+                     R"({"nodes":{"upper":{"properties":{"max_angle":5},"inputs":{"input":"raise.output"}}}})">()));
+    ATELIER_TRY_BIND(angle,
+                     cli.call("graph.inspect", 0, json::Document::literal<R"({"view":"node","node":"upper"})">()));
+    ATELIER_TRY_BIND(restored, cli.call("graph.inspect", 0, topology));
+    if (cycle->root().string({"error", "message"}).value_or("").find("cycle") == std::string_view::npos ||
+        angle->root().number({"result", "properties", "max_angle"}) != 45 ||
+        *restored->root().at("result") != structure)
+        return fixture_failure("A rejected cycle left a partial graph or field change");
+    ATELIER_TRY(cli.call(
+        "graph.apply", 0,
+        json::Document::literal<
+            R"({"remove":["ordered"],"nodes":{"raise":{"inputs":{"surface":null}}},"settings":{"display":"working"}})">()));
+    ATELIER_TRY_BIND(trimmed, cli.call("graph.inspect", 0, topology));
+    if (trimmed->root().at("result")->at("nodes")->size() != 5 ||
+        trimmed->root().at("result")->at("connections")->size() != 3)
+        return fixture_failure("Explicit node removal and port clearing did not take effect");
+    ATELIER_TRY(cli.call("op.call", 0, json::Document::literal<R"({"id":"edit.undo"})">()));
+    ATELIER_TRY_BIND(untrimmed, cli.call("graph.inspect", 0, topology));
+    const auto restored_edit = *untrimmed->root().at("result");
+    if (*restored_edit.at("nodes") != *structure.at("nodes") ||
+        *restored_edit.at("connections") != *structure.at("connections") ||
+        *restored_edit.at("display") != *structure.at("display") ||
+        restored_edit.boolean({"can_redo"}) != true)
+        return fixture_failure("Undo of removal failed to restore the ordered wires");
+    ATELIER_TRY(cli.call("op.call", 0, json::Document::literal<R"({"id":"graph.exit"})">()));
+    return {};
+}
+
 Result<void> verify_graph_requests(Driver& driver) {
     ATELIER_TRY_BIND(empty,
                      driver.ok("graph.create_scratch", json::Document::literal<R"({"key":"scratch/control"})">()));
@@ -1604,24 +1785,24 @@ Result<void> verify_graph_requests(Driver& driver) {
                               "invalid_request", "Unknown or unresolved reference_node in procedural graph: absent"));
     ATELIER_TRY(require_control_error(driver.call("graph.inspect", json::Document::literal<R"({"node":"absent"})">()),
                                       "invalid_request", "Unknown node in procedural graph: absent"));
-    ATELIER_TRY(
-        require_control_error(driver.call("graph.set_properties", json::Document::literal<R"({"properties":[]})">()),
-                              "invalid_request", "properties must be a JSON object"));
-
-    // A valid scalar precedes two bad fields. The first bad field owns the diagnostic.
     ATELIER_TRY(require_control_error(
-        driver.call(
-            "graph.set_properties",
-            json::Document::literal<R"({"node":"","properties":{"seed":12345,"first_bad":0,"later_bad":0}})">()),
-        "operation_failed", "first_bad: Unknown field."));
+        driver.call("graph.apply", json::Document::literal<R"({"nodes":{"copies":{"properties":[]}}})">()),
+        "operation_failed", "nodes.copies.properties: expected an object"));
+
+    // A valid root field precedes two invalid fields. The first error owns the diagnostic.
+    ATELIER_TRY(require_control_error(
+        driver.call("graph.apply",
+                    json::Document::literal<R"({"settings":{"seed":12345,"first_bad":0,"later_bad":0}})">()),
+        "operation_failed", "settings: first_bad: Unknown field."));
     ATELIER_TRY_BIND(rejected, driver.ok("graph.inspect"));
     if (*rejected->root().at("seed") != *graph->root().at("seed") || rejected->root().boolean({"can_undo"}) != false)
         return fixture_failure("Rejected graph-root patch changed seed or created history");
 
     ATELIER_TRY(
         driver.op("graph.add_node", json::Document::literal<R"({"type":"procedural.Grid","name":"points"})">()));
-    ATELIER_TRY(driver.ok("graph.set_properties",
-                          json::Document::literal<R"({"node":"points","properties":{"primitive_type":"points"}})">()));
+    ATELIER_TRY(
+        driver.ok("graph.apply",
+                  json::Document::literal<R"({"nodes":{"points":{"properties":{"primitive_type":"points"}}}})">()));
     ATELIER_TRY(driver.op("graph.add_node",
                           json::Document::literal<R"({"type":"procedural.CopyToPoints","name":"copies"})">()));
     ATELIER_TRY(
@@ -1630,13 +1811,14 @@ Result<void> verify_graph_requests(Driver& driver) {
                       R"({"from_node":"points","from_port":"output","to_node":"copies","to_port":"points"})">()));
     const auto patch = [&](std::string_view mesh, std::string_view variant) -> Result<void> {
         json::Builder args;
-        args.set_validated(args.root(), "node", "copies");
-        const auto props = args.object_validated(args.root(), "properties");
+        const auto nodes = args.object_validated(args.root(), "nodes");
+        const auto copies = args.object_validated(nodes, "copies");
+        const auto props = args.object_validated(copies, "properties");
         const auto meshes = *args.array(props, "meshes");
         if (!args.append(meshes, mesh))
             return fixture_failure("Invalid graph fixture mesh");
         args.set_validated(props, "variant", variant);
-        ATELIER_TRY(driver.ok("graph.set_properties", args.finish()));
+        ATELIER_TRY(driver.ok("graph.apply", args.finish()));
 
         return {};
     };
@@ -1679,10 +1861,10 @@ Result<void> verify_graph_requests(Driver& driver) {
     ATELIER_TRY(patch("builtin/cube", "committed"));
     ATELIER_TRY(check("builtin/cube", "committed", false));
     const auto bad = json::Document::literal<
-        R"({"node":"copies","properties":{"meshes":["builtin/sphere"],"variant":"rejected","first_bad":1,"later_bad":2}})">();
+        R"({"nodes":{"copies":{"properties":{"meshes":["builtin/sphere"],"variant":"rejected","first_bad":1,"later_bad":2}}}})">();
     const auto reject = [&]() -> Result<void> {
-        return require_control_error(driver.call("graph.set_properties", bad), "operation_failed",
-                                     "first_bad: Unknown field.");
+        return require_control_error(driver.call("graph.apply", bad), "operation_failed",
+                                     "nodes.copies.properties: first_bad: Unknown field.");
     };
     ATELIER_TRY(reject());
     ATELIER_TRY(check("builtin/cube", "committed", false));
@@ -1779,7 +1961,20 @@ Result<void> verify_edit_requests(const std::filesystem::path& executable, const
                                      L"--new-project " + quote(project) + L" --control-directory " + quote(directory) +
                                          L" --log-directory " + quote(root / "MaterialLogs") + L" --no-activate",
                                      root / "material-editor.log"));
-    auto connected = connect_editor(*editor, directory);
+    // Invalid patches deliberately emit editor.control_failed. Exercise them on the edit fixture's
+    // editor, leaving the example/Play run with its normal zero-error log contract.
+    const auto open_edit_driver = [&]() -> Result<Driver> {
+        ATELIER_TRY_BIND(instance, discover_editor(*editor, directory));
+        ControlCli graph_cli{cli, directory, std::string(*instance->root().string({"instance_id"})), {}};
+        {
+            ATELIER_TRY_BIND(startup, Driver::connect(*instance));
+            ATELIER_TRY(startup->settle());
+            graph_cli.token = std::move(startup->token);
+        }
+        ATELIER_TRY(verify_graph_patch_cli(graph_cli));
+        return Driver::connect(std::move(*instance));
+    };
+    auto connected = open_edit_driver();
     if (!connected)
         return editor->finish(std::unexpected(std::move(connected).error()));
     auto& driver = *connected;
@@ -1979,7 +2174,7 @@ Result<void> smoke_logs(const std::filesystem::path& executable, const std::file
     const auto drive = [&]() -> Result<void> {
         ATELIER_TRY_BIND(instance, discover_editor(*editor, directory));
 
-        ArtifactCli artifacts{cli, directory, std::string(*instance->root().string({"instance_id"})), {}};
+        ControlCli artifacts{cli, directory, std::string(*instance->root().string({"instance_id"})), {}};
         json::Document state;
         {
             ATELIER_TRY_BIND(driver, Driver::connect(*instance));

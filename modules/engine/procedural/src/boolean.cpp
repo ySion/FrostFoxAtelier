@@ -10,7 +10,6 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <map>
 #include <numeric>
 #include <vector>
 
@@ -238,11 +237,11 @@ struct detail::PreparedBooleanSurface {
         const auto first = component(faces.front());
         if (std::ranges::all_of(faces, [&](const Face& f) { return component(f) == first; }))
             return;
-        std::map<std::uint32_t, std::uint32_t> used;
+        Map<std::uint32_t, std::uint32_t> used;
         for (auto& face : faces) {
-            auto [it, added] = used.try_emplace(component(face), static_cast<std::uint32_t>(shells.size()));
-            face.shell = it->second;
-            if (added)
+            const auto entry = used.try_emplace(component(face), static_cast<std::uint32_t>(shells.size()));
+            face.shell = *entry.value;
+            if (entry.inserted)
                 shells.push_back(face.box);
             else
                 shells[face.shell].include(face.box);
@@ -1345,18 +1344,21 @@ Result<Geometry> publish(const MeshBuilder& mesh, const Lattice& grid, const std
         if (end - i == 2) {
             ATELIER_TRY(pair(edges[i].corner, edges[i + 1].corner));
         } else if (end - i >= 4 && (end - i) % 2 == 0) {
-            // Group a tangential contact by the actual input shell. This
-            // also preserves shells meeting along an edge on a later cook.
-            std::map<std::pair<unsigned, std::uint32_t>, std::vector<std::uint32_t>> uses;
-            for (auto j = i; j < end; ++j) {
-                const auto c = edges[j].corner;
-                const auto& f = *pieces[owners[c]].face;
-                uses[{f.operand, f.shell}].push_back(c);
-            }
-            for (const auto& [key, use] : uses) {
-                if (use.size() != 2)
+            // Keep tangentially meeting shells separate. Check shell keys in order so multiple
+            // invalid groups on one edge report the same first error.
+            const auto shell_key = [&](const Edge& edge) {
+                const auto& face = *pieces[owners[edge.corner]].face;
+                return std::pair{face.operand, face.shell};
+            };
+            std::ranges::stable_sort(std::span{edges}.subspan(i, end - i), {}, shell_key);
+            for (auto j = i; j < end;) {
+                const auto first = j++;
+                const auto key = shell_key(edges[first]);
+                while (j < end && shell_key(edges[j]) == key)
+                    ++j;
+                if (j - first != 2)
                     return failure("Boolean boundary has an ambiguous non-manifold edge.");
-                ATELIER_TRY(pair(use[0], use[1]));
+                ATELIER_TRY(pair(edges[first].corner, edges[first + 1].corner));
             }
         } else
             return failure("Boolean result has an open or non-manifold boundary.");

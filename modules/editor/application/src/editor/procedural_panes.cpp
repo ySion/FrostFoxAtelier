@@ -63,6 +63,41 @@ struct ColumnExtractor {
 
 } // namespace
 
+void GeometryGroupGuide::select(procedural::Layer layer, std::string name) {
+    layer_ = layer;
+    name_ = std::move(name);
+    column_ = {};
+    count_ = 0;
+    samples_.clear();
+}
+
+bool GeometryGroupGuide::resolve(const procedural::Geometry& geometry) {
+    const auto* attr = name_.empty() ? nullptr : geometry.find(StringView{name_});
+    const auto* mask = attr && attr->layer == layer_ ? std::get_if<SharedArray<bool>>(&attr->data) : nullptr;
+    if (!mask) {
+        column_ = {};
+        count_ = 0;
+        samples_.clear();
+        return false;
+    }
+    if (same(column_, *mask))
+        return true;
+    column_ = *mask;
+    count_ = static_cast<std::size_t>(std::ranges::count(column_.array(), true));
+    samples_.clear();
+    constexpr std::size_t sample_limit = 2048;
+    const auto limit = std::min(count_, sample_limit);
+    samples_.reserve(limit);
+    std::size_t rank = 0;
+    for (std::uint32_t i = 0; samples_.size() < limit; ++i) {
+        if (!column_.array()[i])
+            continue;
+        if (rank++ == samples_.size() * count_ / limit)
+            samples_.push_back(i);
+    }
+    return true;
+}
+
 void GeometrySpreadsheet::reset(bool preserve_view) noexcept {
     if (!preserve_view)
         page_offset_ = 0;
@@ -779,7 +814,7 @@ ui::ControlIcon sop_node_icon(std::string_view type_name, bool is_source_sop, bo
         return ui::ControlIcon::face_normals;
     if (type_name == "procedural.Transform")
         return ui::ControlIcon::axes;
-    if (type_name == "procedural.GroupBox" || type_name == "procedural.MatchSize")
+    if (type_name == "procedural.Group" || type_name == "procedural.GroupBox" || type_name == "procedural.MatchSize")
         return ui::ControlIcon::bounds_cage;
     if (type_name == "procedural.Promote" || type_name == "procedural.Connectivity")
         return ui::ControlIcon::network_layout;
@@ -787,7 +822,8 @@ ui::ControlIcon sop_node_icon(std::string_view type_name, bool is_source_sop, bo
         return ui::ControlIcon::duplicate;
     if (type_name == "procedural.Remove")
         return ui::ControlIcon::trash;
-    if (type_name == "procedural.Polyline" || type_name == "procedural.Sweep" || type_name == "procedural.Circle")
+    if (type_name == "procedural.Polyline" || type_name == "procedural.Resample" || type_name == "procedural.Sweep" ||
+        type_name == "procedural.Circle")
         return ui::ControlIcon::axes_origin;
     if (type_name == "procedural.Extrude")
         return ui::ControlIcon::face_normals;
@@ -863,7 +899,7 @@ NetworkCanvas::TabCategory NetworkCanvas::categorize_node_type(const GraphNodeCa
         short_name == "GraphInput" || short_name == "GraphOutput")
         return TabCategory::utility;
     if (entry.ports.inputs.empty() || short_name == "Polyline" || short_name == "MeshImport" ||
-        short_name == "Extrude" || short_name == "Sweep")
+        short_name == "Extrude" || short_name == "Sweep" || short_name == "Resample")
         return TabCategory::primitive;
     return TabCategory::attribute;
 }

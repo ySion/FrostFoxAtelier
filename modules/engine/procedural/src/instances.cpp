@@ -1,10 +1,9 @@
 #include "procedural/instances.hpp"
-#include "procedural/random.hpp"
+#include "foundation/map.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <unordered_map>
 
 namespace atelier::procedural {
 namespace {
@@ -14,14 +13,14 @@ struct GroupKey {
 
     std::array<std::int32_t, 3> chunk;
 
-    bool operator==(const GroupKey&) const = default;
+    bool operator==(const GroupKey&) const noexcept = default;
 };
 
 struct GroupHash {
+    using is_avalanching = void;
+
     std::size_t operator()(const GroupKey& key) const noexcept {
-        return hash(key.reference,
-                    hash(static_cast<std::uint32_t>(key.chunk[0]),
-                         hash(static_cast<std::uint32_t>(key.chunk[1]), static_cast<std::uint32_t>(key.chunk[2]))));
+        return hash_fields(key.reference, key.chunk[0], key.chunk[1], key.chunk[2]);
     }
 };
 
@@ -42,7 +41,7 @@ Result<Publication> publish(const Geometry& geometry, float chunk_size, const Pu
     const auto& indices = geometry.instance_references();
     const auto& transforms = geometry.instance_transforms();
     Publication result;
-    std::unordered_map<GroupKey, std::vector<Affine>, GroupHash> groups;
+    Map<GroupKey, std::vector<Affine>, GroupHash> groups;
     for (std::size_t i = 0; i < indices.size(); ++i) {
         const auto& m = transforms[i];
         if (!math::normal_transform({m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]})) {
@@ -56,11 +55,12 @@ Result<Publication> publish(const Geometry& geometry, float chunk_size, const Pu
                 return failure("An instance lies outside the chunk index range.");
             key.chunk[axis] = static_cast<std::int32_t>(cell);
         }
-        groups[key].push_back({m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10], m[12], m[13], m[14]});
+        auto& transforms_in_chunk = *groups.try_emplace(key).value;
+        transforms_in_chunk.push_back({m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10], m[12], m[13], m[14]});
     }
     const auto references = geometry.references();
     result.collections.reserve(groups.size());
-    for (auto& [key, values] : groups)
+    for (auto [key, values] : groups)
         result.collections.push_back(
             {references[key.reference], key.chunk, std::make_shared<const std::vector<Affine>>(std::move(values))});
     std::ranges::sort(result.collections, [](const Collection& a, const Collection& b) {

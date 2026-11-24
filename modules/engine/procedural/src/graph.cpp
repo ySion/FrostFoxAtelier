@@ -279,6 +279,9 @@ Result<void> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<Reduce>::build(runtime));
     definitions.push_back(reflection::Definition<BooleanOperation>::build(runtime));
     definitions.push_back(reflection::Definition<SweepProfile>::build(runtime));
+    definitions.push_back(reflection::Definition<GroupCriterion>::build(runtime));
+    definitions.push_back(reflection::Definition<GroupOperation>::build(runtime));
+    definitions.push_back(reflection::Definition<ResampleMode>::build(runtime));
     definitions.push_back(reflection::Definition<OrientationPlane>::build(runtime));
     definitions.push_back(reflection::Definition<GridPrimitive>::build(runtime));
     definitions.push_back(reflection::Definition<CirclePrimitive>::build(runtime));
@@ -320,6 +323,8 @@ Result<void> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<Circle>::build(runtime));
     definitions.push_back(reflection::Definition<Torus>::build(runtime));
     definitions.push_back(reflection::Definition<Polyline>::build(runtime));
+    definitions.push_back(reflection::Definition<Resample>::build(runtime));
+    definitions.push_back(reflection::Definition<Group>::build(runtime));
     definitions.push_back(reflection::Definition<GroupBox>::build(runtime));
     definitions.push_back(reflection::Definition<Boolean>::build(runtime));
     definitions.push_back(reflection::Definition<Connectivity>::build(runtime));

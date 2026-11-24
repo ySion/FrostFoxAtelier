@@ -37,6 +37,8 @@
 - **`grid` / `line`**：`grid(GridSettings)` 支持 `zx`（+Y）、`xy`（+Z）、`yz`（+X）三参考平面上的 `quads`（默认四边形网格）、`triangles`（三角形网格）与 `points`（纯点阵）；表面模式要求 `rows/columns >= 2` 且尺寸为正，写出 `vertex` `N` 与 `[0,1]` 仿射 `uv`；双参数便捷入口 `grid(size, rows, columns)` 保持纯点阵语义。`line` 输出含两端的等距散点。
 - **`box` / `sphere` / `tube` / `wedge` / `circle` / `torus`**：按下述拓扑生成几何，表面均写出 `vertex` `N` 与 `vertex` `uv`。`box` 支持三轴细分（共享棱与角点构成单一闭合流形壳）及 `base_on_ground`（底面贴齐 `center.y`）；`tube` 支持独立 `radius_top`/`radius_bottom`（一端为 0 时生成共享尖顶三角锥面）、中空 `inner_radius`（凸梯形环盖）、多层 `rows` 与扇形 `arc_degrees`（自动封闭径向切口）；`wedge` 生成闭合楔形体或双坡屋顶棱柱（`peak_ratio` 覆盖 `0..1`）；`circle` 在三参考平面上输出闭合凸多边形（小于 360° 为过圆心的凸三角扇）、闭合折线或供 `Sweep` 拱门/弯墙直接消费的开放圆弧折线（`open_arc`）；`torus` 生成 `minor_radius < major_radius` 的无自交圆环或带盖弯管。预检总角数均须小于 2³²−1，表面消费者仍执行公共凸面判据。
 - **`Geometry::connect_points` / Polyline**：只接受纯点输入，不得带任何图元或 instance；按点序连接为一个开放图元，不焊接，不自动闭合，没有 closed 选项。0 点空进空出（保留 detail，与未连端口相容），1 点报错。全部 point 与 detail 列及其用途原样共享保留，不生成 N；已有空 vertex/primitive 列保留定义，分别扩为点数/1 个类型默认值，instance 列仍为空，不静默删列。`Line → Polyline` 先生成等距点，再连接相邻点；作者手填点数组的绘制曲线节点后移到 S2，见 roadmap。
+- **`Group`** 输出一列命名的 `bool` 属性。选 `normal` 时，用局部空间点位和多边形绕序计算面积法线；与 `direction` 的夹角 ≤ `max_angle`（0–180°）即入 primitive 组。边界包含在内，折线的条件值为假，零面积面报出首个图元索引。选 `existing` 时直接读取 `source_group` 的层和成员。默认 `replace` 写入条件结果；`unite / intersect / subtract` 计算“基组 ∪ 条件 / 基组 ∩ 条件 / 基组 − 条件”。输出可与任一操作数同名。显式命名的组须存在、为 bool，参与组合的组须同层。已有列替换遵守 Geometry 层与类型契约。
+- **屋面示例**：对宽 2、高 1 的对称 `Wedge` 用 +Y、45° 得到两片 `roof_faces`；以右坡法线 (1,1,0)、0° 得到 `protected_side`。在 `Group` 里选 `existing`、`subtract`，以 `roof_faces` 为基组、`protected_side` 为条件，输出 `work_area`。下游 `Extrude.group = work_area` 只抬高左坡。Scene View 的 Guides → Highlight Group 可以检查该列，Geometry Info HUD 显示成员数和所在层的总数。
 - **`group_box`**：在各轴闭区间 `[minimum,maximum]` 内选 point，写入/替换同名 bool 列；边界须有限且逐轴有序。名字遵守 Geometry 标识符规则，已有异层/异类型列报错。GroupBox 节点在输入的 COW 副本上操作，不改输入；这是输出组名，不能用空名字表示全选，不支持表达式或反选。
 - **Connectivity** 按共享点索引将多边形、开放折线和散点划分为连通块，在 point 层写入 uint 属性（默认 `piece`）。编号从 0 开始，按每块最小点索引排序。仅位置重合的独立点保持分离，孤立点各有一个编号；实例层与其余属性原样传递。需要逐图元编号时接 Promote，目标层选 primitive，归约选 first。
 - **`scatter`**：接受三角形及凸平面多边形，不接受折线；按下述公共首角扇形视图采样。原图元 p、局部子三角 j 的随机源 s 在 j=0 时为 `hash(seed,p)`，j>0 时为 `hash(hash(seed,p),j)`；点数为面积 × 密度，以 `hash(s,0)` 按小数部分概率进位，第 k 个点使用 `hash(s,2*k+1)` 与 `hash(s,2*k+2)` 均匀采样重心坐标。输出按 p/j/k 顺序，k 在每个子三角内从零开始，不把展开下标或线程号混入随机源。可选最小间距通过紧凑双数组开放寻址空间哈希在全部候选上按这个顺序稳定淘汰，所有列一起压紧；格坐标超出 ±2⁶² 时失败。输出 P、N、`id`、`sourceprim`、`sourceordinal`、`sourceprimuv`；仅输入包含超过三角的面时在末尾追加 uint `sourcetri`（其他三角面的值为 0）。纯三角输入的六列顺序、算术与值不变。`id` 在 j=0 时为 `hash(p,k)`，否则为 `hash(hash(p,j),k)`，它只是非唯一随机种子；（p,j,k）是局部稳定来源。`sourceprimuv` 是子三角 j 内的 (b1,b2)，不是原多边形坐标。
@@ -135,7 +137,7 @@ Release 下运行 `atelier_procedural_acceptance --profile-boolean <新的绝对
 
 ## 程序化图
 
-`procedural::register_types(Runtime&)` 发布 Layer、Reduce、RayMode、BooleanOperation、SweepProfile、OrientationPlane、GridPrimitive、CirclePrimitive、AxisJustify、FallbackShape、Geometry、`procedural.Geometries`（`Array<Geometry>`）、Spatial、Context、统一基类 `procedural.Node`、Graph 和内置节点；String、`Array<String>` 和除 String 外每种列类型的 Array（`procedural.Bools`、`Ints`、`Uints`、`Floats`、`Vector2s`、`Vector3s`、`Vector4s`、`Quaternions`、`Matrix4s`）不存在时一并发布，源码节点借用的列就是这些类型。重复调用不做任何事。
+`procedural::register_types(Runtime&)` 发布 Layer、Reduce、RayMode、BooleanOperation、ResampleMode、SweepProfile、OrientationPlane、GridPrimitive、CirclePrimitive、AxisJustify、FallbackShape、Geometry、`procedural.Geometries`（`Array<Geometry>`）、Spatial、Context、统一基类 `procedural.Node`、Graph 和内置节点；String、`Array<String>` 和除 String 外每种列类型的 Array（`procedural.Bools`、`Ints`、`Uints`、`Floats`、`Vector2s`、`Vector3s`、`Vector4s`、`Quaternions`、`Matrix4s`）不存在时一并发布，源码节点借用的列就是这些类型。重复调用不做任何事。
 
 - **Graph**（`procedural.Graph`）：公开字段 `seed`；隐藏的节点强引用序列和 display 强引用槽。
 - **Node**（`procedural.Node`）：所有 C++ 与 `.source` 程序化节点统一派生自 `procedural.Node`（不再设 `PointNode`）；节点类型的公开字段就是 UI/持久化参数；隐藏的 `inputs` 强引用序列每个连接一项，按输入端口排序，与之平行的非反射 C++ 数组记录每个连接的（输入端口，上游输出号）。`.source` 节点直接使用语言级 `fail("...")` 语句报告业务失败（返回 `invocation_failed` 与源码位置，`Node::fail` 已退休）并用 `parallel_for` 并行计算属性列。`procedural.Node` 自身无 `process` 方法，不能直接作为图节点实例。
@@ -165,6 +167,8 @@ Release 下运行 `atelier_procedural_acceptance --profile-boolean <新的绝对
 | Circle | primitive_type=polygon（polygon / closed_polyline / open_arc）、orientation=zx、radius=(1,1)、center=(0,0,0)、segments=32、start_degrees=0、arc_degrees=360 | output |
 | Torus | orientation=zx、major_radius=1、minor_radius=0.25、center=(0,0,0)、base_on_ground=false、major_segments=32、minor_segments=16、arc_degrees=360、end_caps=true | output |
 | Polyline | — | points → output |
+| Resample | mode=spacing、spacing=1 m 或 segments=8、preserve_corners=false | curves（折线）→ output |
+| Group | group="selected"、criterion=normal、direction=(0,1,0)、max_angle=45°、source_group=""、operation=replace、base_group="" | input → output |
 | GroupBox | group="selected"、minimum=(−.5,−.5,−.5)、maximum=(.5,.5,.5) | input → output |
 | Connectivity | attribute="piece"（point uint） | input → output |
 | Scatter | density、seed、min_distance；节点种子为 hash(图种子, seed) | context, surface → points |
@@ -186,6 +190,14 @@ Release 下运行 `atelier_procedural_acceptance --profile-boolean <新的绝对
 | AssetNode | seed_offset=0（`0` 原样透传外层种子，非零经 `procedural::hash` 确定性混合）；动态端口由 `ports(runtime, node_id)` 从所绑定的 `AssetSubgraph` 读取 | 动态 inputs → 动态 outputs |
 
 原生节点的 `process(...) const noexcept` 返回 `atelier::Result<void>`，反射仍发布为业务结果 void，端口和 BorrowSafe 约束不变。业务失败在节点边界转换为 `invocation_failed` 并保留原始原因，不通过异常传递；`Resources::mesh` 和 `Context::mesh` 同样通过 noexcept Result 返回资源拒绝。未连接的单输入端口收到空几何。
+
+### 沿路径布点与保形重采样
+
+`Resample` 对每条折线分别从起点计算弧长。间距模式按 `0, spacing, 2 × spacing, …` 取样并保留精确终点，最后一段可以较短。段数模式沿原始弧长均分。默认相邻采样点直接相连，可能削平两点之间的转角；开启 `preserve_corners` 会额外插入原线的转折点，后面的采样位置不动。因此开启后实际段数可以增加。在直段内增加共线控制点不会额外布点。
+
+例如一段向东 3 m 再向北 2 m 的街墙：间距 2 m 时柱位在原线的 0、2、4、5 m；扫掠墙体时开启保留转角，则再插入 3 m 处的墙角。输出的点层 `arclength` 为原线累计长度，`curveu` 为其占总长的比例，`tangent` 为原线的单位切向；转角取出边方向，开放终点取入边方向。闭合线按原有的首尾共用点索引表示，接缝点的弧长和比例为 0，首尾顶点可以有不同的顶点属性。
+
+浮点和向量属性沿边线性插值，插值法线归一化；整数、组、旋转和矩阵选取最近端点，平局取边起点。图元和 detail 属性沿用原值。已有同名的三个输出属性须匹配点层及类型。各曲线独立生成点，未被折线使用的点不参与；空几何产生空输出，纯散点需先连接 `Polyline`。相邻重合控制点不占弧长。整条零长、非折线、实例、闭环不足三个采样点、超出几何容量或相邻样点在输出精度下重合时返回错误。小于终点位置精度的末尾短段与终点合为一站。
 
 ### 自有语言节点与正式类 Wrangle
 
@@ -273,7 +285,7 @@ Remap 四端点须有限、输入两端不同，输出两端可以相同。按 `
 - **Ray**：y=0 地面上方另有一块 y=2、朝 +Y 的三角形；从 (1,5,1) 竖直向下的射线停在 (1,2,1)，命中 hitprim 2、hittri 0，距离 3、重心 uv (.25,.25)、法线 +Y。
 - **原生图求值**：Grid（3×2、3 行 4 列）→ Transform(+1,0,0) → Merge ← Line → CopyToPoints 发布 14 个实例（12 个格点加 2 个线点），首个实例平移为 (−.5,0,−1)。
 - **连通块**：重合但拓扑独立的面、共享端点的折线、孤立点经 Connectivity 再 Promote 得到逐图元编号，并检查输入列与拓扑的写时复制。注册节点还经过 Merge → Connectivity → CopyToPoints 的完整图求值。
-- **空间与混合 C++/`.source` SOP 契约**：`import_mesh` 正负零缝焊接、`Bvh::acquire` 跨 COW 副本缓存复用与写后失效、`Geometry::set` 用途保持、`scatter` 最小间距空间哈希；`Grid → GroupBox → Jitter → RandomScale → NormalAlign → 自定义 .source SOP → Transform → CopyToPoints`（验证无 `id` 列回退、组遮罩、`RandomScale` 组外单位缩放与已有 `pscale` 保留、`Usage::orientation` 旋转复合及全部实例正常发布）；原生列绑定节点篡改可写列（含 `P`）长度被求值器拦截；`Box → Noise → Promote → Remap`（验证 `[RunOver]` 图元层求值、同名读写、节点与图级失败时 `output()==nullptr` 与 `last_valid_output()` 保旧、下游根因错误传播及恢复后缓存命中）。
+- **空间与混合 C++/`.source` SOP 契约**：`import_mesh` 正负零缝焊接、`Bvh::acquire` 跨 COW 副本缓存复用与写后失效、`Geometry::set` 用途保持、`scatter` 最小间距空间哈希；`Grid → GroupBox → Group → Jitter → RandomScale → NormalAlign → 自定义 .source SOP → Transform → CopyToPoints`（验证无 `id` 列回退、组遮罩、`RandomScale` 组外单位缩放与已有 `pscale` 保留、`Usage::orientation` 旋转复合及全部实例正常发布）；原生列绑定节点篡改可写列（含 `P`）长度被求值器拦截；`Box → Noise → Promote → Remap`（验证 `[RunOver]` 图元层求值、同名读写、节点与图级失败时 `output()==nullptr` 与 `last_valid_output()` 保旧、下游根因错误传播及恢复后缓存命中）。
 - **参数化基础图元、圆弧截面与对齐契约**：`Grid`（`quads`/`triangles`/`points` 与三参考平面及 `vertex uv`）、`Box`（共享棱角三轴细分闭合壳与 `base_on_ground`）、`Tube`（实心圆柱持久拓扑、尖顶圆锥、中空圆管与带径向切面封盖的扇形拱）、`Wedge`（双坡屋顶与斜坡闭合体积）、`Circle`（整圆凸多边形、大于 180° 的凸三角扇及 `open_arc → Sweep` 石拱流形）、`Torus`（闭合圆环与带盖 90° 弯管解析多面体体积）、`Transform`（角度制欧拉旋转 + 局部 `pivot`）与 `MatchSize`（默认 XZ 居中贴地及 `reference` 等比适配）。
 
 图文件 `load_graph` / `save_graph` 对 C++ 与 `.source` 节点的规范往返、缺失类型/失效连接宽容加载（含多输入端口剪线/删节点的保留项同步与撤销），以及编辑器 `.procgraph` 资产、SOP 上下文切换、二维 Network 节点连线画布（`graph.layout`、三段式连线、外置磁吸端口、滚轮缩放、框选多选拖动、`Y` 划断连线、`Tab` 搜索创建并自动连线）、重导入网格删除后的 SOP 快照失效与 `procedural.bake` 拦截、Display 与选中节点解耦求值、`String`/标量参数撤销缓存命中、Geometry Spreadsheet 分页过滤与视口表面/辅助线生成由 `editor_document_acceptance`（[acceptance/editor/document.cpp](../../../acceptance/editor/document.cpp)）覆盖；跨模块工程 Source 消费由 `project_integration_acceptance` 覆盖。

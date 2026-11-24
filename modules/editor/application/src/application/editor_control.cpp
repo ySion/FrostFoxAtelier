@@ -2,6 +2,7 @@
 #include "application/application.hpp"
 #include "application/diagnostics.hpp"
 #include "detail/control_artifacts.hpp"
+#include "editor/fields.hpp"
 #include "editor/view_options.hpp"
 #include "assets/json_format.hpp"
 #include "assets/material_format.hpp"
@@ -321,7 +322,7 @@ json::Result<json::Document> scalar_json(const Scalar& scalar, const TypeInfo& t
         scalar);
 }
 
-enum class Argument { string, object, array, integer, boolean, detail, page_limit, trace_scope };
+enum class Argument { string, object, array, integer, boolean, detail, page_limit, trace_scope, graph_scope, graph_view };
 
 struct Operation {
     std::string_view name;
@@ -345,9 +346,9 @@ const std::vector<Operation>& operations() {
     constexpr auto arr = Argument::array;
     static const std::vector<Operation> values{
         {"capabilities",
-         "Discover operations, arguments, limits and display options",
+         "Discover operations, arguments, limits and display options; scope=graph lists the six graph authoring tools",
          false,
-         {},
+         {{"scope", Argument::graph_scope}},
          {},
          editor::OperatorKind::query},
         {"op.list",
@@ -410,21 +411,23 @@ const std::vector<Operation>& operations() {
          {"object", "path"}},
         {"material.save", "Save a shared material asset", true, {{"asset", str}}, {"asset"}},
         {"graph.inspect",
-         "Read an open procedural graph: nodes, connections, cook status/timings, 5-layer geometry statistics and spatial health diagnostics",
+         "Use view=catalog to discover SOPs without an open graph. Add type for fields, enum choices and ports. topology and node inspect authoring state; full cooks geometry",
          false,
          {{"asset", str},
           {"node", str},
+          {"view", Argument::graph_view},
+          {"type", str},
           {"timings", Argument::boolean},
           {"samples", Argument::integer},
           {"spatial", Argument::boolean},
           {"reference_node", str}},
          {},
          editor::OperatorKind::query},
-        {"graph.set_properties",
-         "Patch a procedural graph node or graph root (scalars, math tuples, enums and strings); one graph undo entry",
+        {"graph.apply",
+         "Atomically edit named nodes and ordered inputs; remove explicitly; settings edits graph root fields and display. One undo step",
          true,
-         {{"asset", str}, {"node", str}, {"properties", obj}},
-         {"properties"}},
+         {{"asset", str}, {"nodes", obj}, {"remove", Argument::array}, {"settings", obj}},
+         {}},
         {"graph.create_scratch",
          "Create or open an in-memory scratch procedural graph and enter its SOP viewport context",
          true,
@@ -474,6 +477,96 @@ const std::vector<Operation>& operations() {
     return values;
 }
 
+json::Result<void> write_range(json::Builder& result, json::Value field, const FieldRange& limits,
+                               const TypeInfo& type) {
+    if (limits != FieldRange{}) {
+        const auto range = result.object_validated(field, "range");
+        for (const auto& [name, bound] : {std::pair{"ui_min", &limits.ui_min},
+                                          {"ui_max", &limits.ui_max},
+                                          {"hard_min", &limits.hard_min},
+                                          {"hard_max", &limits.hard_max}}) {
+            if (*bound) {
+                ATELIER_TRY_BIND(number, scalar_json(**bound, type));
+                result.set_validated(range, name, number->root());
+            }
+        }
+    }
+    return {};
+}
+
+json::Result<void> write_graph_ports(json::Builder& result, json::Value item, const editor::GraphPortInfo& ports) {
+    ATELIER_TRY_BIND(inputs, result.array(item, "inputs"));
+    for (std::size_t i = 0; i < ports.inputs.size(); ++i) {
+        const auto port = result.append_object(*inputs);
+        ATELIER_TRY(result.set(port, "name", ports.inputs[i]));
+        ATELIER_TRY(result.set(port, "multiple", i < ports.multiple.size() && ports.multiple[i]));
+    }
+    ATELIER_TRY_BIND(outputs, result.array(item, "outputs"));
+    for (const auto& name : ports.outputs)
+        ATELIER_TRY(result.append(*outputs, name));
+    return {};
+}
+
+json::Result<void> write_graph_type(json::Builder& result, json::Value item,
+                                    const editor::GraphNodeCatalogEntry& type) {
+    ATELIER_TRY(result.set(item, "name", type.name));
+    ATELIER_TRY(result.set(item, "description", type.description));
+    ATELIER_TRY(result.set(item, "native", type.native));
+    if (!type.asset_key.empty()) {
+        ATELIER_TRY(result.set(item, "asset", type.asset_key));
+        ATELIER_TRY(result.set(item, "display_label", type.display_label));
+    }
+    return write_graph_ports(result, item, type.ports);
+}
+
+json::Result<void> append_operation(json::Builder& result, json::Value entries, const Operation& op) {
+    const auto item = result.append_object(entries);
+    result.set_validated(item, "op", op.name);
+    result.set_validated(item, "description", op.description);
+    result.set_validated(item, "kind", operator_kind_names[static_cast<std::size_t>(op.kind)]);
+    ATELIER_TRY(result.set(item, "requires_state_token", op.changes));
+    const auto args = result.object_validated(item, "args");
+    result.set_validated(args, "type", "object");
+    const auto properties = result.object_validated(args, "properties");
+    for (const auto& [name, kind] : op.properties) {
+        const auto field = result.object_validated(properties, name);
+        constexpr std::array types{"string", "object", "array", "integer", "boolean"};
+        if (kind <= Argument::boolean)
+            result.set_validated(field, "type", types[static_cast<std::size_t>(kind)]);
+        else if (kind == Argument::page_limit) {
+            result.set_validated(field, "type", "integer");
+            ATELIER_TRY(result.set(field, "minimum", 1u));
+            ATELIER_TRY(result.set(field, "maximum", inspect_page_items));
+        } else {
+            ATELIER_TRY_BIND(choices, result.array(field, "enum"));
+            static constexpr std::string_view details[]{"full", "summary", "assets", "objects", "object"};
+            static constexpr std::string_view views[]{"catalog", "topology", "node", "full"};
+            static constexpr std::string_view graph_scope[]{"graph"};
+            static constexpr std::string_view trace_scope[]{"scene_lit_post"};
+            std::span<const std::string_view> names = trace_scope;
+            if (kind == Argument::detail)
+                names = details;
+            else if (kind == Argument::graph_view)
+                names = views;
+            else if (kind == Argument::graph_scope)
+                names = graph_scope;
+            result.set_validated(field, "type", "string");
+            for (const auto name : names)
+                ATELIER_TRY(result.append(*choices, name));
+        }
+    }
+    ATELIER_TRY_BIND(required, result.array(args, "required"));
+    for (const auto& name : op.required) {
+        ATELIER_TRY(result.append(*required, name));
+    }
+    ATELIER_TRY(result.set(args, "additionalProperties", false));
+    if (op.name == "op.call") {
+        ATELIER_TRY_BIND(kinds, result.array(item, "accepted_operator_kinds"));
+        ATELIER_TRY(result.append(*kinds, "direct"));
+    }
+    return {};
+}
+
 json::Result<json::Document> capabilities() {
     json::Builder result;
     const auto root = result.root();
@@ -488,46 +581,8 @@ json::Result<json::Document> capabilities() {
     ATELIER_TRY(result.set(limits, "capture_bytes", 256u * 1024 * 1024));
     ATELIER_TRY(result.set(limits, "timeout_ms", control::maximum_timeout_ms));
     ATELIER_TRY_BIND(ops, result.array(root, "operations"));
-    for (const auto& op : operations()) {
-        const auto item = result.append_object(*ops);
-        result.set_validated(item, "op", op.name);
-        result.set_validated(item, "description", op.description);
-        result.set_validated(item, "kind", operator_kind_names[static_cast<std::size_t>(op.kind)]);
-        ATELIER_TRY(result.set(item, "requires_state_token", op.changes));
-        const auto args = result.object_validated(item, "args");
-        result.set_validated(args, "type", "object");
-        const auto properties = result.object_validated(args, "properties");
-        for (const auto& [name, kind] : op.properties) {
-            const auto field = result.object_validated(properties, name);
-            constexpr std::array types{"string", "object", "array", "integer", "boolean"};
-            if (kind <= Argument::boolean)
-                result.set_validated(field, "type", types[static_cast<std::size_t>(kind)]);
-            else if (kind == Argument::page_limit) {
-                result.set_validated(field, "type", "integer");
-                ATELIER_TRY(result.set(field, "minimum", 1u));
-                ATELIER_TRY(result.set(field, "maximum", inspect_page_items));
-            } else {
-                ATELIER_TRY_BIND(choices, result.array(field, "enum"));
-                if (kind == Argument::detail) {
-                    for (const auto choice : {"full", "summary", "assets", "objects", "object"}) {
-                        ATELIER_TRY(result.append(*choices, std::string_view{choice}));
-                    }
-                } else {
-                    result.set_validated(field, "type", "string");
-                    ATELIER_TRY(result.append(*choices, "scene_lit_post"));
-                }
-            }
-        }
-        ATELIER_TRY_BIND(required, result.array(args, "required"));
-        for (const auto& name : op.required) {
-            ATELIER_TRY(result.append(*required, name));
-        }
-        ATELIER_TRY(result.set(args, "additionalProperties", false));
-        if (op.name == "op.call") {
-            ATELIER_TRY_BIND(kinds, result.array(item, "accepted_operator_kinds"));
-            ATELIER_TRY(result.append(*kinds, "direct"));
-        }
-    }
+    for (const auto& op : operations())
+        ATELIER_TRY(append_operation(result, *ops, op));
     const auto options = result.object_validated(root, "display_options");
     for (const auto& option : editor::view_options()) {
         const auto schema = result.object_validated(options, option.name);
@@ -1326,18 +1381,7 @@ struct EditorControl::Impl {
                 ATELIER_TRY(result.set(field, "transient", true));
             if (property.read_only)
                 ATELIER_TRY(result.set(field, "read_only", true));
-            if (property.range != FieldRange{}) {
-                const auto range = result.object_validated(field, "range");
-                for (const auto& [name, bound] : {std::pair{"ui_min", &property.range.ui_min},
-                                                  {"ui_max", &property.range.ui_max},
-                                                  {"hard_min", &property.range.hard_min},
-                                                  {"hard_max", &property.range.hard_max}}) {
-                    if (*bound) {
-                        ATELIER_TRY_BIND(number, scalar_json(**bound, **prop_type));
-                        result.set_validated(range, name, number->root());
-                    }
-                }
-            }
+            ATELIER_TRY(write_range(result, field, property.range, **prop_type));
         }
         ATELIER_TRY_BIND(saved, operation(doc.retained(id)));
         if (!saved->entries.empty()) {
@@ -1800,6 +1844,8 @@ struct EditorControl::Impl {
                 ATELIER_TRY(result.set(item, "type", attr.type));
                 ATELIER_TRY(result.set(item, "components", attr.components));
                 ATELIER_TRY(result.set(item, "count", attr.count));
+                if (attr.selected_count)
+                    ATELIER_TRY(result.set(item, "selected_count", *attr.selected_count));
                 ATELIER_TRY(result.set(item, "non_finite_count", attr.non_finite_count));
                 if (!attr.minimum.empty()) {
                     ATELIER_TRY(result.numbers(item, "minimum", std::span{attr.minimum}));
@@ -1890,62 +1936,44 @@ struct EditorControl::Impl {
 
     std::expected<json::Document, Failure> graph_inspect_json(const editor::GraphInspectView& view,
                                                               std::string_view inspected_name,
-                                                              std::span<const editor::GraphNodeCatalogEntry> catalog) {
+                                                              std::span<const editor::GraphNodeCatalogEntry> catalog,
+                                                              bool topology_only = false) {
         json::Builder result;
         const auto root = result.root();
         ATELIER_TRY(result.set(root, "asset", view.key));
         ATELIER_TRY(set_handle(result, root, "graph", view.graph));
-        ATELIER_TRY(result.set(root, "seed", view.seed));
         ATELIER_TRY(result.set(root, "display", view.display));
         ATELIER_TRY(result.set(root, "template", view.template_node));
-        ATELIER_TRY(result.set(root, "inspected_node", inspected_name));
-        ATELIER_TRY(result.set(root, "dirty", view.dirty));
         ATELIER_TRY(result.set(root, "can_undo", view.can_undo));
         ATELIER_TRY(result.set(root, "can_redo", view.can_redo));
-        if (view.display_error)
-            ATELIER_TRY(result.set(root, "display_error", view.display_error->message));
-        else
-            ATELIER_TRY(result.set_null(root, "display_error"));
-        if (view.inspected_error)
-            ATELIER_TRY(result.set(root, "inspected_error", view.inspected_error->message));
-        else
-            ATELIER_TRY(result.set_null(root, "inspected_error"));
-        const auto write_ports = [&](json::Value item, const editor::GraphPortInfo& ports) -> json::Result<void> {
-            ATELIER_TRY_BIND(inputs, result.array(item, "inputs"));
-            for (std::size_t i = 0; i < ports.inputs.size(); ++i) {
-                const auto port = result.append_object(*inputs);
-                ATELIER_TRY(result.set(port, "name", ports.inputs[i]));
-                ATELIER_TRY(result.set(port, "multiple", i < ports.multiple.size() && ports.multiple[i]));
-            }
-            ATELIER_TRY_BIND(outputs, result.array(item, "outputs"));
-            for (const auto& name : ports.outputs)
-                ATELIER_TRY(result.append(*outputs, name));
-            return {};
-        };
         const auto external_ports = result.object_validated(root, "external_ports");
-        ATELIER_TRY(write_ports(external_ports, view.external_ports));
-        ATELIER_TRY_BIND(parameters, result.array(root, "parameters"));
-        for (const auto& param : view.parameters) {
-            const auto item = result.append_object(*parameters);
-            ATELIER_TRY(result.set(item, "name", param.name));
-            ATELIER_TRY(result.set(item, "label", param.label));
-            ATELIER_TRY(result.set(item, "category", param.category));
-            ATELIER_TRY(result.set(item, "description", param.description));
-            ATELIER_TRY_BIND(targets, result.array(item, "targets"));
-            for (const auto& t : param.targets)
-                ATELIER_TRY(result.append(*targets, t));
-        }
-        ATELIER_TRY_BIND(types, result.array(root, "node_types"));
-        for (const auto& type : catalog) {
-            const auto item = result.append_object(*types);
-            ATELIER_TRY(result.set(item, "name", type.name));
-            ATELIER_TRY(result.set(item, "description", type.description));
-            ATELIER_TRY(result.set(item, "native", type.native));
-            if (!type.asset_key.empty()) {
-                ATELIER_TRY(result.set(item, "asset", type.asset_key));
-                ATELIER_TRY(result.set(item, "display_label", type.display_label));
+        ATELIER_TRY(write_graph_ports(result, external_ports, view.external_ports));
+        if (!topology_only) {
+            ATELIER_TRY(result.set(root, "dirty", app.document_->graph_dirty(view.key)));
+            ATELIER_TRY(result.set(root, "seed", view.seed));
+            ATELIER_TRY(result.set(root, "inspected_node", inspected_name));
+            if (view.display_error)
+                ATELIER_TRY(result.set(root, "display_error", view.display_error->message));
+            else
+                ATELIER_TRY(result.set_null(root, "display_error"));
+            if (view.inspected_error)
+                ATELIER_TRY(result.set(root, "inspected_error", view.inspected_error->message));
+            else
+                ATELIER_TRY(result.set_null(root, "inspected_error"));
+            ATELIER_TRY_BIND(parameters, result.array(root, "parameters"));
+            for (const auto& param : view.parameters) {
+                const auto item = result.append_object(*parameters);
+                ATELIER_TRY(result.set(item, "name", param.name));
+                ATELIER_TRY(result.set(item, "label", param.label));
+                ATELIER_TRY(result.set(item, "category", param.category));
+                ATELIER_TRY(result.set(item, "description", param.description));
+                ATELIER_TRY_BIND(targets, result.array(item, "targets"));
+                for (const auto& t : param.targets)
+                    ATELIER_TRY(result.append(*targets, t));
             }
-            ATELIER_TRY(write_ports(item, type.ports));
+            ATELIER_TRY_BIND(types, result.array(root, "node_types"));
+            for (const auto& type : catalog)
+                ATELIER_TRY(write_graph_type(result, result.append_object(*types), type));
         }
         ATELIER_TRY_BIND(nodes, result.array(root, "nodes"));
         for (const auto& node : view.nodes) {
@@ -1957,9 +1985,17 @@ struct EditorControl::Impl {
                 ATELIER_TRY(result.set(item, "asset", node.asset_key));
                 ATELIER_TRY(result.set(item, "asset_label", node.asset_label));
             }
+            ATELIER_TRY(write_graph_ports(result, item, node.ports));
+            ATELIER_TRY(result.set(item, "placeholder", node.placeholder));
+            if (topology_only) {
+                if (const auto* entry = app.document_->graph_node(view.key, node.name)) {
+                    if (const auto kept = *entry->kept.root().find("inputs"))
+                        result.set_validated(item, "kept_inputs", *kept);
+                }
+                continue;
+            }
             if (node.overrides.root().kind() == json::Kind::object && node.overrides.root().size() > 0)
                 result.set_validated(item, "overrides", node.overrides.root());
-            ATELIER_TRY(result.set(item, "placeholder", node.placeholder));
             ATELIER_TRY(result.set(item, "display", node.is_display));
             ATELIER_TRY(result.set(item, "template", node.is_template));
             ATELIER_TRY(result.set(item, "bypass", node.is_bypassed));
@@ -1972,7 +2008,6 @@ struct EditorControl::Impl {
                 ATELIER_TRY(result.set_null(item, "color"));
             ATELIER_TRY(result.set(item, "comment", node.comment));
             ATELIER_TRY(result.numbers(item, "position", std::span{node.position}));
-            ATELIER_TRY(write_ports(item, node.ports));
             if (node.status) {
                 const auto st = result.object_validated(item, "status");
                 ATELIER_TRY(result.set(st, "evaluations", node.status->evaluations));
@@ -2010,6 +2045,8 @@ struct EditorControl::Impl {
             ATELIER_TRY(result.set(item, "to_node", conn.to_node));
             ATELIER_TRY(result.set(item, "to_port", conn.to_port));
         }
+        if (topology_only)
+            return result.finish();
         ATELIER_TRY_BIND(notes, result.array(root, "notes"));
         for (const auto& note : view.notes) {
             const auto item = result.append_object(*notes);
@@ -2599,6 +2636,107 @@ struct EditorControl::Impl {
         return json::Document{};
     }
 
+    std::expected<json::Document, Failure> graph_tools() const {
+        json::Builder result;
+        result.set_validated(result.root(), "scope", "graph");
+        ATELIER_TRY_BIND(entries, result.array(result.root(), "operations"));
+        for (std::string_view name : {"asset.new_procedural_graph", "graph.open", "graph.inspect", "graph.apply",
+                                      "graph.save", "graph.create_scratch"}) {
+            const auto direct = std::ranges::find(operations(), name, &Operation::name);
+            if (direct != operations().end()) {
+                ATELIER_TRY(append_operation(result, *entries, *direct));
+                continue;
+            }
+            const auto* op = app.workspace_.operators.find(name);
+            if (!op)
+                return std::unexpected(Failure("operation_failed", "Unregistered graph tool: " + std::string(name)));
+            const auto item = result.append_object(*entries);
+            result.set_validated(item, "op", "op.call");
+            ATELIER_TRY(result.set(item, "id", op->id));
+            ATELIER_TRY(result.set(item, "description", op->description));
+            ATELIER_TRY(result.set(item, "requires_state_token", true));
+            ATELIER_TRY_BIND(
+                schema,
+                editor::parameter_schema(app.document_->world().runtime(), *op).transform_error(operation_failure));
+            result.set_validated(item, "args", schema->root());
+            if (!op->interaction.empty())
+                ATELIER_TRY(result.set(item, "interaction", op->interaction));
+        }
+        return result.finish();
+    }
+
+    std::expected<json::Document, Failure> graph_catalog(json::Value args) {
+        ATELIER_TRY(args.allowed_members({"view", "type"}));
+        auto& doc = *app.document_;
+        json::Builder result;
+        const auto root = result.root();
+        if (const auto query = *args.find("type")) {
+            ATELIER_TRY_BIND(name, text(*query, 256));
+            ATELIER_TRY_BIND(entry, operation(doc.procedural_node_type(*name, app.project_.get())));
+            const auto& found = *entry;
+            if (!found)
+                return std::unexpected(Failure("invalid_request", "Unknown procedural node type: " + *name));
+            ATELIER_TRY(write_graph_type(result, root, *found));
+            auto& runtime = doc.world().runtime();
+            if (!found->asset_key.empty()) {
+                ATELIER_TRY_BIND(params,
+                                 operation(doc.graph_promoted_parameters(found->asset_key, app.project_.get())));
+                ATELIER_TRY_BIND(entries, result.array(root, "parameters"));
+                for (const auto& param : *params) {
+                    const auto item = result.append_object(*entries);
+                    ATELIER_TRY(result.set(item, "name", param.name));
+                    ATELIER_TRY(result.set(item, "label", param.label));
+                    ATELIER_TRY(result.set(item, "description", param.description));
+                    if (param.valid) {
+                        ATELIER_TRY_BIND(type, operation(runtime.describe(param.value_type)));
+                        ATELIER_TRY(result.set(item, "type", (*type)->name));
+                    } else {
+                        ATELIER_TRY(result.set(item, "error", param.invalid_reason));
+                    }
+                }
+            } else {
+                ATELIER_TRY_BIND(fields, operation(editor::detail::author_fields(runtime, found->type)));
+                ATELIER_TRY_BIND(entries, result.array(root, "fields"));
+                for (const auto& field : *fields) {
+                    if (field.read_only || field.form != ValueForm::inline_value)
+                        continue;
+                    ATELIER_TRY_BIND(info, operation(runtime.describe(field.type)));
+                    const auto item = result.append_object(*entries);
+                    ATELIER_TRY(result.set(item, "path", editor::detail::dotted(field.names)));
+                    ATELIER_TRY(result.set(item, "type", (*info)->name));
+                    ATELIER_TRY(result.set(item, "label", field.label));
+                    ATELIER_TRY(result.set(item, "description", field.description));
+                    ATELIER_TRY(result.set(item, "category", field.category));
+                    const TypeInfo* leaf = *info;
+                    if (leaf->kind == TypeKind::array) {
+                        ATELIER_TRY_BIND(element, operation(runtime.describe(*leaf->element)));
+                        leaf = *element;
+                        ATELIER_TRY(result.set(item, "element_type", leaf->name));
+                    }
+                    if (leaf->enumeration) {
+                        ATELIER_TRY_BIND(choices, result.array(item, "enum"));
+                        for (const auto& member : leaf->enumeration->values)
+                            ATELIER_TRY(result.append(*choices, member.first));
+                        if (leaf->enumeration->flags)
+                            ATELIER_TRY(result.set(item, "flags", true));
+                    }
+                    ATELIER_TRY(write_range(result, item, field.range, *leaf));
+                    if (!field.metadata.empty()) {
+                        const auto meta = result.object_validated(item, "metadata");
+                        for (const auto& [key, value] : field.metadata)
+                            ATELIER_TRY(result.set(meta, key, value));
+                    }
+                }
+            }
+        } else {
+            ATELIER_TRY_BIND(catalog, operation(doc.procedural_node_types(app.project_.get())));
+            ATELIER_TRY_BIND(entries, result.array(root, "node_types"));
+            for (const auto& type : *catalog)
+                ATELIER_TRY(write_graph_type(result, result.append_object(*entries), type));
+        }
+        return result.finish();
+    }
+
     std::expected<json::Document, Failure> graph_request(std::string_view op, json::Value args) {
         auto& doc = *app.document_;
         if (op == "graph.create_scratch") {
@@ -2615,6 +2753,12 @@ struct EditorControl::Impl {
             ATELIER_TRY(result.set(result.root(), "asset", key));
             ATELIER_TRY(set_handle(result, result.root(), "graph", *graph));
             return result.finish();
+        }
+        if (op == "graph.inspect") {
+            if (args.string({"view"}) == "catalog")
+                return graph_catalog(args);
+            if (*args.find("type"))
+                return std::unexpected(Failure("invalid_request", "type requires view=catalog"));
         }
         ATELIER_TRY_BIND(asset_arg, args.find("asset"));
         std::string key = app.workspace_.active_graph;
@@ -2634,15 +2778,37 @@ struct EditorControl::Impl {
             ATELIER_TRY_BIND(value, text(**node_arg, 256));
             node_name = std::move(*value);
         }
-        if (op == "graph.set_properties") {
-            ATELIER_TRY_BIND(props, args.at("properties"));
-            if (props->kind() != json::Kind::object)
-                return std::unexpected(Failure("invalid_request", "properties must be a JSON object"));
-            ATELIER_TRY(operation(doc.graph_set_properties(key, node_name, *props)));
+        if (op == "graph.apply") {
+            ATELIER_TRY_BIND(changed, operation(doc.graph_apply(key, args, app.project_.get())));
             json::Builder result;
             ATELIER_TRY(result.set(result.root(), "asset", key));
-            ATELIER_TRY(result.set(result.root(), "node", node_name));
+            ATELIER_TRY(result.set(result.root(), "changed", *changed));
             return result.finish();
+        }
+        if (const auto mode = *args.find("view")) {
+            ATELIER_TRY_BIND(value, text(*mode));
+            if (*value == "topology") {
+                for (const auto name : {"node", "timings", "samples", "spatial", "reference_node"})
+                    if (*args.find(name))
+                        return std::unexpected(Failure("invalid_request", std::string(name) + " requires view=full"));
+                ATELIER_TRY_BIND(view, operation(doc.graph_topology(key)));
+                return graph_inspect_json(**view, {}, {}, true);
+            }
+            if (*value == "node") {
+                if (node_name.empty())
+                    return std::unexpected(Failure("invalid_request", "view=node requires a node name"));
+                for (const auto name : {"timings", "samples", "spatial", "reference_node"})
+                    if (*args.find(name))
+                        return std::unexpected(Failure("invalid_request", std::string(name) + " requires view=full"));
+                ATELIER_TRY_BIND(props, operation(doc.graph_node_properties(key, node_name)));
+                json::Builder result;
+                ATELIER_TRY(result.set(result.root(), "asset", key));
+                ATELIER_TRY(result.set(result.root(), "node", node_name));
+                result.set_validated(result.root(), "properties", props->root());
+                return result.finish();
+            }
+            if (*value != "full")
+                return std::unexpected(Failure("invalid_request", "Graph view must be catalog, topology, node or full"));
         }
         ObjectId inspected_id{};
         if (!node_name.empty()) {
@@ -2775,8 +2941,14 @@ struct EditorControl::Impl {
 
     std::expected<json::Document, Failure> dispatch(std::string_view op, json::Value args, const std::string& id,
                                                     const std::shared_ptr<control::Peer>& peer) {
-        if (op == "capabilities")
+        if (op == "capabilities") {
+            if (const auto scope = *args.find("scope")) {
+                if (scope->string() != "graph")
+                    return std::unexpected(Failure("invalid_request", "Unknown capabilities scope"));
+                return graph_tools();
+            }
             return capabilities();
+        }
         if (op == "op.list")
             return operator_list();
         if (op == "editor.inspect") {
@@ -2841,7 +3013,7 @@ struct EditorControl::Impl {
         ATELIER_TRY(idle());
         if (op == "op.call")
             return call_operator(args);
-        if (op == "graph.create_scratch" || op == "graph.set_properties")
+        if (op == "graph.create_scratch" || op == "graph.apply")
             return graph_request(op, args);
         if (op == "repro.export")
             return start_export(id, peer);

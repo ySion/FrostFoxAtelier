@@ -165,6 +165,24 @@ inline constexpr ui::ControlKey tab_cat_7_first = popup_root + 520; // +520..+53
 inline constexpr ui::ControlKey lock_toggle = popup_root + 536;
 } // namespace network_control
 
+// Selection follows the same named column across cooks. Membership is cached by immutable column identity.
+class GeometryGroupGuide final {
+public:
+    void select(procedural::Layer layer, std::string name);
+    bool resolve(const procedural::Geometry& geometry);
+    std::string_view name() const noexcept { return name_; }
+    procedural::Layer layer() const noexcept { return layer_; }
+    std::size_t count() const noexcept { return count_; }
+    std::span<const std::uint32_t> samples() const noexcept { return samples_; }
+
+private:
+    std::string name_;
+    procedural::Layer layer_{procedural::Layer::primitive};
+    SharedArray<bool> column_;
+    std::size_t count_{};
+    std::vector<std::uint32_t> samples_;
+};
+
 class GeometrySpreadsheet final {
 public:
     static constexpr std::size_t page_size = 512;

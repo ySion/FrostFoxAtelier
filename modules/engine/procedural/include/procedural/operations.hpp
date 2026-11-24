@@ -152,6 +152,18 @@ struct TorusSettings {
 // Closed manifold torus or capped partial-arc pipe elbow (requires minor_radius < major_radius).
 Result<Geometry> torus(const TorusSettings& settings = {});
 
+struct GroupSettings {
+    StringView group{"selected"};
+    GroupCriterion criterion{GroupCriterion::normal};
+    math::Vector3 direction{0.f, 1.f, 0.f};
+    float max_angle{45.f};
+    StringView source_group{};
+    GroupOperation operation{GroupOperation::replace};
+    StringView base_group{};
+};
+
+Result<Geometry> build_group(const Geometry& input, const GroupSettings& settings = {});
+
 // Writes/replaces a point bool column using a closed finite AABB. Incompatible
 // existing layer/type or an invalid name fails; P and other columns are unchanged.
 Result<void> group_box(Geometry& geometry, StringView group, math::Vector3 minimum, math::Vector3 maximum);
@@ -187,6 +199,16 @@ struct BooleanStats {
 // Regularized solid Boolean on outward-oriented closed polygon shells.
 Result<Geometry> solid_boolean(const Geometry& a, const Geometry& b, BooleanOperation operation,
                                BooleanStats* stats = nullptr);
+
+struct ResampleSettings {
+    ResampleMode mode{ResampleMode::spacing};
+    float spacing{1.f};
+    std::uint32_t segments{8};
+    bool preserve_corners{};
+};
+
+// Arc-length lattice per polyline. Preserved turns are additional samples and never restart the lattice.
+[[nodiscard]] Result<Geometry> resample(const Geometry& curves, const ResampleSettings& settings = {});
 
 struct ScatterSettings {
     float density{1}; // Points per unit area before elimination.

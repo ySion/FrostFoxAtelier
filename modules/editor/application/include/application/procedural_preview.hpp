@@ -11,6 +11,10 @@
 #include <string>
 #include <vector>
 
+namespace atelier::editor {
+class GeometryGroupGuide;
+}
+
 namespace atelier::application {
 
 struct SopGuideOptions {
@@ -29,6 +33,8 @@ struct SopGuideOptions {
     float chunk_size{};
 
     math::Matrix4 world_transform{math::Matrix4::identity()};
+
+    editor::GeometryGroupGuide* group{};
 };
 
 // True when the geometry contains points with no polygon surfaces or mesh instances.

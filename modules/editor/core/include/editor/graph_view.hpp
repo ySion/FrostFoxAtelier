@@ -91,6 +91,8 @@ struct GraphNodeView {
 };
 
 struct GraphAttributeStats {
+    std::optional<std::size_t> selected_count; // Exact membership for boolean columns.
+
     std::string name;
 
     std::string type;
@@ -256,8 +258,6 @@ struct GraphInspectView {
     std::string display;
 
     std::string template_node;
-
-    bool dirty{};
 
     bool can_undo{};
 

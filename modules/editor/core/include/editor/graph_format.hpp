@@ -15,6 +15,8 @@
 
 namespace atelier::editor {
 
+std::optional<std::pair<std::string_view, std::string_view>> graph_endpoint(json::Value value);
+
 enum class GraphNodeShape : std::uint8_t {
     auto_role = 0,
     pill,
