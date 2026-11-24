@@ -170,6 +170,30 @@ void scatter_primitive_groups() {
 
 void grouped_wall_surfaces() {
     auto wall = take(box({2, 2, 2}));
+    // A closed interval on a primitive float column can feed Scatter directly.
+    take(wall.set(String::literal<"weathering">(), Layer::primitive,
+                  SharedArray<float>{{-1.f, 0.f, .5f, 1.f, 1.5f, 2.f}}));
+    GroupSettings worn{.group = "worn",
+                       .criterion = GroupCriterion::range,
+                       .source_attribute = "weathering",
+                       .minimum = 0.f,
+                       .maximum = 1.f};
+    const auto worn_wall = take(build_group(wall, worn));
+    const auto& mask = column<bool>(worn_wall, "worn", Layer::primitive);
+    require(!mask[0] && mask[1] && mask[2] && mask[3] && !mask[4] && !mask[5] &&
+                take(scatter(worn_wall, {.density = 2.f, .group = "worn"})).count(Layer::point) > 0,
+            "Range Group lost a closed endpoint or its primitive layer on the way to Scatter.");
+    worn.minimum = worn.maximum;
+    require(std::ranges::count(column<bool>(take(build_group(wall, worn)), "worn", Layer::primitive), true) == 1,
+            "A zero-width interval must select exact matches.");
+    worn.minimum = 2.f;
+    require(!build_group(wall, worn), "Range Group accepted reversed bounds.");
+    worn.minimum = 0.f;
+    auto broken = wall;
+    (*take(broken.write<float>("weathering", Layer::primitive)))[2] = std::numeric_limits<float>::quiet_NaN();
+    const auto invalid = build_group(broken, worn);
+    require(!invalid && invalid.error().message == "Group attribute weathering is not finite at element 2.",
+            "Range Group lost the first non-finite value's element index.");
     // Deliberately contradictory shading normals. The selection must follow polygon winding.
     take(wall.remove("N"));
     take(wall.add<Vector3>("N", Layer::point, {0, -1, 0}));
@@ -314,6 +338,152 @@ std::pair<double, double> solid_measures(const Geometry& g) {
         }
     }
     return {volume, area};
+}
+
+void beveled_stonework() {
+    auto block = take(box({2, 2, 2}));
+    auto* materials = take(block.add<std::uint32_t>("material", Layer::primitive));
+    auto* face_uv = take(block.write<Vector2>("uv", Layer::vertex));
+    for (unsigned p = 0; p < 6; ++p) {
+        (*materials)[p] = p;
+        const auto face = block.primitive(p);
+        for (unsigned v = face.first; v < face.first + face.count; ++v) {
+            const auto pos = block.positions()[block.vertex_points()[v]];
+            (*face_uv)[v] = {float(10 * p) + pos.x, pos.y + 2 * pos.z};
+        }
+    }
+    constexpr float radius = .2f;
+    const auto cap = take(bevel(block, {.radius = radius}));
+    const auto [volume, area] = solid_measures(cap);
+    // Offset a cube of side 2-2r by the six axis points at radius r (an octahedron).
+    require(cap.count(Layer::primitive) == 26 &&
+                std::abs(volume - (8. - 12. * radius * radius + (16. / 3.) * radius * radius * radius)) < 1e-5,
+            "The stone cap lost its six inset faces, twelve chamfers or eight triangular corners.");
+    const auto& donor = column<std::uint32_t>(cap, "material", Layer::primitive);
+    const auto& uv = column<Vector2>(cap, "uv", Layer::vertex);
+    std::array<bool, 6> seen{};
+    for (unsigned p = 0; p < cap.count(Layer::primitive); ++p) {
+        const auto face = cap.primitive(p);
+        const auto ids = cap.vertex_points().subspan(face.first, face.count);
+        for (unsigned side = 0; side < seen.size(); ++side) {
+            if (!std::ranges::all_of(
+                    ids, [&](auto id) { return near(cap.positions()[id][side / 2], side % 2 == 1 ? 1.f : -1.f); }))
+                continue;
+            seen[side] = true;
+            require(donor[p] == side, "Bevel changed the retained face's material.");
+            for (unsigned i = 0; i < face.count; ++i) {
+                const auto pos = cap.positions()[ids[i]];
+                const auto corner_uv = uv[face.first + i];
+                require(near(corner_uv.x, float(10 * side) + pos.x) && near(corner_uv.y, pos.y + 2 * pos.z),
+                        "Bevel sampled the wrong UV island or discarded the clipped corner's interpolation.");
+            }
+        }
+    }
+    require(std::ranges::all_of(seen, [](bool b) { return b; }), "Bevel removed a source face from the stone cap.");
+
+    const auto rounded = take(bevel(block, {.radius = radius, .segments = 4}));
+    const auto support = std::ranges::max(rounded.positions(), {}, [](Vector3 p) { return p.x + p.y; });
+    require(near(support.x + support.y, 2.f * (1.f - radius) + std::sqrt(2.f) * radius) &&
+                solid_measures(rounded).first > volume,
+            "A four-segment Bevel missed the middle station of its circular edge profile.");
+
+    const auto tiles = take(box_primitive({.size = {2, 2, 2}, .divisions_x = 2, .divisions_y = 2, .divisions_z = 2}));
+    Array<std::uint32_t> corners;
+    Array<std::uint32_t> offsets{0};
+    for (unsigned p = 0; p < tiles.count(Layer::primitive); ++p) {
+        const auto quad = tiles.vertex_points().subspan(tiles.primitive(p).first, 4);
+        for (const auto j : {1u, 2u}) {
+            corners.add(quad[0]);
+            corners.add(quad[j]);
+            corners.add(quad[j + 1]);
+            offsets.add(static_cast<std::uint32_t>(corners.size()));
+        }
+    }
+    const auto triangle_block = take(Geometry::polygons(tiles.positions(), std::move(corners), offsets));
+    const auto triangle_cap = take(bevel(triangle_block, {.radius = radius, .angle_degrees = 0.f}));
+    const auto [tile_volume, tile_area] = solid_measures(triangle_cap);
+    require(std::abs(tile_volume - volume) < 1e-5 && std::abs(tile_area - area) < 1e-5 &&
+                take(volume_scatter(triangle_cap, {.density = 8.f})).count(Layer::point) > 0,
+            "Coplanar triangulation introduced a cut or a crack along the bevel of a divided stone block.");
+    auto tilted = triangle_block;
+    take(transform(tilted, {2, 4, -1}, axis_angle({1, 2, 3}, 17), {1, 1, 1}));
+    const auto tilted_cap = take(bevel(tilted, {.radius = radius, .angle_degrees = 0.f}));
+    require(std::abs(solid_measures(tilted_cap).first - volume) < 1e-5 &&
+                take(volume_scatter(tilted_cap, {.density = 8.f})).count(Layer::point) > 0,
+            "Rotating a divided block turned quantized coplanar seams into bevel edges or opened the shell.");
+
+    auto cutter = block;
+    take(transform(cutter, {.5f, 0, 0}, {}, {1, 1, 1}));
+    const auto intersection = take(solid_boolean(block, cutter, BooleanOperation::intersect));
+    const auto beveled_intersection = take(bevel(intersection, {.radius = radius}));
+    const auto reference = take(bevel(take(box({1.5f, 2, 2})), {.radius = radius}));
+    const auto [cut_volume, cut_area] = solid_measures(beveled_intersection);
+    const auto [ref_volume, ref_area] = solid_measures(reference);
+    require(std::abs(cut_volume - ref_volume) < 1e-5 && std::abs(cut_area - ref_area) < 1e-5 &&
+                take(volume_scatter(beveled_intersection, {.density = 8.f})).count(Layer::point) > 0,
+            "A Boolean intersection did not bevel into the same closed solid as its 1.5 m wide box.");
+    take(transform(cutter, {0, .5f, 0}, {}, {1, 1, 1}));
+    const auto notch = take(solid_boolean(block, cutter, BooleanOperation::subtract));
+    require(!bevel(notch), "Bevel silently changed a re-entrant edge of a Boolean-cut stone block.");
+
+    // Only the acute tip exceeds 130 degrees between outward normals. Its two unselected end faces must close.
+    const auto ramp = take(wedge({.size = {2, .5f, 2}, .peak_ratio = 0}));
+    constexpr float tip_radius = .035f;
+    const auto trimmed = take(bevel(ramp, {.radius = tip_radius, .angle_degrees = 130}));
+    const double angle = std::atan(.25);
+    const double setback = tip_radius / std::tan(angle / 2);
+    require(trimmed.count(Layer::primitive) == 6 &&
+                std::abs(solid_measures(trimmed).first - (1. - setback * setback * std::sin(angle))) < 1e-5 &&
+                take(volume_scatter(trimmed, {.density = 32.f})).count(Layer::point) > 0,
+            "Bevel miscut an isolated acute ridge or left the prism ends open.");
+
+    const auto finial = take(tube({.radius_top = 0.f, .radius_bottom = 1.f, .height = 2.f, .segments = 4}));
+    const auto tip = take(bevel(finial, {.radius = .1f}));
+    require(bounds(tip)->maximum.y < bounds(finial)->maximum.y &&
+                take(volume_scatter(tip, {.density = 24.f})).count(Layer::point) > 0,
+            "Four bevel strips meeting at a pyramid apex left a spike or an open corner.");
+    // Off-center apex over a rectangular base: the four inward planes meet in
+    // two trivalent corners joined by a short ridge, even at a small radius.
+    const auto skew_finial = take(Geometry::polygons(
+        {{-1, 0, -.75f}, {1, 0, -.75f}, {1, 0, .75f}, {-1, 0, .75f}, {.25f, 1.6f, -.2f}},
+        {0, 1, 2, 3, 1, 0, 4, 2, 1, 4, 3, 2, 4, 0, 3, 4}, {0, 4, 7, 10, 13, 16}));
+    for (const auto segments : {1u, 3u}) {
+        const auto stone = take(bevel(skew_finial, {.radius = .06f, .angle_degrees = 0.f, .segments = segments}));
+        const auto spatial = take(Bvh::build(stone));
+        for (std::uint32_t p = 0; p < skew_finial.count(Layer::primitive); ++p) {
+            const auto face = skew_finial.primitive(p);
+            Vector3 center{};
+            for (const auto point : skew_finial.vertex_points().subspan(face.first, face.count))
+                center += skew_finial.positions()[point];
+            center /= static_cast<float>(face.count);
+            require(spatial.closest(center, 1e-5f).has_value(), "Bevel displaced a main face of the skew stone finial.");
+        }
+        const auto height = bounds(stone)->maximum.y;
+        require(height < 1.59f && height > 1.45f && solid_measures(stone).first > 1.5 &&
+                    take(volume_scatter(stone, {.density = 24.f})).count(Layer::point) > 0,
+                "Bevel lost the skew finial silhouette or failed to close its split apex.");
+    }
+    const auto overwide = bevel(block, {.radius = 1.f});
+    require(take(bevel(block, {.radius = 0.f})).same_value(block) &&
+                take(bevel(block, {.angle_degrees = 91.f})).same_value(block) && !overwide &&
+                !bevel(triangles({{0, 0, 0}, {1, 0, 0}, {0, 0, 1}})) &&
+                std::abs(solid_measures(block).first - 8) < 1e-6,
+            "Bevel accepted an open or collapsed shell, changed a no-op, or modified the input on failure.");
+    auto distant = block;
+    take(transform(distant, {65536, 0, 0}, {}, {1, 1, 1}));
+    const auto unresolved = bevel(distant, {.radius = .001f});
+    require(!unresolved && !unresolved.error().message.empty(),
+            "Bevel published a radius smaller than the float spacing of the distant stone block.");
+
+    const auto sphere_shell = take(sphere(1.f, 48, 24));
+    const BevelSettings no_ridges{.angle_degrees = 180.f};
+    require(take(bevel(sphere_shell, no_ridges)).same_value(sphere_shell),
+            "Bevel changed a dense convex sphere with no selected edges.");
+    auto dent = sphere_shell;
+    take(dent.write<Vector3>("P", Layer::point))->front().y -= .2f;
+    const auto nonconvex = bevel(dent, no_ridges);
+    require(!nonconvex && nonconvex.error().message.find("primitive 0 is not a supporting face") != std::string::npos,
+            "Bevel missed the first non-supporting face around a dented pole when no edges were selected.");
 }
 
 void boolean_modeling() {
@@ -1548,6 +1718,33 @@ void generative_modeling_and_l3_contracts() {
         const auto l_vol = take(volume_scatter(l_wall, {.density = 4.f, .seed = 5, .cell_size = 0.5f}));
         require(l_vol.count(Layer::point) > 8, "Mitered L-wall Sweep was not a closed outward manifold.");
 
+        // The smooth normals on turned stone must follow its flare and narrowing.
+        // Unequal station spacing should not bias the bisector at the shoulder.
+        auto turning =
+            take(take(Geometry::points({{0, 0, 0}, {0, .125f, 0}, {0, .75f, 0}, {0, 1, 0}})).connect_points());
+        *take(turning.add<float>("stone_radius", Layer::point)) = {.125f, .1875f, .5f, .375f};
+        const auto shaft = take(sweep(turning, {.profile = SweepProfile::tube,
+                                                .radius = 1.f,
+                                                .segments = 12,
+                                                .up = {0, 0, 1},
+                                                .scale_attribute = "stone_radius"}));
+        const auto& shaft_normals = column<Vector3>(shaft, "N", Layer::vertex);
+        for (unsigned p = 0; p < shaft.count(Layer::primitive); ++p) {
+            const auto face = shaft.primitive(p);
+            for (unsigned v = face.first; v < face.first + face.count; ++v) {
+                const auto point = shaft.positions()[shaft.vertex_points()[v]];
+                Vector3 expected{};
+                if (face.count == 12) {
+                    expected.y = point.y == 0.f ? -1.f : 1.f;
+                } else {
+                    expected = normalized(Vector3{point.x, 0, point.z});
+                    expected.y = point.y < .75f ? -.5f : (point.y > .75f ? .5f : 0.f);
+                    expected = normalized(expected);
+                }
+                require(near(shaft_normals[v], expected), "Sweep lost the turned shaft slope or smoothed a flat cap.");
+            }
+        }
+
         Array<Vector3> helix_pts;
         for (int k = 0; k < 7; ++k) {
             const float ang = float(k) * 0.55f;
@@ -1574,7 +1771,7 @@ void generative_modeling_and_l3_contracts() {
 class test.MultiBuilder : procedural.Node {
     float height = 1.5f;
 
-    void process([Port] procedural.Geometry& floor_out,
+    void process([Port, DESC = "Walkable floor surface."] procedural.Geometry& floor_out,
                  [Port] procedural.Geometry& road_out) {
         Array<vector3> q_pts;
         q_pts.add(vector3(-3.0f, self.height, -3.0f));
@@ -1681,6 +1878,10 @@ class test.BadWarpedQuad : procedural.Node {
         auto graph = take(runtime.create(type<Graph>(runtime)));
         const auto grid_n = take(add_node(runtime, graph.id(), type<Grid>(runtime)));
         const auto builder_t = take(runtime.find_type("test.MultiBuilder"));
+        const auto builder_help = take(node_interface(runtime, builder_t)).port_descriptions;
+        require(builder_help.size() == 1 && builder_help.front().port == "floor_out" && builder_help.front().output &&
+                    builder_help.front().description == "Walkable floor surface.",
+                "Source geometry port DESC was not reflected on the declared output");
         const auto probe_t = take(runtime.find_type("test.SpatialProbe"));
         const auto probe_ports = take(ports(runtime, probe_t));
         // `SpatialProbe` shares one single-input port `"road"` between `[Port] const Spatial& road` and `[In(..., Port = "road")]`!
@@ -2087,6 +2288,7 @@ int main(int argc, char** argv) {
     scatter_primitive_groups();
     resampled_wall_and_post_paths();
     connectivity_modeling();
+    beveled_stonework();
     boolean_modeling();
     boolean_contact_sweep();
     graph_evaluation();

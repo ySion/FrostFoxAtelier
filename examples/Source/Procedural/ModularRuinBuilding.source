@@ -70,6 +70,7 @@ void game.append_slab_quad(Array<vector3>& slab_pts,
     slab_quads.add(base_s + 3);
 }
 
+[DESC = "按尺寸、开间和楼层数生成建筑废墟布局，分别输出立面、楼板、屋架和碎石候选点。"]
 class game.ModularBuildingLayout : procedural.Node {
     [Category = "Dimensions", Min = 4.5, Max = 26.0, LockMin, Label = "Building Width", DESC = "建筑沿 X 方向总开间面宽，单位 m。"]
     float width = 10.4f;
@@ -360,6 +361,7 @@ class game.ModularBuildingLayout : procedural.Node {
     }
 }
 
+[DESC = "将碎石候选点投到支撑表面，按墙面净距和点间距筛选后输出放置点。"]
 class game.RuinRubbleGrounder : procedural.Node {
     [Category = "Clearance & Spacing", Min = 0.6, Max = 3.5, LockMin, Label = "Wall Clearance", DESC = "残骸实例距立面石墙的最小净距，消除穿模，单位 m。"]
     float wall_clearance = 0.92f;

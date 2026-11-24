@@ -169,6 +169,8 @@ uint process(combat.DamageInfo& damage) {
 
 ## 项目快照与原生派生类
 
+类声明前可写 `[DESC = "..."]`。文本沿用字段 `DESC` 的 UTF-8、换行和控制字符规则，直接发布到 `TypeInfo::description`。省略时说明为空。修改已发布类的说明遵循类型展示元数据的重建契约。
+
 宿主向同一个 `Program` 提交 `SourceSnapshot{name, version, files}`。每个文件拥有项目相对路径、版本和完整正文；路径用 `/`，拒绝绝对路径、重复路径、空段及 `.`/`..` 段。文件身份区分大小写，文件系统扫描与路径归一化由宿主负责。快照允许空文件集合，最多 1024 个文件、1024 个类、32 MiB 正文。空集合发布无类型、无入口的模块；后续版本可以兼容地追加类型和入口。诊断包含原文件路径、版本、字节偏移和行列。
 
 路径以 `engine/` 开头的文件是引擎源码，路径必须是 `engine/<模块>/<文件>`，模块是 core、math、editor 以外的标识符。快照里出现的模块就是引擎命名空间：`engine/<模块>/` 下的文件声明的每个名字（class、struct、enum、函数、常量）都必须在 `<模块>.` 下，其他文件不能在任何引擎命名空间下声明名字。规则只管声明出来的名字，不管基类、字段类型和调用：工程里可以写 `class mygame.Foo : procedural.Node`，也可以调用 `procedural.hash(x)`。规则在 `Program::request` 收集快照时检查，与宿主无关；引擎文件的来源见[项目快照](docs/source-function-modules.md#项目快照与多个公开入口)。
@@ -207,7 +209,7 @@ class game.Move : world.Component {
 program        = { type_declaration | module_constant | function }, end_of_input ; (* 单源码请求至少一个函数；项目快照允许仅声明 *)
 module_constant = "const", scalar_type, identifier, "=", expression, ";" ;
 type_declaration = struct_declaration | enum_declaration | class_declaration ;
-class_declaration = "class", qualified_name, ":", qualified_name, "{",
+class_declaration = [ "[", "DESC", "=", string_literal, "]" ], "class", qualified_name, ":", qualified_name, "{",
                     { class_field | function }, "}", [ ";" ] ; (* 仅项目快照；方法必须同步 *)
 class_field    = [ "[", field_attribute, { ",", field_attribute }, "]" ],
                  ( scalar_type | math_type | "String" | qualified_name ), identifier, [ "=", expression ], ";" ;
@@ -234,11 +236,11 @@ parameter      = [ "[", param_attribute, "]" ], (* 参数属性仅限 class 方�
                  ( ( scalar_type | math_type | plain_record_type ), [ "&" ]
                  | "const", ( scalar_type | math_type | plain_record_type ), "&"
                  | aggregate_type, "&" | "const", aggregate_type, "&" ), identifier ;
-param_attribute = "Port"
+param_attribute = "Port", [ ",", "DESC", "=", string_literal ]
                 | ( "In" | "Out" | "InOut" | "Group" ),
                   [ "(", param_options, ")" ], [ ",", param_options ] ;
 param_options  = param_option, { ",", param_option } ;
-param_option   = string_literal | "Optional" | ( "From" | "Layer" | "Port" ), "=", string_literal ;
+param_option   = string_literal | "Optional" | ( "From" | "Layer" | "Port" | "DESC" ), "=", string_literal ;
 aggregate_type    = qualified_name | "String" | "Array", "<", ( scalar_type | aggregate_type ), ">" ;
                  (* 须解析为已准备或发布的原生/描述型记录、原生或合成描述型数组、或已注册 String *)
 qualified_name = identifier, { ".", identifier } ;

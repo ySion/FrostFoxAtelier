@@ -335,6 +335,7 @@ Result<void> verify_procedural_editor() {
     auto project = take(editor::Project::create(temp_root));
     ATELIER_TRY(verify_scene_recovery(project));
     take(editor::write_file(temp_root / "Source/TerraceWave.source", R"(
+[DESC = "抬高台地，记录新的点高。"]
 class game.TerraceWave : procedural.Node {
     float lift = 0.5f;
     void process([InOut] Array<vector3>& P, [Out] Array<float>& custom_h) {
@@ -947,9 +948,19 @@ class game.DiagnosticSop : procedural.Node {
                                         return c.from_node == "terrace" && c.to_node == "transform1";
                                     }),
             "Tab quick-create Shift+Enter did not place, auto-wire, and set Display Flag on transform1.");
-    // Also verify floating tab_box mounts cleanly in UI controls when open:
+    // Search by purpose and inspect the tooltip actually delivered to the Tab popup.
     send_key(ui::EventKind::key_down, ui::Key::tab);
+    workspace.network.set_tab_query(L"抬高台地");
+    const auto purpose_matches = workspace.network.filter_catalog(catalog);
+    require(purpose_matches.size() == 1 && purpose_matches.front().name == "game.TerraceWave",
+            "Tab search did not find the Source node by its reflected purpose.");
     const auto tab_controls = take(workspace.describe(doc, {1400, 900}, frame.get(), &project, &ui_session));
+    const auto& purpose = purpose_matches.front().description;
+    require(std::ranges::any_of(tab_controls, [&](const auto& ctrl) {
+                return ctrl.text == L"TerraceWave" && ctrl.tooltip &&
+                       ctrl.tooltip->description == platform::utf8_to_utf16_validated(purpose);
+            }),
+            "The Tab result tooltip did not show the Source catalog description.");
     take_ui(ui_session.set_controls(tab_controls));
     const auto tab_frame = take_ui(ui_session.prepare());
     require(ui_session.accept(tab_frame) && tab_frame->find(editor::network_control::tab_search_input) != nullptr,

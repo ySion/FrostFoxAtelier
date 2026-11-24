@@ -25,6 +25,7 @@ float game.terrace_height(uint seed, float x, float z, float radius, float heigh
     return (terraced + bench_detail + skirt) * height;
 }
 
+[DESC = "将输入点阵塑造成带海岸线和多层台地的岛屿，更新点位置 P 和表面法线 N。"]
 class game.TerraceIsland : procedural.Node {
     [Min = 2.0, Max = 40.0, LockMin, Label = "Island Radius", DESC = "岛屿台地主体半径，单位 m。"]
     float radius = 10.5f;
@@ -97,6 +98,7 @@ class game.TerraceIsland : procedural.Node {
     }
 }
 
+[DESC = "根据台地上的点高和坡度选择道具变体，调整实例的朝向和缩放。"]
 class game.OutpostPlacement : procedural.Node {
     [Min = 0.0, Max = 20.0, Label = "Sanctum Height", DESC = "高于此高度的平缓台地生成琥珀晶簇变体（variant = 1）。"]
     float sanctum_height = 2.5f;

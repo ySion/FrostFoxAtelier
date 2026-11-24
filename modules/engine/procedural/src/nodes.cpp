@@ -122,8 +122,16 @@ Result<void> Resample::process(const Geometry& curves, Geometry& output) const n
 }
 
 Result<void> Group::process(const Geometry& input, Geometry& output) const noexcept {
-    ATELIER_TRY_BIND(result, invocation_result(build_group(input, {group, criterion, direction, max_angle, source_group,
-                                                                   operation, base_group})));
+    ATELIER_TRY_BIND(result, invocation_result(build_group(input, {.group = group,
+                                                                   .criterion = criterion,
+                                                                   .direction = direction,
+                                                                   .max_angle = max_angle,
+                                                                   .source_group = source_group,
+                                                                   .source_attribute = source_attribute,
+                                                                   .minimum = minimum,
+                                                                   .maximum = maximum,
+                                                                   .operation = operation,
+                                                                   .base_group = base_group})));
     output = std::move(*result);
     return {};
 }
@@ -246,6 +254,14 @@ Result<void> Extrude::process(const Geometry& surface, Geometry& output) const n
                                                                  .output_back = output_back,
                                                                  .front_group = front_group.view(),
                                                                  .side_group = side_group.view()})));
+    output = std::move(*result);
+    return {};
+}
+
+Result<void> Bevel::process(const Geometry& surface, Geometry& output) const noexcept {
+    ATELIER_TRY_BIND(result, invocation_result(bevel(surface, {.radius = radius,
+                                                               .angle_degrees = angle_degrees,
+                                                               .segments = segments})));
     output = std::move(*result);
     return {};
 }

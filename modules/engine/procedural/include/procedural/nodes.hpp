@@ -288,7 +288,8 @@ public:
     AFIELD(Label = "Mode", DESC = "选择固定间距或固定段数。")
     ResampleMode mode{ResampleMode::spacing};
 
-    AFIELD(Label = "Spacing", Meta("ui.visible_when", "mode=spacing"), DESC = "沿原折线的采样间距，单位 m。")
+    AFIELD(Label = "Spacing", Meta("ui.visible_when", "mode=spacing"),
+           DESC = "从每条折线起点按米步进。开放线保留终点，闭合线回到接缝，末段可以短于设定间距。")
     float spacing{1.f};
 
     AFIELD(Label = "Segments", Min = "1", Max = "256", LockMin, Meta("ui.visible_when", "mode=segments"),
@@ -299,10 +300,16 @@ public:
     bool preserve_corners{};
 
     AFUNCTION(DESC = "沿输入折线重采样并传递属性。")
-    [[nodiscard]] Result<void> process(const Geometry& curves, Geometry& output) const noexcept;
+    [[nodiscard]] Result<void> process(
+        APARAM(Port, DESC = "一条或多条有序折线，每条从自身起点量距。开放弧线与首尾共用点的闭合线都可接入。")
+            const Geometry& curves,
+        APARAM(
+            Port,
+            DESC = "带 point float arclength（米）、curveu（0–1）与 point vector3 tangent 的折线。每条曲线单独计量。")
+            Geometry& output) const noexcept;
 };
 
-ACLASS(Name = "procedural.Group", DESC = "按几何面法线或已有布尔组选择元素，可与同层组组合。")
+ACLASS(Name = "procedural.Group", DESC = "按面法线、已有组或标量区间选组，可与同层组组合。")
 class Group : public Node {
     AGENERATED_BODY(Group)
 
@@ -310,7 +317,7 @@ public:
     AFIELD(Label = "Output Group", DESC = "写入的 bool 属性名，可与输入组同名。")
     String group = String::literal<"selected">();
 
-    AFIELD(Label = "Criterion", DESC = "选择几何面法线，或使用一个已有组。")
+    AFIELD(Label = "Criterion", DESC = "normal 选择面法线，existing 读取已有组，range 读取 float 列。")
     GroupCriterion criterion{GroupCriterion::normal};
 
     AFIELD(Label = "Direction", Meta("ui.visible_when", "criterion=normal"), DESC = "几何局部空间的朝向轴。")
@@ -322,6 +329,16 @@ public:
 
     AFIELD(Label = "Source Group", Meta("ui.visible_when", "criterion=existing"), DESC = "提供条件的已有 bool 组。")
     String source_group{};
+
+    AFIELD(Label = "Source Attribute", Meta("ui.visible_when", "criterion=range"),
+           DESC = "要读取的 float 列；输出组继承该列的几何层。")
+    String source_attribute{};
+
+    AFIELD(Label = "Minimum", Meta("ui.visible_when", "criterion=range"), DESC = "闭区间的有限下界。")
+    float minimum{};
+
+    AFIELD(Label = "Maximum", Meta("ui.visible_when", "criterion=range"), DESC = "闭区间的有限上界。")
+    float maximum{1.f};
 
     AFIELD(Label = "Operation", DESC = "replace 写入条件，unite 并集，intersect 交集，subtract 从基组扣除条件。")
     GroupOperation operation{GroupOperation::replace};
@@ -628,6 +645,32 @@ public:
     [[nodiscard]] Result<void> process(const Geometry& surface, Geometry& output) const noexcept;
 };
 
+ACLASS(Name = "procedural.Bevel",
+       DESC = "对闭合凸实体按相邻面外法线夹角选择棱边，生成平倒角或多段圆角。可用于石柱帽、压顶和板材边缘。")
+class Bevel : public Node {
+    AGENERATED_BODY(Bevel)
+
+public:
+    AFIELD(Label = "Radius", Min = "0", Max = "1", LockMin,
+           DESC = "圆角半径，单位 m。两面垂直时等于各面的退距。0 原样输出；半径过大导致边面消失时报错。")
+    float radius{0.1f};
+
+    AFIELD(Label = "Minimum Angle", Min = "0", Max = "180", LockMin, LockMax,
+           DESC = "相邻面外法线的最小夹角，单位度。共面细分缝始终跳过。")
+    float angle_degrees{30.f};
+
+    AFIELD(Label = "Segments", Min = "1", Max = "8", LockMin, LockMax,
+           DESC = "每条选中棱的圆弧分段数。1 生成一个平切面，2 至 8 段逐步逼近圆弧。")
+    std::uint32_t segments{1};
+
+    AFUNCTION(DESC = "沿选中的凸棱生成倒角并封闭交角。")
+    [[nodiscard]] Result<void> process(
+        APARAM(Port, DESC = "闭合、外向的凸多边形实体，可同时输入多个彼此分离的凸件。")
+        const Geometry& surface,
+        APARAM(Port, DESC = "保留闭合壳的倒角表面。半径为零或没有满足角度条件的棱时原样输出。")
+        Geometry& output) const noexcept;
+};
+
 ACLASS(Name = "procedural.Sweep",
        DESC = "沿输入开放折线扫掠矩形、圆管或自定义截面，使用 up 稳定斜接标架生成带封盖、法线与弧长 UV 的流形网格。")
 class Sweep : public Node {
@@ -661,12 +704,17 @@ public:
     bool end_caps{true};
 
     AFIELD(Label = "Scale Attribute", Category = "Frame & Caps",
-           DESC = "可选的折线 point float 缩放属性名；缺失时按 1 处理。")
+           DESC = "骨架 point float 缩放列名。空名或缺列取 1。Control bindings 可核对实际列与回退状态。")
     String scale_attribute = String::literal<"pscale">();
 
     AFUNCTION(DESC = "沿 backbone 折线扫掠截面。")
-    [[nodiscard]] Result<void> process(const Geometry& backbone, const Geometry& cross_section,
-                                       Geometry& output) const noexcept;
+    [[nodiscard]] Result<void> process(
+        APARAM(Port, DESC = "一条或多条开放 polyline，每条单独扫掠。Line 生成纯点，需先接 Polyline；相邻点不可重合。")
+        const Geometry& backbone,
+        APARAM(Port, DESC = "仅 profile=custom 需要此输入，rectangle 和 tube 可留空。恰好一个图元，以截面局部 XY（米）为坐标，忽略 Z。polygon 为闭合截面，polyline 为开放截面。")
+        const Geometry& cross_section,
+        APARAM(Port, DESC = "沿骨架生成多边形侧面，带 vertex N 和弧长 uv。仅闭合截面且 end_caps=true 时封住每条骨架的首尾。")
+        Geometry& output) const noexcept;
 };
 
 ACLASS(Name = "procedural.Null",

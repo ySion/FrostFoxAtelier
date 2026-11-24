@@ -99,18 +99,7 @@ std::expected<void, Diagnostic> field_attributes(Tokens& tokens, const SourceFil
             else if (option.text == "RunOver")
                 field.metadata.emplace_back("procedural.role", "run_over");
         } else if (option.text == "Label" || option.text == "Category" || option.text == "DESC") {
-            ATELIER_TRY(tokens.expect("="));
-            if (tokens.token_.kind != Token::Kind::string)
-                return reject(tokens.token_.position, std::string(option.text) + " requires a string literal.");
-            ATELIER_TRY_BIND(token, tokens.consume());
-            ATELIER_TRY_BIND(text, string_value(*token));
-            if (option.text == "DESC") {
-                if (!normalize_description_text(*text))
-                    return reject(option.position,
-                                  "DESC must not contain control characters other than line breaks and tabs.");
-            } else if (std::ranges::any_of(*text, [](unsigned char c) { return c < 32 || c == 127; })) {
-                return reject(option.position, std::string(option.text) + " must not contain control characters.");
-            }
+            ATELIER_TRY_BIND(text, parse_presentation_text(tokens, option));
             (option.text == "Label"      ? field.label
              : option.text == "Category" ? field.category
                                          : field.description) = std::move(*text);
@@ -351,6 +340,19 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
             auto& tokens = *created;
             while (tokens.token_.kind != Token::Kind::end) {
                 const auto begin = tokens.token_.position;
+                std::string class_description;
+                if (tokens.token_.text == "[") {
+                    auto attributes = tokens;
+                    ATELIER_TRY(attributes.consume());
+                    if (attributes.token_.text == "DESC") {
+                        ATELIER_TRY_BIND(option, attributes.consume());
+                        ATELIER_TRY_ASSIGN(class_description, parse_presentation_text(attributes, *option));
+                        ATELIER_TRY(attributes.expect("]"));
+                        if (attributes.token_.text != "class")
+                            return reject(begin, "A type-level DESC applies to class declarations only.");
+                        tokens = attributes;
+                    }
+                }
                 if (tokens.token_.text == "[" || tokens.token_.text == "enum" || tokens.token_.text == "struct") {
                     ATELIER_TRY_BIND(parsed_type, parse_type_declaration(tokens));
                     ATELIER_TRY(declare(parsed_type->name, parsed_type->position));
@@ -410,6 +412,7 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                     continue;
                 }
                 ClassDeclaration declaration;
+                declaration.description = std::move(class_description);
                 declaration.position = begin;
                 declaration.file = file;
                 const auto name_position = tokens.token_.position;

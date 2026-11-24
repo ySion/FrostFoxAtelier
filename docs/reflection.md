@@ -28,7 +28,7 @@ public:
 | `AMETA(Label = "...", DESC = "...")` | 紧邻 `AENUM` 内的单个枚举项，声明枚举项的展示名称与说明文本 |
 | `AFIELD(Name = "...", Label = "...", Category = "...", DESC = "...", Hidden, Transient, ReadOnly, RunOver, Strong = "...", Min = "...", Max = "...", LockMin, LockMax, HardMin = "...", HardMax = "...")` | 声明字段；展示名称、分组、说明与范围均可省略，引用形式和范围见下文 |
 | `AFUNCTION(Name = "...", BorrowSafe, DESC = "...")` | 声明成员方法或静态上下文方法；名称与说明可省略，重载须使用不同的反射名称 |
-| `APARAM(Port, In, Out, InOut, Group, From = "...", Layer = "...", Optional, Meta("...", "..."))` | 紧邻 `AFUNCTION` 的单个业务参数，声明参数级扩展元数据并发布至 `MethodInfo::parameter_metadata` |
+| `APARAM(Port, In, Out, InOut, Group, From = "...", Layer = "...", Optional, DESC = "...", Meta("...", "..."))` | 紧邻 `AFUNCTION` 的单个业务参数，声明参数级扩展元数据并发布至 `MethodInfo::parameter_metadata`。几何端口与列绑定均可用 `DESC` 说明用途。 |
 | `AGENERATED_BODY(TypeName)` | 在类型体内出现一次，仅授权对应元数据生产者访问私有成员；不改变访问段或对象布局 |
 
 `ACLASS/ASTRUCT` 表达引擎语义，C++ 声明本身可以使用 `class` 或 `struct`。类型的 `Name` 默认是完整 C++ 名字，并把 `::` 换成 `.`；成员名字默认取 C++ 名字。稳定的既有名字应明确指定。宏值为普通字符串字面量，`Hidden`、`Transient`、`ReadOnly`、`RunOver`、`Flags`、`BorrowSafe`、`LockMin`、`LockMax`、`Port`、`Optional` 是无值标记。未知或重复参数直接报错；字段与参数的 `Meta` 可重复声明不同键，见下文。

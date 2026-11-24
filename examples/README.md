@@ -11,6 +11,9 @@
 
 | 内容 | 入口 |
 | --- | --- |
+| [门楼 Gatehouse](Content/Procedural/Scenes/Gatehouse.scene) | 可进入的木石城门、过街楼与双塔。通过总图调整通道净宽和屋脊下挠量，用 Control 射线复测。[模型与编辑说明](Content/Procedural/README.md#门楼-gatehouse) |
+| [短木桥 Footbridge](Content/Procedural/Scenes/Footbridge.scene) | 带扶手、交替斜撑与横铺木板的六米木桥。调整桥宽、两端高差和柱距，观察同一组站点如何驱动桥面与栏杆。[模型与编辑说明](Content/Procedural/README.md#短木桥-footbridge) |
+| [弧形石栏杆 ArcBalustrade](Content/Procedural/Scenes/ArcBalustrade.scene) | 瓶形栏柱、连续扶手和四皮错缝石墙共用一条圆弧。可分别调整弧线半径和最大柱距。[模型与编辑说明](Content/Procedural/README.md#弧形石栏杆-arcbalustrade) |
 | [Sponza](Content/Sponza/README.md) | Intel New Sponza 建筑与布帘、天空贴图、三盏真实光源和 DDGI |
 | [Scene Lit Room](<Content/Scene Lit Room/README.md>) | 材质、面光源、自发光和屏幕反射的紧凑观察场景 |
 | [Physic](Content/Physic/README.md) | 9 个物理组件场景：刚体、力、触发/查询、角色、约束及布娃娃 |

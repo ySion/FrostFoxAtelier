@@ -1,6 +1,7 @@
 // Writes orient from N and the up vector, matching the orientation Copy to Points derives when
 // orient is absent, so downstream nodes can further modify orient before instancing. Unselected
 // points keep an existing `orient`, or receive the default N/up orientation when `orient` is newly created.
+[DESC = "从法线 N 和上方向计算实例朝向 orient，使局部 +Z 对齐法线，可供 Copy to Points 使用。"]
 class procedural.NormalAlign : procedural.Node {
     [Label = "Group", DESC = "只修改选中点；空名称表示全选。"]
     String group = "";

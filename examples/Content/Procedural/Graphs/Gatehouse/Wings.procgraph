@@ -1,0 +1,6710 @@
+{
+  "boxes": {
+    "carpenter": {
+      "position": [
+        -54,
+        -57
+      ],
+      "size": [
+        1220,
+        305
+      ],
+      "title": "Window workshop",
+      "color": "#4d6672"
+    },
+    "guardhall": {
+      "position": [
+        -54,
+        1543
+      ],
+      "size": [
+        2172,
+        1475
+      ],
+      "title": "Guard hall | masonry shell and exposed framing",
+      "color": "#73614d"
+    },
+    "crown_roofs": {
+      "position": [
+        -54,
+        3743
+      ],
+      "size": [
+        2172,
+        305
+      ],
+      "title": "Guard hall | ridge and gable details",
+      "color": "#956d51"
+    },
+    "oriel_gallery": {
+      "position": [
+        3346,
+        1543
+      ],
+      "size": [
+        2172,
+        1345
+      ],
+      "title": "Street gallery | canted oriel and leadwork",
+      "color": "#586f6f"
+    },
+    "stone_lodge": {
+      "position": [
+        3346,
+        3793
+      ],
+      "size": [
+        2172,
+        1215
+      ],
+      "title": "West lodge | open service arch and dormer",
+      "color": "#7a7660"
+    },
+    "finishes": {
+      "position": [
+        1636,
+        5746
+      ],
+      "size": [
+        1230,
+        550
+      ],
+      "title": "Assembly | material branches",
+      "color": "#775841"
+    }
+  },
+  "nodes": {
+    "section_stock": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "center": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        }
+      },
+      "position": [
+        0,
+        0
+      ]
+    },
+    "casement_head": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.86,
+          "y": 0.09,
+          "z": 0.13
+        },
+        "center": {
+          "x": 0,
+          "y": 0.525,
+          "z": 0
+        }
+      },
+      "position": [
+        238,
+        0
+      ]
+    },
+    "casement_drip_sill": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.94,
+          "y": 0.09,
+          "z": 0.2
+        },
+        "center": {
+          "x": 0,
+          "y": -0.525,
+          "z": 0
+        }
+      },
+      "position": [
+        476,
+        0
+      ]
+    },
+    "casement_upright_0": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.075,
+          "y": 0.99,
+          "z": 0.095
+        },
+        "center": {
+          "x": -0.375,
+          "y": 0,
+          "z": 0
+        }
+      },
+      "position": [
+        714,
+        0
+      ]
+    },
+    "casement_upright_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.045,
+          "y": 0.99,
+          "z": 0.095
+        },
+        "center": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        }
+      },
+      "position": [
+        952,
+        0
+      ]
+    },
+    "casement_upright_2": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.075,
+          "y": 0.99,
+          "z": 0.095
+        },
+        "center": {
+          "x": 0.375,
+          "y": 0,
+          "z": 0
+        }
+      },
+      "position": [
+        0,
+        130
+      ]
+    },
+    "casement_transom": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.7,
+          "y": 0.045,
+          "z": 0.09
+        },
+        "center": {
+          "x": 0,
+          "y": 0.08,
+          "z": 0
+        }
+      },
+      "position": [
+        238,
+        130
+      ]
+    },
+    "leaded_casement": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "casement_head.output",
+          "casement_drip_sill.output",
+          "casement_upright_0.output",
+          "casement_upright_1.output",
+          "casement_upright_2.output",
+          "casement_transom.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        476,
+        130
+      ]
+    },
+    "leaded_lights": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.72,
+          "y": 0.98,
+          "z": 0.025
+        },
+        "center": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        }
+      },
+      "position": [
+        714,
+        130
+      ]
+    },
+    "guardhall_floor": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 3.74,
+          "y": 0.125,
+          "z": 5.08
+        },
+        "center": {
+          "x": 4.75,
+          "y": -0.0275,
+          "z": 0.14
+        }
+      },
+      "position": [
+        0,
+        1600
+      ]
+    },
+    "guardhall_upper_floor": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 3.74,
+          "y": 0.17,
+          "z": 5.08
+        },
+        "center": {
+          "x": 4.75,
+          "y": 2.505,
+          "z": 0.14
+        }
+      },
+      "position": [
+        238,
+        1600
+      ]
+    },
+    "guardhall_front_base_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.17,
+          "y": 2.44,
+          "z": 0.24
+        },
+        "center": {
+          "x": 2.965,
+          "y": 1.22,
+          "z": -2.4
+        }
+      },
+      "position": [
+        476,
+        1600
+      ]
+    },
+    "guardhall_front_base_2": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 1.14,
+          "y": 0.37,
+          "z": 0.24
+        },
+        "center": {
+          "x": 3.62,
+          "y": 2.255,
+          "z": -2.4
+        }
+      },
+      "position": [
+        714,
+        1600
+      ]
+    },
+    "guardhall_front_base_3": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.81,
+          "y": 2.44,
+          "z": 0.24
+        },
+        "center": {
+          "x": 4.595,
+          "y": 1.22,
+          "z": -2.4
+        }
+      },
+      "position": [
+        952,
+        1600
+      ]
+    },
+    "guardhall_front_base_4": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 1.24,
+          "y": 0.32,
+          "z": 0.24
+        },
+        "center": {
+          "x": 5.62,
+          "y": 2.28,
+          "z": -2.4
+        }
+      },
+      "position": [
+        1190,
+        1600
+      ]
+    },
+    "guardhall_front_base_5": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.38,
+          "y": 2.44,
+          "z": 0.24
+        },
+        "center": {
+          "x": 6.43,
+          "y": 1.22,
+          "z": -2.4
+        }
+      },
+      "position": [
+        1428,
+        1600
+      ]
+    },
+    "guardhall_back_base_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.665,
+          "y": 2.44,
+          "z": 0.26
+        },
+        "center": {
+          "x": 3.2125,
+          "y": 1.22,
+          "z": 2.68
+        }
+      },
+      "position": [
+        1666,
+        1600
+      ]
+    },
+    "guardhall_back_base_2": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.55,
+          "y": 1.12,
+          "z": 0.26
+        },
+        "center": {
+          "x": 3.82,
+          "y": 0.56,
+          "z": 2.68
+        }
+      },
+      "position": [
+        1904,
+        1600
+      ]
+    },
+    "guardhall_back_base_3": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.55,
+          "y": 0.58,
+          "z": 0.26
+        },
+        "center": {
+          "x": 3.82,
+          "y": 2.15,
+          "z": 2.68
+        }
+      },
+      "position": [
+        0,
+        1730
+      ]
+    },
+    "guardhall_back_base_4": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 2.525,
+          "y": 2.44,
+          "z": 0.26
+        },
+        "center": {
+          "x": 5.3575,
+          "y": 1.22,
+          "z": 2.68
+        }
+      },
+      "position": [
+        238,
+        1730
+      ]
+    },
+    "back_slit_frame": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_casement.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 3.82,
+          "y": 1.49,
+          "z": 2.81
+        },
+        "scale": {
+          "x": 0.66,
+          "y": 0.67,
+          "z": 1
+        }
+      },
+      "position": [
+        476,
+        1730
+      ]
+    },
+    "back_slit_inset_glass": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_lights.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 3.82,
+          "y": 1.49,
+          "z": 2.762
+        },
+        "scale": {
+          "x": 0.66,
+          "y": 0.67,
+          "z": 1
+        }
+      },
+      "position": [
+        714,
+        1730
+      ]
+    },
+    "guardhall_passage_base_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.22,
+          "y": 2.44,
+          "z": 1.225
+        },
+        "center": {
+          "x": 2.88,
+          "y": 1.22,
+          "z": -1.6675
+        }
+      },
+      "position": [
+        952,
+        1730
+      ]
+    },
+    "guardhall_passage_base_2": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.22,
+          "y": 1.18,
+          "z": 0.51
+        },
+        "center": {
+          "x": 2.88,
+          "y": 0.59,
+          "z": -0.8
+        }
+      },
+      "position": [
+        1190,
+        1730
+      ]
+    },
+    "guardhall_passage_base_3": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.22,
+          "y": 0.5,
+          "z": 0.51
+        },
+        "center": {
+          "x": 2.88,
+          "y": 2.19,
+          "z": -0.8
+        }
+      },
+      "position": [
+        1428,
+        1730
+      ]
+    },
+    "guardhall_passage_base_4": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.22,
+          "y": 2.44,
+          "z": 1.63
+        },
+        "center": {
+          "x": 2.88,
+          "y": 1.22,
+          "z": 0.27
+        }
+      },
+      "position": [
+        1666,
+        1730
+      ]
+    },
+    "guardhall_passage_base_5": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.22,
+          "y": 1.18,
+          "z": 0.51
+        },
+        "center": {
+          "x": 2.88,
+          "y": 0.59,
+          "z": 1.34
+        }
+      },
+      "position": [
+        1904,
+        1730
+      ]
+    },
+    "guardhall_passage_base_6": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.22,
+          "y": 0.5,
+          "z": 0.51
+        },
+        "center": {
+          "x": 2.88,
+          "y": 2.19,
+          "z": 1.34
+        }
+      },
+      "position": [
+        0,
+        1860
+      ]
+    },
+    "guardhall_passage_base_7": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.22,
+          "y": 2.44,
+          "z": 0.955
+        },
+        "center": {
+          "x": 2.88,
+          "y": 1.22,
+          "z": 2.0725
+        }
+      },
+      "position": [
+        238,
+        1860
+      ]
+    },
+    "passage_light_0_frame": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_casement.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 2.77,
+          "y": 1.56,
+          "z": -0.8
+        },
+        "rotate": {
+          "x": 0,
+          "y": -90,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.59,
+          "y": 0.68,
+          "z": 1
+        }
+      },
+      "position": [
+        476,
+        1860
+      ]
+    },
+    "passage_light_0_inset_glass": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_lights.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 2.818,
+          "y": 1.56,
+          "z": -0.8
+        },
+        "rotate": {
+          "x": 0,
+          "y": -90,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.59,
+          "y": 0.68,
+          "z": 1
+        }
+      },
+      "position": [
+        714,
+        1860
+      ]
+    },
+    "passage_light_1_frame": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_casement.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 2.77,
+          "y": 1.56,
+          "z": 1.34
+        },
+        "rotate": {
+          "x": 0,
+          "y": -90,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.59,
+          "y": 0.68,
+          "z": 1
+        }
+      },
+      "position": [
+        952,
+        1860
+      ]
+    },
+    "passage_light_1_inset_glass": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_lights.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 2.818,
+          "y": 1.56,
+          "z": 1.34
+        },
+        "rotate": {
+          "x": 0,
+          "y": -90,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.59,
+          "y": 0.68,
+          "z": 1
+        }
+      },
+      "position": [
+        1190,
+        1860
+      ]
+    },
+    "guardhall_outer_base_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.23,
+          "y": 2.44,
+          "z": 2.24
+        },
+        "center": {
+          "x": 6.62,
+          "y": 1.22,
+          "z": -1.16
+        }
+      },
+      "position": [
+        1428,
+        1860
+      ]
+    },
+    "guardhall_outer_base_2": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.23,
+          "y": 0.96,
+          "z": 0.68
+        },
+        "center": {
+          "x": 6.62,
+          "y": 0.48,
+          "z": 0.3
+        }
+      },
+      "position": [
+        1666,
+        1860
+      ]
+    },
+    "guardhall_outer_base_3": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.23,
+          "y": 0.52,
+          "z": 0.68
+        },
+        "center": {
+          "x": 6.62,
+          "y": 2.18,
+          "z": 0.3
+        }
+      },
+      "position": [
+        1904,
+        1860
+      ]
+    },
+    "guardhall_outer_base_4": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.23,
+          "y": 2.44,
+          "z": 1.91
+        },
+        "center": {
+          "x": 6.62,
+          "y": 1.22,
+          "z": 1.595
+        }
+      },
+      "position": [
+        0,
+        1990
+      ]
+    },
+    "outer_light_frame": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_casement.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.735,
+          "y": 1.44,
+          "z": 0.3
+        },
+        "rotate": {
+          "x": 0,
+          "y": 90,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.84,
+          "y": 0.87,
+          "z": 1
+        }
+      },
+      "position": [
+        238,
+        1990
+      ]
+    },
+    "outer_light_inset_glass": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_lights.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.687,
+          "y": 1.44,
+          "z": 0.3
+        },
+        "rotate": {
+          "x": 0,
+          "y": 90,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.84,
+          "y": 0.87,
+          "z": 1
+        }
+      },
+      "position": [
+        476,
+        1990
+      ]
+    },
+    "guardhall_front_upper_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.31,
+          "y": 2.38,
+          "z": 0.18
+        },
+        "center": {
+          "x": 3.035,
+          "y": 3.71,
+          "z": -2.4
+        }
+      },
+      "position": [
+        714,
+        1990
+      ]
+    },
+    "guardhall_front_upper_2": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.82,
+          "y": 0.56,
+          "z": 0.18
+        },
+        "center": {
+          "x": 3.6,
+          "y": 2.8,
+          "z": -2.4
+        }
+      },
+      "position": [
+        952,
+        1990
+      ]
+    },
+    "guardhall_front_upper_3": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.82,
+          "y": 0.72,
+          "z": 0.18
+        },
+        "center": {
+          "x": 3.6,
+          "y": 4.54,
+          "z": -2.4
+        }
+      },
+      "position": [
+        1190,
+        1990
+      ]
+    },
+    "guardhall_front_upper_4": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 2.61,
+          "y": 2.38,
+          "z": 0.18
+        },
+        "center": {
+          "x": 5.315,
+          "y": 3.71,
+          "z": -2.4
+        }
+      },
+      "position": [
+        1428,
+        1990
+      ]
+    },
+    "front_crown_light_0_frame": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_casement.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 3.6,
+          "y": 3.63,
+          "z": -2.495
+        },
+        "rotate": {
+          "x": 0,
+          "y": 180,
+          "z": 0
+        }
+      },
+      "position": [
+        1666,
+        1990
+      ]
+    },
+    "front_crown_light_0_inset_glass": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_lights.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 3.6,
+          "y": 3.63,
+          "z": -2.447
+        },
+        "rotate": {
+          "x": 0,
+          "y": 180,
+          "z": 0
+        }
+      },
+      "position": [
+        1904,
+        1990
+      ]
+    },
+    "front_stud_0": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.13,
+          "y": 2.42,
+          "z": 0.15
+        },
+        "center": {
+          "x": 2.94,
+          "y": 3.7,
+          "z": -2.49
+        }
+      },
+      "position": [
+        0,
+        2120
+      ]
+    },
+    "front_stud_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.13,
+          "y": 2.42,
+          "z": 0.15
+        },
+        "center": {
+          "x": 4.46,
+          "y": 3.7,
+          "z": -2.49
+        }
+      },
+      "position": [
+        238,
+        2120
+      ]
+    },
+    "front_stud_2": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.13,
+          "y": 2.42,
+          "z": 0.15
+        },
+        "center": {
+          "x": 6.56,
+          "y": 3.7,
+          "z": -2.49
+        }
+      },
+      "position": [
+        476,
+        2120
+      ]
+    },
+    "front_sill_rail": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 3.86,
+          "y": 0.16,
+          "z": 0.18
+        },
+        "center": {
+          "x": 4.75,
+          "y": 2.58,
+          "z": -2.51
+        }
+      },
+      "position": [
+        714,
+        2120
+      ]
+    },
+    "front_head_rail": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 3.86,
+          "y": 0.16,
+          "z": 0.18
+        },
+        "center": {
+          "x": 4.75,
+          "y": 4.8,
+          "z": -2.51
+        }
+      },
+      "position": [
+        952,
+        2120
+      ]
+    },
+    "guardhall_rear_upper_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.38,
+          "y": 2.38,
+          "z": 0.18
+        },
+        "center": {
+          "x": 3.07,
+          "y": 3.71,
+          "z": 2.68
+        }
+      },
+      "position": [
+        1190,
+        2120
+      ]
+    },
+    "guardhall_rear_upper_2": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.82,
+          "y": 0.56,
+          "z": 0.18
+        },
+        "center": {
+          "x": 3.67,
+          "y": 2.8,
+          "z": 2.68
+        }
+      },
+      "position": [
+        1428,
+        2120
+      ]
+    },
+    "guardhall_rear_upper_3": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.82,
+          "y": 0.72,
+          "z": 0.18
+        },
+        "center": {
+          "x": 3.67,
+          "y": 4.54,
+          "z": 2.68
+        }
+      },
+      "position": [
+        1666,
+        2120
+      ]
+    },
+    "guardhall_rear_upper_4": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.68,
+          "y": 2.38,
+          "z": 0.18
+        },
+        "center": {
+          "x": 4.42,
+          "y": 3.71,
+          "z": 2.68
+        }
+      },
+      "position": [
+        1904,
+        2120
+      ]
+    },
+    "guardhall_rear_upper_5": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.82,
+          "y": 0.56,
+          "z": 0.18
+        },
+        "center": {
+          "x": 5.17,
+          "y": 2.8,
+          "z": 2.68
+        }
+      },
+      "position": [
+        0,
+        2250
+      ]
+    },
+    "guardhall_rear_upper_6": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.82,
+          "y": 0.72,
+          "z": 0.18
+        },
+        "center": {
+          "x": 5.17,
+          "y": 4.54,
+          "z": 2.68
+        }
+      },
+      "position": [
+        238,
+        2250
+      ]
+    },
+    "guardhall_rear_upper_7": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 1.04,
+          "y": 2.38,
+          "z": 0.18
+        },
+        "center": {
+          "x": 6.1,
+          "y": 3.71,
+          "z": 2.68
+        }
+      },
+      "position": [
+        476,
+        2250
+      ]
+    },
+    "rear_crown_light_0_frame": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_casement.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 3.67,
+          "y": 3.63,
+          "z": 2.775
+        }
+      },
+      "position": [
+        714,
+        2250
+      ]
+    },
+    "rear_crown_light_0_inset_glass": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_lights.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 3.67,
+          "y": 3.63,
+          "z": 2.727
+        }
+      },
+      "position": [
+        952,
+        2250
+      ]
+    },
+    "rear_crown_light_1_frame": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_casement.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 5.17,
+          "y": 3.63,
+          "z": 2.775
+        }
+      },
+      "position": [
+        1190,
+        2250
+      ]
+    },
+    "rear_crown_light_1_inset_glass": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_lights.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 5.17,
+          "y": 3.63,
+          "z": 2.727
+        }
+      },
+      "position": [
+        1428,
+        2250
+      ]
+    },
+    "rear_stud_0": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.13,
+          "y": 2.42,
+          "z": 0.15
+        },
+        "center": {
+          "x": 2.94,
+          "y": 3.7,
+          "z": 2.77
+        }
+      },
+      "position": [
+        1666,
+        2250
+      ]
+    },
+    "rear_stud_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.13,
+          "y": 2.42,
+          "z": 0.15
+        },
+        "center": {
+          "x": 4.46,
+          "y": 3.7,
+          "z": 2.77
+        }
+      },
+      "position": [
+        1904,
+        2250
+      ]
+    },
+    "rear_stud_2": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.13,
+          "y": 2.42,
+          "z": 0.15
+        },
+        "center": {
+          "x": 6.56,
+          "y": 3.7,
+          "z": 2.77
+        }
+      },
+      "position": [
+        0,
+        2380
+      ]
+    },
+    "rear_sill_rail": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 3.86,
+          "y": 0.16,
+          "z": 0.18
+        },
+        "center": {
+          "x": 4.75,
+          "y": 2.58,
+          "z": 2.79
+        }
+      },
+      "position": [
+        238,
+        2380
+      ]
+    },
+    "rear_head_rail": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 3.86,
+          "y": 0.16,
+          "z": 0.18
+        },
+        "center": {
+          "x": 4.75,
+          "y": 4.8,
+          "z": 2.79
+        }
+      },
+      "position": [
+        476,
+        2380
+      ]
+    },
+    "guardhall_court_upper_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.18,
+          "y": 2.38,
+          "z": 0.57
+        },
+        "center": {
+          "x": 2.88,
+          "y": 3.71,
+          "z": -2.025
+        }
+      },
+      "position": [
+        714,
+        2380
+      ]
+    },
+    "guardhall_court_upper_2": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.18,
+          "y": 0.56,
+          "z": 0.8
+        },
+        "center": {
+          "x": 2.88,
+          "y": 2.8,
+          "z": -1.34
+        }
+      },
+      "position": [
+        952,
+        2380
+      ]
+    },
+    "guardhall_court_upper_3": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.18,
+          "y": 0.72,
+          "z": 0.8
+        },
+        "center": {
+          "x": 2.88,
+          "y": 4.54,
+          "z": -1.34
+        }
+      },
+      "position": [
+        1190,
+        2380
+      ]
+    },
+    "guardhall_court_upper_4": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.18,
+          "y": 2.38,
+          "z": 1.53
+        },
+        "center": {
+          "x": 2.88,
+          "y": 3.71,
+          "z": -0.175
+        }
+      },
+      "position": [
+        1428,
+        2380
+      ]
+    },
+    "guardhall_court_upper_5": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.18,
+          "y": 0.56,
+          "z": 0.8
+        },
+        "center": {
+          "x": 2.88,
+          "y": 2.8,
+          "z": 0.99
+        }
+      },
+      "position": [
+        1666,
+        2380
+      ]
+    },
+    "guardhall_court_upper_6": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.18,
+          "y": 0.72,
+          "z": 0.8
+        },
+        "center": {
+          "x": 2.88,
+          "y": 4.54,
+          "z": 0.99
+        }
+      },
+      "position": [
+        1904,
+        2380
+      ]
+    },
+    "guardhall_court_upper_7": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.18,
+          "y": 2.38,
+          "z": 1.2
+        },
+        "center": {
+          "x": 2.88,
+          "y": 3.71,
+          "z": 1.99
+        }
+      },
+      "position": [
+        0,
+        2510
+      ]
+    },
+    "court_chamber_light_0_frame": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_casement.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 2.78,
+          "y": 3.63,
+          "z": -1.34
+        },
+        "rotate": {
+          "x": 0,
+          "y": -90,
+          "z": 0
+        }
+      },
+      "position": [
+        238,
+        2510
+      ]
+    },
+    "court_chamber_light_0_inset_glass": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_lights.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 2.828,
+          "y": 3.63,
+          "z": -1.34
+        },
+        "rotate": {
+          "x": 0,
+          "y": -90,
+          "z": 0
+        }
+      },
+      "position": [
+        476,
+        2510
+      ]
+    },
+    "court_chamber_light_1_frame": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_casement.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 2.78,
+          "y": 3.63,
+          "z": 0.99
+        },
+        "rotate": {
+          "x": 0,
+          "y": -90,
+          "z": 0
+        }
+      },
+      "position": [
+        714,
+        2510
+      ]
+    },
+    "court_chamber_light_1_inset_glass": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_lights.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 2.828,
+          "y": 3.63,
+          "z": 0.99
+        },
+        "rotate": {
+          "x": 0,
+          "y": -90,
+          "z": 0
+        }
+      },
+      "position": [
+        952,
+        2510
+      ]
+    },
+    "court_wall_stud_0": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.15,
+          "y": 2.4,
+          "z": 0.15
+        },
+        "center": {
+          "x": 2.78,
+          "y": 3.7,
+          "z": -2.28
+        }
+      },
+      "position": [
+        1190,
+        2510
+      ]
+    },
+    "court_wall_stud_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.15,
+          "y": 2.4,
+          "z": 0.15
+        },
+        "center": {
+          "x": 2.78,
+          "y": 3.7,
+          "z": -0.37
+        }
+      },
+      "position": [
+        1428,
+        2510
+      ]
+    },
+    "court_wall_stud_2": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.15,
+          "y": 2.4,
+          "z": 0.15
+        },
+        "center": {
+          "x": 2.78,
+          "y": 3.7,
+          "z": 2.54
+        }
+      },
+      "position": [
+        1666,
+        2510
+      ]
+    },
+    "court_plate_rail": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.17,
+          "y": 0.18,
+          "z": 5.19
+        },
+        "center": {
+          "x": 2.78,
+          "y": 2.6,
+          "z": 0.14
+        }
+      },
+      "position": [
+        1904,
+        2510
+      ]
+    },
+    "court_head_rail": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.17,
+          "y": 0.18,
+          "z": 5.19
+        },
+        "center": {
+          "x": 2.78,
+          "y": 4.77,
+          "z": 0.14
+        }
+      },
+      "position": [
+        0,
+        2640
+      ]
+    },
+    "court_rising_brace": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 2.78,
+          "y": 3.305,
+          "z": -0.66
+        },
+        "rotate": {
+          "x": 24.20927,
+          "y": 0.0,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.103,
+          "y": 1.41439,
+          "z": 0.103
+        }
+      },
+      "position": [
+        238,
+        2640
+      ]
+    },
+    "court_return_brace": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 2.78,
+          "y": 3.3,
+          "z": 0.01
+        },
+        "rotate": {
+          "x": 149.68879,
+          "y": 0.0,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.103,
+          "y": 1.50586,
+          "z": 0.103
+        }
+      },
+      "position": [
+        476,
+        2640
+      ]
+    },
+    "guardhall_street_upper_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.18,
+          "y": 2.38,
+          "z": 0.97
+        },
+        "center": {
+          "x": 6.62,
+          "y": 3.71,
+          "z": -1.825
+        }
+      },
+      "position": [
+        714,
+        2640
+      ]
+    },
+    "guardhall_street_upper_2": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.18,
+          "y": 0.56,
+          "z": 0.8
+        },
+        "center": {
+          "x": 6.62,
+          "y": 2.8,
+          "z": -0.94
+        }
+      },
+      "position": [
+        952,
+        2640
+      ]
+    },
+    "guardhall_street_upper_3": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.18,
+          "y": 0.72,
+          "z": 0.8
+        },
+        "center": {
+          "x": 6.62,
+          "y": 4.54,
+          "z": -0.94
+        }
+      },
+      "position": [
+        1190,
+        2640
+      ]
+    },
+    "guardhall_street_upper_4": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.18,
+          "y": 2.38,
+          "z": 1.16
+        },
+        "center": {
+          "x": 6.62,
+          "y": 3.71,
+          "z": 0.04
+        }
+      },
+      "position": [
+        1428,
+        2640
+      ]
+    },
+    "guardhall_street_upper_5": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.18,
+          "y": 0.56,
+          "z": 0.8
+        },
+        "center": {
+          "x": 6.62,
+          "y": 2.8,
+          "z": 1.02
+        }
+      },
+      "position": [
+        1666,
+        2640
+      ]
+    },
+    "guardhall_street_upper_6": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.18,
+          "y": 0.72,
+          "z": 0.8
+        },
+        "center": {
+          "x": 6.62,
+          "y": 4.54,
+          "z": 1.02
+        }
+      },
+      "position": [
+        1904,
+        2640
+      ]
+    },
+    "guardhall_street_upper_7": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.18,
+          "y": 2.38,
+          "z": 1.17
+        },
+        "center": {
+          "x": 6.62,
+          "y": 3.71,
+          "z": 2.005
+        }
+      },
+      "position": [
+        0,
+        2770
+      ]
+    },
+    "street_chamber_light_0_frame": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_casement.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.72,
+          "y": 3.63,
+          "z": -0.94
+        },
+        "rotate": {
+          "x": 0,
+          "y": 90,
+          "z": 0
+        }
+      },
+      "position": [
+        238,
+        2770
+      ]
+    },
+    "street_chamber_light_0_inset_glass": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_lights.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.672,
+          "y": 3.63,
+          "z": -0.94
+        },
+        "rotate": {
+          "x": 0,
+          "y": 90,
+          "z": 0
+        }
+      },
+      "position": [
+        476,
+        2770
+      ]
+    },
+    "street_chamber_light_1_frame": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_casement.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.72,
+          "y": 3.63,
+          "z": 1.02
+        },
+        "rotate": {
+          "x": 0,
+          "y": 90,
+          "z": 0
+        }
+      },
+      "position": [
+        714,
+        2770
+      ]
+    },
+    "street_chamber_light_1_inset_glass": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_lights.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.672,
+          "y": 3.63,
+          "z": 1.02
+        },
+        "rotate": {
+          "x": 0,
+          "y": 90,
+          "z": 0
+        }
+      },
+      "position": [
+        952,
+        2770
+      ]
+    },
+    "street_wall_stud_0": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.15,
+          "y": 2.4,
+          "z": 0.15
+        },
+        "center": {
+          "x": 6.72,
+          "y": 3.7,
+          "z": -2.28
+        }
+      },
+      "position": [
+        1190,
+        2770
+      ]
+    },
+    "street_wall_stud_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.15,
+          "y": 2.4,
+          "z": 0.15
+        },
+        "center": {
+          "x": 6.72,
+          "y": 3.7,
+          "z": -0.37
+        }
+      },
+      "position": [
+        1428,
+        2770
+      ]
+    },
+    "street_wall_stud_2": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.15,
+          "y": 2.4,
+          "z": 0.15
+        },
+        "center": {
+          "x": 6.72,
+          "y": 3.7,
+          "z": 2.54
+        }
+      },
+      "position": [
+        1666,
+        2770
+      ]
+    },
+    "street_plate_rail": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.17,
+          "y": 0.18,
+          "z": 5.19
+        },
+        "center": {
+          "x": 6.72,
+          "y": 2.6,
+          "z": 0.14
+        }
+      },
+      "position": [
+        1904,
+        2770
+      ]
+    },
+    "street_head_rail": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.17,
+          "y": 0.18,
+          "z": 5.19
+        },
+        "center": {
+          "x": 6.72,
+          "y": 4.77,
+          "z": 0.14
+        }
+      },
+      "position": [
+        0,
+        2900
+      ]
+    },
+    "street_rising_brace": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.72,
+          "y": 3.305,
+          "z": -0.66
+        },
+        "rotate": {
+          "x": 24.20927,
+          "y": 0.0,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.103,
+          "y": 1.41439,
+          "z": 0.103
+        }
+      },
+      "position": [
+        238,
+        2900
+      ]
+    },
+    "street_return_brace": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.72,
+          "y": 3.3,
+          "z": 0.01
+        },
+        "rotate": {
+          "x": 149.68879,
+          "y": 0.0,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.103,
+          "y": 1.50586,
+          "z": 0.103
+        }
+      },
+      "position": [
+        476,
+        2900
+      ]
+    },
+    "guardhall_gable_infill": {
+      "type": "procedural.Wedge",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 3.79,
+          "y": 1.85,
+          "z": 5.17
+        },
+        "center": {
+          "x": 4.75,
+          "y": 5.825,
+          "z": 0.14
+        }
+      },
+      "position": [
+        0,
+        3800
+      ]
+    },
+    "guardhall_west_tiles": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 3.7025,
+          "y": 5.77237,
+          "z": 0.14
+        },
+        "rotate": {
+          "x": 0,
+          "y": 0,
+          "z": 44.31157
+        },
+        "scale": {
+          "x": 2.99781,
+          "y": 0.115,
+          "z": 5.41
+        }
+      },
+      "position": [
+        238,
+        3800
+      ]
+    },
+    "guardhall_west_eaves": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.115,
+          "y": 0.15,
+          "z": 5.49
+        },
+        "center": {
+          "x": 2.655,
+          "y": 4.70475,
+          "z": 0.14
+        }
+      },
+      "position": [
+        476,
+        3800
+      ]
+    },
+    "guardhall_west_tile_course": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.06,
+          "y": 0.048,
+          "z": 5.445
+        },
+        "center": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        }
+      },
+      "position": [
+        714,
+        3800
+      ]
+    },
+    "guardhall_west_spacing": {
+      "type": "procedural.Line",
+      "inputs": {},
+      "properties": {
+        "start": {
+          "x": 4.4986,
+          "y": 6.61157,
+          "z": 0.14
+        },
+        "end": {
+          "x": 2.7807,
+          "y": 4.93446,
+          "z": 0.14
+        },
+        "count": 8
+      },
+      "position": [
+        952,
+        3800
+      ]
+    },
+    "guardhall_west_overlaps": {
+      "type": "procedural.Realize",
+      "inputs": {
+        "sources": [
+          "guardhall_west_tile_course.output"
+        ],
+        "points": "guardhall_west_spacing.output"
+      },
+      "properties": {},
+      "position": [
+        1190,
+        3800
+      ]
+    },
+    "guardhall_east_tiles": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 5.7975,
+          "y": 5.77237,
+          "z": 0.14
+        },
+        "rotate": {
+          "x": 0,
+          "y": 0,
+          "z": -44.31157
+        },
+        "scale": {
+          "x": 2.99781,
+          "y": 0.115,
+          "z": 5.41
+        }
+      },
+      "position": [
+        1428,
+        3800
+      ]
+    },
+    "guardhall_east_eaves": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.115,
+          "y": 0.15,
+          "z": 5.49
+        },
+        "center": {
+          "x": 6.845,
+          "y": 4.70475,
+          "z": 0.14
+        }
+      },
+      "position": [
+        1666,
+        3800
+      ]
+    },
+    "guardhall_east_tile_course": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.06,
+          "y": 0.048,
+          "z": 5.445
+        },
+        "center": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        }
+      },
+      "position": [
+        1904,
+        3800
+      ]
+    },
+    "guardhall_east_spacing": {
+      "type": "procedural.Line",
+      "inputs": {},
+      "properties": {
+        "start": {
+          "x": 5.0014,
+          "y": 6.61157,
+          "z": 0.14
+        },
+        "end": {
+          "x": 6.7193,
+          "y": 4.93446,
+          "z": 0.14
+        },
+        "count": 8
+      },
+      "position": [
+        0,
+        3930
+      ]
+    },
+    "guardhall_east_overlaps": {
+      "type": "procedural.Realize",
+      "inputs": {
+        "sources": [
+          "guardhall_east_tile_course.output"
+        ],
+        "points": "guardhall_east_spacing.output"
+      },
+      "properties": {},
+      "position": [
+        238,
+        3930
+      ]
+    },
+    "guardhall_ridge_tiles": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.17,
+          "y": 0.13,
+          "z": 5.55
+        },
+        "center": {
+          "x": 4.75,
+          "y": 6.84,
+          "z": 0.14
+        }
+      },
+      "position": [
+        476,
+        3930
+      ]
+    },
+    "front_left_bargeboard": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 3.8325,
+          "y": 5.795,
+          "z": -2.515
+        },
+        "rotate": {
+          "x": 45.39297,
+          "y": 90.0,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.115,
+          "y": 2.57746,
+          "z": 0.115
+        }
+      },
+      "position": [
+        714,
+        3930
+      ]
+    },
+    "front_right_bargeboard": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 5.6675,
+          "y": 5.795,
+          "z": -2.515
+        },
+        "rotate": {
+          "x": 45.39297,
+          "y": -90.0,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.115,
+          "y": 2.57746,
+          "z": 0.115
+        }
+      },
+      "position": [
+        952,
+        3930
+      ]
+    },
+    "front_kingpost": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.14,
+          "y": 1.65,
+          "z": 0.15
+        },
+        "center": {
+          "x": 4.75,
+          "y": 5.7,
+          "z": -2.515
+        }
+      },
+      "position": [
+        1190,
+        3930
+      ]
+    },
+    "rear_left_bargeboard": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 3.8325,
+          "y": 5.795,
+          "z": 2.795
+        },
+        "rotate": {
+          "x": 45.39297,
+          "y": 90.0,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.115,
+          "y": 2.57746,
+          "z": 0.115
+        }
+      },
+      "position": [
+        1428,
+        3930
+      ]
+    },
+    "rear_right_bargeboard": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 5.6675,
+          "y": 5.795,
+          "z": 2.795
+        },
+        "rotate": {
+          "x": 45.39297,
+          "y": -90.0,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.115,
+          "y": 2.57746,
+          "z": 0.115
+        }
+      },
+      "position": [
+        1666,
+        3930
+      ]
+    },
+    "rear_kingpost": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.14,
+          "y": 1.65,
+          "z": 0.15
+        },
+        "center": {
+          "x": 4.75,
+          "y": 5.7,
+          "z": 2.795
+        }
+      },
+      "position": [
+        1904,
+        3930
+      ]
+    },
+    "gallery_floor": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 2.32,
+          "y": 0.09,
+          "z": 2.71
+        },
+        "center": {
+          "x": 5.46,
+          "y": 0.045,
+          "z": -3.725
+        }
+      },
+      "position": [
+        3400,
+        1600
+      ]
+    },
+    "gallery_jetty": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 2.51,
+          "y": 0.18,
+          "z": 2.81
+        },
+        "center": {
+          "x": 5.46,
+          "y": 2.33,
+          "z": -3.775
+        }
+      },
+      "position": [
+        3638,
+        1600
+      ]
+    },
+    "gallery_court_base_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.22,
+          "y": 2.26,
+          "z": 0.925
+        },
+        "center": {
+          "x": 4.3,
+          "y": 1.17,
+          "z": -4.6175
+        }
+      },
+      "position": [
+        3876,
+        1600
+      ]
+    },
+    "gallery_court_base_2": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.22,
+          "y": 0.88,
+          "z": 0.85
+        },
+        "center": {
+          "x": 4.3,
+          "y": 0.48,
+          "z": -3.73
+        }
+      },
+      "position": [
+        4114,
+        1600
+      ]
+    },
+    "gallery_court_base_3": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.22,
+          "y": 0.43,
+          "z": 0.85
+        },
+        "center": {
+          "x": 4.3,
+          "y": 2.085,
+          "z": -3.73
+        }
+      },
+      "position": [
+        4352,
+        1600
+      ]
+    },
+    "gallery_court_base_4": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.22,
+          "y": 2.26,
+          "z": 0.935
+        },
+        "center": {
+          "x": 4.3,
+          "y": 1.17,
+          "z": -2.8375
+        }
+      },
+      "position": [
+        4590,
+        1600
+      ]
+    },
+    "gallery_court_shop_frame": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_casement.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 4.18,
+          "y": 1.395,
+          "z": -3.73
+        },
+        "rotate": {
+          "x": 0,
+          "y": -90,
+          "z": 0
+        },
+        "scale": {
+          "x": 1.02,
+          "y": 0.865,
+          "z": 1
+        }
+      },
+      "position": [
+        4828,
+        1600
+      ]
+    },
+    "gallery_court_shop_inset_glass": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_lights.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 4.228,
+          "y": 1.395,
+          "z": -3.73
+        },
+        "rotate": {
+          "x": 0,
+          "y": -90,
+          "z": 0
+        },
+        "scale": {
+          "x": 1.02,
+          "y": 0.865,
+          "z": 1
+        }
+      },
+      "position": [
+        5066,
+        1600
+      ]
+    },
+    "gallery_court_plaster_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.16,
+          "y": 1.94,
+          "z": 0.94
+        },
+        "center": {
+          "x": 4.245,
+          "y": 3.35,
+          "z": -4.61
+        }
+      },
+      "position": [
+        5304,
+        1600
+      ]
+    },
+    "gallery_court_plaster_2": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.16,
+          "y": 0.43,
+          "z": 0.82
+        },
+        "center": {
+          "x": 4.245,
+          "y": 2.595,
+          "z": -3.73
+        }
+      },
+      "position": [
+        3400,
+        1730
+      ]
+    },
+    "gallery_court_plaster_3": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.16,
+          "y": 0.41,
+          "z": 0.82
+        },
+        "center": {
+          "x": 4.245,
+          "y": 4.115,
+          "z": -3.73
+        }
+      },
+      "position": [
+        3638,
+        1730
+      ]
+    },
+    "gallery_court_plaster_4": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.16,
+          "y": 1.94,
+          "z": 0.95
+        },
+        "center": {
+          "x": 4.245,
+          "y": 3.35,
+          "z": -2.845
+        }
+      },
+      "position": [
+        3876,
+        1730
+      ]
+    },
+    "gallery_court_sash_frame": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_casement.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 4.15,
+          "y": 3.36,
+          "z": -3.73
+        },
+        "rotate": {
+          "x": 0,
+          "y": -90,
+          "z": 0
+        }
+      },
+      "position": [
+        4114,
+        1730
+      ]
+    },
+    "gallery_court_sash_inset_glass": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_lights.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 4.198,
+          "y": 3.36,
+          "z": -3.73
+        },
+        "rotate": {
+          "x": 0,
+          "y": -90,
+          "z": 0
+        }
+      },
+      "position": [
+        4352,
+        1730
+      ]
+    },
+    "gallery_court_post_0": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.14,
+          "y": 2.04,
+          "z": 0.15
+        },
+        "center": {
+          "x": 4.15,
+          "y": 3.37,
+          "z": -4.97
+        }
+      },
+      "position": [
+        4590,
+        1730
+      ]
+    },
+    "gallery_court_knee_0": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 4.215,
+          "y": 2.115,
+          "z": -4.97
+        },
+        "rotate": {
+          "x": 19.88517,
+          "y": -90.0,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.15,
+          "y": 0.4998,
+          "z": 0.15
+        }
+      },
+      "position": [
+        4828,
+        1730
+      ]
+    },
+    "gallery_court_post_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.14,
+          "y": 2.04,
+          "z": 0.15
+        },
+        "center": {
+          "x": 4.15,
+          "y": 3.37,
+          "z": -2.53
+        }
+      },
+      "position": [
+        5066,
+        1730
+      ]
+    },
+    "gallery_court_knee_1": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 4.215,
+          "y": 2.115,
+          "z": -2.53
+        },
+        "rotate": {
+          "x": 19.88517,
+          "y": -90.0,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.15,
+          "y": 0.4998,
+          "z": 0.15
+        }
+      },
+      "position": [
+        5304,
+        1730
+      ]
+    },
+    "gallery_court_plate": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.15,
+          "y": 0.15,
+          "z": 2.84
+        },
+        "center": {
+          "x": 4.16,
+          "y": 4.27,
+          "z": -3.725
+        }
+      },
+      "position": [
+        3400,
+        1860
+      ]
+    },
+    "gallery_street_base_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.22,
+          "y": 2.26,
+          "z": 0.925
+        },
+        "center": {
+          "x": 6.62,
+          "y": 1.17,
+          "z": -4.6175
+        }
+      },
+      "position": [
+        3638,
+        1860
+      ]
+    },
+    "gallery_street_base_2": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.22,
+          "y": 0.88,
+          "z": 0.85
+        },
+        "center": {
+          "x": 6.62,
+          "y": 0.48,
+          "z": -3.73
+        }
+      },
+      "position": [
+        3876,
+        1860
+      ]
+    },
+    "gallery_street_base_3": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.22,
+          "y": 0.43,
+          "z": 0.85
+        },
+        "center": {
+          "x": 6.62,
+          "y": 2.085,
+          "z": -3.73
+        }
+      },
+      "position": [
+        4114,
+        1860
+      ]
+    },
+    "gallery_street_base_4": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.22,
+          "y": 2.26,
+          "z": 0.935
+        },
+        "center": {
+          "x": 6.62,
+          "y": 1.17,
+          "z": -2.8375
+        }
+      },
+      "position": [
+        4352,
+        1860
+      ]
+    },
+    "gallery_street_shop_frame": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_casement.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.74,
+          "y": 1.395,
+          "z": -3.73
+        },
+        "rotate": {
+          "x": 0,
+          "y": 90,
+          "z": 0
+        },
+        "scale": {
+          "x": 1.02,
+          "y": 0.865,
+          "z": 1
+        }
+      },
+      "position": [
+        4590,
+        1860
+      ]
+    },
+    "gallery_street_shop_inset_glass": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_lights.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.692,
+          "y": 1.395,
+          "z": -3.73
+        },
+        "rotate": {
+          "x": 0,
+          "y": 90,
+          "z": 0
+        },
+        "scale": {
+          "x": 1.02,
+          "y": 0.865,
+          "z": 1
+        }
+      },
+      "position": [
+        4828,
+        1860
+      ]
+    },
+    "gallery_street_plaster_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.16,
+          "y": 1.94,
+          "z": 0.94
+        },
+        "center": {
+          "x": 6.675,
+          "y": 3.35,
+          "z": -4.61
+        }
+      },
+      "position": [
+        5066,
+        1860
+      ]
+    },
+    "gallery_street_plaster_2": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.16,
+          "y": 0.43,
+          "z": 0.82
+        },
+        "center": {
+          "x": 6.675,
+          "y": 2.595,
+          "z": -3.73
+        }
+      },
+      "position": [
+        5304,
+        1860
+      ]
+    },
+    "gallery_street_plaster_3": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.16,
+          "y": 0.41,
+          "z": 0.82
+        },
+        "center": {
+          "x": 6.675,
+          "y": 4.115,
+          "z": -3.73
+        }
+      },
+      "position": [
+        3400,
+        1990
+      ]
+    },
+    "gallery_street_plaster_4": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.16,
+          "y": 1.94,
+          "z": 0.95
+        },
+        "center": {
+          "x": 6.675,
+          "y": 3.35,
+          "z": -2.845
+        }
+      },
+      "position": [
+        3638,
+        1990
+      ]
+    },
+    "gallery_street_sash_frame": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_casement.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.77,
+          "y": 3.36,
+          "z": -3.73
+        },
+        "rotate": {
+          "x": 0,
+          "y": 90,
+          "z": 0
+        }
+      },
+      "position": [
+        3876,
+        1990
+      ]
+    },
+    "gallery_street_sash_inset_glass": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_lights.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.722,
+          "y": 3.36,
+          "z": -3.73
+        },
+        "rotate": {
+          "x": 0,
+          "y": 90,
+          "z": 0
+        }
+      },
+      "position": [
+        4114,
+        1990
+      ]
+    },
+    "gallery_street_post_0": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.14,
+          "y": 2.04,
+          "z": 0.15
+        },
+        "center": {
+          "x": 6.77,
+          "y": 3.37,
+          "z": -4.97
+        }
+      },
+      "position": [
+        4352,
+        1990
+      ]
+    },
+    "gallery_street_knee_0": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.705,
+          "y": 2.115,
+          "z": -4.97
+        },
+        "rotate": {
+          "x": 19.88517,
+          "y": 90.0,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.15,
+          "y": 0.4998,
+          "z": 0.15
+        }
+      },
+      "position": [
+        4590,
+        1990
+      ]
+    },
+    "gallery_street_post_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.14,
+          "y": 2.04,
+          "z": 0.15
+        },
+        "center": {
+          "x": 6.77,
+          "y": 3.37,
+          "z": -2.53
+        }
+      },
+      "position": [
+        4828,
+        1990
+      ]
+    },
+    "gallery_street_knee_1": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.705,
+          "y": 2.115,
+          "z": -2.53
+        },
+        "rotate": {
+          "x": 19.88517,
+          "y": 90.0,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.15,
+          "y": 0.4998,
+          "z": 0.15
+        }
+      },
+      "position": [
+        5066,
+        1990
+      ]
+    },
+    "gallery_street_plate": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.15,
+          "y": 0.15,
+          "z": 2.84
+        },
+        "center": {
+          "x": 6.76,
+          "y": 4.27,
+          "z": -3.725
+        }
+      },
+      "position": [
+        5304,
+        1990
+      ]
+    },
+    "gallery_gable_infill": {
+      "type": "procedural.Wedge",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 2.32,
+          "y": 1.02,
+          "z": 2.71
+        },
+        "center": {
+          "x": 5.46,
+          "y": 4.84,
+          "z": -3.725
+        }
+      },
+      "position": [
+        3400,
+        2120
+      ]
+    },
+    "gallery_west_tiles": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 4.78,
+          "y": 4.79707,
+          "z": -3.725
+        },
+        "rotate": {
+          "x": 0,
+          "y": 0,
+          "z": 41.3255
+        },
+        "scale": {
+          "x": 1.88099,
+          "y": 0.115,
+          "z": 2.95
+        }
+      },
+      "position": [
+        3638,
+        2120
+      ]
+    },
+    "gallery_west_eaves": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.115,
+          "y": 0.15,
+          "z": 3.03
+        },
+        "center": {
+          "x": 4.1,
+          "y": 4.15414,
+          "z": -3.725
+        }
+      },
+      "position": [
+        3876,
+        2120
+      ]
+    },
+    "gallery_east_tiles": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.14,
+          "y": 4.79707,
+          "z": -3.725
+        },
+        "rotate": {
+          "x": 0,
+          "y": 0,
+          "z": -41.3255
+        },
+        "scale": {
+          "x": 1.88099,
+          "y": 0.115,
+          "z": 2.95
+        }
+      },
+      "position": [
+        4114,
+        2120
+      ]
+    },
+    "gallery_east_eaves": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.115,
+          "y": 0.15,
+          "z": 3.03
+        },
+        "center": {
+          "x": 6.82,
+          "y": 4.15414,
+          "z": -3.725
+        }
+      },
+      "position": [
+        4352,
+        2120
+      ]
+    },
+    "gallery_ridge_tiles": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.17,
+          "y": 0.13,
+          "z": 3.09
+        },
+        "center": {
+          "x": 5.46,
+          "y": 5.44,
+          "z": -3.725
+        }
+      },
+      "position": [
+        4590,
+        2120
+      ]
+    },
+    "oriel_base_profile": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "radius_bottom": 1.14,
+        "radius_top": 1.14,
+        "height": 1.875,
+        "segments": 8,
+        "center": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        }
+      },
+      "position": [
+        4828,
+        2120
+      ]
+    },
+    "oriel_base": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "oriel_base_profile.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 5.48,
+          "y": 0.9125,
+          "z": -5.28
+        },
+        "rotate": {
+          "x": 0,
+          "y": 22.5,
+          "z": 0
+        }
+      },
+      "position": [
+        5066,
+        2120
+      ]
+    },
+    "oriel_jetty_bracket_profile": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "radius_bottom": 1.13,
+        "radius_top": 1.25,
+        "height": 0.3800000000000001,
+        "segments": 8,
+        "center": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        }
+      },
+      "position": [
+        5304,
+        2120
+      ]
+    },
+    "oriel_jetty_bracket": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "oriel_jetty_bracket_profile.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 5.48,
+          "y": 2.03,
+          "z": -5.28
+        },
+        "rotate": {
+          "x": 0,
+          "y": 22.5,
+          "z": 0
+        }
+      },
+      "position": [
+        3400,
+        2250
+      ]
+    },
+    "oriel_floor_rail_profile": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "radius_bottom": 1.28,
+        "radius_top": 1.28,
+        "height": 0.18999999999999995,
+        "segments": 8,
+        "center": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        }
+      },
+      "position": [
+        3638,
+        2250
+      ]
+    },
+    "oriel_floor_rail": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "oriel_floor_rail_profile.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 5.48,
+          "y": 2.305,
+          "z": -5.28
+        },
+        "rotate": {
+          "x": 0,
+          "y": 22.5,
+          "z": 0
+        }
+      },
+      "position": [
+        3876,
+        2250
+      ]
+    },
+    "oriel_panelled_sill_profile": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "radius_bottom": 1.2,
+        "radius_top": 1.2,
+        "height": 0.5099999999999998,
+        "segments": 8,
+        "center": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        }
+      },
+      "position": [
+        4114,
+        2250
+      ]
+    },
+    "oriel_panelled_sill": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "oriel_panelled_sill_profile.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 5.48,
+          "y": 2.625,
+          "z": -5.28
+        },
+        "rotate": {
+          "x": 0,
+          "y": 22.5,
+          "z": 0
+        }
+      },
+      "position": [
+        4352,
+        2250
+      ]
+    },
+    "oriel_panelled_head_profile": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "radius_bottom": 1.2,
+        "radius_top": 1.2,
+        "height": 0.17499999999999982,
+        "segments": 8,
+        "center": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        }
+      },
+      "position": [
+        4590,
+        2250
+      ]
+    },
+    "oriel_panelled_head": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "oriel_panelled_head_profile.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 5.48,
+          "y": 4.1225,
+          "z": -5.28
+        },
+        "rotate": {
+          "x": 0,
+          "y": 22.5,
+          "z": 0
+        }
+      },
+      "position": [
+        4828,
+        2250
+      ]
+    },
+    "oriel_head_rail_profile": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "radius_bottom": 1.28,
+        "radius_top": 1.28,
+        "height": 0.1800000000000006,
+        "segments": 8,
+        "center": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        }
+      },
+      "position": [
+        5066,
+        2250
+      ]
+    },
+    "oriel_head_rail": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "oriel_head_rail_profile.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 5.48,
+          "y": 4.27,
+          "z": -5.28
+        },
+        "rotate": {
+          "x": 0,
+          "y": 22.5,
+          "z": 0
+        }
+      },
+      "position": [
+        5304,
+        2250
+      ]
+    },
+    "oriel_lower_sill_profile": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "radius_bottom": 1.23,
+        "radius_top": 1.23,
+        "height": 0.1299999999999999,
+        "segments": 8,
+        "center": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        }
+      },
+      "position": [
+        3400,
+        2380
+      ]
+    },
+    "oriel_lower_sill": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "oriel_lower_sill_profile.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 5.48,
+          "y": 2.795,
+          "z": -5.28
+        },
+        "rotate": {
+          "x": 0,
+          "y": 22.5,
+          "z": 0
+        }
+      },
+      "position": [
+        3638,
+        2380
+      ]
+    },
+    "oriel_slated_hood_profile": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "radius_bottom": 1.43,
+        "radius_top": 0.24,
+        "height": 1.2599999999999998,
+        "segments": 8,
+        "center": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        }
+      },
+      "position": [
+        3876,
+        2380
+      ]
+    },
+    "oriel_slated_hood": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "oriel_slated_hood_profile.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 5.48,
+          "y": 4.99,
+          "z": -5.28
+        },
+        "rotate": {
+          "x": 0,
+          "y": 22.5,
+          "z": 0
+        }
+      },
+      "position": [
+        4114,
+        2380
+      ]
+    },
+    "oriel_cap_profile": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "radius_bottom": 0.26,
+        "radius_top": 0.12,
+        "height": 0.1800000000000006,
+        "segments": 8,
+        "center": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        }
+      },
+      "position": [
+        4352,
+        2380
+      ]
+    },
+    "oriel_cap": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "oriel_cap_profile.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 5.48,
+          "y": 5.69,
+          "z": -5.28
+        },
+        "rotate": {
+          "x": 0,
+          "y": 22.5,
+          "z": 0
+        }
+      },
+      "position": [
+        4590,
+        2380
+      ]
+    },
+    "oriel_panel_jamb_0_0": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.60066,
+          "y": 3.46,
+          "z": -4.863
+        },
+        "rotate": {
+          "x": 0,
+          "y": 90,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.103,
+          "y": 1.18,
+          "z": 0.12
+        }
+      },
+      "position": [
+        4828,
+        2380
+      ]
+    },
+    "oriel_panel_jamb_0_1": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.60066,
+          "y": 3.46,
+          "z": -5.697
+        },
+        "rotate": {
+          "x": 0,
+          "y": 90,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.103,
+          "y": 1.18,
+          "z": 0.12
+        }
+      },
+      "position": [
+        5066,
+        2380
+      ]
+    },
+    "oriel_casement_0_frame": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_casement.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.60066,
+          "y": 3.46,
+          "z": -5.28
+        },
+        "rotate": {
+          "x": 0,
+          "y": 90,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.96,
+          "y": 1.06,
+          "z": 1
+        }
+      },
+      "position": [
+        5304,
+        2380
+      ]
+    },
+    "oriel_casement_0_inset_glass": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_lights.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.55266,
+          "y": 3.46,
+          "z": -5.28
+        },
+        "rotate": {
+          "x": 0,
+          "y": 90,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.96,
+          "y": 1.06,
+          "z": 1
+        }
+      },
+      "position": [
+        3400,
+        2510
+      ]
+    },
+    "oriel_panel_jamb_1_0": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.56729,
+          "y": 3.46,
+          "z": -5.77756
+        },
+        "rotate": {
+          "x": 0,
+          "y": 135,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.103,
+          "y": 1.18,
+          "z": 0.12
+        }
+      },
+      "position": [
+        3638,
+        2510
+      ]
+    },
+    "oriel_panel_jamb_1_1": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 5.97756,
+          "y": 3.46,
+          "z": -6.36729
+        },
+        "rotate": {
+          "x": 0,
+          "y": 135,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.103,
+          "y": 1.18,
+          "z": 0.12
+        }
+      },
+      "position": [
+        3876,
+        2510
+      ]
+    },
+    "oriel_casement_1_frame": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_casement.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.27242,
+          "y": 3.46,
+          "z": -6.07242
+        },
+        "rotate": {
+          "x": 0,
+          "y": 135,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.96,
+          "y": 1.06,
+          "z": 1
+        }
+      },
+      "position": [
+        4114,
+        2510
+      ]
+    },
+    "oriel_casement_1_inset_glass": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_lights.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.23848,
+          "y": 3.46,
+          "z": -6.03848
+        },
+        "rotate": {
+          "x": 0,
+          "y": 135,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.96,
+          "y": 1.06,
+          "z": 1
+        }
+      },
+      "position": [
+        4352,
+        2510
+      ]
+    },
+    "oriel_panel_jamb_2_0": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 5.897,
+          "y": 3.46,
+          "z": -6.40066
+        },
+        "rotate": {
+          "x": 0,
+          "y": 180,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.103,
+          "y": 1.18,
+          "z": 0.12
+        }
+      },
+      "position": [
+        4590,
+        2510
+      ]
+    },
+    "oriel_panel_jamb_2_1": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 5.063,
+          "y": 3.46,
+          "z": -6.40066
+        },
+        "rotate": {
+          "x": 0,
+          "y": 180,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.103,
+          "y": 1.18,
+          "z": 0.12
+        }
+      },
+      "position": [
+        4828,
+        2510
+      ]
+    },
+    "oriel_casement_2_frame": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_casement.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 5.48,
+          "y": 3.46,
+          "z": -6.40066
+        },
+        "rotate": {
+          "x": 0,
+          "y": 180,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.96,
+          "y": 1.06,
+          "z": 1
+        }
+      },
+      "position": [
+        5066,
+        2510
+      ]
+    },
+    "oriel_casement_2_inset_glass": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_lights.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 5.48,
+          "y": 3.46,
+          "z": -6.35266
+        },
+        "rotate": {
+          "x": 0,
+          "y": 180,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.96,
+          "y": 1.06,
+          "z": 1
+        }
+      },
+      "position": [
+        5304,
+        2510
+      ]
+    },
+    "oriel_panel_jamb_3_0": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 4.98244,
+          "y": 3.46,
+          "z": -6.36729
+        },
+        "rotate": {
+          "x": 0,
+          "y": 225,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.103,
+          "y": 1.18,
+          "z": 0.12
+        }
+      },
+      "position": [
+        3400,
+        2640
+      ]
+    },
+    "oriel_panel_jamb_3_1": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 4.39271,
+          "y": 3.46,
+          "z": -5.77756
+        },
+        "rotate": {
+          "x": 0,
+          "y": 225,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.103,
+          "y": 1.18,
+          "z": 0.12
+        }
+      },
+      "position": [
+        3638,
+        2640
+      ]
+    },
+    "oriel_casement_3_frame": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_casement.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 4.68758,
+          "y": 3.46,
+          "z": -6.07242
+        },
+        "rotate": {
+          "x": 0,
+          "y": 225,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.96,
+          "y": 1.06,
+          "z": 1
+        }
+      },
+      "position": [
+        3876,
+        2640
+      ]
+    },
+    "oriel_casement_3_inset_glass": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_lights.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 4.72152,
+          "y": 3.46,
+          "z": -6.03848
+        },
+        "rotate": {
+          "x": 0,
+          "y": 225,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.96,
+          "y": 1.06,
+          "z": 1
+        }
+      },
+      "position": [
+        4114,
+        2640
+      ]
+    },
+    "oriel_panel_jamb_4_0": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 4.35934,
+          "y": 3.46,
+          "z": -5.697
+        },
+        "rotate": {
+          "x": 0,
+          "y": 270,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.103,
+          "y": 1.18,
+          "z": 0.12
+        }
+      },
+      "position": [
+        4352,
+        2640
+      ]
+    },
+    "oriel_panel_jamb_4_1": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 4.35934,
+          "y": 3.46,
+          "z": -4.863
+        },
+        "rotate": {
+          "x": 0,
+          "y": 270,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.103,
+          "y": 1.18,
+          "z": 0.12
+        }
+      },
+      "position": [
+        4590,
+        2640
+      ]
+    },
+    "oriel_casement_4_frame": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_casement.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 4.35934,
+          "y": 3.46,
+          "z": -5.28
+        },
+        "rotate": {
+          "x": 0,
+          "y": 270,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.96,
+          "y": 1.06,
+          "z": 1
+        }
+      },
+      "position": [
+        4828,
+        2640
+      ]
+    },
+    "oriel_casement_4_inset_glass": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_lights.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 4.40734,
+          "y": 3.46,
+          "z": -5.28
+        },
+        "rotate": {
+          "x": 0,
+          "y": 270,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.96,
+          "y": 1.06,
+          "z": 1
+        }
+      },
+      "position": [
+        5066,
+        2640
+      ]
+    },
+    "oriel_corner_0": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.58588,
+          "y": 3.28,
+          "z": -4.82193
+        },
+        "rotate": {
+          "x": 0,
+          "y": 67.5,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.102,
+          "y": 1.85,
+          "z": 0.103
+        }
+      },
+      "position": [
+        5304,
+        2640
+      ]
+    },
+    "oriel_corner_1": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.58588,
+          "y": 3.28,
+          "z": -5.73807
+        },
+        "rotate": {
+          "x": 0,
+          "y": 112.5,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.102,
+          "y": 1.85,
+          "z": 0.103
+        }
+      },
+      "position": [
+        3400,
+        2770
+      ]
+    },
+    "oriel_corner_2": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 5.93807,
+          "y": 3.28,
+          "z": -6.38588
+        },
+        "rotate": {
+          "x": 0,
+          "y": 157.5,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.102,
+          "y": 1.85,
+          "z": 0.103
+        }
+      },
+      "position": [
+        3638,
+        2770
+      ]
+    },
+    "oriel_corner_3": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 5.02193,
+          "y": 3.28,
+          "z": -6.38588
+        },
+        "rotate": {
+          "x": 0,
+          "y": 202.5,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.102,
+          "y": 1.85,
+          "z": 0.103
+        }
+      },
+      "position": [
+        3876,
+        2770
+      ]
+    },
+    "oriel_corner_4": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 4.37412,
+          "y": 3.28,
+          "z": -5.73807
+        },
+        "rotate": {
+          "x": 0,
+          "y": 247.5,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.102,
+          "y": 1.85,
+          "z": 0.103
+        }
+      },
+      "position": [
+        4114,
+        2770
+      ]
+    },
+    "oriel_corner_5": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 4.37412,
+          "y": 3.28,
+          "z": -4.82193
+        },
+        "rotate": {
+          "x": 0,
+          "y": 292.5,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.102,
+          "y": 1.85,
+          "z": 0.103
+        }
+      },
+      "position": [
+        4352,
+        2770
+      ]
+    },
+    "lodge_floor": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 3.87,
+          "y": 0.12,
+          "z": 3.07
+        },
+        "center": {
+          "x": -8.435,
+          "y": -0.025,
+          "z": -3.945
+        }
+      },
+      "position": [
+        3400,
+        3850
+      ]
+    },
+    "lodge_street_wall_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.54,
+          "y": 2.56,
+          "z": 0.27
+        },
+        "center": {
+          "x": -10.1,
+          "y": 1.28,
+          "z": -5.48
+        }
+      },
+      "position": [
+        3638,
+        3850
+      ]
+    },
+    "lodge_street_wall_2": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.8,
+          "y": 0.9,
+          "z": 0.27
+        },
+        "center": {
+          "x": -9.43,
+          "y": 0.45,
+          "z": -5.48
+        }
+      },
+      "position": [
+        3876,
+        3850
+      ]
+    },
+    "lodge_street_wall_3": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.8,
+          "y": 0.6,
+          "z": 0.27
+        },
+        "center": {
+          "x": -9.43,
+          "y": 2.26,
+          "z": -5.48
+        }
+      },
+      "position": [
+        4114,
+        3850
+      ]
+    },
+    "lodge_street_wall_4": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.8,
+          "y": 2.56,
+          "z": 0.27
+        },
+        "center": {
+          "x": -8.63,
+          "y": 1.28,
+          "z": -5.48
+        }
+      },
+      "position": [
+        4352,
+        3850
+      ]
+    },
+    "lodge_street_wall_5": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 1.62,
+          "y": 0.23,
+          "z": 0.27
+        },
+        "center": {
+          "x": -7.42,
+          "y": 2.445,
+          "z": -5.48
+        }
+      },
+      "position": [
+        4590,
+        3850
+      ]
+    },
+    "lodge_street_wall_6": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.11,
+          "y": 2.56,
+          "z": 0.27
+        },
+        "center": {
+          "x": -6.555,
+          "y": 1.28,
+          "z": -5.48
+        }
+      },
+      "position": [
+        4828,
+        3850
+      ]
+    },
+    "lodge_street_window_frame": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_casement.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -9.43,
+          "y": 1.43,
+          "z": -5.63
+        },
+        "rotate": {
+          "x": 0,
+          "y": 180,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.99,
+          "y": 0.96,
+          "z": 1
+        }
+      },
+      "position": [
+        5066,
+        3850
+      ]
+    },
+    "lodge_street_window_inset_glass": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_lights.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -9.43,
+          "y": 1.43,
+          "z": -5.582
+        },
+        "rotate": {
+          "x": 0,
+          "y": 180,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.99,
+          "y": 0.96,
+          "z": 1
+        }
+      },
+      "position": [
+        5304,
+        3850
+      ]
+    },
+    "lodge_alley_wall_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.24,
+          "y": 2.56,
+          "z": 1.19
+        },
+        "center": {
+          "x": -10.37,
+          "y": 1.28,
+          "z": -4.745
+        }
+      },
+      "position": [
+        3400,
+        3980
+      ]
+    },
+    "lodge_alley_wall_2": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.24,
+          "y": 0.97,
+          "z": 0.64
+        },
+        "center": {
+          "x": -10.37,
+          "y": 0.485,
+          "z": -3.83
+        }
+      },
+      "position": [
+        3638,
+        3980
+      ]
+    },
+    "lodge_alley_wall_3": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.24,
+          "y": 0.64,
+          "z": 0.64
+        },
+        "center": {
+          "x": -10.37,
+          "y": 2.24,
+          "z": -3.83
+        }
+      },
+      "position": [
+        3876,
+        3980
+      ]
+    },
+    "lodge_alley_wall_4": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.24,
+          "y": 2.56,
+          "z": 1.1
+        },
+        "center": {
+          "x": -10.37,
+          "y": 1.28,
+          "z": -2.96
+        }
+      },
+      "position": [
+        4114,
+        3980
+      ]
+    },
+    "lodge_alley_window_frame": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_casement.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -10.5,
+          "y": 1.445,
+          "z": -3.83
+        },
+        "rotate": {
+          "x": 0,
+          "y": -90,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.78,
+          "y": 0.86,
+          "z": 1
+        }
+      },
+      "position": [
+        4352,
+        3980
+      ]
+    },
+    "lodge_alley_window_inset_glass": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_lights.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -10.452,
+          "y": 1.445,
+          "z": -3.83
+        },
+        "rotate": {
+          "x": 0,
+          "y": -90,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.78,
+          "y": 0.86,
+          "z": 1
+        }
+      },
+      "position": [
+        4590,
+        3980
+      ]
+    },
+    "lodge_yard_wall_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.24,
+          "y": 2.56,
+          "z": 1.19
+        },
+        "center": {
+          "x": -6.5,
+          "y": 1.28,
+          "z": -4.745
+        }
+      },
+      "position": [
+        4828,
+        3980
+      ]
+    },
+    "lodge_yard_wall_2": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.24,
+          "y": 0.97,
+          "z": 0.64
+        },
+        "center": {
+          "x": -6.5,
+          "y": 0.485,
+          "z": -3.83
+        }
+      },
+      "position": [
+        5066,
+        3980
+      ]
+    },
+    "lodge_yard_wall_3": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.24,
+          "y": 0.64,
+          "z": 0.64
+        },
+        "center": {
+          "x": -6.5,
+          "y": 2.24,
+          "z": -3.83
+        }
+      },
+      "position": [
+        5304,
+        3980
+      ]
+    },
+    "lodge_yard_wall_4": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.24,
+          "y": 2.56,
+          "z": 1.1
+        },
+        "center": {
+          "x": -6.5,
+          "y": 1.28,
+          "z": -2.96
+        }
+      },
+      "position": [
+        3400,
+        4110
+      ]
+    },
+    "lodge_yard_window_frame": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_casement.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -6.37,
+          "y": 1.445,
+          "z": -3.83
+        },
+        "rotate": {
+          "x": 0,
+          "y": 90,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.78,
+          "y": 0.86,
+          "z": 1
+        }
+      },
+      "position": [
+        3638,
+        4110
+      ]
+    },
+    "lodge_yard_window_inset_glass": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_lights.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -6.418,
+          "y": 1.445,
+          "z": -3.83
+        },
+        "rotate": {
+          "x": 0,
+          "y": 90,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.78,
+          "y": 0.86,
+          "z": 1
+        }
+      },
+      "position": [
+        3876,
+        4110
+      ]
+    },
+    "lodge_left_door_jamb": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.15,
+          "y": 1.52,
+          "z": 0.34
+        },
+        "center": {
+          "x": -8.155,
+          "y": 0.76,
+          "z": -5.515
+        }
+      },
+      "position": [
+        4114,
+        4110
+      ]
+    },
+    "lodge_left_impost": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.23,
+          "y": 0.13,
+          "z": 0.38
+        },
+        "center": {
+          "x": -8.155,
+          "y": 1.51,
+          "z": -5.53
+        }
+      },
+      "position": [
+        4352,
+        4110
+      ]
+    },
+    "lodge_right_door_jamb": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.15,
+          "y": 1.52,
+          "z": 0.34
+        },
+        "center": {
+          "x": -6.685,
+          "y": 0.76,
+          "z": -5.515
+        }
+      },
+      "position": [
+        4590,
+        4110
+      ]
+    },
+    "lodge_right_impost": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.23,
+          "y": 0.13,
+          "z": 0.38
+        },
+        "center": {
+          "x": -6.685,
+          "y": 1.51,
+          "z": -5.53
+        }
+      },
+      "position": [
+        4828,
+        4110
+      ]
+    },
+    "lodge_haunch_blank": {
+      "type": "procedural.Wedge",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 1,
+          "y": 1,
+          "z": 1
+        },
+        "peak_ratio": 1
+      },
+      "position": [
+        5066,
+        4110
+      ]
+    },
+    "lodge_left_haunch_1": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "lodge_haunch_blank.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -7.51012,
+          "y": 2.31985,
+          "z": -5.48
+        },
+        "rotate": {
+          "x": 0,
+          "y": 0,
+          "z": 180
+        },
+        "scale": {
+          "x": 0.18024,
+          "y": 0.02031,
+          "z": 0.25
+        }
+      },
+      "position": [
+        5304,
+        4110
+      ]
+    },
+    "lodge_left_haunch_2": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "lodge_haunch_blank.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -7.68584,
+          "y": 2.27974,
+          "z": -5.48
+        },
+        "rotate": {
+          "x": 0,
+          "y": 0,
+          "z": 180
+        },
+        "scale": {
+          "x": 0.1712,
+          "y": 0.05991,
+          "z": 0.25
+        }
+      },
+      "position": [
+        3400,
+        4240
+      ]
+    },
+    "lodge_left_haunch_2_cap": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.1712,
+          "y": 0.02031,
+          "z": 0.25
+        },
+        "center": {
+          "x": -7.68584,
+          "y": 2.31985,
+          "z": -5.48
+        }
+      },
+      "position": [
+        3638,
+        4240
+      ]
+    },
+    "lodge_left_haunch_3": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "lodge_haunch_blank.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -7.84824,
+          "y": 2.20153,
+          "z": -5.48
+        },
+        "rotate": {
+          "x": 0,
+          "y": 0,
+          "z": 180
+        },
+        "scale": {
+          "x": 0.15358,
+          "y": 0.0965,
+          "z": 0.25
+        }
+      },
+      "position": [
+        3876,
+        4240
+      ]
+    },
+    "lodge_left_haunch_3_cap": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.15358,
+          "y": 0.08022,
+          "z": 0.25
+        },
+        "center": {
+          "x": -7.84824,
+          "y": 2.28989,
+          "z": -5.48
+        }
+      },
+      "position": [
+        4114,
+        4240
+      ]
+    },
+    "lodge_left_haunch_4": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "lodge_haunch_blank.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -7.98916,
+          "y": 2.08916,
+          "z": -5.48
+        },
+        "rotate": {
+          "x": 0,
+          "y": 0,
+          "z": 180
+        },
+        "scale": {
+          "x": 0.12826,
+          "y": 0.12826,
+          "z": 0.25
+        }
+      },
+      "position": [
+        4352,
+        4240
+      ]
+    },
+    "lodge_left_haunch_4_cap": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.12826,
+          "y": 0.17672,
+          "z": 0.25
+        },
+        "center": {
+          "x": -7.98916,
+          "y": 2.24164,
+          "z": -5.48
+        }
+      },
+      "position": [
+        4590,
+        4240
+      ]
+    },
+    "lodge_left_haunch_5": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "lodge_haunch_blank.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -8.10153,
+          "y": 1.94824,
+          "z": -5.48
+        },
+        "rotate": {
+          "x": 0,
+          "y": 0,
+          "z": 180
+        },
+        "scale": {
+          "x": 0.0965,
+          "y": 0.15358,
+          "z": 0.25
+        }
+      },
+      "position": [
+        4828,
+        4240
+      ]
+    },
+    "lodge_left_haunch_5_cap": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.0965,
+          "y": 0.30497,
+          "z": 0.25
+        },
+        "center": {
+          "x": -8.10153,
+          "y": 2.17751,
+          "z": -5.48
+        }
+      },
+      "position": [
+        5066,
+        4240
+      ]
+    },
+    "lodge_left_haunch_6": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "lodge_haunch_blank.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -8.17974,
+          "y": 1.78584,
+          "z": -5.48
+        },
+        "rotate": {
+          "x": 0,
+          "y": 0,
+          "z": 180
+        },
+        "scale": {
+          "x": 0.05991,
+          "y": 0.1712,
+          "z": 0.25
+        }
+      },
+      "position": [
+        5304,
+        4240
+      ]
+    },
+    "lodge_left_haunch_6_cap": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.05991,
+          "y": 0.45855,
+          "z": 0.25
+        },
+        "center": {
+          "x": -8.17974,
+          "y": 2.10072,
+          "z": -5.48
+        }
+      },
+      "position": [
+        3400,
+        4370
+      ]
+    },
+    "lodge_left_haunch_7": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "lodge_haunch_blank.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -8.21985,
+          "y": 1.61012,
+          "z": -5.48
+        },
+        "rotate": {
+          "x": 0,
+          "y": 0,
+          "z": 180
+        },
+        "scale": {
+          "x": 0.02031,
+          "y": 0.18024,
+          "z": 0.25
+        }
+      },
+      "position": [
+        3638,
+        4370
+      ]
+    },
+    "lodge_left_haunch_7_cap": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.02031,
+          "y": 0.62976,
+          "z": 0.25
+        },
+        "center": {
+          "x": -8.21985,
+          "y": 2.01512,
+          "z": -5.48
+        }
+      },
+      "position": [
+        3876,
+        4370
+      ]
+    },
+    "lodge_right_haunch_1": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "lodge_haunch_blank.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -7.32988,
+          "y": 2.31985,
+          "z": -5.48
+        },
+        "rotate": {
+          "x": 180,
+          "y": 0,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.18024,
+          "y": 0.02031,
+          "z": 0.25
+        }
+      },
+      "position": [
+        4114,
+        4370
+      ]
+    },
+    "lodge_right_haunch_2": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "lodge_haunch_blank.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -7.15416,
+          "y": 2.27974,
+          "z": -5.48
+        },
+        "rotate": {
+          "x": 180,
+          "y": 0,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.1712,
+          "y": 0.05991,
+          "z": 0.25
+        }
+      },
+      "position": [
+        4352,
+        4370
+      ]
+    },
+    "lodge_right_haunch_2_cap": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.1712,
+          "y": 0.02031,
+          "z": 0.25
+        },
+        "center": {
+          "x": -7.15416,
+          "y": 2.31985,
+          "z": -5.48
+        }
+      },
+      "position": [
+        4590,
+        4370
+      ]
+    },
+    "lodge_right_haunch_3": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "lodge_haunch_blank.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -6.99176,
+          "y": 2.20153,
+          "z": -5.48
+        },
+        "rotate": {
+          "x": 180,
+          "y": 0,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.15358,
+          "y": 0.0965,
+          "z": 0.25
+        }
+      },
+      "position": [
+        4828,
+        4370
+      ]
+    },
+    "lodge_right_haunch_3_cap": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.15358,
+          "y": 0.08022,
+          "z": 0.25
+        },
+        "center": {
+          "x": -6.99176,
+          "y": 2.28989,
+          "z": -5.48
+        }
+      },
+      "position": [
+        5066,
+        4370
+      ]
+    },
+    "lodge_right_haunch_4": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "lodge_haunch_blank.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -6.85084,
+          "y": 2.08916,
+          "z": -5.48
+        },
+        "rotate": {
+          "x": 180,
+          "y": 0,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.12826,
+          "y": 0.12826,
+          "z": 0.25
+        }
+      },
+      "position": [
+        5304,
+        4370
+      ]
+    },
+    "lodge_right_haunch_4_cap": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.12826,
+          "y": 0.17672,
+          "z": 0.25
+        },
+        "center": {
+          "x": -6.85084,
+          "y": 2.24164,
+          "z": -5.48
+        }
+      },
+      "position": [
+        3400,
+        4500
+      ]
+    },
+    "lodge_right_haunch_5": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "lodge_haunch_blank.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -6.73847,
+          "y": 1.94824,
+          "z": -5.48
+        },
+        "rotate": {
+          "x": 180,
+          "y": 0,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.0965,
+          "y": 0.15358,
+          "z": 0.25
+        }
+      },
+      "position": [
+        3638,
+        4500
+      ]
+    },
+    "lodge_right_haunch_5_cap": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.0965,
+          "y": 0.30497,
+          "z": 0.25
+        },
+        "center": {
+          "x": -6.73847,
+          "y": 2.17751,
+          "z": -5.48
+        }
+      },
+      "position": [
+        3876,
+        4500
+      ]
+    },
+    "lodge_right_haunch_6": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "lodge_haunch_blank.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -6.66026,
+          "y": 1.78584,
+          "z": -5.48
+        },
+        "rotate": {
+          "x": 180,
+          "y": 0,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.05991,
+          "y": 0.1712,
+          "z": 0.25
+        }
+      },
+      "position": [
+        4114,
+        4500
+      ]
+    },
+    "lodge_right_haunch_6_cap": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.05991,
+          "y": 0.45855,
+          "z": 0.25
+        },
+        "center": {
+          "x": -6.66026,
+          "y": 2.10072,
+          "z": -5.48
+        }
+      },
+      "position": [
+        4352,
+        4500
+      ]
+    },
+    "lodge_right_haunch_7": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "lodge_haunch_blank.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -6.62015,
+          "y": 1.61012,
+          "z": -5.48
+        },
+        "rotate": {
+          "x": 180,
+          "y": 0,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.02031,
+          "y": 0.18024,
+          "z": 0.25
+        }
+      },
+      "position": [
+        4590,
+        4500
+      ]
+    },
+    "lodge_right_haunch_7_cap": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.02031,
+          "y": 0.62976,
+          "z": 0.25
+        },
+        "center": {
+          "x": -6.62015,
+          "y": 2.01512,
+          "z": -5.48
+        }
+      },
+      "position": [
+        4828,
+        4500
+      ]
+    },
+    "porch_arch_section": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "radius_top": 0.81,
+        "radius_bottom": 0.81,
+        "inner_radius": 0.66,
+        "height": 0.38,
+        "segments": 14,
+        "arc_degrees": 180
+      },
+      "position": [
+        5066,
+        4500
+      ]
+    },
+    "lodge_archivolt": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "porch_arch_section.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -7.42,
+          "y": 1.52,
+          "z": -5.515
+        },
+        "rotate": {
+          "x": -90,
+          "y": 0,
+          "z": 0
+        }
+      },
+      "position": [
+        5304,
+        4500
+      ]
+    },
+    "lodge_keystone": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.22,
+          "y": 0.26,
+          "z": 0.42
+        },
+        "center": {
+          "x": -7.42,
+          "y": 2.285,
+          "z": -5.535
+        }
+      },
+      "position": [
+        3400,
+        4630
+      ]
+    },
+    "lodge_front_wall_plate": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 4.0,
+          "y": 0.14,
+          "z": 0.18
+        },
+        "center": {
+          "x": -8.435,
+          "y": 2.52,
+          "z": -5.61
+        }
+      },
+      "position": [
+        3638,
+        4630
+      ]
+    },
+    "lodge_hip_blank": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "radius_bottom": 1.4142135623730951,
+        "radius_top": 0,
+        "height": 1,
+        "segments": 4,
+        "center": {
+          "x": 0,
+          "y": 0.5,
+          "z": 0
+        }
+      },
+      "position": [
+        3876,
+        4630
+      ]
+    },
+    "lodge_hip_axes": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "lodge_hip_blank.output"
+      },
+      "properties": {
+        "rotate": {
+          "x": 0,
+          "y": 45,
+          "z": 0
+        }
+      },
+      "position": [
+        4114,
+        4630
+      ]
+    },
+    "lodge_hip_roof": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "lodge_hip_axes.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -8.435,
+          "y": 2.57,
+          "z": -3.945
+        },
+        "scale": {
+          "x": 2.165,
+          "y": 1.88,
+          "z": 1.755
+        }
+      },
+      "position": [
+        4352,
+        4630
+      ]
+    },
+    "lodge_hip_roll_0": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -9.5075,
+          "y": 3.54,
+          "z": -4.8125
+        },
+        "rotate": {
+          "x": 55.72778,
+          "y": 51.03207,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.07,
+          "y": 3.33851,
+          "z": 0.06
+        }
+      },
+      "position": [
+        4590,
+        4630
+      ]
+    },
+    "lodge_hip_roll_1": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -7.3625,
+          "y": 3.54,
+          "z": -4.8125
+        },
+        "rotate": {
+          "x": 55.72778,
+          "y": -51.03207,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.07,
+          "y": 3.33851,
+          "z": 0.06
+        }
+      },
+      "position": [
+        4828,
+        4630
+      ]
+    },
+    "lodge_hip_roll_2": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -9.5075,
+          "y": 3.54,
+          "z": -3.0775
+        },
+        "rotate": {
+          "x": 55.72778,
+          "y": 128.96793,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.07,
+          "y": 3.33851,
+          "z": 0.06
+        }
+      },
+      "position": [
+        5066,
+        4630
+      ]
+    },
+    "lodge_hip_roll_3": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -7.3625,
+          "y": 3.54,
+          "z": -3.0775
+        },
+        "rotate": {
+          "x": 55.72778,
+          "y": -128.96793,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.07,
+          "y": 3.33851,
+          "z": 0.06
+        }
+      },
+      "position": [
+        5304,
+        4630
+      ]
+    },
+    "lodge_dormer_cheek_0": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.09,
+          "y": 0.61,
+          "z": 0.72
+        },
+        "center": {
+          "x": -9.575,
+          "y": 3.23,
+          "z": -4.95
+        }
+      },
+      "position": [
+        3400,
+        4760
+      ]
+    },
+    "lodge_dormer_cheek_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.09,
+          "y": 0.61,
+          "z": 0.72
+        },
+        "center": {
+          "x": -8.765,
+          "y": 3.23,
+          "z": -4.95
+        }
+      },
+      "position": [
+        3638,
+        4760
+      ]
+    },
+    "lodge_dormer_frame": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_casement.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -9.17,
+          "y": 3.25,
+          "z": -5.31
+        },
+        "rotate": {
+          "x": 0,
+          "y": 180,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.99,
+          "y": 0.6,
+          "z": 1
+        }
+      },
+      "position": [
+        3876,
+        4760
+      ]
+    },
+    "lodge_dormer_inset_glass": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "leaded_lights.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -9.17,
+          "y": 3.25,
+          "z": -5.262
+        },
+        "rotate": {
+          "x": 0,
+          "y": 180,
+          "z": 0
+        },
+        "scale": {
+          "x": 0.99,
+          "y": 0.6,
+          "z": 1
+        }
+      },
+      "position": [
+        4114,
+        4760
+      ]
+    },
+    "lodge_dormer_gable_infill": {
+      "type": "procedural.Wedge",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.92,
+          "y": 0.44,
+          "z": 0.76
+        },
+        "center": {
+          "x": -9.17,
+          "y": 3.82,
+          "z": -4.97
+        }
+      },
+      "position": [
+        4352,
+        4760
+      ]
+    },
+    "lodge_dormer_west_tiles": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -9.5,
+          "y": 3.76935,
+          "z": -4.97
+        },
+        "rotate": {
+          "x": 0,
+          "y": 0,
+          "z": 43.72697
+        },
+        "scale": {
+          "x": 0.98332,
+          "y": 0.115,
+          "z": 1.0
+        }
+      },
+      "position": [
+        4590,
+        4760
+      ]
+    },
+    "lodge_dormer_west_eaves": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.115,
+          "y": 0.15,
+          "z": 1.08
+        },
+        "center": {
+          "x": -9.83,
+          "y": 3.4087,
+          "z": -4.97
+        }
+      },
+      "position": [
+        4828,
+        4760
+      ]
+    },
+    "lodge_dormer_east_tiles": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "section_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -8.84,
+          "y": 3.76935,
+          "z": -4.97
+        },
+        "rotate": {
+          "x": 0,
+          "y": 0,
+          "z": -43.72697
+        },
+        "scale": {
+          "x": 0.98332,
+          "y": 0.115,
+          "z": 1.0
+        }
+      },
+      "position": [
+        5066,
+        4760
+      ]
+    },
+    "lodge_dormer_east_eaves": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.115,
+          "y": 0.15,
+          "z": 1.08
+        },
+        "center": {
+          "x": -8.51,
+          "y": 3.4087,
+          "z": -4.97
+        }
+      },
+      "position": [
+        5304,
+        4760
+      ]
+    },
+    "lodge_dormer_ridge_tiles": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.17,
+          "y": 0.13,
+          "z": 1.14
+        },
+        "center": {
+          "x": -9.17,
+          "y": 4.13,
+          "z": -4.97
+        }
+      },
+      "position": [
+        3400,
+        4890
+      ]
+    },
+    "lodge_chimney": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.4,
+          "y": 1.43,
+          "z": 0.53
+        },
+        "center": {
+          "x": -9.79,
+          "y": 3.89,
+          "z": -3.31
+        }
+      },
+      "position": [
+        3638,
+        4890
+      ]
+    },
+    "lodge_chimney_coping": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.51,
+          "y": 0.14,
+          "z": 0.64
+        },
+        "center": {
+          "x": -9.79,
+          "y": 4.58,
+          "z": -3.31
+        }
+      },
+      "position": [
+        3876,
+        4890
+      ]
+    },
+    "stonework": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "guardhall_floor.output",
+          "guardhall_front_base_1.output",
+          "guardhall_front_base_2.output",
+          "guardhall_front_base_3.output",
+          "guardhall_front_base_4.output",
+          "guardhall_front_base_5.output",
+          "guardhall_back_base_1.output",
+          "guardhall_back_base_2.output",
+          "guardhall_back_base_3.output",
+          "guardhall_back_base_4.output",
+          "guardhall_passage_base_1.output",
+          "guardhall_passage_base_2.output",
+          "guardhall_passage_base_3.output",
+          "guardhall_passage_base_4.output",
+          "guardhall_passage_base_5.output",
+          "guardhall_passage_base_6.output",
+          "guardhall_passage_base_7.output",
+          "guardhall_outer_base_1.output",
+          "guardhall_outer_base_2.output",
+          "guardhall_outer_base_3.output",
+          "guardhall_outer_base_4.output",
+          "gallery_floor.output",
+          "gallery_court_base_1.output",
+          "gallery_court_base_2.output",
+          "gallery_court_base_3.output",
+          "gallery_court_base_4.output",
+          "gallery_street_base_1.output",
+          "gallery_street_base_2.output",
+          "gallery_street_base_3.output",
+          "gallery_street_base_4.output",
+          "oriel_base.output",
+          "oriel_jetty_bracket.output",
+          "lodge_floor.output",
+          "lodge_street_wall_1.output",
+          "lodge_street_wall_2.output",
+          "lodge_street_wall_3.output",
+          "lodge_street_wall_4.output",
+          "lodge_street_wall_5.output",
+          "lodge_street_wall_6.output",
+          "lodge_alley_wall_1.output",
+          "lodge_alley_wall_2.output",
+          "lodge_alley_wall_3.output",
+          "lodge_alley_wall_4.output",
+          "lodge_yard_wall_1.output",
+          "lodge_yard_wall_2.output",
+          "lodge_yard_wall_3.output",
+          "lodge_yard_wall_4.output",
+          "lodge_left_door_jamb.output",
+          "lodge_left_impost.output",
+          "lodge_right_door_jamb.output",
+          "lodge_right_impost.output",
+          "lodge_left_haunch_1.output",
+          "lodge_left_haunch_2.output",
+          "lodge_left_haunch_2_cap.output",
+          "lodge_left_haunch_3.output",
+          "lodge_left_haunch_3_cap.output",
+          "lodge_left_haunch_4.output",
+          "lodge_left_haunch_4_cap.output",
+          "lodge_left_haunch_5.output",
+          "lodge_left_haunch_5_cap.output",
+          "lodge_left_haunch_6.output",
+          "lodge_left_haunch_6_cap.output",
+          "lodge_left_haunch_7.output",
+          "lodge_left_haunch_7_cap.output",
+          "lodge_right_haunch_1.output",
+          "lodge_right_haunch_2.output",
+          "lodge_right_haunch_2_cap.output",
+          "lodge_right_haunch_3.output",
+          "lodge_right_haunch_3_cap.output",
+          "lodge_right_haunch_4.output",
+          "lodge_right_haunch_4_cap.output",
+          "lodge_right_haunch_5.output",
+          "lodge_right_haunch_5_cap.output",
+          "lodge_right_haunch_6.output",
+          "lodge_right_haunch_6_cap.output",
+          "lodge_right_haunch_7.output",
+          "lodge_right_haunch_7_cap.output",
+          "lodge_archivolt.output",
+          "lodge_keystone.output",
+          "lodge_chimney.output",
+          "lodge_chimney_coping.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        1700,
+        5800
+      ]
+    },
+    "finish_stonework": {
+      "type": "game.GatehouseFinish",
+      "inputs": {
+        "input": "stonework.output"
+      },
+      "properties": {
+        "finish": 0
+      },
+      "position": [
+        1700,
+        5935
+      ]
+    },
+    "timbers": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "guardhall_upper_floor.output",
+          "back_slit_frame.output",
+          "passage_light_0_frame.output",
+          "passage_light_1_frame.output",
+          "outer_light_frame.output",
+          "front_crown_light_0_frame.output",
+          "front_stud_0.output",
+          "front_stud_1.output",
+          "front_stud_2.output",
+          "front_sill_rail.output",
+          "front_head_rail.output",
+          "rear_crown_light_0_frame.output",
+          "rear_crown_light_1_frame.output",
+          "rear_stud_0.output",
+          "rear_stud_1.output",
+          "rear_stud_2.output",
+          "rear_sill_rail.output",
+          "rear_head_rail.output",
+          "court_chamber_light_0_frame.output",
+          "court_chamber_light_1_frame.output",
+          "court_wall_stud_0.output",
+          "court_wall_stud_1.output",
+          "court_wall_stud_2.output",
+          "court_plate_rail.output",
+          "court_head_rail.output",
+          "court_rising_brace.output",
+          "court_return_brace.output",
+          "street_chamber_light_0_frame.output",
+          "street_chamber_light_1_frame.output",
+          "street_wall_stud_0.output",
+          "street_wall_stud_1.output",
+          "street_wall_stud_2.output",
+          "street_plate_rail.output",
+          "street_head_rail.output",
+          "street_rising_brace.output",
+          "street_return_brace.output",
+          "guardhall_west_eaves.output",
+          "guardhall_east_eaves.output",
+          "front_left_bargeboard.output",
+          "front_right_bargeboard.output",
+          "front_kingpost.output",
+          "rear_left_bargeboard.output",
+          "rear_right_bargeboard.output",
+          "rear_kingpost.output",
+          "gallery_jetty.output",
+          "gallery_court_shop_frame.output",
+          "gallery_court_sash_frame.output",
+          "gallery_court_post_0.output",
+          "gallery_court_knee_0.output",
+          "gallery_court_post_1.output",
+          "gallery_court_knee_1.output",
+          "gallery_court_plate.output",
+          "gallery_street_shop_frame.output",
+          "gallery_street_sash_frame.output",
+          "gallery_street_post_0.output",
+          "gallery_street_knee_0.output",
+          "gallery_street_post_1.output",
+          "gallery_street_knee_1.output",
+          "gallery_street_plate.output",
+          "gallery_west_eaves.output",
+          "gallery_east_eaves.output",
+          "oriel_floor_rail.output",
+          "oriel_head_rail.output",
+          "oriel_lower_sill.output",
+          "oriel_casement_0_frame.output",
+          "oriel_casement_1_frame.output",
+          "oriel_casement_2_frame.output",
+          "oriel_casement_3_frame.output",
+          "oriel_casement_4_frame.output",
+          "oriel_corner_0.output",
+          "oriel_corner_1.output",
+          "oriel_corner_2.output",
+          "oriel_corner_3.output",
+          "oriel_corner_4.output",
+          "oriel_corner_5.output",
+          "lodge_street_window_frame.output",
+          "lodge_alley_window_frame.output",
+          "lodge_yard_window_frame.output",
+          "lodge_front_wall_plate.output",
+          "lodge_dormer_cheek_0.output",
+          "lodge_dormer_cheek_1.output",
+          "lodge_dormer_frame.output",
+          "lodge_dormer_west_eaves.output",
+          "lodge_dormer_east_eaves.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        1892,
+        5800
+      ]
+    },
+    "finish_timbers": {
+      "type": "game.GatehouseFinish",
+      "inputs": {
+        "input": "timbers.output"
+      },
+      "properties": {
+        "finish": 1
+      },
+      "position": [
+        1892,
+        5935
+      ]
+    },
+    "window_panes": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "back_slit_inset_glass.output",
+          "passage_light_0_inset_glass.output",
+          "passage_light_1_inset_glass.output",
+          "outer_light_inset_glass.output",
+          "front_crown_light_0_inset_glass.output",
+          "rear_crown_light_0_inset_glass.output",
+          "rear_crown_light_1_inset_glass.output",
+          "court_chamber_light_0_inset_glass.output",
+          "court_chamber_light_1_inset_glass.output",
+          "street_chamber_light_0_inset_glass.output",
+          "street_chamber_light_1_inset_glass.output",
+          "gallery_court_shop_inset_glass.output",
+          "gallery_court_sash_inset_glass.output",
+          "gallery_street_shop_inset_glass.output",
+          "gallery_street_sash_inset_glass.output",
+          "oriel_casement_0_inset_glass.output",
+          "oriel_casement_1_inset_glass.output",
+          "oriel_casement_2_inset_glass.output",
+          "oriel_casement_3_inset_glass.output",
+          "oriel_casement_4_inset_glass.output",
+          "lodge_street_window_inset_glass.output",
+          "lodge_alley_window_inset_glass.output",
+          "lodge_yard_window_inset_glass.output",
+          "lodge_dormer_inset_glass.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        2084,
+        5800
+      ]
+    },
+    "finish_window_panes": {
+      "type": "game.GatehouseFinish",
+      "inputs": {
+        "input": "window_panes.output"
+      },
+      "properties": {
+        "finish": 5
+      },
+      "position": [
+        2084,
+        5935
+      ]
+    },
+    "plaster": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "guardhall_front_upper_1.output",
+          "guardhall_front_upper_2.output",
+          "guardhall_front_upper_3.output",
+          "guardhall_front_upper_4.output",
+          "guardhall_rear_upper_1.output",
+          "guardhall_rear_upper_2.output",
+          "guardhall_rear_upper_3.output",
+          "guardhall_rear_upper_4.output",
+          "guardhall_rear_upper_5.output",
+          "guardhall_rear_upper_6.output",
+          "guardhall_rear_upper_7.output",
+          "guardhall_court_upper_1.output",
+          "guardhall_court_upper_2.output",
+          "guardhall_court_upper_3.output",
+          "guardhall_court_upper_4.output",
+          "guardhall_court_upper_5.output",
+          "guardhall_court_upper_6.output",
+          "guardhall_court_upper_7.output",
+          "guardhall_street_upper_1.output",
+          "guardhall_street_upper_2.output",
+          "guardhall_street_upper_3.output",
+          "guardhall_street_upper_4.output",
+          "guardhall_street_upper_5.output",
+          "guardhall_street_upper_6.output",
+          "guardhall_street_upper_7.output",
+          "guardhall_gable_infill.output",
+          "gallery_court_plaster_1.output",
+          "gallery_court_plaster_2.output",
+          "gallery_court_plaster_3.output",
+          "gallery_court_plaster_4.output",
+          "gallery_street_plaster_1.output",
+          "gallery_street_plaster_2.output",
+          "gallery_street_plaster_3.output",
+          "gallery_street_plaster_4.output",
+          "gallery_gable_infill.output",
+          "oriel_panelled_sill.output",
+          "oriel_panelled_head.output",
+          "oriel_panel_jamb_0_0.output",
+          "oriel_panel_jamb_0_1.output",
+          "oriel_panel_jamb_1_0.output",
+          "oriel_panel_jamb_1_1.output",
+          "oriel_panel_jamb_2_0.output",
+          "oriel_panel_jamb_2_1.output",
+          "oriel_panel_jamb_3_0.output",
+          "oriel_panel_jamb_3_1.output",
+          "oriel_panel_jamb_4_0.output",
+          "oriel_panel_jamb_4_1.output",
+          "lodge_dormer_gable_infill.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        2276,
+        5800
+      ]
+    },
+    "finish_plaster": {
+      "type": "game.GatehouseFinish",
+      "inputs": {
+        "input": "plaster.output"
+      },
+      "properties": {
+        "finish": 2
+      },
+      "position": [
+        2276,
+        5935
+      ]
+    },
+    "roof_tiles": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "guardhall_west_tiles.output",
+          "guardhall_west_overlaps.output",
+          "guardhall_east_tiles.output",
+          "guardhall_east_overlaps.output",
+          "guardhall_ridge_tiles.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        2468,
+        5800
+      ]
+    },
+    "finish_roof_tiles": {
+      "type": "game.GatehouseFinish",
+      "inputs": {
+        "input": "roof_tiles.output"
+      },
+      "properties": {
+        "finish": 3
+      },
+      "position": [
+        2468,
+        5935
+      ]
+    },
+    "slate": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "gallery_west_tiles.output",
+          "gallery_east_tiles.output",
+          "gallery_ridge_tiles.output",
+          "oriel_slated_hood.output",
+          "oriel_cap.output",
+          "lodge_hip_roof.output",
+          "lodge_hip_roll_0.output",
+          "lodge_hip_roll_1.output",
+          "lodge_hip_roll_2.output",
+          "lodge_hip_roll_3.output",
+          "lodge_dormer_west_tiles.output",
+          "lodge_dormer_east_tiles.output",
+          "lodge_dormer_ridge_tiles.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        2660,
+        5800
+      ]
+    },
+    "finish_slate": {
+      "type": "game.GatehouseFinish",
+      "inputs": {
+        "input": "slate.output"
+      },
+      "properties": {
+        "finish": 4
+      },
+      "position": [
+        2660,
+        5935
+      ]
+    },
+    "assembled_wings": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "finish_stonework.output",
+          "finish_timbers.output",
+          "finish_window_panes.output",
+          "finish_plaster.output",
+          "finish_roof_tiles.output",
+          "finish_slate.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        2150,
+        6070
+      ],
+      "comment": "Street galleries, octagonal oriel and west lodge; the central carriageway is clear."
+    },
+    "OUT_wings": {
+      "type": "procedural.GraphOutput",
+      "inputs": {
+        "input": "assembled_wings.output"
+      },
+      "properties": {
+        "order": 0,
+        "port_name": "geometry"
+      },
+      "position": [
+        2150,
+        6205
+      ]
+    }
+  },
+  "settings": {
+    "display": "OUT_wings",
+    "seed": 0
+  },
+  "version": 4
+}

@@ -1,0 +1,11 @@
+{
+  "inputs": [],
+  "policy": {
+    "coverage": "opaque",
+    "double_sided": true,
+    "emission_two_sided": false
+  },
+  "role": "source",
+  "source_path": "Content/Procedural/Materials/Footbridge/Timber.ms.source",
+  "version": 2
+}

@@ -218,12 +218,14 @@ struct SurfaceBuilder {
     }
 };
 
-Result<const Attribute*> require_group(const Geometry& geometry, StringView name) {
+template <class T>
+Result<const Attribute*> group_column(const Geometry& geometry, StringView name) {
     const auto* attribute = geometry.find(name);
     if (!attribute)
         return failure("Group attribute " + std::string{name.std_view()} + " was not found.");
-    if (!std::holds_alternative<SharedArray<bool>>(attribute->data))
-        return failure("Group attribute " + std::string{name.std_view()} + " must be bool.");
+    if (!std::holds_alternative<SharedArray<T>>(attribute->data))
+        return failure("Group attribute " + std::string{name.std_view()} +
+                       (std::same_as<T, bool> ? " must be bool." : " must be float."));
     return attribute;
 }
 
@@ -242,6 +244,7 @@ Result<Geometry> build_group(const Geometry& input, const GroupSettings& setting
     ATELIER_TRY(Geometry::admit_name(settings.group));
     Layer layer = Layer::primitive;
     const SharedArray<bool>* source = nullptr;
+    const Array<float>* scalars = nullptr;
     Vector3d axis{};
     double cosine{};
     switch (settings.criterion) {
@@ -258,8 +261,16 @@ Result<Geometry> build_group(const Geometry& input, const GroupSettings& setting
         break;
     }
     case GroupCriterion::existing: {
-        ATELIER_TRY_BIND(attr, require_group(input, settings.source_group));
+        ATELIER_TRY_BIND(attr, group_column<bool>(input, settings.source_group));
         source = &std::get<SharedArray<bool>>((*attr)->data);
+        layer = (*attr)->layer;
+        break;
+    }
+    case GroupCriterion::range: {
+        if (!std::isfinite(settings.minimum) || !std::isfinite(settings.maximum) || settings.minimum > settings.maximum)
+            return failure("Group range requires finite bounds with minimum <= maximum.");
+        ATELIER_TRY_BIND(attr, group_column<float>(input, settings.source_attribute));
+        scalars = &std::get<SharedArray<float>>((*attr)->data).array();
         layer = (*attr)->layer;
         break;
     }
@@ -274,7 +285,7 @@ Result<Geometry> build_group(const Geometry& input, const GroupSettings& setting
     case GroupOperation::unite:
     case GroupOperation::intersect:
     case GroupOperation::subtract: {
-        ATELIER_TRY_BIND(attr, require_group(input, settings.base_group));
+        ATELIER_TRY_BIND(attr, group_column<bool>(input, settings.base_group));
         if ((*attr)->layer != layer)
             return failure("Base group " + std::string{settings.base_group.std_view()} +
                            " belongs to a different layer.");
@@ -299,6 +310,12 @@ Result<Geometry> build_group(const Geometry& input, const GroupSettings& setting
         bool match = false;
         if (source) {
             match = source->array()[i];
+        } else if (scalars) {
+            const float value = (*scalars)[i];
+            if (!std::isfinite(value))
+                return failure("Group attribute " + std::string{settings.source_attribute.std_view()} +
+                               " is not finite at element " + std::to_string(i) + ".");
+            match = value >= settings.minimum && value <= settings.maximum;
         } else if (const auto face = input.primitive(i); face.kind == PrimitiveKind::polygon) {
             auto normal = compute_polygon_normal(input, face);
             if (!normal)
@@ -351,7 +368,7 @@ Result<Geometry> extrude(const Geometry& surface, const ExtrudeSettings& setting
 
     std::vector<bool> selected(prim_count, true);
     if (!settings.group.empty()) {
-        ATELIER_TRY_BIND(found, require_group(surface, settings.group));
+        ATELIER_TRY_BIND(found, group_column<bool>(surface, settings.group));
         const auto* group_attr = *found;
         const auto& flags = std::get<SharedArray<bool>>(group_attr->data).array();
         if (group_attr->layer == Layer::primitive) {
@@ -766,8 +783,7 @@ Result<Geometry> sweep(const Geometry& backbone, const SweepSettings& settings, 
     std::vector<Vector3d> seg_r;
     std::vector<Vector3d> seg_u;
     std::vector<double> arc_u;
-    std::vector<Vector3d> station_r_unit;
-    std::vector<Vector3d> station_u_unit;
+    std::vector<Vector3> lower_normals, upper_normals;
     std::vector<std::uint32_t> cap_pts;
     std::vector<Vector2> cap_uvs;
     std::vector<Vector3> cap_pos;
@@ -818,23 +834,18 @@ Result<Geometry> sweep(const Geometry& backbone, const SweepSettings& settings, 
         }
 
         const auto base_station = static_cast<std::uint32_t>(mesh.positions.size());
-        station_r_unit.resize(m);
-        station_u_unit.resize(m);
-
         for (std::uint32_t k = 0; k < m; ++k) {
             Vector3d x_axis{};
             Vector3d y_axis{};
             if (k == 0 || k + 1 == m) {
                 const std::uint32_t seg = (k == 0) ? 0u : (m - 2u);
-                x_axis = station_r_unit[k] = seg_r[seg];
-                y_axis = station_u_unit[k] = seg_u[seg];
+                x_axis = seg_r[seg];
+                y_axis = seg_u[seg];
             } else {
                 const Vector3d r_dir = math::try_normalize(seg_r[k - 1] + seg_r[k]).value_or(seg_r[k]);
                 const Vector3d u_dir = math::try_normalize(seg_u[k - 1] + seg_u[k]).value_or(seg_u[k]);
                 x_axis = r_dir * (1.0 / std::max(0.25, math::dot(r_dir, seg_r[k])));
                 y_axis = u_dir * (1.0 / std::max(0.25, math::dot(u_dir, seg_u[k])));
-                station_r_unit[k] = r_dir;
-                station_u_unit[k] = u_dir;
             }
             for (std::uint32_t i = 0; i < ring_size; ++i) {
                 mesh.add_point(Vector3(path_pts[k] + x_axis * (scales[k] * profile_pts[i].x) +
@@ -846,14 +857,35 @@ Result<Geometry> sweep(const Geometry& backbone, const SweepSettings& settings, 
         const auto ring_point = [&](std::uint32_t k, std::uint32_t i) -> std::uint32_t {
             return base_station + k * ring_size + i;
         };
-        const auto smooth_normal = [&](std::uint32_t k, std::uint32_t i, Vector3 fallback) -> Vector3 {
-            const Vector3d radial = station_r_unit[k] * profile_pts[i].x + station_u_unit[k] * profile_pts[i].y;
-            if (const auto unit = math::try_normalize(radial))
-                return Vector3(*unit);
-            return fallback;
+        // The circumferential tangent and the actual sweep rails span the side
+        // surface. Equal-weight unit normals on either side of a station keep a
+        // short moulding from inheriting the slope of its longer neighbour.
+        const auto fill_normals = [&](std::uint32_t k, std::vector<Vector3>& normals) {
+            normals.resize(ring_size);
+            const auto at = [&](std::uint32_t station, std::uint32_t i) {
+                return Vector3d(mesh.positions[ring_point(station, i)]);
+            };
+            for (std::uint32_t i = 0; i < ring_size; ++i) {
+                const auto prev = i ? i - 1 : ring_size - 1;
+                const auto next = i + 1 == ring_size ? 0 : i + 1;
+                const auto across = at(k, next) - at(k, prev);
+                const auto here = at(k, i);
+                Vector3d before{}, after{};
+                if (k)
+                    before = math::fast_normalize_or_zero(math::cross(across, here - at(k - 1, i)));
+                if (k + 1 < m)
+                    after = math::fast_normalize_or_zero(math::cross(across, at(k + 1, i) - here));
+                // At a folded rail the incident normals can cancel exactly.
+                normals[i] = Vector3(math::try_normalize(before + after).value_or(before));
+            }
         };
-
+        if (smooth_ring_normals)
+            fill_normals(0, upper_normals);
         for (std::uint32_t k = 0; k + 1 < m; ++k) {
+            if (smooth_ring_normals) {
+                lower_normals.swap(upper_normals);
+                fill_normals(k + 1, upper_normals);
+            }
             const float u0 = static_cast<float>(arc_u[k]);
             const float u1 = static_cast<float>(arc_u[k + 1]);
             for (std::uint32_t i = 0; i < seg_edges; ++i) {
@@ -864,11 +896,12 @@ Result<Geometry> sweep(const Geometry& backbone, const SweepSettings& settings, 
                                                      ring_point(k + 1, i)};
                 const std::array<Vector2, 4> q_uv{Vector2{u0, v0}, Vector2{u0, v1}, Vector2{u1, v1}, Vector2{u1, v0}};
                 if (smooth_ring_normals) {
-                    const Vector3 flat_n0 = face_unit_normal(mesh.positions[q[0]], mesh.positions[q[1]],
-                                                             mesh.positions[q[2]], {0.f, 1.f, 0.f});
-                    const std::array<Vector3, 4> q_nrm{smooth_normal(k, i, flat_n0), smooth_normal(k, next, flat_n0),
-                                                       smooth_normal(k + 1, next, flat_n0),
-                                                       smooth_normal(k + 1, i, flat_n0)};
+                    std::array<Vector3, 4> q_nrm{lower_normals[i], lower_normals[next], upper_normals[next],
+                                                 upper_normals[i]};
+                    for (auto& normal : q_nrm)
+                        if (normal == Vector3{})
+                            normal = face_unit_normal(mesh.positions[q[0]], mesh.positions[q[1]], mesh.positions[q[2]],
+                                                      {0.f, 1.f, 0.f});
                     mesh.emit_quad_or_split(q, q_uv, &q_nrm, p, false, false, false);
                 } else {
                     mesh.emit_quad_or_split(q, q_uv, nullptr, p, false, false, false);

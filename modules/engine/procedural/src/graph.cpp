@@ -339,6 +339,7 @@ Result<void> register_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<CopyToPoints>::build(runtime));
     definitions.push_back(reflection::Definition<Realize>::build(runtime));
     definitions.push_back(reflection::Definition<Extrude>::build(runtime));
+    definitions.push_back(reflection::Definition<Bevel>::build(runtime));
     definitions.push_back(reflection::Definition<Sweep>::build(runtime));
     definitions.push_back(reflection::Definition<Null>::build(runtime));
     definitions.push_back(reflection::Definition<GraphInput>::build(runtime));
@@ -348,7 +349,8 @@ Result<void> register_types(Runtime& runtime) {
     return {};
 }
 
-Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type) {
+Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
+                                              std::vector<PortDescription>* port_descriptions) {
     ATELIER_TRY_BIND(node_base, runtime.native_type<Node>());
     ATELIER_TRY_BIND(derived, runtime.is_a(type, *node_base));
     ATELIER_TRY_BIND(info, runtime.describe(type));
@@ -554,6 +556,8 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type) {
             if (param_name.empty() || !Geometry::admit_name(StringView{param_name}))
                 return error(ErrorCode::invalid_definition, name + ".process port parameter " + std::to_string(i) +
                                                                 " requires a valid identifier name.");
+            if (port_descriptions && !meta.purpose.empty())
+                port_descriptions->push_back({param_name, *port_kind == ArgKind::port_output, std::string(meta.purpose)});
             if (*port_kind == ArgKind::port_output) {
                 if (std::ranges::find(plan.ports.outputs, param_name) != plan.ports.outputs.end())
                     return error(ErrorCode::invalid_definition,
@@ -666,6 +670,19 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type) {
     if (plan.run_over_field != FieldId{} && !uses_dynamic_layer)
         return error(ErrorCode::invalid_definition,
                      name + ": RunOver requires at least one column or group parameter without a fixed Layer.");
+    // A single column can define the entire named input. With several columns each DESC
+    // describes only its own binding; an explicit Port owns the port-wide description.
+    if (port_descriptions) {
+        for (std::size_t i = 0; i < plan.ports.inputs.size(); ++i) {
+            if (explicit_input_port[i])
+                continue;
+            const auto& port = plan.ports.inputs[i];
+            const auto binding = std::ranges::find(parsed_meta, port, &ParsedMeta::port);
+            if (binding != parsed_meta.end() && !binding->purpose.empty() &&
+                std::ranges::find(binding + 1, parsed_meta.end(), port, &ParsedMeta::port) == parsed_meta.end())
+                port_descriptions->push_back({port, false, std::string(binding->purpose)});
+        }
+    }
     return plan;
 }
 
@@ -722,10 +739,12 @@ std::vector<AttributeRule> detail::attribute_rules(const NodePlan& plan, const T
 }
 
 Result<NodeInterface> node_interface(Runtime& runtime, TypeId type) {
-    ATELIER_TRY_BIND(plan, detail::inspect_node(runtime, type));
+    NodeInterface result;
+    ATELIER_TRY_BIND(plan, detail::inspect_node(runtime, type, &result.port_descriptions));
     ATELIER_TRY_BIND(info, runtime.describe(type));
-    auto attributes = detail::attribute_rules(*plan, **info);
-    return NodeInterface{std::move(plan->ports), std::move(attributes)};
+    result.attributes = detail::attribute_rules(*plan, **info);
+    result.ports = std::move(plan->ports);
+    return result;
 }
 
 Result<Ports> ports(Runtime& runtime, TypeId type) {

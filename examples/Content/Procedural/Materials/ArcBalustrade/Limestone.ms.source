@@ -1,0 +1,42 @@
+// Metric cut limestone. The masonry joints, turned silhouette and mouldings are geometry.
+struct Params {
+    vector3 limestone;
+};
+
+Params defaults() {
+    Params p;
+    p.limestone = vector3(0.353, 0.337, 0.298);
+    return p;
+}
+
+float mineral(vector2 cell) {
+    vector2 q = vector2(math.fract(cell.x * 0.1137), math.fract(cell.y * 0.1379));
+    float seed = math.dot(q, vector2(q.y + 19.13, q.x + 31.17));
+    return math.fract((q.x + seed) * (q.y + seed));
+}
+
+float mottling(vector2 pos) {
+    vector2 cell = vector2(math.floor(pos.x), math.floor(pos.y));
+    float x = math.fract(pos.x);
+    float y = math.fract(pos.y);
+    x = x * x * (3.0 - 2.0 * x);
+    y = y * y * (3.0 - 2.0 * y);
+    float a = math.lerp(mineral(cell), mineral(cell + vector2(1.0, 0.0)), x);
+    float b = math.lerp(mineral(cell + vector2(0.0, 1.0)), mineral(cell + vector2(1.0, 1.0)), x);
+    return math.lerp(a, b, y);
+}
+
+material.Output shade(material.Context context, Params p) {
+    vector3 pos = context.position_world;
+    vector2 bed = vector2(0.91 * pos.x + 0.41 * pos.z, pos.y + 0.16 * pos.z);
+    vector2 cross = vector2(pos.z - 0.27 * pos.y, 0.83 * pos.x + 0.48 * pos.y);
+    float cloudy = mottling(bed * 4.9);
+    float sand = mottling(cross * 38.0 + bed * 11.0);
+    float warmth = mottling(cross * 1.75);
+    material.Output surface;
+    surface.base_color = p.limestone * (0.75 + 0.25 * cloudy + 0.15 * sand)
+                       + vector3(0.012, 0.006, 0.001) * warmth;
+    surface.roughness = 0.84 + 0.12 * sand;
+    surface.normal_world = context.normal_world;
+    return surface;
+}

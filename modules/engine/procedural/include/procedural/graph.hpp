@@ -221,12 +221,29 @@ struct AttributeRule {
     std::string_view missing;
     std::string purpose{};
     std::string_view unless_present{}, needs_present{};
+    // A mode-dependent rule applies when the reflected enum field matches (or excludes) its named value.
+    struct Condition {
+        std::string_view field{}, value{};
+        bool exclude{};
+        bool operator==(const Condition&) const = default;
+    };
+    Condition when{};
     bool operator==(const AttributeRule&) const = default;
+};
+
+// Documentation for explicit geometry ports; collected on type inspection only.
+struct PortDescription {
+    std::string port;
+
+    bool output{};
+
+    std::string description;
 };
 
 struct NodeInterface {
     Ports ports;
     std::vector<AttributeRule> attributes;
+    std::vector<PortDescription> port_descriptions;
 };
 
 Result<NodeInterface> node_interface(Runtime& runtime, TypeId node);

@@ -28,6 +28,7 @@ float procedural.sample_value_noise(uint seed, vector3 q) {
     return math.clamp(math.lerp(math.lerp(a, b, t.y), math.lerp(c, d, t.y), t.z), 0.0f, 1.0f);
 }
 
+[DESC = "从指定坐标列采样三维值噪声，在所选几何层写入可命名的 float 属性；可用组限制写入范围。"]
 class procedural.Noise : procedural.Node {
     [RunOver, Label = "Run Over", DESC = "采样与写入属性所在的几何层。"]
     procedural.Layer layer = procedural.Layer::point;

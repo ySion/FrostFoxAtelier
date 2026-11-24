@@ -80,6 +80,9 @@ struct TypeDeclaration {
 
 namespace detail {
 class Tokens;
+struct Token;
+
+std::expected<std::string, Diagnostic> parse_presentation_text(Tokens&, const Token& option);
 
 std::expected<TypeName, Diagnostic> parse_type_name(Tokens&);
 

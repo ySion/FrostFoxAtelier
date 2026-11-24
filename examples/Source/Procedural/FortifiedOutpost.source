@@ -56,6 +56,7 @@ void game.append_accepted_prop(const game.PropDecision& d,
     out_variant.add(d.variant);
 }
 
+[DESC = "在地形上布置要塞骨架，分别生成道路曲线、城墙曲线、垛口曲线和门柱点位。"]
 class game.OutpostLayoutSkeleton : procedural.Node {
     [Category = "Fortress Perimeter", Min = 3.8, Max = 11.5, LockMin, Label = "Fortress Radius", DESC = "多边形堡垒围墙外接半径，单位 m。"]
     float fort_radius = 6.8f;
@@ -245,6 +246,7 @@ class game.OutpostLayoutSkeleton : procedural.Node {
     }
 }
 
+[DESC = "结合地形、道路、城墙和门柱筛选候选点，为要塞道具生成带朝向、缩放及变体的实例点。"]
 class game.OutpostTacticalScatter : procedural.Node {
     [Category = "Clearance & Spacing", Min = 0.8, Max = 5.0, LockMin, Label = "Road Exclusion", DESC = "引道中线两侧禁止摆件生成的净空半宽，单位 m。"]
     float road_clearance = 1.85f;

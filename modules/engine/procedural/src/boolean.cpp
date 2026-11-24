@@ -1,5 +1,6 @@
 #include "procedural/operations.hpp"
 #include "detail/boolean_exact.hpp"
+#include "detail/interpolate_attribute.hpp"
 #include "detail/native_cook.hpp"
 #include "detail/triangles.hpp"
 #include "detail/topology.hpp"
@@ -1183,36 +1184,6 @@ Result<Sample> sample(const Piece& piece, const Point& p) {
     return failure("Boolean boundary sample lies outside its exact source polygon.");
 }
 
-template <class T>
-T interpolate(const Array<T>& values, const std::array<std::uint32_t, 3>& ids, const Sample& s, Usage usage) {
-    if constexpr (std::same_as<T, float> || std::same_as<T, math::Vector2> || std::same_as<T, math::Vector3> ||
-                  std::same_as<T, math::Vector4>) {
-        if constexpr (std::same_as<T, float>)
-            return static_cast<float>(values[ids[0]] * s.weights[0] + values[ids[1]] * s.weights[1] +
-                                      values[ids[2]] * s.weights[2]);
-        else {
-            T v{};
-            for (std::size_t k = 0; k < T::dimensions; ++k)
-                v[k] = static_cast<float>(values[ids[0]][k] * s.weights[0] + values[ids[1]][k] * s.weights[1] +
-                                          values[ids[2]][k] * s.weights[2]);
-            if constexpr (std::same_as<T, math::Vector3>) {
-                if (usage == Usage::normal) {
-                    v = math::try_normalize(v).value_or(T{});
-                    if (s.piece->reverse)
-                        v = -v;
-                }
-            }
-            return v;
-        }
-    } else {
-        auto best = 0;
-        for (int i = 1; i < 3; ++i)
-            if (s.weights[i] > s.weights[best] || (s.weights[i] == s.weights[best] && ids[i] < ids[best]))
-                best = i;
-        return values[ids[best]];
-    }
-}
-
 Result<void> attributes(Geometry& out, const std::array<const Geometry*, 2>& inputs, const std::vector<Piece>& pieces,
                         const std::vector<Sample>& corners, const std::vector<std::uint32_t>& donors) {
     for (unsigned side = 0; side < 2; ++side) {
@@ -1261,7 +1232,10 @@ Result<void> attributes(Geometry& out, const std::array<const Geometry*, 2>& inp
                             if (at_point)
                                 for (auto& id : ids)
                                     id = inputs[f.operand]->vertex_points()[id];
-                            values.add(data[f.operand] ? interpolate(*data[f.operand], ids, sample, attr.usage) : T{});
+                            values.add(data[f.operand]
+                                           ? detail::interpolate_attribute(*data[f.operand], ids, sample.weights,
+                                                                           attr.usage, sample.piece->reverse)
+                                           : T{});
                         }
                     }
                     return out.set(attr.name, attr.layer, Column{std::move(values)}, attr.usage);

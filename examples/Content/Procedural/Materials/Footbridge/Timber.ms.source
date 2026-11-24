@@ -1,0 +1,49 @@
+struct Params {
+    vector3 heartwood;
+    vector3 weathered;
+};
+
+Params defaults() {
+    Params p;
+    p.heartwood = vector3(0.17, 0.085, 0.038);
+    p.weathered = vector3(0.29, 0.205, 0.128);
+    return p;
+}
+
+float wood_cell(vector2 cell) {
+    vector2 h = vector2(math.fract(cell.x * 0.1031), math.fract(cell.y * 0.11369));
+    float b = math.dot(h, vector2(h.y + 33.33, h.x + 33.33));
+    return math.fract((h.x + b) * (h.y + b));
+}
+
+float wood_noise(vector2 p) {
+    vector2 cell = vector2(math.floor(p.x), math.floor(p.y));
+    float x = math.fract(p.x);
+    float y = math.fract(p.y);
+    x = x * x * (3.0 - 2.0 * x);
+    y = y * y * (3.0 - 2.0 * y);
+    float low = math.lerp(wood_cell(cell), wood_cell(cell + vector2(1.0, 0.0)), x);
+    float high = math.lerp(wood_cell(cell + vector2(0.0, 1.0)), wood_cell(cell + vector2(1.0, 1.0)), x);
+    return math.lerp(low, high, y);
+}
+
+material.Output shade(material.Context context, Params p) {
+    // Sweep U measures metres down the timber. Subtracting that displacement gives
+    // adjacent boards different cuts while keeping each grain fixed along its length.
+    vector3 tangent = vector3(context.tangent_world.x, context.tangent_world.y, context.tangent_world.z);
+    vector3 anchor = context.position_world - tangent * context.uv.x;
+    float cut = wood_noise(vector2(anchor.x * 3.71 + anchor.y, anchor.z * 3.19 - anchor.y * 0.63));
+    float along = context.uv.x;
+    float across = context.uv.y + cut;
+    float wave = wood_noise(vector2(along * 0.77, across * 3.5));
+    float ring = wood_noise(vector2(along * 0.91 + cut * 7.0, across * 28.0 + wave * 2.2));
+    float fiber = wood_noise(vector2(along * 3.8, across * 78.0 + wave * 3.1));
+    float sun = math.clamp(context.geometric_normal_world.y, 0.0, 1.0);
+    float silver = math.clamp(0.10 + 0.26 * cut + 0.40 * sun + 0.12 * wave, 0.0, 1.0);
+    float value = (0.68 + 0.42 * ring + 0.16 * fiber) * (0.83 + 0.26 * cut);
+    material.Output result;
+    result.base_color = (p.heartwood * (1.0 - silver) + p.weathered * silver) * value;
+    result.normal_world = context.normal_world;
+    result.roughness = 0.76 + 0.15 * fiber;
+    return result;
+}

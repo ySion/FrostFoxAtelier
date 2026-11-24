@@ -1,0 +1,135 @@
+// The two outer abutments stay against the adjoining buildings when clear_width changes.
+// Each XY section vertex has a front and rear copy; adjacent faces of the barrel share these indices.
+uint game.arch_pair(Array<vector3>& p, float x, float y, float front, float back) {
+    const uint first = p.size();
+    p.add(vector3(x, y, front));
+    p.add(vector3(x, y, back));
+    return first;
+}
+
+void game.arch_quad(Array<uint>& faces, uint a, uint b, uint c, uint d, bool reverse) {
+    faces.add(a);
+    faces.add(reverse ? d : b);
+    faces.add(c);
+    faces.add(reverse ? b : d);
+}
+
+void game.arch_faces(Array<uint>& faces, uint a, uint b, uint c, uint d, bool reverse) {
+    game.arch_quad(faces, a, b, c, d, reverse);
+    game.arch_quad(faces, a + 1, b + 1, c + 1, d + 1, !reverse);
+}
+
+void game.arch_edge(Array<uint>& faces, uint a, uint b, bool reverse) {
+    game.arch_quad(faces, b, a, a + 1, b + 1, reverse);
+}
+
+void game.arch_pier(Array<vector3>& p, Array<uint>& faces, float outer_x, float inner_x,
+                    uint spring_point, uint inner_top, float spring, float top, float front, float back, bool right) {
+    const uint foot = game.arch_pair(p, outer_x, 0.0f, front, back);
+    const uint course = game.arch_pair(p, outer_x, spring, front, back);
+    const uint cap = game.arch_pair(p, outer_x, top, front, back);
+    const uint reveal = game.arch_pair(p, inner_x, 0.0f, front, back);
+    game.arch_faces(faces, foot, course, spring_point, reveal, right);
+    game.arch_faces(faces, course, cap, inner_top, spring_point, right);
+    game.arch_edge(faces, foot, course, right);
+    game.arch_edge(faces, course, cap, right);
+    game.arch_edge(faces, cap, inner_top, right);
+    game.arch_edge(faces, spring_point, reveal, right);
+    game.arch_edge(faces, reveal, foot, right);
+}
+
+void game.arch_block(Array<vector3>& p, Array<uint>& faces, vector2 a, vector2 b,
+                     vector2 c, vector2 d, float front, float back) {
+    const uint i = game.arch_pair(p, a.x, a.y, front, back);
+    const uint j = game.arch_pair(p, b.x, b.y, front, back);
+    const uint k = game.arch_pair(p, c.x, c.y, front, back);
+    const uint l = game.arch_pair(p, d.x, d.y, front, back);
+    game.arch_faces(faces, i, j, k, l, false);
+    game.arch_edge(faces, i, j, false);
+    game.arch_edge(faces, j, k, false);
+    game.arch_edge(faces, k, l, false);
+    game.arch_edge(faces, l, i, false);
+}
+
+void game.arch_normals(const Array<vector3>& p, const Array<uint>& faces, Array<vector3>& normals) {
+    for (uint face = 0; face < faces.size() / 4; face += 1) {
+        const uint at = 4 * face;
+        const vector3 n = math.normalize_or_zero(math.cross(p[faces[at + 1]] - p[faces[at]], p[faces[at + 2]] - p[faces[at]]));
+        normals.add(n); normals.add(n); normals.add(n); normals.add(n);
+    }
+}
+
+[DESC = "按通道净宽生成门楼的拱腹和分块拱石，分别输出主体与拱圈。"]
+class game.GateArch : procedural.Node {
+    [Label = "Clear passage width (m)", Min = 2.8, Max = 4.6, LockMin, LockMax,
+     DESC = "Spring-line opening between the stone jambs. The outer abutments and overhead gallery stay fixed."]
+    float clear_width = 4.0f;
+
+    void process([Port] procedural.Geometry& barrel, [Port] procedural.Geometry& voussoirs) {
+        if (!(self.clear_width >= 2.8f && self.clear_width <= 4.6f)) {
+            fail("The gate passage width must be between 2.8 and 4.6 metres.");
+        }
+        const float r = self.clear_width * 0.5f;
+        const float spring = 2.10f;
+        const float rise = 1.45f;
+        const float cap = 4.13f;
+        const float front = -1.68f;
+        const float back = 1.82f;
+        const uint count = 17;
+        const float step = 3.14159265f / float(count);
+        Array<vector3> p; Array<uint> f; Array<vector3> normals;
+        Array<vector3> stones; Array<uint> blocks; Array<vector3> stone_normals;
+        uint last_low = 0; uint last_high = 0;
+        for (uint i = 0; i < count + 1; i += 1) {
+            const float theta = step * float(i);
+            const float x = i == 0 ? -r : (i == count ? r : -r * math.cos(theta));
+            const float y = (i == 0 || i == count) ? spring : spring + rise * math.sin(theta);
+            const uint low = game.arch_pair(p, x, y, front, back);
+            const uint high = game.arch_pair(p, x, cap, front, back);
+            if (i == 0) {
+                game.arch_pier(p, f, -2.7f, -r, low, high, spring, cap, front, back, false);
+            } else {
+                game.arch_faces(f, last_low, last_high, high, low, false);
+                game.arch_edge(f, last_high, high, false);
+                game.arch_edge(f, low, last_low, false);
+            }
+            if (i == count) {
+                game.arch_pier(p, f, 2.85f, r, low, high, spring, cap, front, back, true);
+            }
+            last_low = low;
+            last_high = high;
+        }
+        self.emit_quads(p, f, 0);
+        game.arch_normals(p, f, normals);
+        self.set_vec3("N", procedural.Layer::vertex, normals, 0);
+
+        for (uint side = 0; side < uint(2); side += 1) {
+            const float z0 = side == 0 ? front - 0.11f : back - 0.025f;
+            const float z1 = side == 0 ? front + 0.025f : back + 0.11f;
+            for (uint i = 0; i < count; i += 1) {
+                const float a = step * float(i) + 0.006f;
+                const float b = step * float(i + 1) - 0.006f;
+                const float band = i == count / 2 ? 0.45f : 0.32f;
+                game.arch_block(stones, blocks,
+                    vector2(r * math.cos(a), spring + rise * math.sin(a)),
+                    vector2(r * math.cos(b), spring + rise * math.sin(b)),
+                    vector2((r + band) * math.cos(b), spring + (rise + band) * math.sin(b)),
+                    vector2((r + band) * math.cos(a), spring + (rise + band) * math.sin(a)), z0, z1);
+            }
+            for (uint tier = 0; tier < uint(5); tier += 1) {
+                const float y0 = spring * float(tier) / 5.0f + 0.012f;
+                const float y1 = spring * float(tier + 1) / 5.0f - 0.012f;
+                const float width = tier % 2 == 0 ? 0.39f : 0.31f;
+                for (uint jamb = 0; jamb < uint(2); jamb += 1) {
+                    const float left = jamb == 0 ? -r - width : r;
+                    const float right = jamb == 0 ? -r : r + width;
+                    game.arch_block(stones, blocks, vector2(left,y0), vector2(left,y1),
+                        vector2(right,y1), vector2(right,y0), z0, z1);
+                }
+            }
+        }
+        self.emit_quads(stones, blocks, 1);
+        game.arch_normals(stones, blocks, stone_normals);
+        self.set_vec3("N", procedural.Layer::vertex, stone_normals, 1);
+    }
+}

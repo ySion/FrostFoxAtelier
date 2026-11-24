@@ -121,6 +121,8 @@ struct ClassDeclaration {
 
     std::string base;
 
+    std::string description;
+
     std::uint32_t file{};
 
     SourcePosition position;

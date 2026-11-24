@@ -1,0 +1,13 @@
+// Dedicated palette coordinates for the gatehouse surface. Apply at the end of each finish branch.
+// The material projects the grain, masonry courses and shingles at metre scale.
+[DESC = "将门楼构件的材色分类写入顶点 uv，供门楼表面材质识别砌石、橡木、陶瓦等饰面。"]
+class game.GatehouseFinish : procedural.Node {
+    [Label = "Finish", Min = 0, Max = 7, LockMin, LockMax, DESC = "0 砌石、1 橡木、2 石灰灰泥、3 陶瓦、4 板岩、5 铅条玻璃、6 锻铁、7 烟黑与炭木。"]
+    uint finish = 0;
+
+    void process([Out("uv", Layer = "vertex", DESC = "门楼材色图集的采样位置。")] Array<vector2>& uv) {
+        if (self.finish > 7) { fail("Unknown gatehouse finish."); }
+        const vector2 swatch = vector2((float(self.finish) + 0.5f) / 8.0f, 0.5f);
+        parallel_for (uint i : uv.size()) { uv[i] = swatch; }
+    }
+}

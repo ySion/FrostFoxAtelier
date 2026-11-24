@@ -1,6 +1,7 @@
 // Sets pscale on selected points to a random value in [minimum, maximum], seeded from the graph
 // seed, the node's seed and the point's `id` (or the point index when `id` is absent). Unselected
 // points keep an existing `pscale`, or default to unit scale (1.0) when `pscale` is newly created.
+[DESC = "在指定区间内为选中点生成可复现的随机实例缩放 pscale；可用点组限制范围。"]
 class procedural.RandomScale : procedural.Node {
     [Label = "Group", DESC = "只修改选中点；空名称表示全选。"]
     String group = "";

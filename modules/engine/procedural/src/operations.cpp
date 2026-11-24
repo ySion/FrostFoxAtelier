@@ -533,7 +533,48 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
 // and Realize's explicit target_attributes list are separate from these conventional names.
 void detail::append_native_rules(std::vector<AttributeRule>& rules, std::string_view type) {
     using enum AttributeAccess;
-    if (type == "procedural.Scatter") {
+    if (type == "procedural.Group") {
+        const AttributeRule::Condition normal{"criterion", "normal"}, existing{"criterion", "existing"},
+            range{"criterion", "range"}, combine{"operation", "replace", true};
+        rules = {{"input",
+                  "P",
+                  {},
+                  "point",
+                  {},
+                  "vector3",
+                  read,
+                  "error",
+                  "Face normal from polygon winding",
+                  {},
+                  {},
+                  normal},
+                 {"input", {}, "source_group", {}, {}, "bool", read, "error", "Existing selection", {}, {}, existing},
+                 {"input",
+                  {},
+                  "source_attribute",
+                  {},
+                  {},
+                  "float",
+                  read,
+                  "error",
+                  "Inclusive minimum and maximum",
+                  {},
+                  {},
+                  range},
+                 {"input",
+                  {},
+                  "base_group",
+                  {},
+                  {},
+                  "bool",
+                  read,
+                  "error",
+                  "Left operand on the criterion layer",
+                  {},
+                  {},
+                  combine},
+                 {"output", {}, "group", {}, {}, "bool", write, "create", "Selection on the criterion layer"}};
+    } else if (type == "procedural.Scatter") {
         rules = {{"surface", "P", {}, "point", {}, "vector3", read, "error", "Surface positions"},
                  {"surface",
                   {},
@@ -575,6 +616,40 @@ void detail::append_native_rules(std::vector<AttributeRule>& rules, std::string_
                   write,
                   "conditional",
                   "Fan triangle index when the input has a polygon with more than three corners"}};
+    } else if (type == "procedural.Resample") {
+        rules = {
+            {"curves", "P", {}, "point", {}, "vector3", read, "error", "Ordered polyline positions"},
+            {"output",
+             "arclength",
+             {},
+             "point",
+             {},
+             "float",
+             write,
+             "create",
+             "Distance along this input curve in metres"},
+            {"output", "curveu", {}, "point", {}, "float", write, "create", "Fraction of the input curve's length"},
+            {"output", "tangent", {}, "point", {}, "vector3", write, "create", "Unit direction along the input curve"}};
+    } else if (type == "procedural.Sweep") {
+        rules = {{"backbone",
+                  {},
+                  "scale_attribute",
+                  "point",
+                  {},
+                  "float",
+                  read,
+                  "1",
+                  "Positive multiplier for the cross-section dimensions at each backbone point"},
+                 {"output", normal_name, {}, "vertex", {}, "vector3", write, "create", "Side and cap shading normals"},
+                 {"output",
+                  "uv",
+                  {},
+                  "vertex",
+                  {},
+                  "vector2",
+                  write,
+                  "create",
+                  "Longitudinal arc length and profile coordinate on the sides"}};
     } else if (type == "procedural.Realize" || type == "procedural.CopyToPoints") {
         rules = {
             {"points", "P", {}, "point", {}, "vector3", read, "error", "Translation"},

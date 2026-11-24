@@ -1,0 +1,335 @@
+{
+  "nodes": {
+    "OUT_bridge": {
+      "inputs": {
+        "input": "footbridge.output"
+      },
+      "position": [
+        -25.0,
+        710.0
+      ],
+      "properties": {
+        "order": 0,
+        "port_name": "output"
+      },
+      "type": "procedural.GraphOutput"
+    },
+    "axis": {
+      "inputs": {
+        "points": "span.output"
+      },
+      "position": [
+        0.0,
+        90.0
+      ],
+      "properties": {},
+      "type": "procedural.Polyline"
+    },
+    "bearings": {
+      "inputs": {
+        "backbone": "layout.bearing_axes"
+      },
+      "position": [
+        310.0,
+        475.0
+      ],
+      "properties": {
+        "end_caps": true,
+        "height": 0.16,
+        "profile": "rectangle",
+        "radius": 0.5,
+        "scale_attribute": "pscale",
+        "segments": 8,
+        "up": {
+          "x": 0.0,
+          "y": 1.0,
+          "z": 0.0
+        },
+        "width": 0.28
+      },
+      "type": "procedural.Sweep"
+    },
+    "boards": {
+      "inputs": {
+        "backbone": "layout.plank_axes"
+      },
+      "position": [
+        -395.0,
+        475.0
+      ],
+      "properties": {
+        "end_caps": true,
+        "height": 0.05,
+        "profile": "rectangle",
+        "radius": 0.5,
+        "scale_attribute": "pscale",
+        "segments": 8,
+        "up": {
+          "x": 0.0,
+          "y": 1.0,
+          "z": 0.0
+        },
+        "width": 2.0
+      },
+      "type": "procedural.Sweep"
+    },
+    "braces": {
+      "inputs": {
+        "backbone": "layout.brace_axes"
+      },
+      "position": [
+        -45.0,
+        475.0
+      ],
+      "properties": {
+        "end_caps": true,
+        "height": 0.09,
+        "profile": "rectangle",
+        "radius": 0.5,
+        "scale_attribute": "pscale",
+        "segments": 8,
+        "up": {
+          "x": 0.0,
+          "y": 1.0,
+          "z": 0.0
+        },
+        "width": 0.075
+      },
+      "type": "procedural.Sweep"
+    },
+    "deck": {
+      "inputs": {
+        "rail_a": "layout.left_edge",
+        "rail_b": "layout.right_edge"
+      },
+      "position": [
+        -560.0,
+        475.0
+      ],
+      "properties": {
+        "thickness": 0.12
+      },
+      "type": "procedural.RailPanel"
+    },
+    "footbridge": {
+      "inputs": {
+        "inputs": [
+          "deck.panel",
+          "boards.output",
+          "uprights.output",
+          "braces.output",
+          "handrails.output",
+          "bearings.output",
+          "piles.output"
+        ]
+      },
+      "position": [
+        -25.0,
+        600.0
+      ],
+      "properties": {},
+      "type": "procedural.Merge"
+    },
+    "grip_section": {
+      "inputs": {},
+      "position": [
+        130.0,
+        365.0
+      ],
+      "properties": {
+        "arc_degrees": 360.0,
+        "center": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "orientation": "xy",
+        "primitive_type": "polygon",
+        "radius": {
+          "x": 0.064,
+          "y": 0.048
+        },
+        "segments": 8,
+        "start_degrees": 0.0
+      },
+      "type": "procedural.Circle"
+    },
+    "handrails": {
+      "inputs": {
+        "backbone": "layout.rail_axes",
+        "cross_section": "grip_section.output"
+      },
+      "position": [
+        130.0,
+        475.0
+      ],
+      "properties": {
+        "end_caps": true,
+        "height": 1.0,
+        "profile": "custom",
+        "radius": 0.5,
+        "scale_attribute": "pscale",
+        "segments": 8,
+        "up": {
+          "x": 0.0,
+          "y": 1.0,
+          "z": 0.0
+        },
+        "width": 1.0
+      },
+      "type": "procedural.Sweep"
+    },
+    "layout": {
+      "inputs": {
+        "stations": "stations.output"
+      },
+      "position": [
+        0.0,
+        270.0
+      ],
+      "properties": {
+        "rise": 0.6,
+        "width": 2.0
+      },
+      "type": "game.FootbridgeLayout"
+    },
+    "piles": {
+      "inputs": {
+        "backbone": "layout.pile_axes"
+      },
+      "position": [
+        480.0,
+        475.0
+      ],
+      "properties": {
+        "end_caps": true,
+        "height": 0.22,
+        "profile": "rectangle",
+        "radius": 0.5,
+        "scale_attribute": "pscale",
+        "segments": 8,
+        "up": {
+          "x": 0.0,
+          "y": 1.0,
+          "z": 0.0
+        },
+        "width": 0.22
+      },
+      "type": "procedural.Sweep"
+    },
+    "post_stock": {
+      "inputs": {},
+      "position": [
+        -220.0,
+        365.0
+      ],
+      "properties": {
+        "base_on_ground": true,
+        "center": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "divisions_x": 1,
+        "divisions_y": 1,
+        "divisions_z": 1,
+        "size": {
+          "x": 0.12,
+          "y": 1.08,
+          "z": 0.12
+        }
+      },
+      "type": "procedural.Box"
+    },
+    "span": {
+      "inputs": {},
+      "position": [
+        0.0,
+        0.0
+      ],
+      "properties": {
+        "count": 2,
+        "end": {
+          "x": 3.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "start": {
+          "x": -3.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "type": "procedural.Line"
+    },
+    "stations": {
+      "inputs": {
+        "curves": "axis.output"
+      },
+      "position": [
+        0.0,
+        180.0
+      ],
+      "properties": {
+        "mode": "spacing",
+        "preserve_corners": false,
+        "segments": 8,
+        "spacing": 1.5
+      },
+      "type": "procedural.Resample"
+    },
+    "uprights": {
+      "inputs": {
+        "points": "layout.post_feet",
+        "sources": [
+          "post_stock.output"
+        ]
+      },
+      "position": [
+        -220.0,
+        475.0
+      ],
+      "properties": {
+        "group": "",
+        "target_attributes": [],
+        "variant": "variant"
+      },
+      "type": "procedural.Realize"
+    }
+  },
+  "parameters": [
+    {
+      "category": "Bridge",
+      "description": "Full deck and plank width. Both railings and the supports move with the edges.",
+      "label": "Bridge width (m)",
+      "name": "width",
+      "targets": [
+        "layout.width",
+        "boards.width"
+      ]
+    },
+    {
+      "category": "Bridge",
+      "description": "Height difference between abutments over the fixed six-metre horizontal span.",
+      "label": "End rise over 6 m (m)",
+      "name": "rise",
+      "targets": [
+        "layout.rise"
+      ]
+    },
+    {
+      "category": "Bridge",
+      "description": "Maximum horizontal distance along the span between posts. The endpoints are always occupied.",
+      "label": "Post spacing (m)",
+      "name": "post_spacing",
+      "targets": [
+        "stations.spacing"
+      ]
+    }
+  ],
+  "settings": {
+    "display": "OUT_bridge",
+    "seed": 23
+  },
+  "version": 4
+}

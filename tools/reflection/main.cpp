@@ -1432,7 +1432,7 @@ void members(State& state, Type& type, ASTContext& context) {
             std::vector<std::pair<std::string, std::string>> param_meta;
             if (auto* param_marker = state.prefix(*param_decl, MarkerKind::parameter)) {
                 const auto param_options = state.options(
-                    *param_marker, {"Port", "In", "Out", "InOut", "Group", "From", "Layer", "Optional", "Meta"},
+                    *param_marker, {"Port", "In", "Out", "InOut", "Group", "From", "Layer", "Optional", "DESC", "Meta"},
                     &param_meta);
                 if (!param_options) {
                     valid = false;
@@ -1494,10 +1494,12 @@ void members(State& state, Type& type, ASTContext& context) {
                         param_meta.emplace_back("procedural.layer", param_options->at("Layer"));
                     if (param_options->contains("Optional"))
                         param_meta.emplace_back("procedural.optional", "true");
+                    if (param_options->contains("DESC"))
+                        param_meta.emplace_back("procedural.description", param_options->at("DESC"));
                 } else if (param_options->contains("From") || param_options->contains("Layer") ||
-                           param_options->contains("Optional")) {
+                           param_options->contains("Optional") || param_options->contains("DESC")) {
                     state.error(param_marker->location,
-                                "From, Layer and Optional require an In, Out, InOut or Group role.");
+                                "Parameter options require a procedural role.");
                     valid = false;
                     break;
                 }

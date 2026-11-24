@@ -158,6 +158,8 @@ struct GroupSettings {
     math::Vector3 direction{0.f, 1.f, 0.f};
     float max_angle{45.f};
     StringView source_group{};
+    StringView source_attribute{};
+    float minimum{}, maximum{1.f};
     GroupOperation operation{GroupOperation::replace};
     StringView base_group{};
 };
@@ -359,6 +361,16 @@ struct ExtrudeSettings {
 // when individual is false) with optional planar bisector inset, hard-edge vertex N, metric side uv,
 // primitive/detail attribute inheritance, and optional back caps for watertight solid shells.
 Result<Geometry> extrude(const Geometry& surface, const ExtrudeSettings& settings = {});
+
+struct BevelSettings {
+    float radius{0.1f};
+    float angle_degrees{30.f};
+    std::uint32_t segments{1};
+};
+
+// Rounds convex ridges on closed, outward-facing convex components. Radius is measured
+// in world units; at a right angle it equals the setback on each incident face.
+Result<Geometry> bevel(const Geometry& surface, const BevelSettings& settings = {});
 
 struct SweepSettings {
     SweepProfile profile{SweepProfile::rectangle};

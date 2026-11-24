@@ -6,6 +6,7 @@
 #include "editor/view_options.hpp"
 #include "assets/json_format.hpp"
 #include "assets/material_format.hpp"
+#include "procedural/bvh.hpp"
 #include "procedural/operations.hpp"
 #include "platform/error.hpp"
 #include "platform/utf.hpp"
@@ -30,6 +31,7 @@ constexpr std::array<std::string_view, 3> removed_view_options{"direct_reference
                                                                "direct_shadow_cache"};
 
 constexpr unsigned inspect_page_items = 256;
+constexpr std::size_t graph_ray_limit = 32;
 
 constexpr std::size_t inspect_page_bytes = control::maximum_message / 4;
 
@@ -322,7 +324,19 @@ json::Result<json::Document> scalar_json(const Scalar& scalar, const TypeInfo& t
         scalar);
 }
 
-enum class Argument { string, object, array, integer, boolean, detail, page_limit, trace_scope, graph_scope, graph_view };
+enum class Argument {
+    string,
+    object,
+    array,
+    integer,
+    boolean,
+    detail,
+    page_limit,
+    trace_scope,
+    graph_scope,
+    graph_view,
+    graph_raycast
+};
 
 struct Operation {
     std::string_view name;
@@ -411,12 +425,13 @@ const std::vector<Operation>& operations() {
          {"object", "path"}},
         {"material.save", "Save a shared material asset", true, {{"asset", str}}, {"asset"}},
         {"graph.inspect",
-         "Use view=catalog to discover SOPs without an open graph. Add type for fields, ports and named attribute contracts. topology and node inspect authoring state. With view=node, bindings=true cooks the target and explains its columns. full cooks geometry",
+         "Use view=catalog to discover SOPs without an open graph. Add type for fields, port_descriptions (wiring requirements by input/output name) and named attribute contracts. topology and node inspect authoring state. A node's controlled_fields maps promoted field paths to graph parameter names. With view=node, bindings=true cooks the target and explains its columns. With explicit node, raycast measures a named polygon output in graph-local metres. full cooks geometry",
          false,
          {{"asset", str},
           {"node", str},
           {"view", Argument::graph_view},
           {"bindings", Argument::boolean},
+          {"raycast", Argument::graph_raycast},
           {"type", str},
           {"timings", Argument::boolean},
           {"samples", Argument::integer},
@@ -425,7 +440,10 @@ const std::vector<Operation>& operations() {
          {},
          editor::OperatorKind::query},
         {"graph.apply",
-         "Atomically edit named nodes and ordered inputs; remove explicitly; settings edits graph root fields and display. One undo step",
+         "Atomically edit nodes by name, ordered inputs and graph settings in one undo step. Explicit removals "
+         "require existing nodes, including on retry. For a field listed in the node's controlled_fields, use op.call "
+         "graph.set_parameter with its public parameter name and a value_json string containing JSON. Both writes "
+         "require the latest response state_token.",
          true,
          {{"asset", str}, {"nodes", obj}, {"remove", Argument::array}, {"settings", obj}},
          {}},
@@ -521,6 +539,13 @@ json::Result<void> write_attribute_rule(json::Builder& result, json::Value item,
         ATELIER_TRY(result.set(item, "layer", rule.layer));
     if (!rule.layer_selector.empty())
         ATELIER_TRY(result.set(item, "layer_from", rule.layer_selector));
+    else if (rule.layer.empty())
+        ATELIER_TRY(result.set(item, "layer_from_column", true));
+    if (!rule.when.field.empty()) {
+        const auto when = result.object_validated(item, "when");
+        ATELIER_TRY(result.set(when, "field", rule.when.field));
+        ATELIER_TRY(result.set(when, rule.when.exclude ? "not_equal" : "equals", rule.when.value));
+    }
     ATELIER_TRY(result.set(item, "missing", rule.missing));
     if (!rule.purpose.empty())
         ATELIER_TRY(result.set(item, "purpose", rule.purpose));
@@ -543,16 +568,89 @@ json::Result<void> write_graph_type(json::Builder& result, json::Value item,
     return write_graph_ports(result, item, type.ports);
 }
 
+json::Result<void> graph_raycast_schema(json::Builder& result, json::Value item, json::Value args,
+                                        json::Value properties) {
+    const auto field = result.object_validated(properties, "raycast");
+    result.set_validated(field, "type", "object");
+    result.set_validated(
+        field, "description",
+        "Nearest two-sided polygon hits on the current named output. Coordinates and distances are in graph-local metres.");
+    ATELIER_TRY(result.set(field, "additionalProperties", false));
+    result.set_validated(field, "required", json::Document::literal<R"(["output","rays"])">().root());
+    const auto keys = result.object_validated(field, "properties");
+    result.set_validated(
+        keys, "output",
+        json::Document::literal<
+            R"({"type":"string","minLength":1,"description":"Exact output port name from the node's topology or type catalog."})">()
+            .root());
+    const auto rays = result.object_validated(keys, "rays");
+    result.set_validated(rays, "type", "array");
+    ATELIER_TRY(result.set(rays, "minItems", 1u));
+    ATELIER_TRY(result.set(rays, "maxItems", static_cast<unsigned>(graph_ray_limit)));
+    const auto ray = result.object_validated(rays, "items");
+    result.set_validated(ray, "type", "object");
+    ATELIER_TRY(result.set(ray, "additionalProperties", false));
+    result.set_validated(ray, "required", json::Document::literal<R"(["origin","direction","max_distance"])">().root());
+    const auto coordinates =
+        json::Document::literal<
+            R"({"type":"array","minItems":3,"maxItems":3,"items":{"type":"number","format":"float"}})">()
+            .root();
+    const auto components = result.object_validated(ray, "properties");
+    result.set_validated(components, "origin", coordinates);
+    result.set_validated(
+        components, "direction",
+        json::Document::literal<
+            R"({"type":"array","minItems":3,"maxItems":3,"items":{"type":"number","format":"float"},"description":"Finite nonzero [x,y,z]; normalized by the query."})">()
+            .root());
+    result.set_validated(
+        components, "max_distance",
+        json::Document::literal<R"({"type":"number","format":"float","exclusiveMinimum":0,"unit":"m"})">().root());
+    result.set_validated(args, "if", json::Document::literal<R"({"required":["raycast"]})">().root());
+    result.set_validated(
+        args, "then",
+        json::Document::literal<
+            R"({"required":["node","view"],"properties":{"node":{"minLength":1},"view":{"const":"node"}}})">()
+            .root());
+    result.set_validated(
+        args, "examples",
+        json::Document::literal<
+            R"([{"view":"node","node":"roof","raycast":{"output":"output","rays":[{"origin":[0,10,0],"direction":[0,-1,0],"max_distance":20}]}}])">()
+            .root());
+    result.set_validated(item, "raycast_result",
+                         json::Document::literal<R"({
+        "path":"result.raycast","type":"object","required":["output","hits"],
+        "properties":{"output":{"type":"string"},"hits":{"type":"array","description":"One entry per input ray, in order. Null means no polygon hit within max_distance. Hit distances use metres; position is graph-local XYZ; primitive and fan triangle indices are zero-based.",
+          "items":{"oneOf":[{"type":"null"},{"type":"object","required":["distance","position","primitive","triangle"],
+          "properties":{"distance":{"type":"number","minimum":0,"unit":"m"},"position":{"type":"array","minItems":3,"maxItems":3,"items":{"type":"number"}},"primitive":{"type":"integer","minimum":0},"triangle":{"type":"integer","minimum":0}}}]}}}
+    })">()
+                             .root());
+    return {};
+}
+
 json::Result<void> append_operation(json::Builder& result, json::Value entries, const Operation& op) {
     const auto item = result.append_object(entries);
     result.set_validated(item, "op", op.name);
     result.set_validated(item, "description", op.description);
     result.set_validated(item, "kind", operator_kind_names[static_cast<std::size_t>(op.kind)]);
     ATELIER_TRY(result.set(item, "requires_state_token", op.changes));
+    if (op.name == "graph.apply") {
+        const auto examples = result.object_validated(item, "examples");
+        result.set_validated(examples, "edit_nodes", json::Document::literal<R"({
+            "op":"graph.apply","state_token":"<latest state_token>","args":{"nodes":{
+                "roof":{"type":"procedural.Wedge","properties":{"size":{"x":4,"y":2,"z":4}}},
+                "place":{"type":"procedural.Transform","inputs":{"input":"roof.output"}}}}})">().root());
+        result.set_validated(examples, "set_promoted_parameter", json::Document::literal<R"({
+            "op":"op.call","state_token":"<latest state_token>",
+            "args":{"id":"graph.set_parameter","args":{"parameter":"clear_width","value_json":"5.0"}}})">().root());
+    }
     const auto args = result.object_validated(item, "args");
     result.set_validated(args, "type", "object");
     const auto properties = result.object_validated(args, "properties");
     for (const auto& [name, kind] : op.properties) {
+        if (kind == Argument::graph_raycast) {
+            ATELIER_TRY(graph_raycast_schema(result, item, args, properties));
+            continue;
+        }
         const auto field = result.object_validated(properties, name);
         constexpr std::array types{"string", "object", "array", "integer", "boolean"};
         if (kind <= Argument::boolean)
@@ -2689,6 +2787,69 @@ struct EditorControl::Impl {
         return result.finish();
     }
 
+    std::expected<void, Failure> graph_raycast(json::Builder& result, std::string_view key, std::string_view node_name,
+                                               json::Value request) {
+        ATELIER_TRY(request.members({"output", "rays"}));
+        ATELIER_TRY_BIND(port_value, request.at("output"));
+        ATELIER_TRY_BIND(port, text(*port_value, 256));
+        if (port->empty())
+            return std::unexpected(port_value->error(json::Fault::range, "Output port name must not be empty"));
+        ATELIER_TRY_BIND(rays, request.at("rays"));
+        ATELIER_TRY_BIND(entries, rays->array());
+        if (!rays->size() || rays->size() > graph_ray_limit)
+            return std::unexpected(rays->error(json::Fault::range, "Raycast requires 1 to 32 rays"));
+        struct Ray {
+            math::Vector3 origin, direction;
+            float distance;
+        };
+        std::vector<Ray> queries;
+        queries.reserve(rays->size());
+        const auto vector = [](json::Value value) -> json::Result<math::Vector3> {
+            ATELIER_TRY_BIND(array, value.array());
+            if (value.size() != 3)
+                return std::unexpected(value.error(json::Fault::range, "Expected graph-local [x,y,z]"));
+            math::Vector3 v;
+            unsigned i = 0;
+            for (const auto component : *array) {
+                ATELIER_TRY_BIND(number, component.f32());
+                v[i++] = *number;
+            }
+            return v;
+        };
+        for (const auto ray : *entries) {
+            ATELIER_TRY(ray.members({"origin", "direction", "max_distance"}));
+            ATELIER_TRY_BIND(origin, vector(*ray.at("origin")));
+            const auto direction_value = *ray.at("direction");
+            ATELIER_TRY_BIND(direction, vector(direction_value));
+            const auto unit = math::try_normalize(*direction);
+            if (!unit)
+                return std::unexpected(direction_value.error(json::Fault::range, "Ray direction must be nonzero"));
+            const auto limit = *ray.at("max_distance");
+            ATELIER_TRY_BIND(distance, limit.f32());
+            if (*distance <= 0)
+                return std::unexpected(limit.error(json::Fault::range, "Ray max_distance must be positive"));
+            queries.push_back({*origin, *unit, *distance});
+        }
+        ATELIER_TRY_BIND(surface,
+                         operation(app.document_->graph_node_surface(key, node_name, *port, app.project_.get())));
+        const auto response = result.object_validated(result.root(), "raycast");
+        ATELIER_TRY(result.set(response, "output", *port));
+        ATELIER_TRY_BIND(hits, result.array(response, "hits"));
+        for (const auto& ray : queries) {
+            const auto hit = (*surface)->ray(ray.origin, ray.direction, ray.distance);
+            if (!hit) {
+                result.append_null(*hits);
+                continue;
+            }
+            const auto row = result.append_object(*hits);
+            ATELIER_TRY(result.set(row, "distance", hit->distance));
+            ATELIER_TRY(numbers(result, row, "position", hit->position));
+            ATELIER_TRY(result.set(row, "primitive", hit->primitive));
+            ATELIER_TRY(result.set(row, "triangle", hit->triangle));
+        }
+        return {};
+    }
+
     std::expected<json::Document, Failure> graph_catalog(json::Value args) {
         ATELIER_TRY(args.allowed_members({"view", "type"}));
         auto& doc = *app.document_;
@@ -2702,9 +2863,17 @@ struct EditorControl::Impl {
                 return std::unexpected(Failure("invalid_request", "Unknown procedural node type: " + *name));
             ATELIER_TRY(write_graph_type(result, root, *found));
             ATELIER_TRY_BIND(attributes, result.array(root, "attribute_contracts"));
-            if (found->attribute_help)
-                for (const auto& rule : found->attribute_help->rules)
+            if (found->help) {
+                if (!found->help->ports.empty()) {
+                    const auto descriptions = result.object_validated(root, "port_descriptions");
+                    const auto inputs = result.object_validated(descriptions, "inputs");
+                    const auto outputs = result.object_validated(descriptions, "outputs");
+                    for (const auto& port : found->help->ports)
+                        ATELIER_TRY(result.set(port.output ? outputs : inputs, port.port, port.description));
+                }
+                for (const auto& rule : found->help->attributes)
                     ATELIER_TRY(write_attribute_rule(result, result.append_object(*attributes), rule));
+            }
             auto& runtime = doc.world().runtime();
             if (!found->asset_key.empty()) {
                 ATELIER_TRY_BIND(params,
@@ -2783,6 +2952,8 @@ struct EditorControl::Impl {
             return result.finish();
         }
         if (op == "graph.inspect") {
+            if (*args.find("raycast") && (args.string({"view"}) != "node" || !*args.find("node")))
+                return std::unexpected(Failure("invalid_request", "raycast requires view=node and an explicit node"));
             if (*args.find("bindings") && args.string({"view"}) != "node")
                 return std::unexpected(Failure("invalid_request", "bindings requires view=node"));
             if (args.string({"view"}) == "catalog")
@@ -2835,6 +3006,17 @@ struct EditorControl::Impl {
                 ATELIER_TRY(result.set(result.root(), "asset", key));
                 ATELIER_TRY(result.set(result.root(), "node", node_name));
                 result.set_validated(result.root(), "properties", props->root());
+                const auto prefix = node_name + ".";
+                std::optional<json::Value> controls;
+                for (const auto& parameter : doc.graph_document(key)->parameters)
+                    for (std::string_view target : parameter.targets)
+                        if (target.starts_with(prefix)) {
+                            if (!controls)
+                                controls = result.object_validated(result.root(), "controlled_fields");
+                            ATELIER_TRY(result.set(*controls, target.substr(prefix.size()), parameter.name));
+                        }
+                if (const auto rays = *args.find("raycast"))
+                    ATELIER_TRY(graph_raycast(result, key, node_name, *rays));
                 if (const auto requested = *args.find("bindings")) {
                     ATELIER_TRY_BIND(enabled, requested->boolean());
                     if (*enabled) {

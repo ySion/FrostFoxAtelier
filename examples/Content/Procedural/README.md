@@ -44,3 +44,56 @@
 独立程序化数字资产 `Content/Procedural/Graphs/RuinedSettlement.procgraph`（可在 **Assets** 面板双击打开）：
 - 通过 3 个通用 `procedural.AssetNode`（`west_watchtower`、`great_hall`、`east_chapel`）实例化调用 `ModularRuinBuilding.procgraph`，各自配置独立 `overrides`（4 层角楼、3 层主殿、2 层重度坍塌礼拜堂）与 `seed_offset` 并共享同一 256 MiB `Evaluator::CachePool`；图根同时暴露多目标参数 `wing_scale_y` 同步驱动两侧翼楼变换，双击或按 `Enter` 可直接沿面包屑下钻进入子资产检视。
 
+
+
+## 门楼 Gatehouse
+
+用 Examples 工程打开 [Gatehouse.scene](Scenes/Gatehouse.scene) 可从场景中观察木构、砌体、陶瓦和石板瓦。街道位于负 Z 侧，穿过拱道向正 Z 进入后院。正面左侧的小拱门通往主楼首层，里面有楼板、梁、窗和壁炉。
+
+[门楼总图](Graphs/Gatehouse.procgraph) 组装[西侧主楼](Graphs/Gatehouse/Hall.procgraph)、[沿街附房](Graphs/Gatehouse/Wings.procgraph)、[双塔](Graphs/Gatehouse/Towers.procgraph)及过街楼。图级参数 `clear_width` 以米计量两侧石门框之间的净宽，默认 4.0，可调范围 2.8–4.6。[拱券 SOP](../../Source/Procedural/GateArch.source) 由它重建两端拱圈、拱腹和门框，外侧支承固定。公开参数在总图参数面板可直接调整。
+
+过街楼的另一项图级参数 `roof_sag` 控制屋脊跨中低于两端连线的距离，默认 **0.56 米**。屋脊、前后坡与封边共用 21 个纵向截面。[SpanSag](../../Source/Procedural/GalleryRoof.source) 计算屋脊下挠，公共 [RailPanel](../../../assets/engine/procedural/rail_panel.source) 分别连接屋脊和两条檐线生成两片有厚度的屋面。Sweep 沿同一组线生成脊瓦和檐口。调节下挠时，两端支座与两侧檐口保持原位。
+
+**用 Control 改稿与复核**
+
+从空图搭建同类屋面时，先调用 `graph.inspect {"view":"catalog"}`，按用途找“下挠”和“封闭屋面板”，再带上选中项的 `type` 查询详情。前者接收一列有序点。后者的两条边线按其 `attribute_contracts` 中的 `port` 与 `purpose` 接入：点序沿 +X 时，Z 较小的一列在左，Z 较大的一列在右。屋脊可以位于任意一侧。
+
+1. 打开总图后，调用 `graph.inspect` 并传入 `{"view":"node","node":"ridge_stations"}`。`controlled_fields.drop` 给出应修改的图参数 `roof_sag`。
+2. 用最新的 `state_token` 调用 `op.call`，传入 `{"id":"graph.set_parameter","args":{"parameter":"roof_sag","value_json":"0.0"}}` 可把屋脊拉直。把参数改为 `clear_width`、值改为 `"4.5"` 可拓宽通道。每次编辑均可用 `edit.undo` 撤销。
+3. 调用 `graph.inspect`，传入 `{"view":"node","node":"street_pitch","raycast":{"output":"panel","rays":[{"origin":[0.54,12,0.06],"direction":[0,-1,0],"max_distance":12}]}}`，从上方复测靠近跨中屋脊的高度。比较编辑前后的 `raycast.hits[0].position[1]` 即可量出实际变化。输出端口可从 `graph.inspect` 的 `catalog` 视图查得。
+
+材色由[构件分类](../../Source/Procedural/GatehouseFinish.source)和场景生成器绑定的[表面程序](Materials/Gatehouse/Gatehouse.ms.source)共同决定。陶瓦按 35° 参考坡面每 0.215 米排一行，使过街楼缓坡与主楼陡坡上的瓦片尺度相近。
+
+## 短木桥 Footbridge
+
+[场景](Scenes/Footbridge.scene)中的[桥图](Graphs/Footbridge.procgraph)沿 +X 跨过溪沟，+Y 向上。六米主跨两侧各有一段 1.5 米引板，接到高程固定的岸台。编辑桥图可调整三个以米为单位的公开参数。
+
+| 参数 | 默认 | 改稿时可观察的结果 |
+| --- | ---: | --- |
+| `width` | 2.0 | 控制承板和全部横铺板的总宽，主跨 30 块，引板各 8 块。两侧栏杆及支桩随边线移动。 |
+| `rise` | 0.6 | 固定起端标高，改变末端高差。默认主跨坡度 10%，设为 1.2 后为 20%；铺板和扶手随坡，立柱保持竖直。末端引板随之转为下坡，仍接回东岸。 |
+| `post_spacing` | 1.5 | 沿水平基线量取柱距。两端保留立柱，不能整除跨度时最后一跨较短。 |
+
+`Line → Polyline → Resample` 沿基线划分开间。[桥架布局](../../Source/Procedural/Footbridge.source)输出两列桥面边点、柱脚点及各构件的轴线。[RailPanel](../../../assets/engine/procedural/rail_panel.source) 沿两条边线生成承板，栏柱由同一个底面贴地的 Box 经 Realize 放到各柱脚，斜撑由 Sweep 沿每一跨的两个端点制成。扶手的自定义截面是一个 XY 平面内的八边形。
+
+用 Control 打开图，调用 `graph.inspect {"view":"catalog","type":"procedural.Sweep"}` 读取 `port_descriptions`。用 `op.call` 传入 `{"id":"graph.set_parameter","args":{"parameter":"post_spacing","value_json":"1.1"}}`，每侧立柱由 5 根增至 7 根，末跨 0.5 米。要测单根木料，向 `graph.inspect` 传入 `{"view":"node","node":"uprights","raycast":{"output":"output","rays":[{"origin":[2.5,5,0.92],"direction":[0,-1,0],"max_distance":6}]}}`。用 `edit.undo` 恢复原柱距，原位的竖射线随即穿空。
+
+
+## 弧形石栏杆 ArcBalustrade
+
+打开[场景](Scenes/ArcBalustrade.scene)，主相机面对一段 132° 的石栏杆。它由[一张 18 节点的图](Graphs/ArcBalustrade.procgraph)生成。四皮墙石交替错开半块，灰缝宽 16 mm，灰芯比石面内收 20 mm。柱座落在 1.22 m 高的压顶上，扶手底面和栏柱顶面同高 2.16 m。方柱座的局部 +Z 沿导线切向，两端各留 0.22 m。石块、灰芯、扶手和栏柱是各自闭合的构件。
+
+| 弧线半径 `arc_radius` | 最大柱距 `post_spacing` | 栏柱 | 实际等分柱距 | 墙石 / 压顶石 |
+|---:|---:|---:|---:|---:|
+| 2.10 m | 0.68 m | 8 | 0.628 m | 34 / 5 |
+| 2.80 m | 0.68 m | 10 | 0.668 m | 42 / 6 |
+| 2.10 m | 0.48 m | 11 | 0.440 m | 34 / 5 |
+| 2.80 m | 0.48 m | 14 | 0.462 m | 42 / 6 |
+
+`guide` 是 Circle 的水平开放弧。半径同时绑定它的两个半轴。`measured_guide` 用 Resample 的 1 段模式保留原折点，生成以米计的 `arclength` 和 `tangent`。扶手、墙石和栏柱均从这条线取得位置。墙石按弧长切段并保留切口之间的原折点，随后交给 Sweep。瓶形柱用竖直折线和 point float `shaft_scale` 驱动圆管 Sweep，腹部半径 0.160 m、颈部 0.076 m。柱脚和柱头复用一次 Bevel 生成的方座，整根栏柱只做一次，再沿曲线 Realize。[案例中的截面、砌法和布站](../../Source/Procedural/ArcBalustrade.source)
+
+**用 Control 改稿。** 打开图后，用 `op.call` 传入 `{"id":"graph.set_parameter","args":{"parameter":"post_spacing","value_json":"0.48"}}`。用 `graph.inspect {"node":"post_stations","samples":16}` 查看全部柱脚的 `arclength`，用 `graph.inspect {"view":"node","node":"spindle","bindings":true}` 查看半径列的实际来源。缺列时返回 `fallback`，实际系数为 1。对 `spindle.output` 从 `[0.6,0.406,0]` 和 `[0.6,0.721,0]` 沿 `[-1,0,0]` 发射线可以复测柱腹和柱颈。执行 `edit.undo` 恢复上一次改稿。
+
+**这次案例暴露的曲线需求。** 默认弧长 4.838 m，用固定 0.68 m 步长会在末端留下 0.078 m，放不下宽 0.33 m 的柱脚。等分可用长度并保留两端退距解决了布柱问题。柱位和石缝还都要按距离定位到原折线的一段并插值，砌石再取出区间内的折点。这两种操作值得在下一个沿线案例中提炼。车削母线的有序高度与半径目前写在案例 Source 中，Control 可发现所有截面的端口和使用方法。编辑轮廓样点是另一个独立的作者工具需求。
+
+**已复现的射线边界读数。** 默认图的 `wall_stones.output`，从 `[2.0132889498235693,0.39,2.3572584933600957]` 沿 `[-0.6494480483301837,0,-0.7604059656000309]` 发射长度 1.55 m 的射线，落在一个截面站的共享边上，报告 1.2700 m 处的内壁。沿弧向前或向后各移 2 mm 再径向入射，两侧都在 0.7300 m 命中外壁。该件拓扑检查为零开口、零非流形边和零退化面。测量灰缝时使用两侧射线，单条共边射线的差异仍待定位。

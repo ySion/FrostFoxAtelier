@@ -9,6 +9,10 @@
 #include <map>
 #include <unordered_map>
 
+namespace atelier::procedural {
+class Bvh;
+}
+
 namespace atelier::editor {
 class Project;
 
@@ -619,6 +623,9 @@ public:
 
     // Apply one text edit to the open graph. Returns whether an undo step was published.
     Result<bool> graph_apply(std::string_view key, json::Value patch, Project* project = nullptr);
+
+    Result<std::shared_ptr<const procedural::Bvh>> graph_node_surface(std::string_view key, std::string_view name,
+                                                                      std::string_view output, Project* project);
 
     Result<procedural::NodeBindings> graph_node_bindings(std::string_view key, std::string_view name, Project* project);
 

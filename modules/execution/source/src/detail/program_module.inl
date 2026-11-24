@@ -575,6 +575,9 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
                     {ErrorCode::rebuild_required,
                      "Published source class layout or method signature changed; rebuild the Runtime context: " +
                          cls.name});
+            if (cls.description != found->description)
+                return fail({ErrorCode::rebuild_required,
+                             "Published source class description changed; rebuild the Runtime context: " + cls.name});
         }
     }
     std::vector<language::TypeName> array_uses;
@@ -649,6 +652,7 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
                     source_error(input, cls.file, cls.position, "Source class has no prepared Runtime layout."));
             kept_classes.push_back({*existing, std::move(methods)});
         } else {
+            definition.description = cls.description;
             definition.described_methods = std::move(methods);
             definition.fields = fields;
             definitions->push_back(std::move(definition));

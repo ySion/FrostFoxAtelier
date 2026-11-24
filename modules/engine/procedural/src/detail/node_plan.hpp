@@ -61,6 +61,7 @@ struct NodePlan {
 std::vector<AttributeRule> attribute_rules(const NodePlan& plan, const TypeInfo& type);
 void append_native_rules(std::vector<AttributeRule>& rules, std::string_view type);
 
-Result<NodePlan> inspect_node(Runtime& runtime, TypeId type);
+Result<NodePlan> inspect_node(Runtime& runtime, TypeId type,
+                              std::vector<PortDescription>* port_descriptions = nullptr);
 
 }

@@ -1,3 +1,4 @@
+[DESC = "将一个 float 属性从输入区间线性映射到输出区间，区间外继续外推。可指定写入列和选组。"]
 class procedural.Remap : procedural.Node {
     [RunOver, Label = "Run Over", DESC = "读取与写入属性所在的几何层。"]
     procedural.Layer layer = procedural.Layer::point;

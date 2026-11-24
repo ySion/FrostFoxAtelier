@@ -103,14 +103,23 @@ Agent 从 `{"op":"capabilities","args":{"scope":"graph"}}` 获取精简目录。
 
 | 目的 | 请求 | 返回 |
 | --- | --- | --- |
-| 列算子 | `graph.inspect {"view":"catalog"}` | 返回内置 SOP、已发布的 Source SOP 和工程数字资产的名称、说明、来源和端口。 |
-| 查算子说明 | `graph.inspect {"view":"catalog","type":"procedural.Group"}` | 精确查类型。普通 SOP 列出可写字段的路径、类型、枚举值、数组元素类型、范围及声明元数据；向量的分量路径如 `direction.x` 对应补丁里的嵌套对象。数字资产按 `asset:<key>` 查其端口和公开的提升参数。发现请求不选择节点、不触发几何求值。 |
+| 列算子 | `graph.inspect {"view":"catalog"}` | 按 `description` 筛选用途，再用返回的 `name` 查精确类型。Source SOP 的类级说明与编辑器 Tab 搜索提示共用 Runtime 反射；端口列表供接线使用。目录也包含原生 SOP 和工程数字资产。 |
+| 查算子说明 | `graph.inspect {"view":"catalog","type":"procedural.Sweep"}` | 在 `inputs`、`outputs` 查端口名；有端口说明的类型附 `port_descriptions.inputs` 和 `port_descriptions.outputs`，按端口名读取接线要求。普通 SOP 还列出可写字段的路径、类型、枚举值、数组元素类型、范围及声明元数据，向量分量路径如 `direction.x` 对应补丁里的嵌套对象。数字资产按 `asset:<key>` 查端口及公开参数。发现请求不选择节点、不触发几何求值。 |
 | 看结构 | `graph.inspect {"view":"topology"}` | 一层节点与端口、有序连线、显示节点、模板节点、子图资产键和可撤销/重做状态。未解析的已保存输入列在对应节点的 `kept_inputs` 中。只读作者拓扑，不发起 cook；可沿 `asset` 打开子图继续查询。 |
-| 看字段 | `graph.inspect {"view":"node","node":"upper"}` | 所选已解析节点当前的可编辑属性 `properties`，不求值。 |
-| 查列契约 | `graph.inspect {"view":"catalog","type":"procedural.Realize"}` | `attribute_contracts` 列出已声明的具名绑定，每项给出端口、读写方向、层、类型、缺列行为及适用条件。Source 的 `name_from`、`layer_from` 指向可编辑字段。空表表示没有已声明的绑定。 |
-| 解释一次放置 | `graph.inspect {"view":"node","node":"place_clumps","bindings":true}` | 仅请求该节点的求值分支。`bindings.attributes` 返回解析后的列名、层、状态和来源。`bound` 代表内核可读取该列，`inactive` 表示受优先级或前置列条件排除，`fallback` 使用缺列规则。`upstream` 是直接连线节点；`column_source` 沿可证明共享非空列的主输入流追溯，到原生整块几何操作、快照或列重写处停止。冻结或旁路直接返回对应 `mode` 和空列表。求值失败返回首错。 |
+| 看字段 | `graph.inspect {"view":"node","node":"upper"}` | 所选已解析节点的当前字段值 `properties`。有提升目标时附 `controlled_fields`，以节点内字段路径为键、公开参数名为值，例如 `{"size.x":"clear_width"}`；整向量提升时以向量路径为键，其分量也受控。此查询不求值。 |
+| 查列契约 | `graph.inspect {"view":"catalog","type":"procedural.Realize"}` | `attribute_contracts` 列出已声明的具名绑定，每项给出端口、读写方向、层、类型、缺列行为及适用条件。Source 的 `name_from`、`layer_from` 指向可编辑字段。`when` 声明规则适用的枚举字段和值，`layer_from_column` 表示跟随实际列所在层。空表表示没有已声明的绑定。 |
+| 解释一次放置 | `graph.inspect {"view":"node","node":"place_clumps","bindings":true}` | 仅请求该节点的求值分支。`bindings.attributes` 按当前节点模式返回适用的列绑定，包括解析后的列名、层、状态和来源。`bound` 代表内核可读取该列，`inactive` 表示受优先级或前置列条件排除，`fallback` 使用缺列规则。`upstream` 是直接连线节点；`column_source` 沿主输入流或单输入算子追溯共享的非空列，到无法确认传递关系的节点、资产边界、快照或列重写处停止。冻结或旁路直接返回对应 `mode` 和空列表。求值失败返回首错。 |
+| 量节点净空 | `graph.inspect {"view":"node","node":"roof","raycast":{"output":"output","rays":[{"origin":[0,10,0],"direction":[0,-1,0],"max_distance":20}]}}` | 须显式指定节点与输出端口名。只求值其当前分支，在图局部坐标系内以米测量，接受 1–32 条双面射线，非零方向自动归一。`result.raycast.hits` 按输入顺序返回；段内无相交为 `null`，否则给出最近命中的 `distance`、`position`、零基 `primitive` 与面内扇形 `triangle`。查询多边形表面，实例须先实体化；求值或 BVH 构建失败返回首错。 |
 | 核对产物 | `graph.inspect {"node":"upper","samples":0,"spatial":false}` | 默认 `full` 视图求值并返回几何统计。布尔属性的 `count` 为层元素总数，`selected_count` 为完整成员数，均与样本上限无关。 |
-| 修改图 | `graph.apply` | 成功返回 `asset` 和 `changed`。一个有效修改对应一步图撤销；原样重发返回 `changed:false`。 |
+| 修改图 | `graph.apply` | 成功返回 `asset` 和 `changed`。一个有效修改对应一步图撤销。已生效的字段、连线等更新原样重发返回 `changed:false`；`remove` 要求节点仍存在，成功删除后重发同一删除会报错。 |
+
+精简目录的 `graph.apply.examples` 给出两个完整请求形状。`edit_nodes` 显示如何按名建节点、写字段、用 `node.port` 接线；`set_promoted_parameter` 用于 `controlled_fields` 中列出的目标。将示例的 `state_token` 替换为最新响应令牌。对门楼 `gate_vault.clear_width`，修改活动图中所有绑定目标的请求为：
+
+```json
+{"op":"op.call","state_token":"<latest state_token>","args":{"id":"graph.set_parameter","args":{"parameter":"clear_width","value_json":"5.0"}}}
+```
+
+`parameter` 填公开参数名；`value_json` 是一段编码为字符串的 JSON，例如数值 5 写作 `"5.0"`，字符串 oak 写作 `"\"oak\""`。需要指定已打开的其他图时，在内层 `args` 添加 `asset`。
 
 例如，已打开的图里有 `roof` 和 `extrude` 时，下面是一次 `graph.apply` 的 `args`。它在已有屋面和挤出之间插入选择节点。
 
@@ -135,7 +144,7 @@ Agent 从 `{"op":"capabilities","args":{"scope":"graph"}}` 获取精简目录。
 - 节点名是局部编辑的身份。新节点必须提供 `type`。已有节点可省略类型，也可提供相同类型作为断言。`position` 是二元坐标，`asset` 是 AssetNode 引用，`properties` 遵守现有反射字段及提升参数的编辑约束。
 - 只替换明确写出的端口。同一补丁内可以前向引用。单输入写 `"node.port"`，多输入写有序端点数组，`null` 清空指定端口。空数组也可清空多输入。未涉及的连线、节点、字段和保存的待修复数据沿用原值。
 - `remove:["node_name"]` 显式删除节点及关联连线。同一节点不能同时出现在 `nodes` 和 `remove`。`settings.display:""` 清除显示标记。
-- 失败返回首个诊断，例如 `nodes.extrude.inputs.surface: unknown output 'roof.typo'`。失败不会发布部分修改，也不截断已有重做历史。补丁沿用编辑器的图操作和对象身份；图能否生成有效几何通过后续 `graph.inspect` 的完整视图检查。
+- 失败返回首个诊断。已知节点的端口拼错时，响应也列出可选名称，例如 `nodes.extrude.inputs.surface: unknown output 'roof.typo' (available: output)`。失败不会发布部分修改，也不截断已有重做历史。补丁沿用编辑器的图操作和对象身份；图能否生成有效几何通过后续 `graph.inspect` 的完整视图检查。
 
 ## 资产目录分页
 

@@ -65,6 +65,7 @@ enum game.LayerMask : uint {
     Trigger = 4
 }
 
+[DESC = "Move owner.\r\nUnits: metres."]
 class game.Move : world.Component {
     float speed = 2.0f;
     [Transient, ReadOnly] float distance_moved = 0.0f;
@@ -88,6 +89,17 @@ void verify_world_project() {
     auto program = take(Program::create(runtime));
     publish(*program, sources());
     const auto type = take(runtime.find_type("game.Move"));
+    const auto info = take(runtime.describe(type));
+    require(info->description == "Move owner.\nUnits: metres.", "Source class DESC did not reach Runtime reflection.");
+    auto revised = sources();
+    ++revised.version;
+    auto& file = revised.files.back();
+    ++file.version;
+    file.source.replace(file.source.find("Move owner."), 11, "Translate owner.");
+    auto candidate = Program::prepare(take(program->request(std::move(revised))));
+    require(!candidate && candidate.error().code == ErrorCode::rebuild_required &&
+                info->description == "Move owner.\nUnits: metres.",
+            "A changed class DESC must request a rebuild and preserve the published description.");
     w::World world;
     take(world.initialize(runtime, world_types));
     auto owner = take(w::create_entity(runtime));
@@ -192,6 +204,9 @@ void verify_frontend_and_pod_evaluation() {
     reject_snapshot("void bodyless();", "Expected '{'");
     reject_snapshot("struct MissingSemi { int x; }", "Expected ';'");
     reject_snapshot("[UnknownAttr] enum BadEnum { a }", "Unknown enum attribute");
+    reject_snapshot("[DESC = 42] class p.Bad : test.PairHost {}", "DESC requires a string literal.");
+    reject_snapshot(R"([DESC = "bad\0text"] class p.Bad : test.PairHost {})", "DESC must not contain control");
+    reject_snapshot(R"([DESC = "bad target"] struct Bad { int x; };)", "applies to class declarations only");
     reject_snapshot("bool bad_fin() { return math.is_finite(1); }", "math.is_finite requires");
     reject_snapshot("uint bad_bits() { return math.as_uint(1.0d); }", "math.as_uint requires");
     reject_snapshot("int bad_ibits() { return math.as_int(vector3()); }", "math.as_int requires");

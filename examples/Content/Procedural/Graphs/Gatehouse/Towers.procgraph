@@ -1,0 +1,3334 @@
+{
+  "version": 4,
+  "boxes": {
+    "watch_stone": {
+      "color": "#786d5b",
+      "position": [
+        0,
+        0
+      ],
+      "size": [
+        957,
+        1600
+      ],
+      "title": "High watchtower — Masonry"
+    },
+    "watch_timber": {
+      "color": "#765846",
+      "position": [
+        1017,
+        0
+      ],
+      "size": [
+        957,
+        1490
+      ],
+      "title": "High watchtower — Oak frame"
+    },
+    "watch_plaster": {
+      "color": "#937e60",
+      "position": [
+        2034,
+        0
+      ],
+      "size": [
+        957,
+        1304
+      ],
+      "title": "High watchtower — Infill and reveals"
+    },
+    "watch_roof": {
+      "color": "#555d70",
+      "position": [
+        3051,
+        0
+      ],
+      "size": [
+        957,
+        1042
+      ],
+      "title": "High watchtower — Slate and flashing"
+    },
+    "ward_stone": {
+      "color": "#786d5b",
+      "position": [
+        0,
+        1720
+      ],
+      "size": [
+        957,
+        1452
+      ],
+      "title": "Ward turret — Masonry"
+    },
+    "ward_timber": {
+      "color": "#765846",
+      "position": [
+        1017,
+        1720
+      ],
+      "size": [
+        957,
+        1378
+      ],
+      "title": "Ward turret — Oak frame"
+    },
+    "ward_plaster": {
+      "color": "#937e60",
+      "position": [
+        2034,
+        1720
+      ],
+      "size": [
+        957,
+        1304
+      ],
+      "title": "Ward turret — Infill and reveals"
+    },
+    "ward_roof": {
+      "color": "#555d70",
+      "position": [
+        3051,
+        1720
+      ],
+      "size": [
+        957,
+        408
+      ],
+      "title": "Ward turret — Slate and flashing"
+    }
+  },
+  "nodes": {
+    "watch_footing": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "height": 0.22,
+        "radius_bottom": 1.615,
+        "radius_top": 1.65,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        80,
+        60
+      ]
+    },
+    "watch_plinth": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 0.22,
+          "z": 0
+        },
+        "height": 1,
+        "radius_bottom": 1.605,
+        "radius_top": 1.575,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        232,
+        60
+      ]
+    },
+    "watch_weathering": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 1.22,
+          "z": 0
+        },
+        "height": 0.22,
+        "radius_bottom": 1.595,
+        "radius_top": 1.43,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        384,
+        60
+      ]
+    },
+    "watch_shaft": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 1.44,
+          "z": 0
+        },
+        "height": 3.24,
+        "radius_bottom": 1.43,
+        "radius_top": 1.43,
+        "inner_radius": 1.19,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        536,
+        60
+      ]
+    },
+    "watch_upper_shaft": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 5.43,
+          "z": 0
+        },
+        "height": 2.01,
+        "radius_bottom": 1.43,
+        "radius_top": 1.43,
+        "inner_radius": 1.19,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        688,
+        60
+      ]
+    },
+    "watch_corbel_throat": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 7.06,
+          "z": 0
+        },
+        "height": 0.15,
+        "radius_bottom": 1.465,
+        "radius_top": 1.5,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        840,
+        60
+      ]
+    },
+    "watch_corbel_table": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 7.29,
+          "z": 0
+        },
+        "height": 0.26,
+        "radius_bottom": 1.49,
+        "radius_top": 1.59,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        80,
+        134
+      ]
+    },
+    "watch_slit_jamb_l": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.4422,
+          "y": 0.75,
+          "z": 0.23
+        },
+        "center": {
+          "x": -0.3261,
+          "y": 5.055,
+          "z": 1.2061
+        }
+      },
+      "position": [
+        232,
+        134
+      ]
+    },
+    "watch_slit_jamb_r": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.4422,
+          "y": 0.75,
+          "z": 0.23
+        },
+        "center": {
+          "x": 0.3261,
+          "y": 5.055,
+          "z": 1.2061
+        }
+      },
+      "position": [
+        384,
+        134
+      ]
+    },
+    "watch_slit_head": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.51,
+          "y": 0.15,
+          "z": 0.11
+        },
+        "center": {
+          "x": 0,
+          "y": 5.485,
+          "z": 1.3371
+        }
+      },
+      "position": [
+        536,
+        134
+      ]
+    },
+    "watch_slit_sill": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.44,
+          "y": 0.1,
+          "z": 0.12
+        },
+        "center": {
+          "x": 0,
+          "y": 4.645,
+          "z": 1.3391
+        }
+      },
+      "position": [
+        688,
+        134
+      ]
+    },
+    "watch_plinth_course_1_stone_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.5663,
+          "y": 0.227,
+          "z": 0.048
+        },
+        "center": {
+          "x": -0.3186,
+          "y": 0.345,
+          "z": 1.4864
+        }
+      },
+      "position": [
+        840,
+        134
+      ]
+    },
+    "watch_plinth_course_1_stone_2": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.6153,
+          "y": 0.227,
+          "z": 0.048
+        },
+        "center": {
+          "x": 0.2941,
+          "y": 0.345,
+          "z": 1.4964
+        }
+      },
+      "position": [
+        80,
+        208
+      ]
+    },
+    "watch_plinth_course_2_stone_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.2951,
+          "y": 0.227,
+          "z": 0.048
+        },
+        "center": {
+          "x": -0.4513,
+          "y": 0.595,
+          "z": 1.4844
+        }
+      },
+      "position": [
+        232,
+        208
+      ]
+    },
+    "watch_plinth_course_2_stone_2": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.5635,
+          "y": 0.227,
+          "z": 0.048
+        },
+        "center": {
+          "x": 0,
+          "y": 0.595,
+          "z": 1.4794
+        }
+      },
+      "position": [
+        384,
+        208
+      ]
+    },
+    "watch_plinth_course_2_stone_3": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.2951,
+          "y": 0.227,
+          "z": 0.048
+        },
+        "center": {
+          "x": 0.4513,
+          "y": 0.595,
+          "z": 1.4894
+        }
+      },
+      "position": [
+        536,
+        208
+      ]
+    },
+    "watch_plinth_course_3_stone_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.5608,
+          "y": 0.227,
+          "z": 0.048
+        },
+        "center": {
+          "x": -0.3157,
+          "y": 0.845,
+          "z": 1.4825
+        }
+      },
+      "position": [
+        688,
+        208
+      ]
+    },
+    "watch_plinth_course_3_stone_2": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.6093,
+          "y": 0.227,
+          "z": 0.048
+        },
+        "center": {
+          "x": 0.2914,
+          "y": 0.845,
+          "z": 1.4775
+        }
+      },
+      "position": [
+        840,
+        208
+      ]
+    },
+    "watch_plinth_course_4_stone_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.2922,
+          "y": 0.227,
+          "z": 0.048
+        },
+        "center": {
+          "x": -0.4471,
+          "y": 1.095,
+          "z": 1.4656
+        }
+      },
+      "position": [
+        80,
+        282
+      ]
+    },
+    "watch_plinth_course_4_stone_2": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.558,
+          "y": 0.227,
+          "z": 0.048
+        },
+        "center": {
+          "x": 0,
+          "y": 1.095,
+          "z": 1.4756
+        }
+      },
+      "position": [
+        232,
+        282
+      ]
+    },
+    "watch_plinth_course_4_stone_3": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.2922,
+          "y": 0.227,
+          "z": 0.048
+        },
+        "center": {
+          "x": 0.4471,
+          "y": 1.095,
+          "z": 1.4706
+        }
+      },
+      "position": [
+        384,
+        282
+      ]
+    },
+    "watch_bond_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.35,
+          "y": 0.32,
+          "z": 0.06
+        },
+        "center": {
+          "x": -0.3722,
+          "y": 1.7,
+          "z": 1.3291
+        }
+      },
+      "position": [
+        536,
+        282
+      ]
+    },
+    "watch_bond_2": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.22,
+          "y": 0.32,
+          "z": 0.06
+        },
+        "center": {
+          "x": -0.4372,
+          "y": 2.07,
+          "z": 1.3291
+        }
+      },
+      "position": [
+        688,
+        282
+      ]
+    },
+    "watch_bond_3": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.35,
+          "y": 0.32,
+          "z": 0.06
+        },
+        "center": {
+          "x": -0.3722,
+          "y": 2.44,
+          "z": 1.3291
+        }
+      },
+      "position": [
+        840,
+        282
+      ]
+    },
+    "watch_bond_4": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.22,
+          "y": 0.32,
+          "z": 0.06
+        },
+        "center": {
+          "x": -0.4372,
+          "y": 2.81,
+          "z": 1.3291
+        }
+      },
+      "position": [
+        80,
+        356
+      ]
+    },
+    "watch_bond_5": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.35,
+          "y": 0.32,
+          "z": 0.06
+        },
+        "center": {
+          "x": -0.3722,
+          "y": 3.18,
+          "z": 1.3291
+        }
+      },
+      "position": [
+        232,
+        356
+      ]
+    },
+    "watch_bond_6": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.22,
+          "y": 0.32,
+          "z": 0.06
+        },
+        "center": {
+          "x": -0.4372,
+          "y": 3.55,
+          "z": 1.3291
+        }
+      },
+      "position": [
+        384,
+        356
+      ]
+    },
+    "watch_stone_corbel_l": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.18,
+          "y": 0.29,
+          "z": 0.22
+        },
+        "center": {
+          "x": -0.36,
+          "y": 7.27,
+          "z": 1.3861
+        }
+      },
+      "position": [
+        536,
+        356
+      ]
+    },
+    "watch_stone_corbel_r": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.18,
+          "y": 0.29,
+          "z": 0.22
+        },
+        "center": {
+          "x": 0.36,
+          "y": 7.27,
+          "z": 1.3861
+        }
+      },
+      "position": [
+        688,
+        356
+      ]
+    },
+    "watch_masonry_bay": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "watch_slit_jamb_l.output",
+          "watch_slit_jamb_r.output",
+          "watch_slit_head.output",
+          "watch_slit_sill.output",
+          "watch_plinth_course_1_stone_1.output",
+          "watch_plinth_course_1_stone_2.output",
+          "watch_plinth_course_2_stone_1.output",
+          "watch_plinth_course_2_stone_2.output",
+          "watch_plinth_course_2_stone_3.output",
+          "watch_plinth_course_3_stone_1.output",
+          "watch_plinth_course_3_stone_2.output",
+          "watch_plinth_course_4_stone_1.output",
+          "watch_plinth_course_4_stone_2.output",
+          "watch_plinth_course_4_stone_3.output",
+          "watch_bond_1.output",
+          "watch_bond_2.output",
+          "watch_bond_3.output",
+          "watch_bond_4.output",
+          "watch_bond_5.output",
+          "watch_bond_6.output",
+          "watch_stone_corbel_l.output",
+          "watch_stone_corbel_r.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        80,
+        468
+      ]
+    },
+    "watch_masonry_turn_1": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "watch_masonry_bay.output"
+      },
+      "properties": {
+        "rotate": {
+          "x": 0,
+          "y": 45,
+          "z": 0
+        }
+      },
+      "position": [
+        80,
+        580
+      ]
+    },
+    "watch_masonry_repeat_2": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "watch_masonry_bay.output",
+          "watch_masonry_turn_1.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        80,
+        692
+      ]
+    },
+    "watch_masonry_turn_2": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "watch_masonry_repeat_2.output"
+      },
+      "properties": {
+        "rotate": {
+          "x": 0,
+          "y": 90,
+          "z": 0
+        }
+      },
+      "position": [
+        80,
+        804
+      ]
+    },
+    "watch_masonry_repeat_4": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "watch_masonry_repeat_2.output",
+          "watch_masonry_turn_2.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        80,
+        916
+      ]
+    },
+    "watch_masonry_turn_4": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "watch_masonry_repeat_4.output"
+      },
+      "properties": {
+        "rotate": {
+          "x": 0,
+          "y": 180,
+          "z": 0
+        }
+      },
+      "position": [
+        80,
+        1028
+      ]
+    },
+    "watch_masonry_repeat_8": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "watch_masonry_repeat_4.output",
+          "watch_masonry_turn_4.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        80,
+        1140
+      ]
+    },
+    "watch_masonry_setout": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "watch_masonry_repeat_8.output"
+      },
+      "properties": {
+        "rotate": {
+          "x": 0,
+          "y": 22.5,
+          "z": 0
+        }
+      },
+      "position": [
+        80,
+        1252
+      ]
+    },
+    "watch_stone_work": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "watch_footing.output",
+          "watch_plinth.output",
+          "watch_weathering.output",
+          "watch_shaft.output",
+          "watch_upper_shaft.output",
+          "watch_corbel_throat.output",
+          "watch_corbel_table.output",
+          "watch_masonry_setout.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        80,
+        1364
+      ]
+    },
+    "watch_stone_site": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "watch_stone_work.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -9.2,
+          "y": 0,
+          "z": 3.65
+        }
+      },
+      "position": [
+        80,
+        1476
+      ]
+    },
+    "watch_lower_infill": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 7.55,
+          "z": 0
+        },
+        "height": 0.99,
+        "radius_bottom": 1.58,
+        "radius_top": 1.58,
+        "inner_radius": 1.42,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        2114,
+        60
+      ]
+    },
+    "watch_head_infill": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 9.51,
+          "z": 0
+        },
+        "height": 0.41,
+        "radius_bottom": 1.58,
+        "radius_top": 1.58,
+        "inner_radius": 1.42,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        2266,
+        60
+      ]
+    },
+    "watch_infill_cheek_l": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.2446,
+          "y": 0.97,
+          "z": 0.17
+        },
+        "center": {
+          "x": -0.4823,
+          "y": 9.025,
+          "z": 1.3747
+        }
+      },
+      "position": [
+        2418,
+        60
+      ]
+    },
+    "watch_infill_cheek_r": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.2446,
+          "y": 0.97,
+          "z": 0.17
+        },
+        "center": {
+          "x": 0.4823,
+          "y": 9.025,
+          "z": 1.3747
+        }
+      },
+      "position": [
+        2570,
+        60
+      ]
+    },
+    "watch_infill_bay": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "watch_infill_cheek_l.output",
+          "watch_infill_cheek_r.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        2114,
+        172
+      ]
+    },
+    "watch_infill_turn_1": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "watch_infill_bay.output"
+      },
+      "properties": {
+        "rotate": {
+          "x": 0,
+          "y": 45,
+          "z": 0
+        }
+      },
+      "position": [
+        2114,
+        284
+      ]
+    },
+    "watch_infill_repeat_2": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "watch_infill_bay.output",
+          "watch_infill_turn_1.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        2114,
+        396
+      ]
+    },
+    "watch_infill_turn_2": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "watch_infill_repeat_2.output"
+      },
+      "properties": {
+        "rotate": {
+          "x": 0,
+          "y": 90,
+          "z": 0
+        }
+      },
+      "position": [
+        2114,
+        508
+      ]
+    },
+    "watch_infill_repeat_4": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "watch_infill_repeat_2.output",
+          "watch_infill_turn_2.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        2114,
+        620
+      ]
+    },
+    "watch_infill_turn_4": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "watch_infill_repeat_4.output"
+      },
+      "properties": {
+        "rotate": {
+          "x": 0,
+          "y": 180,
+          "z": 0
+        }
+      },
+      "position": [
+        2114,
+        732
+      ]
+    },
+    "watch_infill_repeat_8": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "watch_infill_repeat_4.output",
+          "watch_infill_turn_4.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        2114,
+        844
+      ]
+    },
+    "watch_infill_setout": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "watch_infill_repeat_8.output"
+      },
+      "properties": {
+        "rotate": {
+          "x": 0,
+          "y": 22.5,
+          "z": 0
+        }
+      },
+      "position": [
+        2114,
+        956
+      ]
+    },
+    "watch_plaster_work": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "watch_lower_infill.output",
+          "watch_head_infill.output",
+          "watch_infill_setout.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        2114,
+        1068
+      ]
+    },
+    "watch_plaster_site": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "watch_plaster_work.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -9.2,
+          "y": 0,
+          "z": 3.65
+        }
+      },
+      "position": [
+        2114,
+        1180
+      ]
+    },
+    "watch_gallery_sole": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 7.51,
+          "z": 0
+        },
+        "height": 0.18,
+        "radius_bottom": 1.65,
+        "radius_top": 1.65,
+        "inner_radius": 1.49,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        1097,
+        60
+      ]
+    },
+    "watch_sill_band": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 8.445,
+          "z": 0
+        },
+        "height": 0.16,
+        "radius_bottom": 1.635,
+        "radius_top": 1.635,
+        "inner_radius": 1.5,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        1249,
+        60
+      ]
+    },
+    "watch_wall_plate": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 9.81,
+          "z": 0
+        },
+        "height": 0.125,
+        "radius_bottom": 1.655,
+        "radius_top": 1.655,
+        "inner_radius": 1.5,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        1401,
+        60
+      ]
+    },
+    "watch_bay_post": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.14,
+          "y": 2.37,
+          "z": 0.15
+        },
+        "center": {
+          "x": -0.5696,
+          "y": 8.735,
+          "z": 1.4697
+        }
+      },
+      "position": [
+        1553,
+        60
+      ]
+    },
+    "watch_casement_jamb_l": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.063,
+          "y": 1.02,
+          "z": 0.095
+        },
+        "center": {
+          "x": -0.36,
+          "y": 9.025,
+          "z": 1.4747
+        }
+      },
+      "position": [
+        1705,
+        60
+      ]
+    },
+    "watch_casement_jamb_r": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.063,
+          "y": 1.02,
+          "z": 0.095
+        },
+        "center": {
+          "x": 0.36,
+          "y": 9.025,
+          "z": 1.4747
+        }
+      },
+      "position": [
+        1857,
+        60
+      ]
+    },
+    "watch_casement_mullion": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.049,
+          "y": 0.97,
+          "z": 0.067
+        },
+        "center": {
+          "x": 0,
+          "y": 9.025,
+          "z": 1.4447
+        }
+      },
+      "position": [
+        1097,
+        134
+      ]
+    },
+    "watch_window_transom": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.72,
+          "y": 0.053,
+          "z": 0.073
+        },
+        "center": {
+          "x": 0,
+          "y": 9.2093,
+          "z": 1.4457
+        }
+      },
+      "position": [
+        1249,
+        134
+      ]
+    },
+    "watch_casement_hood": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.91,
+          "y": 0.093,
+          "z": 0.2
+        },
+        "center": {
+          "x": 0,
+          "y": 9.546,
+          "z": 1.4947
+        }
+      },
+      "position": [
+        1401,
+        134
+      ]
+    },
+    "watch_window_sill": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.87,
+          "y": 0.073,
+          "z": 0.21
+        },
+        "center": {
+          "x": 0,
+          "y": 8.563,
+          "z": 1.5047
+        }
+      },
+      "position": [
+        1553,
+        134
+      ]
+    },
+    "watch_saltire_l_stock": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.105,
+          "y": 1.3036,
+          "z": 0.095
+        },
+        "center": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        }
+      },
+      "position": [
+        1705,
+        134
+      ]
+    },
+    "watch_saltire_l": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "watch_saltire_l_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 0.01,
+          "y": 8.07,
+          "z": 1.4777
+        },
+        "rotate": {
+          "x": 0,
+          "y": 0,
+          "z": -52.1441
+        }
+      },
+      "position": [
+        1097,
+        246
+      ]
+    },
+    "watch_saltire_r_stock": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.105,
+          "y": 1.3036,
+          "z": 0.095
+        },
+        "center": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        }
+      },
+      "position": [
+        1857,
+        134
+      ]
+    },
+    "watch_saltire_r": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "watch_saltire_r_stock.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 0.01,
+          "y": 8.07,
+          "z": 1.4917
+        },
+        "rotate": {
+          "x": 0,
+          "y": 0,
+          "z": 52.1441
+        }
+      },
+      "position": [
+        1249,
+        246
+      ]
+    },
+    "watch_framing_bay": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "watch_bay_post.output",
+          "watch_casement_jamb_l.output",
+          "watch_casement_jamb_r.output",
+          "watch_casement_mullion.output",
+          "watch_window_transom.output",
+          "watch_casement_hood.output",
+          "watch_window_sill.output",
+          "watch_saltire_l.output",
+          "watch_saltire_r.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        1097,
+        358
+      ]
+    },
+    "watch_framing_turn_1": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "watch_framing_bay.output"
+      },
+      "properties": {
+        "rotate": {
+          "x": 0,
+          "y": 45,
+          "z": 0
+        }
+      },
+      "position": [
+        1097,
+        470
+      ]
+    },
+    "watch_framing_repeat_2": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "watch_framing_bay.output",
+          "watch_framing_turn_1.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        1097,
+        582
+      ]
+    },
+    "watch_framing_turn_2": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "watch_framing_repeat_2.output"
+      },
+      "properties": {
+        "rotate": {
+          "x": 0,
+          "y": 90,
+          "z": 0
+        }
+      },
+      "position": [
+        1097,
+        694
+      ]
+    },
+    "watch_framing_repeat_4": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "watch_framing_repeat_2.output",
+          "watch_framing_turn_2.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        1097,
+        806
+      ]
+    },
+    "watch_framing_turn_4": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "watch_framing_repeat_4.output"
+      },
+      "properties": {
+        "rotate": {
+          "x": 0,
+          "y": 180,
+          "z": 0
+        }
+      },
+      "position": [
+        1097,
+        918
+      ]
+    },
+    "watch_framing_repeat_8": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "watch_framing_repeat_4.output",
+          "watch_framing_turn_4.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        1097,
+        1030
+      ]
+    },
+    "watch_framing_setout": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "watch_framing_repeat_8.output"
+      },
+      "properties": {
+        "rotate": {
+          "x": 0,
+          "y": 22.5,
+          "z": 0
+        }
+      },
+      "position": [
+        1097,
+        1142
+      ]
+    },
+    "watch_timber_work": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "watch_gallery_sole.output",
+          "watch_sill_band.output",
+          "watch_wall_plate.output",
+          "watch_framing_setout.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        1097,
+        1254
+      ]
+    },
+    "watch_timber_site": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "watch_timber_work.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -9.2,
+          "y": 0,
+          "z": 3.65
+        }
+      },
+      "position": [
+        1097,
+        1366
+      ]
+    },
+    "watch_gutter_board": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 9.885,
+          "z": 0
+        },
+        "height": 0.085,
+        "radius_bottom": 1.81,
+        "radius_top": 1.9,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        3131,
+        60
+      ]
+    },
+    "watch_bellcast": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 9.97,
+          "z": 0
+        },
+        "height": 0.58,
+        "radius_bottom": 1.9,
+        "radius_top": 1.2956,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        3283,
+        60
+      ]
+    },
+    "watch_spire_course_1": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 10.55,
+          "z": 0
+        },
+        "height": 0.5715,
+        "radius_bottom": 1.3106,
+        "radius_top": 1.0365,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        3435,
+        60
+      ]
+    },
+    "watch_spire_course_2": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 11.1215,
+          "z": 0
+        },
+        "height": 0.6477,
+        "radius_bottom": 1.0605,
+        "radius_top": 0.8162,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        3587,
+        60
+      ]
+    },
+    "watch_spire_course_3": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 11.7692,
+          "z": 0
+        },
+        "height": 0.6858,
+        "radius_bottom": 0.8402,
+        "radius_top": 0.596,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        3739,
+        60
+      ]
+    },
+    "watch_spire_course_4": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 12.455,
+          "z": 0
+        },
+        "height": 0.7239,
+        "radius_bottom": 0.62,
+        "radius_top": 0.3887,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        3891,
+        60
+      ]
+    },
+    "watch_spire_course_5": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 13.1789,
+          "z": 0
+        },
+        "height": 0.6096,
+        "radius_bottom": 0.4127,
+        "radius_top": 0.1917,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        3131,
+        134
+      ]
+    },
+    "watch_spire_course_6": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 13.7885,
+          "z": 0
+        },
+        "height": 0.5715,
+        "radius_bottom": 0.2157,
+        "radius_top": 0,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        3283,
+        134
+      ]
+    },
+    "watch_lucarne_cheek_l": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.07,
+          "y": 0.35,
+          "z": 0.38
+        },
+        "center": {
+          "x": -0.132,
+          "y": 10.66,
+          "z": 1.13
+        }
+      },
+      "position": [
+        3435,
+        134
+      ]
+    },
+    "watch_lucarne_cheek_r": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.07,
+          "y": 0.35,
+          "z": 0.38
+        },
+        "center": {
+          "x": 0.132,
+          "y": 10.66,
+          "z": 1.13
+        }
+      },
+      "position": [
+        3587,
+        134
+      ]
+    },
+    "watch_lucarne_lintel": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.34,
+          "y": 0.075,
+          "z": 0.38
+        },
+        "center": {
+          "x": 0,
+          "y": 10.815,
+          "z": 1.13
+        }
+      },
+      "position": [
+        3739,
+        134
+      ]
+    },
+    "watch_lucarne_gable": {
+      "type": "procedural.Wedge",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.48,
+          "y": 0.28,
+          "z": 0.55
+        },
+        "center": {
+          "x": 0,
+          "y": 10.83,
+          "z": 1.12
+        },
+        "base_on_ground": true
+      },
+      "position": [
+        3891,
+        134
+      ]
+    },
+    "watch_lucarnes_bay": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "watch_lucarne_cheek_l.output",
+          "watch_lucarne_cheek_r.output",
+          "watch_lucarne_lintel.output",
+          "watch_lucarne_gable.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        3131,
+        246
+      ]
+    },
+    "watch_lucarnes_turn_1": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "watch_lucarnes_bay.output"
+      },
+      "properties": {
+        "rotate": {
+          "x": 0,
+          "y": 90,
+          "z": 0
+        }
+      },
+      "position": [
+        3131,
+        358
+      ]
+    },
+    "watch_lucarnes_repeat_2": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "watch_lucarnes_bay.output",
+          "watch_lucarnes_turn_1.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        3131,
+        470
+      ]
+    },
+    "watch_lucarnes_turn_2": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "watch_lucarnes_repeat_2.output"
+      },
+      "properties": {
+        "rotate": {
+          "x": 0,
+          "y": 180,
+          "z": 0
+        }
+      },
+      "position": [
+        3131,
+        582
+      ]
+    },
+    "watch_lucarnes_repeat_4": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "watch_lucarnes_repeat_2.output",
+          "watch_lucarnes_turn_2.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        3131,
+        694
+      ]
+    },
+    "watch_roof_work": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "watch_gutter_board.output",
+          "watch_bellcast.output",
+          "watch_spire_course_1.output",
+          "watch_spire_course_2.output",
+          "watch_spire_course_3.output",
+          "watch_spire_course_4.output",
+          "watch_spire_course_5.output",
+          "watch_spire_course_6.output",
+          "watch_lucarnes_repeat_4.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        3131,
+        806
+      ]
+    },
+    "watch_roof_site": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "watch_roof_work.output"
+      },
+      "properties": {
+        "translate": {
+          "x": -9.2,
+          "y": 0,
+          "z": 3.65
+        }
+      },
+      "position": [
+        3131,
+        918
+      ]
+    },
+    "ward_footing": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "height": 0.1628,
+        "radius_bottom": 1.065,
+        "radius_top": 1.1,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        80,
+        1780
+      ]
+    },
+    "ward_plinth": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 0.1628,
+          "z": 0
+        },
+        "height": 0.5144,
+        "radius_bottom": 1.055,
+        "radius_top": 1.025,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        232,
+        1780
+      ]
+    },
+    "ward_weathering": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 0.6772,
+          "z": 0
+        },
+        "height": 0.1628,
+        "radius_bottom": 1.045,
+        "radius_top": 0.93,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        384,
+        1780
+      ]
+    },
+    "ward_shaft": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 0.84,
+          "z": 0
+        },
+        "height": 2.63,
+        "radius_bottom": 0.93,
+        "radius_top": 0.93,
+        "inner_radius": 0.7524,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        536,
+        1780
+      ]
+    },
+    "ward_upper_shaft": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 4.01,
+          "z": 0
+        },
+        "height": 1.45,
+        "radius_bottom": 0.93,
+        "radius_top": 0.93,
+        "inner_radius": 0.7524,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        688,
+        1780
+      ]
+    },
+    "ward_corbel_throat": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 5.1788,
+          "z": 0
+        },
+        "height": 0.111,
+        "radius_bottom": 0.9559,
+        "radius_top": 0.9818,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        840,
+        1780
+      ]
+    },
+    "ward_corbel_table": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 5.349,
+          "z": 0
+        },
+        "height": 0.191,
+        "radius_bottom": 0.9744,
+        "radius_top": 1.0074,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        80,
+        1854
+      ]
+    },
+    "ward_slit_jamb_l": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.2759,
+          "y": 0.54,
+          "z": 0.1702
+        },
+        "center": {
+          "x": -0.2179,
+          "y": 3.74,
+          "z": 0.7741
+        }
+      },
+      "position": [
+        232,
+        1854
+      ]
+    },
+    "ward_slit_jamb_r": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.2759,
+          "y": 0.54,
+          "z": 0.1702
+        },
+        "center": {
+          "x": 0.2179,
+          "y": 3.74,
+          "z": 0.7741
+        }
+      },
+      "position": [
+        384,
+        1854
+      ]
+    },
+    "ward_slit_head": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.3774,
+          "y": 0.111,
+          "z": 0.0814
+        },
+        "center": {
+          "x": 0,
+          "y": 4.0507,
+          "z": 0.871
+        }
+      },
+      "position": [
+        536,
+        1854
+      ]
+    },
+    "ward_slit_sill": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.3256,
+          "y": 0.074,
+          "z": 0.0888
+        },
+        "center": {
+          "x": 0,
+          "y": 3.4441,
+          "z": 0.8725
+        }
+      },
+      "position": [
+        688,
+        1854
+      ]
+    },
+    "ward_plinth_course_1_stone_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.3685,
+          "y": 0.2402,
+          "z": 0.0355
+        },
+        "center": {
+          "x": -0.2084,
+          "y": 0.2914,
+          "z": 0.9729
+        }
+      },
+      "position": [
+        840,
+        1854
+      ]
+    },
+    "ward_plinth_course_1_stone_2": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.4006,
+          "y": 0.2402,
+          "z": 0.0355
+        },
+        "center": {
+          "x": 0.1924,
+          "y": 0.2914,
+          "z": 0.9803
+        }
+      },
+      "position": [
+        80,
+        1928
+      ]
+    },
+    "ward_plinth_course_2_stone_1": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.1892,
+          "y": 0.2402,
+          "z": 0.0355
+        },
+        "center": {
+          "x": -0.2924,
+          "y": 0.5486,
+          "z": 0.9628
+        }
+      },
+      "position": [
+        232,
+        1928
+      ]
+    },
+    "ward_plinth_course_2_stone_2": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.363,
+          "y": 0.2402,
+          "z": 0.0355
+        },
+        "center": {
+          "x": 0,
+          "y": 0.5486,
+          "z": 0.9591
+        }
+      },
+      "position": [
+        384,
+        1928
+      ]
+    },
+    "ward_plinth_course_2_stone_3": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.1892,
+          "y": 0.2402,
+          "z": 0.0355
+        },
+        "center": {
+          "x": 0.2924,
+          "y": 0.5486,
+          "z": 0.9665
+        }
+      },
+      "position": [
+        536,
+        1928
+      ]
+    },
+    "ward_masonry_bay": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "ward_slit_jamb_l.output",
+          "ward_slit_jamb_r.output",
+          "ward_slit_head.output",
+          "ward_slit_sill.output",
+          "ward_plinth_course_1_stone_1.output",
+          "ward_plinth_course_1_stone_2.output",
+          "ward_plinth_course_2_stone_1.output",
+          "ward_plinth_course_2_stone_2.output",
+          "ward_plinth_course_2_stone_3.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        80,
+        2040
+      ]
+    },
+    "ward_masonry_turn_1": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "ward_masonry_bay.output"
+      },
+      "properties": {
+        "rotate": {
+          "x": 0,
+          "y": 45,
+          "z": 0
+        }
+      },
+      "position": [
+        80,
+        2152
+      ]
+    },
+    "ward_masonry_repeat_2": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "ward_masonry_bay.output",
+          "ward_masonry_turn_1.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        80,
+        2264
+      ]
+    },
+    "ward_masonry_turn_2": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "ward_masonry_repeat_2.output"
+      },
+      "properties": {
+        "rotate": {
+          "x": 0,
+          "y": 90,
+          "z": 0
+        }
+      },
+      "position": [
+        80,
+        2376
+      ]
+    },
+    "ward_masonry_repeat_4": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "ward_masonry_repeat_2.output",
+          "ward_masonry_turn_2.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        80,
+        2488
+      ]
+    },
+    "ward_masonry_turn_4": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "ward_masonry_repeat_4.output"
+      },
+      "properties": {
+        "rotate": {
+          "x": 0,
+          "y": 180,
+          "z": 0
+        }
+      },
+      "position": [
+        80,
+        2600
+      ]
+    },
+    "ward_masonry_repeat_8": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "ward_masonry_repeat_4.output",
+          "ward_masonry_turn_4.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        80,
+        2712
+      ]
+    },
+    "ward_masonry_setout": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "ward_masonry_repeat_8.output"
+      },
+      "properties": {
+        "rotate": {
+          "x": 0,
+          "y": 22.5,
+          "z": 0
+        }
+      },
+      "position": [
+        80,
+        2824
+      ]
+    },
+    "ward_stone_work": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "ward_footing.output",
+          "ward_plinth.output",
+          "ward_weathering.output",
+          "ward_shaft.output",
+          "ward_upper_shaft.output",
+          "ward_corbel_throat.output",
+          "ward_corbel_table.output",
+          "ward_masonry_setout.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        80,
+        2936
+      ]
+    },
+    "ward_stone_site": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "ward_stone_work.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.4,
+          "y": 0,
+          "z": 2.7
+        }
+      },
+      "position": [
+        80,
+        3048
+      ]
+    },
+    "ward_lower_infill": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 5.54,
+          "z": 0
+        },
+        "height": 0.26,
+        "radius_bottom": 1,
+        "radius_top": 1,
+        "inner_radius": 0.8816,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        2114,
+        1780
+      ]
+    },
+    "ward_head_infill": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 6.42,
+          "z": 0
+        },
+        "height": 0.08,
+        "radius_bottom": 1,
+        "radius_top": 1,
+        "inner_radius": 0.8816,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        2266,
+        1780
+      ]
+    },
+    "ward_infill_cheek_l": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.1827,
+          "y": 0.62,
+          "z": 0.1258
+        },
+        "center": {
+          "x": -0.2913,
+          "y": 6.11,
+          "z": 0.861
+        }
+      },
+      "position": [
+        2418,
+        1780
+      ]
+    },
+    "ward_infill_cheek_r": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.1827,
+          "y": 0.62,
+          "z": 0.1258
+        },
+        "center": {
+          "x": 0.2913,
+          "y": 6.11,
+          "z": 0.861
+        }
+      },
+      "position": [
+        2570,
+        1780
+      ]
+    },
+    "ward_infill_bay": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "ward_infill_cheek_l.output",
+          "ward_infill_cheek_r.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        2114,
+        1892
+      ]
+    },
+    "ward_infill_turn_1": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "ward_infill_bay.output"
+      },
+      "properties": {
+        "rotate": {
+          "x": 0,
+          "y": 45,
+          "z": 0
+        }
+      },
+      "position": [
+        2114,
+        2004
+      ]
+    },
+    "ward_infill_repeat_2": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "ward_infill_bay.output",
+          "ward_infill_turn_1.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        2114,
+        2116
+      ]
+    },
+    "ward_infill_turn_2": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "ward_infill_repeat_2.output"
+      },
+      "properties": {
+        "rotate": {
+          "x": 0,
+          "y": 90,
+          "z": 0
+        }
+      },
+      "position": [
+        2114,
+        2228
+      ]
+    },
+    "ward_infill_repeat_4": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "ward_infill_repeat_2.output",
+          "ward_infill_turn_2.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        2114,
+        2340
+      ]
+    },
+    "ward_infill_turn_4": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "ward_infill_repeat_4.output"
+      },
+      "properties": {
+        "rotate": {
+          "x": 0,
+          "y": 180,
+          "z": 0
+        }
+      },
+      "position": [
+        2114,
+        2452
+      ]
+    },
+    "ward_infill_repeat_8": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "ward_infill_repeat_4.output",
+          "ward_infill_turn_4.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        2114,
+        2564
+      ]
+    },
+    "ward_infill_setout": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "ward_infill_repeat_8.output"
+      },
+      "properties": {
+        "rotate": {
+          "x": 0,
+          "y": 22.5,
+          "z": 0
+        }
+      },
+      "position": [
+        2114,
+        2676
+      ]
+    },
+    "ward_plaster_work": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "ward_lower_infill.output",
+          "ward_head_infill.output",
+          "ward_infill_setout.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        2114,
+        2788
+      ]
+    },
+    "ward_plaster_site": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "ward_plaster_work.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.4,
+          "y": 0,
+          "z": 2.7
+        }
+      },
+      "position": [
+        2114,
+        2900
+      ]
+    },
+    "ward_gallery_sole": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 5.5104,
+          "z": 0
+        },
+        "height": 0.1332,
+        "radius_bottom": 1.0518,
+        "radius_top": 1.0518,
+        "inner_radius": 0.9334,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        1097,
+        1780
+      ]
+    },
+    "ward_sill_band": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 5.7297,
+          "z": 0
+        },
+        "height": 0.1184,
+        "radius_bottom": 1.0407,
+        "radius_top": 1.0407,
+        "inner_radius": 0.9408,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        1249,
+        1780
+      ]
+    },
+    "ward_wall_plate": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 6.4186,
+          "z": 0
+        },
+        "height": 0.0925,
+        "radius_bottom": 1.0555,
+        "radius_top": 1.0555,
+        "inner_radius": 0.9408,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        1401,
+        1780
+      ]
+    },
+    "ward_bay_post": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.1036,
+          "y": 0.96,
+          "z": 0.111
+        },
+        "center": {
+          "x": -0.3568,
+          "y": 6.02,
+          "z": 0.9313
+        }
+      },
+      "position": [
+        1553,
+        1780
+      ]
+    },
+    "ward_casement_jamb_l": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.0466,
+          "y": 0.657,
+          "z": 0.0703
+        },
+        "center": {
+          "x": -0.2,
+          "y": 6.11,
+          "z": 0.935
+        }
+      },
+      "position": [
+        1705,
+        1780
+      ]
+    },
+    "ward_casement_jamb_r": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.0466,
+          "y": 0.657,
+          "z": 0.0703
+        },
+        "center": {
+          "x": 0.2,
+          "y": 6.11,
+          "z": 0.935
+        }
+      },
+      "position": [
+        1857,
+        1780
+      ]
+    },
+    "ward_casement_mullion": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.0363,
+          "y": 0.62,
+          "z": 0.0496
+        },
+        "center": {
+          "x": 0,
+          "y": 6.11,
+          "z": 0.9128
+        }
+      },
+      "position": [
+        1097,
+        1854
+      ]
+    },
+    "ward_window_transom": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.4,
+          "y": 0.0392,
+          "z": 0.054
+        },
+        "center": {
+          "x": 0,
+          "y": 6.2278,
+          "z": 0.9135
+        }
+      },
+      "position": [
+        1249,
+        1854
+      ]
+    },
+    "ward_casement_hood": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.5406,
+          "y": 0.0688,
+          "z": 0.148
+        },
+        "center": {
+          "x": 0,
+          "y": 6.4466,
+          "z": 0.9498
+        }
+      },
+      "position": [
+        1401,
+        1854
+      ]
+    },
+    "ward_window_sill": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.511,
+          "y": 0.054,
+          "z": 0.1554
+        },
+        "center": {
+          "x": 0,
+          "y": 5.817,
+          "z": 0.9572
+        }
+      },
+      "position": [
+        1553,
+        1854
+      ]
+    },
+    "ward_breast_block": {
+      "type": "procedural.Box",
+      "inputs": {},
+      "properties": {
+        "size": {
+          "x": 0.13,
+          "y": 0.26,
+          "z": 0.1
+        },
+        "center": {
+          "x": 0,
+          "y": 5.67,
+          "z": 0.9339
+        }
+      },
+      "position": [
+        1705,
+        1854
+      ]
+    },
+    "ward_framing_bay": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "ward_bay_post.output",
+          "ward_casement_jamb_l.output",
+          "ward_casement_jamb_r.output",
+          "ward_casement_mullion.output",
+          "ward_window_transom.output",
+          "ward_casement_hood.output",
+          "ward_window_sill.output",
+          "ward_breast_block.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        1097,
+        1966
+      ]
+    },
+    "ward_framing_turn_1": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "ward_framing_bay.output"
+      },
+      "properties": {
+        "rotate": {
+          "x": 0,
+          "y": 45,
+          "z": 0
+        }
+      },
+      "position": [
+        1097,
+        2078
+      ]
+    },
+    "ward_framing_repeat_2": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "ward_framing_bay.output",
+          "ward_framing_turn_1.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        1097,
+        2190
+      ]
+    },
+    "ward_framing_turn_2": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "ward_framing_repeat_2.output"
+      },
+      "properties": {
+        "rotate": {
+          "x": 0,
+          "y": 90,
+          "z": 0
+        }
+      },
+      "position": [
+        1097,
+        2302
+      ]
+    },
+    "ward_framing_repeat_4": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "ward_framing_repeat_2.output",
+          "ward_framing_turn_2.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        1097,
+        2414
+      ]
+    },
+    "ward_framing_turn_4": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "ward_framing_repeat_4.output"
+      },
+      "properties": {
+        "rotate": {
+          "x": 0,
+          "y": 180,
+          "z": 0
+        }
+      },
+      "position": [
+        1097,
+        2526
+      ]
+    },
+    "ward_framing_repeat_8": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "ward_framing_repeat_4.output",
+          "ward_framing_turn_4.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        1097,
+        2638
+      ]
+    },
+    "ward_framing_setout": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "ward_framing_repeat_8.output"
+      },
+      "properties": {
+        "rotate": {
+          "x": 0,
+          "y": 22.5,
+          "z": 0
+        }
+      },
+      "position": [
+        1097,
+        2750
+      ]
+    },
+    "ward_timber_work": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "ward_gallery_sole.output",
+          "ward_sill_band.output",
+          "ward_wall_plate.output",
+          "ward_framing_setout.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        1097,
+        2862
+      ]
+    },
+    "ward_timber_site": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "ward_timber_work.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.4,
+          "y": 0,
+          "z": 2.7
+        }
+      },
+      "position": [
+        1097,
+        2974
+      ]
+    },
+    "ward_gutter_board": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 6.4741,
+          "z": 0
+        },
+        "height": 0.0629,
+        "radius_bottom": 1.0934,
+        "radius_top": 1.16,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        3131,
+        1780
+      ]
+    },
+    "ward_bellcast": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 6.537,
+          "z": 0
+        },
+        "height": 0.293,
+        "radius_bottom": 1.16,
+        "radius_top": 0.82,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        3283,
+        1780
+      ]
+    },
+    "ward_spire_course_1": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 6.83,
+          "z": 0
+        },
+        "height": 0.4092,
+        "radius_bottom": 0.8311,
+        "radius_top": 0.5986,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        3435,
+        1780
+      ]
+    },
+    "ward_spire_course_2": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 7.2392,
+          "z": 0
+        },
+        "height": 0.465,
+        "radius_bottom": 0.6164,
+        "radius_top": 0.3772,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        3587,
+        1780
+      ]
+    },
+    "ward_spire_course_3": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 7.7042,
+          "z": 0
+        },
+        "height": 0.465,
+        "radius_bottom": 0.395,
+        "radius_top": 0.1788,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        3739,
+        1780
+      ]
+    },
+    "ward_spire_course_4": {
+      "type": "procedural.Tube",
+      "inputs": {},
+      "properties": {
+        "center": {
+          "x": 0,
+          "y": 8.1692,
+          "z": 0
+        },
+        "height": 0.5208,
+        "radius_bottom": 0.1965,
+        "radius_top": 0,
+        "base_on_ground": true,
+        "segments": 8
+      },
+      "position": [
+        3891,
+        1780
+      ]
+    },
+    "ward_roof_work": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "ward_gutter_board.output",
+          "ward_bellcast.output",
+          "ward_spire_course_1.output",
+          "ward_spire_course_2.output",
+          "ward_spire_course_3.output",
+          "ward_spire_course_4.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        3131,
+        1892
+      ]
+    },
+    "ward_roof_site": {
+      "type": "procedural.Transform",
+      "inputs": {
+        "input": "ward_roof_work.output"
+      },
+      "properties": {
+        "translate": {
+          "x": 6.4,
+          "y": 0,
+          "z": 2.7
+        }
+      },
+      "position": [
+        3131,
+        2004
+      ]
+    },
+    "stone": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "watch_stone_site.output",
+          "ward_stone_site.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        760,
+        3292
+      ],
+      "color": "#786d5b"
+    },
+    "timber": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "watch_timber_site.output",
+          "ward_timber_site.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        1005,
+        3292
+      ],
+      "color": "#765846"
+    },
+    "plaster": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "watch_plaster_site.output",
+          "ward_plaster_site.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        1250,
+        3292
+      ],
+      "color": "#937e60"
+    },
+    "roof": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "watch_roof_site.output",
+          "ward_roof_site.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        1495,
+        3292
+      ],
+      "color": "#555d70"
+    },
+    "towers": {
+      "type": "procedural.Merge",
+      "inputs": {
+        "inputs": [
+          "stone_finish.output",
+          "timber_finish.output",
+          "plaster_finish.output",
+          "roof_finish.output"
+        ]
+      },
+      "properties": {},
+      "position": [
+        1120,
+        3489
+      ],
+      "color": "#bb9955"
+    },
+    "OUT_towers": {
+      "type": "procedural.GraphOutput",
+      "inputs": {
+        "input": "towers.output"
+      },
+      "properties": {
+        "order": 0,
+        "port_name": "geometry"
+      },
+      "position": [
+        1120,
+        3591
+      ],
+      "comment": "Both towers in gatehouse space",
+      "color": "#bb9955"
+    },
+    "stone_finish": {
+      "type": "game.GatehouseFinish",
+      "inputs": {
+        "input": "stone.output"
+      },
+      "properties": {
+        "finish": 0
+      },
+      "position": [
+        760,
+        3377
+      ],
+      "color": "#786d5b"
+    },
+    "timber_finish": {
+      "type": "game.GatehouseFinish",
+      "inputs": {
+        "input": "timber.output"
+      },
+      "properties": {
+        "finish": 1
+      },
+      "position": [
+        1005,
+        3377
+      ],
+      "color": "#765846"
+    },
+    "plaster_finish": {
+      "type": "game.GatehouseFinish",
+      "inputs": {
+        "input": "plaster.output"
+      },
+      "properties": {
+        "finish": 2
+      },
+      "position": [
+        1250,
+        3377
+      ],
+      "color": "#937e60"
+    },
+    "roof_finish": {
+      "type": "game.GatehouseFinish",
+      "inputs": {
+        "input": "roof.output"
+      },
+      "properties": {
+        "finish": 4
+      },
+      "position": [
+        1495,
+        3377
+      ],
+      "color": "#555d70"
+    }
+  },
+  "settings": {
+    "display": "OUT_towers",
+    "seed": 0
+  }
+}

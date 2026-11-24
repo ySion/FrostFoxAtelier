@@ -5,6 +5,21 @@
 #include <charconv>
 
 namespace atelier::language {
+std::expected<std::string, Diagnostic> detail::parse_presentation_text(Tokens& tokens, const Token& option) {
+    ATELIER_TRY(tokens.expect("="));
+    if (tokens.token_.kind != Token::Kind::string)
+        return reject(tokens.token_.position, std::string(option.text) + " requires a string literal.");
+    ATELIER_TRY_BIND(token, tokens.consume());
+    ATELIER_TRY_BIND(text, string_value(*token));
+    if (option.text == "DESC") {
+        if (!normalize_description_text(*text))
+            return reject(option.position, "DESC must not contain control characters other than line breaks and tabs.");
+    } else if (std::ranges::any_of(*text, [](unsigned char c) { return c < 32 || c == 127; })) {
+        return reject(option.position, std::string(option.text) + " must not contain control characters.");
+    }
+    return text;
+}
+
 std::expected<TypeName, Diagnostic> detail::parse_type_name(Tokens& tokens) {
     TypeName result;
     for (;;) {
@@ -88,21 +103,11 @@ std::expected<TypeDeclaration, Diagnostic> detail::parse_type_declaration(Tokens
                         return reject(option->position, "Duplicate enumerator attribute: " + std::string(option->text));
                     if (option->text != "Label" && option->text != "DESC")
                         return reject(option->position, "Unknown enumerator attribute: " + std::string(option->text));
-                    ATELIER_TRY(tokens.expect("="));
-                    if (tokens.token_.kind != Token::Kind::string)
-                        return reject(tokens.token_.position,
-                                      std::string(option->text) + " requires a string literal.");
-                    ATELIER_TRY_BIND(str_tok, tokens.consume());
-                    ATELIER_TRY_BIND(decoded, string_value(*str_tok));
+                    ATELIER_TRY_BIND(decoded, parse_presentation_text(tokens, *option));
                     if (option->text == "Label") {
-                        if (std::ranges::any_of(*decoded, [](unsigned char c) { return c < 32 || c == 127; }))
-                            return reject(option->position, "Label must not contain control characters.");
                         attribute.label = std::move(*decoded);
                         seen_label = true;
                     } else {
-                        if (!normalize_description_text(*decoded))
-                            return reject(option->position,
-                                          "DESC must not contain control characters other than line breaks and tabs.");
                         attribute.description = std::move(*decoded);
                         seen_desc = true;
                     }
@@ -204,8 +209,8 @@ detail::parse_parameter_attributes(Tokens& tokens, bool allow_attributes,
                 explicit_name = std::move(*decoded);
             } else {
                 ATELIER_TRY_BIND(opt, tokens.identifier());
-                if (role == "port")
-                    return reject(opt->position, "Port does not accept options.");
+                if (role == "port" && opt->text != "DESC")
+                    return reject(opt->position, "Port only accepts a DESC option.");
                 if (opt->text == "Optional") {
                     if (tokens.token_.text == "=")
                         return reject(opt->position, "Optional is a flag without a value.");

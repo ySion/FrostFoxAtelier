@@ -41,8 +41,8 @@ enum class RayMode : std::uint32_t { project, minimum };
 AENUM(Name = "procedural.BooleanOperation", DESC = "闭合实体的并集、交集或差集 A 减 B。")
 enum class BooleanOperation : std::uint32_t { unite, intersect, subtract };
 
-AENUM(Name = "procedural.GroupCriterion", DESC = "按面的几何法线选择，或读取已有的 bool 组。")
-enum class GroupCriterion : std::uint32_t { normal, existing };
+AENUM(Name = "procedural.GroupCriterion", DESC = "根据面法线、已有 bool 组或 float 属性的闭区间生成选择。")
+enum class GroupCriterion : std::uint32_t { normal, existing, range };
 
 AENUM(Name = "procedural.GroupOperation", DESC = "直接使用条件结果，或与指定的同层基组求并、交、差。")
 enum class GroupOperation : std::uint32_t { replace, unite, intersect, subtract };

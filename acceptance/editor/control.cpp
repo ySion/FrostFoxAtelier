@@ -1582,15 +1582,60 @@ Result<void> verify_inspect_read_errors(const std::filesystem::path& directory, 
     return require_control_error(inspect(full), "operation_failed", "World is closed.");
 }
 
+Result<void> verify_graph_write_examples(ControlCli& cli, json::Value examples) {
+    ATELIER_TRY(cli.call("graph.create_scratch", 0, json::Document::literal<R"({"key":"scratch/write-examples"})">()));
+    const auto invoke = [&](std::string_view name) -> Result<json::Document> {
+        ATELIER_TRY_BIND(request, examples.at(name).transform_error(json_error));
+        ATELIER_TRY_BIND(op, request->string({"op"}).transform_error(json_error));
+        ATELIER_TRY_BIND(args, request->at("args").transform_error(json_error));
+        if (request->string({"state_token"}) != "<latest state_token>")
+            return fixture_failure("Graph write example omitted the write token");
+        return cli.call(*op, 0, json::Document(*args));
+    };
+    ATELIER_TRY(invoke("edit_nodes"));
+    const auto roof = json::Document::literal<R"({"view":"node","node":"roof"})">();
+    ATELIER_TRY_BIND(unbound, cli.call("graph.inspect", 0, roof));
+    if (*unbound->root().at("result")->find("controlled_fields"))
+        return fixture_failure("Unbound node advertised promoted fields");
+
+    ATELIER_TRY(cli.call("op.call", 0, json::Document::literal<R"({"id":"graph.expose_parameter",
+        "args":{"node":"roof","path":"size.x","name":"clear_width"}})">()));
+    ATELIER_TRY(cli.call("op.call", 0, json::Document::literal<R"({"id":"graph.bind_parameter",
+        "args":{"node":"place","path":"translate.x","parameter":"clear_width"}})">()));
+    ATELIER_TRY_BIND(promoted, cli.call("graph.inspect", 0, roof));
+    const auto mapping = promoted->root().at("result")->at("controlled_fields");
+    if (!mapping || mapping->size() != 1 || mapping->string({"size.x"}) != "clear_width")
+        return fixture_failure("Node view did not identify its controlling graph parameter");
+    ATELIER_TRY_BIND(rejected, cli.call("graph.apply", 1, json::Document::literal<R"({
+        "nodes":{"roof":{"properties":{"size":{"x":9}}}}})">()));
+    if (rejected->root().string({"error","code"}) != "operation_failed" ||
+        rejected->root().string({"error","message"}).value_or("").find("parameter='clear_width'") == std::string_view::npos)
+        return fixture_failure("Direct write to a promoted field lost the parameter name or repair hint");
+    ATELIER_TRY(invoke("set_promoted_parameter"));
+    ATELIER_TRY_BIND(updated, cli.call("graph.inspect", 0, roof));
+    ATELIER_TRY_BIND(peer, cli.call("graph.inspect", 0, json::Document::literal<R"({"view":"node","node":"place"})">()));
+    if (updated->root().number({"result","properties","size","x"}) != 5 ||
+        peer->root().number({"result","properties","translate","x"}) != 5 ||
+        peer->root().string({"result","controlled_fields","translate.x"}) != "clear_width")
+        return fixture_failure("Published graph parameter example did not update both bound nodes");
+    ATELIER_TRY(cli.call("op.call", 0, json::Document::literal<R"({"id":"graph.exit"})">()));
+    return {};
+}
+
 Result<void> verify_graph_discovery_cli(ControlCli& cli) {
     ATELIER_TRY_BIND(profile, cli.call("capabilities", 0, json::Document::literal<R"({"scope":"graph"})">()));
     const auto ops = *profile->root().at("result")->at("operations")->array();
     std::vector<std::string> names;
+    std::optional<json::Value> write_examples;
     for (const auto item : ops) {
         const auto op = *item.string({"op"});
         names.emplace_back(op == "op.call" ? *item.string({"id"}) : op);
         if (!*item.find("args") || !*item.find("requires_state_token"))
             return fixture_failure("Graph tool is missing its invocation contract");
+        if (op == "graph.apply") {
+            ATELIER_TRY_BIND(examples, item.at("examples").transform_error(json_error));
+            write_examples = *examples;
+        }
     }
     if (names != std::vector<std::string>{"asset.new_procedural_graph", "graph.open", "graph.inspect", "graph.apply",
                                           "graph.save", "graph.create_scratch"})
@@ -1601,10 +1646,23 @@ Result<void> verify_graph_discovery_cli(ControlCli& cli) {
             return fixture_failure("Retired graph property request is still advertised");
     ATELIER_TRY_BIND(types, cli.call("graph.inspect", 0, json::Document::literal<R"({"view":"catalog"})">()));
     bool group_listed = false;
-    for (const auto entry : *types->root().at("result")->at("node_types")->array())
+    std::string_view noise_description;
+    for (const auto entry : *types->root().at("result")->at("node_types")->array()) {
         group_listed |= entry.string({"name"}) == "procedural.Group";
+        if (entry.string({"name"}) == "procedural.Noise")
+            noise_description = entry.string({"description"}).value_or("");
+    }
     if (!group_listed || *types->root().at("result")->find("display_summary"))
         return fixture_failure("Expected the SOP catalog before opening a graph");
+    ATELIER_TRY_BIND(sweep, cli.call("graph.inspect", 0,
+                                     json::Document::literal<R"({"view":"catalog","type":"procedural.Sweep"})">()));
+    const auto hints = *sweep->root().at("result");
+    const auto backbone = hints.string({"port_descriptions", "inputs", "backbone"}).value_or("");
+    const auto section = hints.string({"port_descriptions", "inputs", "cross_section"}).value_or("");
+    const auto output = hints.string({"port_descriptions", "outputs", "output"}).value_or("");
+    if (!backbone.contains("Polyline") || !section.contains("profile=custom") || !section.contains("XY") ||
+        !section.contains("polygon") || !section.contains("polyline") || !output.contains("end_caps"))
+        return fixture_failure("Sweep port help omitted the topology, coordinate or cap contract");
     ATELIER_TRY_BIND(schema, cli.call("graph.inspect", 0,
                                       json::Document::literal<R"({"view":"catalog","type":"procedural.Group"})">()));
     const auto type = *schema->root().at("result");
@@ -1624,7 +1682,8 @@ Result<void> verify_graph_discovery_cli(ControlCli& cli) {
     ATELIER_TRY_BIND(
         source_type,
         cli.call("graph.inspect", 0, json::Document::literal<R"({"view":"catalog","type":"procedural.Noise"})">()));
-    if (source_type->root().boolean({"result", "native"}) != false ||
+    if (noise_description.empty() || source_type->root().string({"result", "description"}) != noise_description ||
+        source_type->root().boolean({"result", "native"}) != false ||
         !source_type->root().at("result")->at("fields")->size())
         return fixture_failure("Source SOP schema discovery failed");
     ATELIER_TRY_BIND(
@@ -1654,8 +1713,9 @@ Result<void> verify_graph_discovery_cli(ControlCli& cli) {
     const auto parameters = *digital->root().at("result")->at("parameters");
     if (parameters.size() != 1 || parameters.at(0)->string({"name"}) != "width" || !*parameters.at(0)->find("type"))
         return fixture_failure("Digital asset catalog did not resolve its promoted parameter");
-
-    return {};
+    if (!write_examples)
+        return fixture_failure("Graph authoring help omitted the write examples");
+    return verify_graph_write_examples(cli, *write_examples);
 }
 
 Result<void> verify_moss_bindings_cli(ControlCli& cli) {
@@ -1725,7 +1785,7 @@ Result<void> verify_moss_bindings_cli(ControlCli& cli) {
     ATELIER_TRY(check(true, true));
     ATELIER_TRY_BIND(rotated, samples());
     ATELIER_TRY(cli.call("graph.apply", 0, json::Document::literal<R"({"nodes":{
-        "place_clumps":{"inputs":{"points":"moss_anchors.points"}}}})">()));
+        "place_clumps":{"inputs":{"points":"moss_patch.output"}}}})">()));
     ATELIER_TRY(check(false, false));
     ATELIER_TRY_BIND(unit, samples());
     if (*original == *rotated || *original == *unit)
@@ -1740,6 +1800,78 @@ Result<void> verify_moss_bindings_cli(ControlCli& cli) {
     ATELIER_TRY_BIND(restored, samples());
     if (*original != *restored)
         return fixture_failure("Undo did not restore the realized roof geometry");
+    return {};
+}
+
+Result<void> verify_moss_range_cli(ControlCli& cli) {
+    const auto undo = json::Document::literal<R"({"id":"edit.undo"})">();
+    const auto patch_query = json::Document::literal<R"({"node":"moss_patch","samples":0,"spatial":false})">();
+    const auto bindings = json::Document::literal<R"({"node":"moss_patch","view":"node","bindings":true})">();
+    const auto selected = [](json::Value summary, std::string_view name) -> Result<std::uint64_t> {
+        for (const auto attr : *summary.at("attributes")->array())
+            if (attr.string({"name"}) == name && attr.string({"layer"}) == "point")
+                return attr.u64({"selected_count"}).transform_error(json_error);
+        return fixture_failure("Missing point selection in the cooked moss roof");
+    };
+    ATELIER_TRY_BIND(explained, cli.call("graph.inspect", 0, bindings));
+    bool reads_cover = false, writes_patch = false;
+    for (const auto row : *explained->root().at("result")->at("bindings")->at("attributes")->array()) {
+        reads_cover |= row.string({"name"}) == "moss_cover" && row.string({"column_source"}) == "cover_noise" &&
+                       row.string({"layer"}) == "point" && row.string({"status"}) == "bound";
+        writes_patch |= row.string({"name"}) == "moss_patch" && row.string({"status"}) == "written";
+    }
+    if (!reads_cover || !writes_patch)
+        return fixture_failure("Group did not explain the selected range column and output mask");
+    // Measure source topology so the same assertion works when the clump mesh changes.
+    ATELIER_TRY_BIND(pad, cli.call("graph.inspect", 0,
+                                   json::Document::literal<R"({"node":"moss_pad","samples":0,"spatial":false})">()));
+    const auto faces = pad->root().u64({"result", "inspected_summary", "counts", "primitive"}).value_or(0);
+    const auto cook = [&](float minimum, std::uint64_t& scatter_runs) -> Result<std::uint64_t> {
+        json::Builder patch;
+        const auto nodes = patch.object_validated(patch.root(), "nodes");
+        const auto group = patch.object_validated(nodes, "moss_patch");
+        ATELIER_TRY(
+            patch.set(patch.object_validated(group, "properties"), "minimum", minimum).transform_error(json_error));
+        ATELIER_TRY(cli.call("graph.apply", 0, patch.finish()));
+        ATELIER_TRY_BIND(reply, cli.call("graph.inspect", 0, patch_query));
+        const auto result = *reply->root().at("result");
+        ATELIER_TRY_BIND(count, selected(*result.at("inspected_summary"), "moss_patch"));
+        for (const auto row : *result.at("nodes")->array())
+            if (row.string({"name"}) == "moss_anchors")
+                scatter_runs = row.u64({"status", "evaluations"}).value_or(0);
+        ATELIER_TRY_BIND(copies,
+                         cli.call("graph.inspect", 0,
+                                  json::Document::literal<R"({"node":"place_clumps","samples":0,"spatial":false})">()));
+        if (!faces || !scatter_runs ||
+            copies->root().u64({"result", "inspected_summary", "counts", "primitive"}) != faces * *count)
+            return fixture_failure("Realize did not place exactly one clump per selected roof anchor");
+        return *count;
+    };
+    std::uint64_t runs_low{}, runs_high{};
+    ATELIER_TRY_BIND(low, cook(.4f, runs_low));
+    ATELIER_TRY_BIND(high, cook(.7f, runs_high));
+    if (!*high || *high >= *low || runs_low != runs_high)
+        return fixture_failure("Thresholds did not thin the same immutable set of roof anchors");
+    // Compare every member in the engine, including those beyond the CLI's 32 sample preview.
+    ATELIER_TRY(cli.call("graph.apply", 0, json::Document::literal<R"({"nodes":{
+        "wide":{"type":"procedural.Group","inputs":{"input":"moss_patch.output"},"properties":{"criterion":"range",
+          "source_attribute":"moss_cover","minimum":0.4,"maximum":1,"group":"wide"}},
+        "difference":{"type":"procedural.Group","inputs":{"input":"wide.output"},"properties":{"criterion":"existing",
+          "source_group":"wide","operation":"subtract","base_group":"moss_patch","group":"difference"}}}})">()));
+    ATELIER_TRY_BIND(diff, cli.call("graph.inspect", 0,
+                                    json::Document::literal<R"({"node":"difference","samples":0,"spatial":false})">()));
+    const auto summary = *diff->root().at("result")->at("inspected_summary");
+    ATELIER_TRY_BIND(wide, selected(summary, "wide"));
+    ATELIER_TRY_BIND(outside, selected(summary, "difference"));
+    if (*wide != *low || *outside != 0)
+        return fixture_failure("The tighter interval selected anchors outside the wider interval");
+    ATELIER_TRY(
+        cli.call("graph.apply", 0,
+                 json::Document::literal<R"({"nodes":{"moss_patch":{"properties":{"source_attribute":"P"}}}})">()));
+    ATELIER_TRY(require_control_error(cli.call("graph.inspect", 1, bindings), "operation_failed",
+                                      "procedural.Group: Group attribute P must be float."));
+    for (unsigned i = 0; i < 4; ++i)
+        ATELIER_TRY(cli.call("op.call", 0, undo));
     return {};
 }
 
@@ -1798,6 +1930,10 @@ Result<void> verify_moss_roof_cli(ControlCli& cli) {
         return positions && provenance ? Result<void>{}
                                        : fixture_failure("Moss anchors lost their position or source face");
     };
+    ATELIER_TRY(verify_moss_range_cli(cli));
+    // Inspect every anchor on both slopes using the same graph at the original sparse density.
+    ATELIER_TRY(cli.call("graph.apply", 0, json::Document::literal<R"({"nodes":{"moss_anchors":{
+        "properties":{"density":2,"min_distance":0.3}}}})">()));
     ATELIER_TRY(slope(true));
     ATELIER_TRY(verify_moss_bindings_cli(cli));
     ATELIER_TRY(cli.call(
@@ -1805,12 +1941,220 @@ Result<void> verify_moss_roof_cli(ControlCli& cli) {
         json::Document::literal<R"({"nodes":{"moss_faces":{"properties":{"direction":{"x":1,"y":1,"z":0}}}}})">()));
     ATELIER_TRY(slope(false));
     ATELIER_TRY(cli.call("op.call", 0, json::Document::literal<R"({"id":"edit.undo"})">()));
+    ATELIER_TRY(cli.call("op.call", 0, json::Document::literal<R"({"id":"edit.undo"})">()));
     ATELIER_TRY(cli.call("op.call", 0, json::Document::literal<R"({"id":"graph.exit"})">()));
+    return {};
+}
+
+Result<void> verify_graph_raycast_cli(ControlCli& cli) {
+    ATELIER_TRY(cli.call("graph.create_scratch", 0, json::Document::literal<R"({"key":"scratch/raycast"})">()));
+    ATELIER_TRY(cli.call("graph.apply", 0, json::Document::literal<R"({"nodes":{
+        "roof":{"type":"procedural.Box","properties":{"size":{"x":4,"y":2,"z":3}}},
+        "selection":{"type":"procedural.Group","inputs":{"input":"roof.output"}}
+    },"settings":{"display":"roof"}})">()));
+    ATELIER_TRY_BIND(profile, cli.call("capabilities", 0, json::Document::literal<R"({"scope":"graph"})">()));
+    bool example_hit = false;
+    for (const auto item : *profile->root().at("result")->at("operations")->array()) {
+        if (item.string({"op"}) != "graph.inspect")
+            continue;
+        const auto schema = *item.at("args");
+        if (schema.u32({"properties", "raycast", "properties", "rays", "maxItems"}) != 32 ||
+            item.string({"raycast_result", "path"}) != "result.raycast")
+            return fixture_failure("Graph capabilities lost the raycast request or result schema");
+        const auto example = *schema.at("examples")->at(0);
+        ATELIER_TRY_BIND(measured, cli.call("graph.inspect", 0, json::Document{example}));
+        const auto hit = *measured->root().at("result")->at("raycast")->at("hits")->at(0);
+        example_hit = hit.number({"distance"}) == 9.0;
+    }
+    if (!example_hit)
+        return fixture_failure("The graph discovery example must measure the current box roof");
+    const auto query =
+        json::Document::literal<R"({"view":"node","node":"selection","raycast":{"output":"output","rays":[
+        {"origin":[0,0.25,0.3],"direction":[2,0,0],"max_distance":20},
+        {"origin":[0,0.25,0.3],"direction":[2,0,0],"max_distance":1.5}
+    ]}})">();
+    const auto topology = json::Document::literal<R"({"view":"topology"})">();
+    ATELIER_TRY_BIND(before, cli.call("graph.inspect", 0, topology));
+    const auto check = [&](float width) -> Result<void> {
+        ATELIER_TRY_BIND(reply, cli.call("graph.inspect", 0, query));
+        const auto result = *reply->root().at("result")->at("raycast");
+        const auto hits = *result.at("hits");
+        const auto hit = *hits.at(0);
+        if (result.string({"output"}) != "output" || hits.size() != 2 || !hits.at(1)->is_null() ||
+            hit.number({"distance"}) != width / 2 || hit.at("position")->at(0)->number() != width / 2 ||
+            !hit.u32({"primitive"}) || !hit.u32({"triangle"}))
+            return fixture_failure("Expected normalized graph-local hit and ordered finite-range miss");
+        return {};
+    };
+    ATELIER_TRY(check(4));
+    ATELIER_TRY_BIND(after, cli.call("graph.inspect", 0, topology));
+    if (*before->root().at("result") != *after->root().at("result"))
+        return fixture_failure("Read-only rays changed graph authoring state");
+    ATELIER_TRY(
+        cli.call("graph.apply", 0,
+                 json::Document::literal<R"({"nodes":{"roof":{"properties":{"size":{"x":5,"y":2,"z":3}}}}})">()));
+    ATELIER_TRY(check(5));
+    ATELIER_TRY(cli.call("graph.apply", 0, json::Document::literal<R"({"nodes":{"selection":{
+        "properties":{"direction":{"x":0,"y":0,"z":0}}}}})">()));
+    ATELIER_TRY(require_control_error(cli.call("graph.inspect", 1, query), "operation_failed",
+                                      "procedural.Group: Group normal direction must be nonzero."));
+    ATELIER_TRY_BIND(malformed, cli.call("graph.inspect", 1, json::Document::literal<R"({
+        "view":"node","node":"roof","raycast":{"output":"output","rays":[{"origin":[0,1,0],
+        "direction":[0,0,0],"max_distance":5}]}})">()));
+    if (malformed->root().string({"error", "code"}) != "invalid_request" ||
+        malformed->root().string({"error", "message"}).value_or("").find("direction must be nonzero") ==
+            std::string_view::npos)
+        return fixture_failure("Invalid ray lost its validation diagnostic");
+    return {};
+}
+
+Result<void> verify_rail_panel_cli(ControlCli& cli) {
+    ATELIER_TRY_BIND(
+        schema,
+        cli.call("graph.inspect", 0, json::Document::literal<R"({"view":"catalog","type":"procedural.RailPanel"})">()));
+    ATELIER_TRY_BIND(hints, schema->root().path({"result", "port_descriptions"}).transform_error(json_error));
+    ATELIER_TRY_BIND(inputs, hints->at("inputs").and_then(&json::Value::object_items).transform_error(json_error));
+    ATELIER_TRY_BIND(outputs, hints->at("outputs").and_then(&json::Value::object_items).transform_error(json_error));
+    std::string_view low_z, high_z;
+    for (const auto& [port, hint] : *inputs) {
+        const auto purpose = hint.string().value_or("");
+        if (purpose.contains("Z 较小"))
+            low_z = port;
+        if (purpose.contains("Z 较大"))
+            high_z = port;
+    }
+    if (low_z.empty() || high_z.empty() || low_z == high_z || outputs->size() != 1 ||
+        !(*outputs)[0].second.string().value_or("").contains("负 Y"))
+        return fixture_failure("RailPanel port help must identify both rails along +X and the closed panel output");
+
+    ATELIER_TRY(cli.call("graph.create_scratch", 0, json::Document::literal<R"({"key":"scratch/rail-panel"})">()));
+    ATELIER_TRY(cli.call("graph.apply", 0, json::Document::literal<R"({"nodes":{
+        "near":{"type":"procedural.Line","properties":{"start":{"x":0,"y":1,"z":-1},"end":{"x":4,"y":1,"z":-1},"count":3}},
+        "far":{"type":"procedural.Line","properties":{"start":{"x":0,"y":2,"z":1},"end":{"x":4,"y":3,"z":1},"count":3}},
+        "board":{"type":"procedural.RailPanel","properties":{"thickness":0.25}}
+    }})">()));
+    const auto wire = [&](std::string_view left, std::string_view right) -> Result<void> {
+        json::Builder patch;
+        const auto nodes = patch.object_validated(patch.root(), "nodes");
+        const auto board = patch.object_validated(nodes, "board");
+        const auto wires = patch.object_validated(board, "inputs");
+        ATELIER_TRY(patch.set(wires, low_z, left).transform_error(json_error));
+        ATELIER_TRY(patch.set(wires, high_z, right).transform_error(json_error));
+        ATELIER_TRY(cli.call("graph.apply", 0, patch.finish()));
+        return {};
+    };
+    ATELIER_TRY(wire("near.output", "far.output"));
+    json::Builder query;
+    query.set_validated(query.root(), "view", "node");
+    query.set_validated(query.root(), "node", "board");
+    const auto raycast = query.object_validated(query.root(), "raycast");
+    ATELIER_TRY(query.set(raycast, "output", (*outputs)[0].first).transform_error(json_error));
+    query.set_validated(raycast, "rays",
+                        json::Document::literal<R"([
+        {"origin":[2,3,0],"direction":[0,-1,0],"max_distance":4},
+        {"origin":[2,0,0],"direction":[0,1,0],"max_distance":4}])">()
+                            .root());
+    const auto measure = query.finish();
+    ATELIER_TRY_BIND(measured, cli.call("graph.inspect", 0, measure));
+    ATELIER_TRY_BIND(hits, measured->root().path({"result", "raycast", "hits"}).transform_error(json_error));
+    if (hits->size() != 2 || hits->at(0)->number({"distance"}) != 1.25 || hits->at(1)->number({"distance"}) != 1.5)
+        return fixture_failure("RailPanel rails selected by port help did not produce the expected top and underside");
+    ATELIER_TRY(wire("far.output", "near.output"));
+    return require_control_error(
+        cli.call("graph.inspect", 1, measure), "operation_failed",
+        "procedural.RailPanel: RailPanel rails cross, repeat a station or face down; check rail order.");
+}
+
+Result<void> verify_bevel_cli(ControlCli& cli) {
+    ATELIER_TRY_BIND(
+        schema, cli.call("graph.inspect", 0,
+                         json::Document::literal<R"({"view":"catalog","type":"procedural.Bevel"})">()));
+    const auto type = *schema->root().at("result");
+    const auto input = type.string({"port_descriptions", "inputs", "surface"}).value_or("");
+    if (!input.contains("闭合") || !input.contains("凸") ||
+        type.string({"port_descriptions", "outputs", "output"}).value_or("").empty())
+        return fixture_failure("Bevel catalog did not describe the closed convex surface contract");
+    bool radius = false, angle = false, segments = false;
+    for (const auto field : *type.at("fields")->array()) {
+        const auto help = field.string({"description"}).value_or("");
+        if (field.string({"path"}) == "radius")
+            radius = help.contains("半径") && help.contains("退距");
+        else if (field.string({"path"}) == "angle_degrees")
+            angle = help.contains("外法线") && help.contains("共面");
+        else if (field.string({"path"}) == "segments")
+            segments = help.contains("平切") && help.contains("圆弧");
+    }
+    if (!radius || !angle || !segments)
+        return fixture_failure("Bevel field help omitted the radius convention, hard edge filter or profile segments");
+
+    ATELIER_TRY(cli.call("graph.create_scratch", 0, json::Document::literal<R"({"key":"scratch/stone-pier-cap"})">()));
+    ATELIER_TRY(cli.call("graph.apply", 0, json::Document::literal<R"({"nodes":{
+        "stone":{"type":"procedural.Box","properties":{"size":{"x":2,"y":0.6,"z":2}}},
+        "cap":{"type":"procedural.Bevel","inputs":{"surface":"stone.output"}},
+        "placed":{"type":"procedural.Transform","inputs":{"input":"cap.output"}}
+    },"settings":{"display":"cap"}})">()));
+    ATELIER_TRY_BIND(cooked, cli.call("graph.inspect", 0, json::Document::literal<R"({"node":"cap","samples":0})">()));
+    if (const auto error = cooked->root().string({"result", "inspected_error"}); error)
+        return fixture_failure(std::string(*error));
+    const auto summary = *cooked->root().at("result")->at("inspected_summary");
+    ATELIER_TRY_BIND(topology, summary.path({"spatial", "topology"}).transform_error(json_error));
+    if (summary.u32({"counts", "primitive"}) != 26 || topology->boolean({"skipped"}) != false ||
+        topology->u32({"degenerate_primitives"}) != 0 || topology->u32({"open_boundary_edges"}) != 0 ||
+        topology->u32({"non_manifold_edges"}) != 0)
+        return fixture_failure("The single-segment stone cap must have six faces, twelve edge strips and eight caps");
+
+    // The first ray cuts a vertical edge halfway through its profile. The second hits its three-way corner.
+    const auto rays = json::Document::literal<R"({"view":"node","node":"placed","raycast":{"output":"output","rays":[
+        {"origin":[2,0.04,2],"direction":[-1,0,-1],"max_distance":4},
+        {"origin":[0.94,1,0.94],"direction":[0,-1,0],"max_distance":2}
+    ]}})">();
+    const auto edge_distance = [](double at_x) { return (2. - at_x) * std::sqrt(2.); };
+    ATELIER_TRY_BIND(flat, cli.call("graph.inspect", 0, rays));
+    const auto flat_hits = *flat->root().at("result")->at("raycast")->at("hits");
+    if (std::abs(flat_hits.at(0)->number({"distance"}).value_or(-1.) - edge_distance(.95)) > 1e-5 ||
+        std::abs(flat_hits.at(1)->number({"distance"}).value_or(-1.) - .78) > 1e-5)
+        return fixture_failure("Stone cap did not cut its edge and corner at the default 0.1 m radius");
+
+    ATELIER_TRY(cli.call("graph.apply", 0,
+                         json::Document::literal<R"({"nodes":{"cap":{"properties":{"segments":3}}}})">()));
+    ATELIER_TRY_BIND(rounded, cli.call("graph.inspect", 0, rays));
+    const auto rounded_hits = *rounded->root().at("result")->at("raycast")->at("hits");
+    // The middle chord joins the 30° and 60° samples of the 90° profile.
+    const auto at_x = .9 + .1 * (1. + std::sqrt(3.)) / 4.;
+    if (std::abs(rounded_hits.at(0)->number({"distance"}).value_or(-1.) - edge_distance(at_x)) > 1e-5)
+        return fixture_failure("Stone cap multi-segment profile did not follow the sampled circular arc");
+
+    ATELIER_TRY(cli.call("graph.apply", 0,
+                         json::Document::literal<R"({"nodes":{"cap":{"properties":{"radius":0.4}}}})">()));
+    ATELIER_TRY_BIND(failed, cli.call("graph.inspect", 1, rays));
+    const auto first_error = failed->root().string({"error", "message"}).value_or("");
+    if (failed->root().string({"error", "code"}) != "operation_failed" ||
+        !first_error.starts_with("procedural.Bevel: Bevel radius") || *failed->root().find("result"))
+        return fixture_failure("An over-wide bevel reached the downstream mesh or lost the radius diagnostic");
+    const auto direct = json::Document::literal<R"({"view":"node","node":"cap","raycast":{"output":"output","rays":[
+        {"origin":[0,1,0],"direction":[0,-1,0],"max_distance":2}
+    ]}})">();
+    ATELIER_TRY(require_control_error(cli.call("graph.inspect", 1, direct), "operation_failed", first_error));
+    ATELIER_TRY(cli.call("op.call", 0, json::Document::literal<R"({"id":"edit.undo"})">()));
+    ATELIER_TRY_BIND(restored, cli.call("graph.inspect", 0, rays));
+    if (*restored->root().at("result")->at("raycast")->at("hits") != rounded_hits)
+        return fixture_failure("Undo did not recover the previous stone cap after the failed cook");
+
+    ATELIER_TRY(cli.call("graph.apply", 0,
+                         json::Document::literal<R"({"nodes":{"cap":{"properties":{"angle_degrees":100}}}})">()));
+    ATELIER_TRY_BIND(sharp, cli.call("graph.inspect", 0, rays));
+    const auto sharp_hits = *sharp->root().at("result")->at("raycast")->at("hits");
+    if (std::abs(sharp_hits.at(0)->number({"distance"}).value_or(-1.) - edge_distance(1.)) > 1e-5 ||
+        std::abs(sharp_hits.at(1)->number({"distance"}).value_or(-1.) - .7) > 1e-5)
+        return fixture_failure("The hard edge threshold did not preserve the unselected box");
     return {};
 }
 
 Result<void> verify_graph_patch_cli(ControlCli& cli) {
     ATELIER_TRY(verify_graph_discovery_cli(cli));
+    ATELIER_TRY(verify_graph_raycast_cli(cli));
+    ATELIER_TRY(verify_rail_panel_cli(cli));
+    ATELIER_TRY(verify_bevel_cli(cli));
     ATELIER_TRY(cli.call("graph.create_scratch", 0, json::Document::literal<R"({"key":"scratch/roof"})">()));
     const auto topology = json::Document::literal<R"({"view":"topology"})">();
     const auto base = json::Document::literal<

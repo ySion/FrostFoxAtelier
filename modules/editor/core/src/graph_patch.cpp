@@ -18,6 +18,14 @@ auto at_path(std::string path) {
     };
 }
 
+std::string port_choices(std::span<const std::string> names) {
+    if (names.empty())
+        return " (none available)";
+    std::string list = " (available: " + names.front();
+    for (const auto& name : names.subspan(1))
+        list += ", " + name;
+    return list + ")";
+}
 struct NodeEdit {
     std::string name;
     std::string type;
@@ -169,7 +177,7 @@ Result<void> Session::apply_graph_patch(std::string_view key, json::Value patch,
             const std::string path = "nodes." + edit.name + ".inputs." + std::string(name);
             const auto it = std::ranges::find(ports->inputs, name);
             if (it == ports->inputs.end())
-                return invalid(path + ": unknown input port");
+                return invalid(path + ": unknown input port" + port_choices(ports->inputs));
             const auto index = static_cast<std::size_t>(it - ports->inputs.begin());
             PortEdit wire{edit.name, std::string(name), {}};
             const auto connect = [&](json::Value endpoint) -> Result<void> {
@@ -181,7 +189,8 @@ Result<void> Session::apply_graph_patch(std::string_view key, json::Value patch,
                     return invalid(path + ": missing upstream node '" + std::string(ep->first) + "'");
                 ATELIER_TRY_BIND(upstream, procedural::ports(runtime_, id));
                 if (std::ranges::find(upstream->outputs, ep->second) == upstream->outputs.end())
-                    return invalid(path + ": unknown output '" + std::string(*endpoint.string()) + "'");
+                    return invalid(path + ": unknown output '" + std::string(*endpoint.string()) + "'" +
+                                   port_choices(upstream->outputs));
                 if (std::ranges::find(wire.endpoints, *ep) != wire.endpoints.end())
                     return invalid(path + ": duplicate endpoint '" + std::string(*endpoint.string()) + "'");
                 wire.endpoints.push_back(*ep);

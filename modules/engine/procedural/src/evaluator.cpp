@@ -1407,11 +1407,13 @@ Result<NodeBindings> Evaluator::inspect_bindings(ObjectId node) {
     if (state->frozen && state->frozen_entry)
         return NodeBindings{"frozen", {}};
 
-    // Follow proven sharing through the primary stream. Stop at opaque kernels, snapshots
-    // and empty columns (two empty arrays need not share an allocation).
+    // Also follow a native kernel with a single input when both sides prove the same nonempty allocation.
+    // A snapshot or asset boundary does not identify the current interior producer.
     const auto column_source = [&](ObjectId current, const Attribute& column, std::uint32_t output) {
         while (const auto* owner = impl_->nodes.find(current)) {
-            if (output != 0 || (!owner->bypassed && (!owner->plan->uses_primary_stream || owner->frozen)))
+            const bool single_input = owner->plan->ports.inputs.size() == 1 && !owner->plan->ports.multiple[0];
+            if (output != 0 || (!owner->bypassed && (owner->frozen || owner->is_asset_node ||
+                                                     (!owner->plan->uses_primary_stream && !single_input))))
                 break;
             const auto input = std::ranges::find(owner->inputs, 0u, &Input::input);
             if (input == owner->inputs.end())
@@ -1437,6 +1439,19 @@ Result<NodeBindings> Evaluator::inspect_bindings(ObjectId node) {
     ATELIER_TRY_BIND(type, runtime.describe(state->type));
     auto rules = detail::attribute_rules(*state->plan, **type);
     for (auto& rule : rules) {
+        if (!rule.when.field.empty()) {
+            ATELIER_TRY_BIND(field, runtime.find_field(state->type, rule.when.field));
+            ATELIER_TRY_BIND(value, runtime.read(node, *field));
+            const auto selected = std::get<EnumValue>(*value);
+            ATELIER_TRY_BIND(info, runtime.describe(selected.type));
+            const auto& choices = (*info)->enumeration->values;
+            const auto choice =
+                std::ranges::find_if(choices, [&](const auto& v) { return v.first == rule.when.value; });
+            if (choice == choices.end())
+                return failure("Unknown attribute contract enum value: " + std::string(rule.when.value));
+            if ((choice->second == selected.bits) == rule.when.exclude)
+                continue;
+        }
         AttributeBinding binding{.rule = std::move(rule)};
         auto& attr = binding.rule;
         binding.name = attr.name;
@@ -1471,6 +1486,8 @@ Result<NodeBindings> Evaluator::inspect_bindings(ObjectId node) {
             binding.upstream = edge->from;
         }
         const auto* column = geometry->find(StringView{binding.name});
+        if (column && binding.layer.empty())
+            binding.layer = layer_name(column->layer);
         if (column && edge)
             binding.column_source = column_source(edge->from, *column, edge->output);
         if ((!attr.unless_present.empty() && geometry->find(StringView{attr.unless_present})) ||

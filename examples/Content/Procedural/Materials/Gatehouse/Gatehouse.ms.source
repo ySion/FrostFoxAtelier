@@ -1,0 +1,120 @@
+// Linear reflectances. Geometry supplies a finish swatch; the surface projects metric detail.
+struct Params {
+    vector3 limestone;
+    vector3 oak;
+    vector3 limewash;
+    vector3 clay;
+    vector3 slate;
+    vector3 glass;
+    vector3 iron;
+};
+
+Params defaults() {
+    Params p;
+    p.limestone = vector3(0.31, 0.30, 0.261);
+    p.oak = vector3(0.091, 0.066, 0.048);
+    p.limewash = vector3(0.61, 0.585, 0.514);
+    p.clay = vector3(0.218, 0.127, 0.085);
+    p.slate = vector3(0.101, 0.115, 0.116);
+    p.glass = vector3(0.049, 0.057, 0.059);
+    p.iron = vector3(0.076, 0.077, 0.073);
+    return p;
+}
+
+float cell_tone(vector2 cell) {
+    vector2 h = vector2(math.fract(cell.x * 0.1031), math.fract(cell.y * 0.11369));
+    float b = math.dot(h, vector2(h.y + 33.33, h.x + 33.33));
+    return math.fract((h.x + b) * (h.y + b));
+}
+
+float patina(vector2 p) {
+    vector2 cell = vector2(math.floor(p.x), math.floor(p.y));
+    float x = math.fract(p.x);
+    float y = math.fract(p.y);
+    x = x * x * (3.0 - 2.0 * x);
+    y = y * y * (3.0 - 2.0 * y);
+    float base = math.lerp(cell_tone(cell), cell_tone(cell + vector2(1.0, 0.0)), x);
+    float top = math.lerp(cell_tone(cell + vector2(0.0, 1.0)), cell_tone(cell + vector2(1.0, 1.0)), x);
+    return math.lerp(base, top, y);
+}
+
+float edge_distance(float coordinate) {
+    float f = math.fract(coordinate);
+    return math.min(f, 1.0 - f);
+}
+
+vector2 wall_plane(vector3 pos, vector3 n) {
+    if (math.abs(n.y) > 0.78) { return vector2(pos.x, pos.z); }
+    if (math.abs(n.z) > math.abs(n.x)) { return vector2(pos.x, pos.y); }
+    return vector2(pos.z, pos.y);
+}
+
+material.Output shade(material.Context context, Params p) {
+    vector3 pos = context.position_world;
+    vector3 n = context.geometric_normal_world;
+    vector2 plane = wall_plane(pos, n);
+    float swatch = math.floor(context.uv.x * 8.0);
+    float exposure = patina(plane * 0.57 + vector2(4.2, 8.3));
+    material.Output result;
+    result.normal_world = context.normal_world;
+    result.roughness = 0.89;
+    if (swatch < 1.0) {
+        // Undulating beds and alternating stone lengths form loosely coursed rubble.
+        float weather = patina(plane * 4.6);
+        float grit = patina(plane * 14.0);
+        float v = plane.y * 4.4 + 0.49 * weather + 0.17 * grit + 0.73 * exposure;
+        float row = math.floor(v);
+        float u = plane.x * (2.1 + 1.25 * cell_tone(vector2(row, 71.0))) + 0.30 * weather +
+                  0.10 * grit + 2.8 * cell_tone(vector2(row, 17.0));
+        float fill = math.clamp(math.min(edge_distance(u) * 19.0, edge_distance(v) * 13.0), 0.0, 1.0);
+        float mineral = cell_tone(vector2(math.floor(u), row));
+        float stone = (0.67 + 0.47 * mineral) * (0.81 + 0.25 * grit + 0.14 * weather);
+        float level = math.lerp(0.64 + 0.10 * weather, stone, fill) * (0.83 + 0.25 * exposure);
+        float damp = math.clamp(1.1 - pos.y * 0.92 + (weather - 0.5) * 0.44, 0.0, 1.0) *
+                     math.clamp((exposure - 0.16) * 1.8, 0.0, 1.0);
+        result.base_color = vector3(p.limestone.x * (1.0 - 0.42 * damp), p.limestone.y * (1.0 - 0.29 * damp), p.limestone.z * (1.0 - 0.49 * damp)) * level;
+    } else if (swatch < 2.0) {
+        float grain = patina(vector2(plane.x * 8.0, plane.y * 0.88));
+        result.base_color = p.oak * (0.80 + 0.23 * grain + 0.15 * exposure);
+    } else if (swatch < 3.0) {
+        float lime = patina(plane * 3.8 + vector2(9.0, 4.0));
+        result.base_color = p.limewash * (0.79 + 0.17 * exposure + 0.14 * lime);
+    } else if (swatch < 5.0) {
+        float along = pos.z;
+        float across = pos.x;
+        float across_normal = n.x;
+        if (math.abs(n.z) > math.abs(n.x)) {
+            along = pos.x;
+            across = pos.z;
+            across_normal = n.z;
+        }
+        float v = pos.y / 0.155;
+        if (swatch < 4.0) {
+            // Project clay courses onto a fixed 35-degree incline, so a shallow pitch still has rows.
+            // A constant basis keeps rows continuous across the triangles of a sagging roof.
+            if (across_normal * n.y > 0.0) { across = -across; }
+            v = (0.819152 * across + 0.573576 * pos.y) / 0.215;
+        }
+        float row = math.floor(v);
+        float u = along / 0.235 + math.fract(row * 0.5) + 0.11 * cell_tone(vector2(row, 8.0));
+        float edge = math.clamp(math.min(edge_distance(u) * 19.0, edge_distance(v) * 11.0), 0.0, 1.0);
+        float firing = cell_tone(vector2(math.floor(u), row));
+        float value = (0.72 + 0.40 * firing) * (0.78 + 0.29 * exposure) * (0.68 + 0.32 * edge);
+        vector3 tile = vector3(p.clay.x * (0.85 + 0.19 * firing), p.clay.y * 0.97, p.clay.z * (1.10 - 0.15 * firing));
+        if (swatch >= 4.0) { tile = p.slate; }
+        result.base_color = tile * value;
+    } else if (swatch < 6.0) {
+        float leading = math.min(edge_distance((plane.x + 0.55 * plane.y) * 4.0),
+                                 edge_distance((plane.x - 0.55 * plane.y) * 4.0));
+        result.base_color = p.glass * (0.63 + 0.37 * math.clamp(leading * 16.0, 0.0, 1.0));
+        result.roughness = 0.36;
+    } else if (swatch < 7.0) {
+        result.base_color = p.iron;
+        result.metallic = 0.55;
+        result.roughness = 0.62;
+    } else {
+        result.base_color = vector3(0.022, 0.019, 0.016);
+        result.roughness = 0.98;
+    }
+    return result;
+}

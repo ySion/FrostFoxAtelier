@@ -1,0 +1,28 @@
+[DESC = "让一列沿水平跨距前进的有序点竖直下挠，可用于弯曲屋脊。保持两端固定，跨中下挠量以米计；输入和输出保留相同点序。"]
+class game.SpanSag : procedural.Node {
+    [Label = "Midspan drop (m)", Min = 0.0, Max = 1.0, LockMin,
+     DESC = "竖直下挠量（米）。端点固定；沿水平跨距投影，跨中下挠最大。输入为一列有序点。"]
+    float drop = 0.56f;
+
+    void process([InOut("P", DESC = "按端点间的水平投影施加抛物线下挠，保持 X/Z 和两端点。")] Array<vector3>& P) {
+        const uint n = P.size();
+        if (n < 2) { fail("SpanSag requires at least two ordered stations."); }
+        if (!(math.is_finite(self.drop) && self.drop >= 0.0f)) { fail("SpanSag drop must be finite and nonnegative."); }
+        const vector3 first = P[0];
+        const vector3 last = P[n - 1];
+        if (!(math.is_finite(first) && math.is_finite(last))) { fail("SpanSag requires finite end stations."); }
+        const vector2 span = vector2(last.x - first.x, last.z - first.z);
+        const float span2 = math.dot(span, span);
+        if (!(math.is_finite(span2) && span2 > 0.0f)) { fail("SpanSag requires a nonzero finite horizontal span."); }
+        float previous = 0.0f;
+        for (uint i = 1; i + 1 < n; i += 1) {
+            const vector3 p = P[i];
+            const float t = math.dot(vector2(p.x - first.x, p.z - first.z), span) / span2;
+            if (!(t > previous && t < 1.0f)) { fail("SpanSag stations must advance along the horizontal span."); }
+            const float y = p.y - self.drop * (4.0f * t * (1.0f - t));
+            if (!math.is_finite(y)) { fail("SpanSag produced a non-finite height."); }
+            P[i] = vector3(p.x, y, p.z);
+            previous = t;
+        }
+    }
+}

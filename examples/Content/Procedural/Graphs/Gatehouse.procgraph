@@ -1,0 +1,1679 @@
+{
+  "boxes": {
+    "arch_section": {
+      "color": "#64534a",
+      "position": [
+        -85.0,
+        -50.0
+      ],
+      "size": [
+        620.0,
+        300.0
+      ],
+      "title": "01 · Stone barrel and dressed archivolts"
+    },
+    "assembly": {
+      "color": "#435c62",
+      "position": [
+        745.0,
+        930.0
+      ],
+      "size": [
+        640.0,
+        285.0
+      ],
+      "title": "06 · Gatehouse assembly"
+    },
+    "gallery_panels": {
+      "color": "#ae9674",
+      "position": [
+        -85.0,
+        1100.0
+      ],
+      "size": [
+        640.0,
+        607.0
+      ],
+      "title": "03 · Gallery lights and infill"
+    },
+    "gallery_roof": {
+      "color": "#965b43",
+      "position": [
+        -85.0,
+        1770.0
+      ],
+      "size": [
+        620.0,
+        300.0
+      ],
+      "title": "04 · Cross roof, eaves and ridge"
+    },
+    "gallery_structure": {
+      "color": "#714630",
+      "position": [
+        -85.0,
+        410.0
+      ],
+      "size": [
+        630.0,
+        602.0
+      ],
+      "title": "02 · Timber gallery over the passage"
+    },
+    "gate_grille": {
+      "color": "#575665",
+      "position": [
+        -85.0,
+        2170.0
+      ],
+      "size": [
+        620.0,
+        300.0
+      ],
+      "title": "05 · Raised lattice behind the stone reveal"
+    }
+  },
+  "nodes": {
+    "OUT_gatehouse": {
+      "inputs": {
+        "input": "gatehouse.output"
+      },
+      "position": [
+        978.0,
+        1072.0
+      ],
+      "properties": {
+        "order": 0,
+        "port_name": "geometry"
+      },
+      "type": "procedural.GraphOutput"
+    },
+    "back_end_panel": {
+      "inputs": {},
+      "position": [
+        296.0,
+        1426.0
+      ],
+      "properties": {
+        "base_on_ground": false,
+        "center": {
+          "x": 2.65,
+          "y": 5.395,
+          "z": 1.69
+        },
+        "divisions_x": 1,
+        "divisions_y": 1,
+        "divisions_z": 1,
+        "size": {
+          "x": 0.25,
+          "y": 0.87,
+          "z": 0.1
+        }
+      },
+      "type": "procedural.Box"
+    },
+    "back_infill": {
+      "inputs": {},
+      "position": [
+        444.0,
+        1334.0
+      ],
+      "properties": {
+        "base_on_ground": false,
+        "center": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "divisions_x": 1,
+        "divisions_y": 1,
+        "divisions_z": 1,
+        "size": {
+          "x": 0.7,
+          "y": 0.87,
+          "z": 0.1
+        }
+      },
+      "type": "procedural.Box"
+    },
+    "back_infill_bays": {
+      "inputs": {
+        "points": "back_infill_bays_stations.output",
+        "sources": [
+          "back_infill.output"
+        ]
+      },
+      "position": [
+        148.0,
+        1426.0
+      ],
+      "properties": {
+        "group": "",
+        "target_attributes": [],
+        "variant": "variant"
+      },
+      "type": "procedural.Realize"
+    },
+    "back_infill_bays_stations": {
+      "inputs": {},
+      "position": [
+        0.0,
+        1426.0
+      ],
+      "properties": {
+        "count": 5,
+        "end": {
+          "x": 2.01,
+          "y": 5.395,
+          "z": 1.69
+        },
+        "start": {
+          "x": -2.27,
+          "y": 5.395,
+          "z": 1.69
+        }
+      },
+      "type": "procedural.Line"
+    },
+    "back_lights": {
+      "inputs": {
+        "points": "back_lights_stations.output",
+        "sources": [
+          "back_recessed_light.output"
+        ]
+      },
+      "position": [
+        148.0,
+        1518.0
+      ],
+      "properties": {
+        "group": "",
+        "target_attributes": [],
+        "variant": "variant"
+      },
+      "type": "procedural.Realize"
+    },
+    "back_lights_stations": {
+      "inputs": {},
+      "position": [
+        0.0,
+        1518.0
+      ],
+      "properties": {
+        "count": 5,
+        "end": {
+          "x": 2.545,
+          "y": 5.395,
+          "z": 1.6
+        },
+        "start": {
+          "x": -1.735,
+          "y": 5.395,
+          "z": 1.6
+        }
+      },
+      "type": "procedural.Line"
+    },
+    "back_lintel": {
+      "inputs": {},
+      "position": [
+        296.0,
+        1334.0
+      ],
+      "properties": {
+        "base_on_ground": false,
+        "center": {
+          "x": 0.075,
+          "y": 5.92,
+          "z": 1.69
+        },
+        "divisions_x": 1,
+        "divisions_y": 1,
+        "divisions_z": 1,
+        "size": {
+          "x": 5.6,
+          "y": 0.2,
+          "z": 0.1
+        }
+      },
+      "type": "procedural.Box"
+    },
+    "back_plinth": {
+      "inputs": {},
+      "position": [
+        148.0,
+        1334.0
+      ],
+      "properties": {
+        "base_on_ground": false,
+        "center": {
+          "x": 0.075,
+          "y": 4.62,
+          "z": 1.69
+        },
+        "divisions_x": 1,
+        "divisions_y": 1,
+        "divisions_z": 1,
+        "size": {
+          "x": 5.6,
+          "y": 0.65,
+          "z": 0.1
+        }
+      },
+      "type": "procedural.Box"
+    },
+    "back_post": {
+      "inputs": {
+        "input": "gallery_post.output"
+      },
+      "position": [
+        0.0,
+        736.0
+      ],
+      "properties": {
+        "pivot": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "rotate": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "scale": {
+          "x": 1.0,
+          "y": 1.0,
+          "z": 1.0
+        },
+        "translate": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 3.44
+        }
+      },
+      "type": "procedural.Transform"
+    },
+    "back_recessed_light": {
+      "inputs": {},
+      "position": [
+        444.0,
+        1426.0
+      ],
+      "properties": {
+        "base_on_ground": false,
+        "center": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "divisions_x": 1,
+        "divisions_y": 1,
+        "divisions_z": 1,
+        "size": {
+          "x": 0.4,
+          "y": 0.87,
+          "z": 0.055
+        }
+      },
+      "type": "procedural.Box"
+    },
+    "both_eaves": {
+      "inputs": {
+        "inputs": [
+          "street_drip_line.output",
+          "yard_drip_line.output"
+        ]
+      },
+      "position": [
+        453.0,
+        1936.0
+      ],
+      "properties": {},
+      "type": "procedural.Merge"
+    },
+    "brace_blank": {
+      "inputs": {},
+      "position": [
+        0.0,
+        828.0
+      ],
+      "properties": {
+        "base_on_ground": false,
+        "center": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "divisions_x": 1,
+        "divisions_y": 1,
+        "divisions_z": 1,
+        "size": {
+          "x": 1.1,
+          "y": 0.105,
+          "z": 0.12
+        }
+      },
+      "type": "procedural.Box"
+    },
+    "court_knee": {
+      "inputs": {
+        "input": "street_knee.output"
+      },
+      "position": [
+        296.0,
+        828.0
+      ],
+      "properties": {
+        "pivot": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "rotate": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "scale": {
+          "x": 1.0,
+          "y": 1.0,
+          "z": 1.0
+        },
+        "translate": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 3.44
+        }
+      },
+      "type": "procedural.Transform"
+    },
+    "court_sill": {
+      "inputs": {
+        "input": "long_rail.output"
+      },
+      "position": [
+        0.0,
+        644.0
+      ],
+      "properties": {
+        "pivot": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "rotate": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "scale": {
+          "x": 1.0,
+          "y": 1.0,
+          "z": 1.0
+        },
+        "translate": {
+          "x": 0.0,
+          "y": 4.48,
+          "z": 1.79
+        }
+      },
+      "type": "procedural.Transform"
+    },
+    "court_wall_plate": {
+      "inputs": {
+        "input": "long_rail.output"
+      },
+      "position": [
+        296.0,
+        644.0
+      ],
+      "properties": {
+        "pivot": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "rotate": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "scale": {
+          "x": 1.0,
+          "y": 1.0,
+          "z": 1.0
+        },
+        "translate": {
+          "x": 0.0,
+          "y": 5.99,
+          "z": 1.79
+        }
+      },
+      "type": "procedural.Transform"
+    },
+    "court_window_rail": {
+      "inputs": {
+        "input": "long_rail.output"
+      },
+      "position": [
+        148.0,
+        644.0
+      ],
+      "properties": {
+        "pivot": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "rotate": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "scale": {
+          "x": 1.0,
+          "y": 1.0,
+          "z": 1.0
+        },
+        "translate": {
+          "x": 0.0,
+          "y": 4.95,
+          "z": 1.79
+        }
+      },
+      "type": "procedural.Transform"
+    },
+    "covered_passage": {
+      "inputs": {
+        "inputs": [
+          "cut_stone.output",
+          "gallery_oak.output",
+          "gallery_lime.output",
+          "leaded_lights.output",
+          "fired_clay.output",
+          "eaves_oak.output",
+          "grille_iron.output"
+        ]
+      },
+      "position": [
+        830.0,
+        980.0
+      ],
+      "properties": {},
+      "type": "procedural.Merge"
+    },
+    "cut_stone": {
+      "inputs": {
+        "input": "masonry.output"
+      },
+      "position": [
+        296.0,
+        0.0
+      ],
+      "properties": {
+        "finish": 0
+      },
+      "type": "game.GatehouseFinish"
+    },
+    "deck_joists": {
+      "inputs": {
+        "points": "deck_joists_stations.output",
+        "sources": [
+          "through_joist.output"
+        ]
+      },
+      "position": [
+        444.0,
+        460.0
+      ],
+      "properties": {
+        "group": "",
+        "target_attributes": [],
+        "variant": "variant"
+      },
+      "type": "procedural.Realize"
+    },
+    "deck_joists_stations": {
+      "inputs": {},
+      "position": [
+        296.0,
+        460.0
+      ],
+      "properties": {
+        "count": 11,
+        "end": {
+          "x": 2.73,
+          "y": 4.24,
+          "z": 0.07
+        },
+        "start": {
+          "x": -2.58,
+          "y": 4.24,
+          "z": 0.07
+        }
+      },
+      "type": "procedural.Line"
+    },
+    "eaves_oak": {
+      "inputs": {
+        "input": "fascia_boards.output"
+      },
+      "position": [
+        302.0,
+        2040.0
+      ],
+      "properties": {
+        "finish": 1
+      },
+      "type": "game.GatehouseFinish"
+    },
+    "fascia_axis": {
+      "inputs": {
+        "input": "both_eaves.output"
+      },
+      "position": [
+        453.0,
+        1984.0
+      ],
+      "properties": {
+        "pivot": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "rotate": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "scale": {
+          "x": 1.0,
+          "y": 1.0,
+          "z": 1.0
+        },
+        "translate": {
+          "x": 0.0,
+          "y": -0.103,
+          "z": 0.0
+        }
+      },
+      "type": "procedural.Transform"
+    },
+    "fascia_boards": {
+      "inputs": {
+        "backbone": "fascia_axis.output"
+      },
+      "position": [
+        453.0,
+        2040.0
+      ],
+      "properties": {
+        "end_caps": true,
+        "height": 0.138,
+        "profile": "rectangle",
+        "radius": 0.5,
+        "scale_attribute": "",
+        "segments": 8,
+        "up": {
+          "x": 0.0,
+          "y": 1.0,
+          "z": 0.0
+        },
+        "width": 0.095
+      },
+      "type": "procedural.Sweep"
+    },
+    "fired_clay": {
+      "inputs": {
+        "input": "tile_canopy.output"
+      },
+      "position": [
+        0.0,
+        2040.0
+      ],
+      "properties": {
+        "finish": 3
+      },
+      "type": "game.GatehouseFinish"
+    },
+    "framing": {
+      "inputs": {
+        "inputs": [
+          "gallery_deck.output",
+          "deck_joists.output",
+          "street_sill.output",
+          "street_window_rail.output",
+          "street_wall_plate.output",
+          "court_sill.output",
+          "court_window_rail.output",
+          "court_wall_plate.output",
+          "paired_bents.output",
+          "gallery_braces.output"
+        ]
+      },
+      "position": [
+        296.0,
+        920.0
+      ],
+      "properties": {},
+      "type": "procedural.Merge"
+    },
+    "front_end_panel": {
+      "inputs": {},
+      "position": [
+        148.0,
+        1242.0
+      ],
+      "properties": {
+        "base_on_ground": false,
+        "center": {
+          "x": 2.65,
+          "y": 5.395,
+          "z": -1.55
+        },
+        "divisions_x": 1,
+        "divisions_y": 1,
+        "divisions_z": 1,
+        "size": {
+          "x": 0.25,
+          "y": 0.87,
+          "z": 0.1
+        }
+      },
+      "type": "procedural.Box"
+    },
+    "front_infill": {
+      "inputs": {},
+      "position": [
+        296.0,
+        1150.0
+      ],
+      "properties": {
+        "base_on_ground": false,
+        "center": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "divisions_x": 1,
+        "divisions_y": 1,
+        "divisions_z": 1,
+        "size": {
+          "x": 0.7,
+          "y": 0.87,
+          "z": 0.1
+        }
+      },
+      "type": "procedural.Box"
+    },
+    "front_infill_bays": {
+      "inputs": {
+        "points": "front_infill_bays_stations.output",
+        "sources": [
+          "front_infill.output"
+        ]
+      },
+      "position": [
+        0.0,
+        1242.0
+      ],
+      "properties": {
+        "group": "",
+        "target_attributes": [],
+        "variant": "variant"
+      },
+      "type": "procedural.Realize"
+    },
+    "front_infill_bays_stations": {
+      "inputs": {},
+      "position": [
+        444.0,
+        1150.0
+      ],
+      "properties": {
+        "count": 5,
+        "end": {
+          "x": 2.01,
+          "y": 5.395,
+          "z": -1.55
+        },
+        "start": {
+          "x": -2.27,
+          "y": 5.395,
+          "z": -1.55
+        }
+      },
+      "type": "procedural.Line"
+    },
+    "front_lights": {
+      "inputs": {
+        "points": "front_lights_stations.output",
+        "sources": [
+          "front_recessed_light.output"
+        ]
+      },
+      "position": [
+        0.0,
+        1334.0
+      ],
+      "properties": {
+        "group": "",
+        "target_attributes": [],
+        "variant": "variant"
+      },
+      "type": "procedural.Realize"
+    },
+    "front_lights_stations": {
+      "inputs": {},
+      "position": [
+        444.0,
+        1242.0
+      ],
+      "properties": {
+        "count": 5,
+        "end": {
+          "x": 2.545,
+          "y": 5.395,
+          "z": -1.46
+        },
+        "start": {
+          "x": -1.735,
+          "y": 5.395,
+          "z": -1.46
+        }
+      },
+      "type": "procedural.Line"
+    },
+    "front_lintel": {
+      "inputs": {},
+      "position": [
+        148.0,
+        1150.0
+      ],
+      "properties": {
+        "base_on_ground": false,
+        "center": {
+          "x": 0.075,
+          "y": 5.92,
+          "z": -1.55
+        },
+        "divisions_x": 1,
+        "divisions_y": 1,
+        "divisions_z": 1,
+        "size": {
+          "x": 5.6,
+          "y": 0.2,
+          "z": 0.1
+        }
+      },
+      "type": "procedural.Box"
+    },
+    "front_plinth": {
+      "inputs": {},
+      "position": [
+        0.0,
+        1150.0
+      ],
+      "properties": {
+        "base_on_ground": false,
+        "center": {
+          "x": 0.075,
+          "y": 4.62,
+          "z": -1.55
+        },
+        "divisions_x": 1,
+        "divisions_y": 1,
+        "divisions_z": 1,
+        "size": {
+          "x": 5.6,
+          "y": 0.65,
+          "z": 0.1
+        }
+      },
+      "type": "procedural.Box"
+    },
+    "front_recessed_light": {
+      "inputs": {},
+      "position": [
+        296.0,
+        1242.0
+      ],
+      "properties": {
+        "base_on_ground": false,
+        "center": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "divisions_x": 1,
+        "divisions_y": 1,
+        "divisions_z": 1,
+        "size": {
+          "x": 0.4,
+          "y": 0.87,
+          "z": 0.055
+        }
+      },
+      "type": "procedural.Box"
+    },
+    "gallery_braces": {
+      "inputs": {
+        "points": "gallery_braces_stations.output",
+        "sources": [
+          "gallery_braces_unit.output"
+        ]
+      },
+      "position": [
+        148.0,
+        920.0
+      ],
+      "properties": {
+        "group": "",
+        "target_attributes": [],
+        "variant": "variant"
+      },
+      "type": "procedural.Realize"
+    },
+    "gallery_braces_stations": {
+      "inputs": {},
+      "position": [
+        0.0,
+        920.0
+      ],
+      "properties": {
+        "count": 5,
+        "end": {
+          "x": 2.215,
+          "y": 5.5,
+          "z": -1.64
+        },
+        "start": {
+          "x": -2.07,
+          "y": 5.5,
+          "z": -1.64
+        }
+      },
+      "type": "procedural.Line"
+    },
+    "gallery_braces_unit": {
+      "inputs": {
+        "inputs": [
+          "street_knee.output",
+          "court_knee.output"
+        ]
+      },
+      "position": [
+        444.0,
+        828.0
+      ],
+      "properties": {},
+      "type": "procedural.Merge"
+    },
+    "gallery_deck": {
+      "inputs": {},
+      "position": [
+        0.0,
+        460.0
+      ],
+      "properties": {
+        "base_on_ground": false,
+        "center": {
+          "x": 0.075,
+          "y": 4.215,
+          "z": 0.07
+        },
+        "divisions_x": 1,
+        "divisions_y": 1,
+        "divisions_z": 1,
+        "size": {
+          "x": 5.75,
+          "y": 0.17,
+          "z": 3.52
+        }
+      },
+      "type": "procedural.Box"
+    },
+    "gallery_lime": {
+      "inputs": {
+        "input": "lime_panels.output"
+      },
+      "position": [
+        444.0,
+        1518.0
+      ],
+      "properties": {
+        "finish": 2
+      },
+      "type": "game.GatehouseFinish"
+    },
+    "gallery_oak": {
+      "inputs": {
+        "input": "framing.output"
+      },
+      "position": [
+        444.0,
+        920.0
+      ],
+      "properties": {
+        "finish": 1
+      },
+      "type": "game.GatehouseFinish"
+    },
+    "gallery_post": {
+      "inputs": {},
+      "position": [
+        444.0,
+        644.0
+      ],
+      "properties": {
+        "base_on_ground": false,
+        "center": {
+          "x": 0.0,
+          "y": 0.82,
+          "z": 0.0
+        },
+        "divisions_x": 1,
+        "divisions_y": 1,
+        "divisions_z": 1,
+        "size": {
+          "x": 0.16,
+          "y": 1.64,
+          "z": 0.17
+        }
+      },
+      "type": "procedural.Box"
+    },
+    "gate_vault": {
+      "comment": "Clear width in metres; the barrel, jambs and archivolts follow together. The adjoining buildings stay fixed.",
+      "inputs": {},
+      "position": [
+        0.0,
+        0.0
+      ],
+      "properties": {
+        "clear_width": 4.0
+      },
+      "type": "game.GateArch"
+    },
+    "gatehouse": {
+      "inputs": {
+        "inputs": [
+          "covered_passage.output",
+          "west_hall.geometry",
+          "street_wings.geometry",
+          "watchtowers.geometry"
+        ]
+      },
+      "position": [
+        830.0,
+        1072.0
+      ],
+      "properties": {},
+      "type": "procedural.Merge"
+    },
+    "grille_iron": {
+      "inputs": {
+        "input": "raised_lattice.output"
+      },
+      "position": [
+        148.0,
+        2312.0
+      ],
+      "properties": {
+        "finish": 6
+      },
+      "type": "game.GatehouseFinish"
+    },
+    "hanging_bars": {
+      "inputs": {
+        "points": "hanging_bars_stations.output",
+        "sources": [
+          "lattice_vertical.output"
+        ]
+      },
+      "position": [
+        296.0,
+        2220.0
+      ],
+      "properties": {
+        "group": "",
+        "target_attributes": [],
+        "variant": "variant"
+      },
+      "type": "procedural.Realize"
+    },
+    "hanging_bars_stations": {
+      "inputs": {},
+      "position": [
+        148.0,
+        2220.0
+      ],
+      "properties": {
+        "count": 9,
+        "end": {
+          "x": 1.05,
+          "y": 3.2,
+          "z": -1.43
+        },
+        "start": {
+          "x": -1.05,
+          "y": 3.2,
+          "z": -1.43
+        }
+      },
+      "type": "procedural.Line"
+    },
+    "iron_transom": {
+      "inputs": {},
+      "position": [
+        444.0,
+        2220.0
+      ],
+      "properties": {
+        "base_on_ground": false,
+        "center": {
+          "x": 0.0,
+          "y": 3.22,
+          "z": -1.43
+        },
+        "divisions_x": 1,
+        "divisions_y": 1,
+        "divisions_z": 1,
+        "size": {
+          "x": 2.38,
+          "y": 0.077,
+          "z": 0.072
+        }
+      },
+      "type": "procedural.Box"
+    },
+    "lattice_vertical": {
+      "inputs": {},
+      "position": [
+        0.0,
+        2220.0
+      ],
+      "properties": {
+        "base_on_ground": false,
+        "center": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "divisions_x": 1,
+        "divisions_y": 1,
+        "divisions_z": 1,
+        "size": {
+          "x": 0.062,
+          "y": 0.43,
+          "z": 0.067
+        }
+      },
+      "type": "procedural.Box"
+    },
+    "leaded_lights": {
+      "inputs": {
+        "input": "small_windows.output"
+      },
+      "position": [
+        148.0,
+        1610.0
+      ],
+      "properties": {
+        "finish": 5
+      },
+      "type": "game.GatehouseFinish"
+    },
+    "lime_panels": {
+      "inputs": {
+        "inputs": [
+          "front_plinth.output",
+          "front_lintel.output",
+          "front_infill_bays.output",
+          "front_end_panel.output",
+          "back_plinth.output",
+          "back_lintel.output",
+          "back_infill_bays.output",
+          "back_end_panel.output"
+        ]
+      },
+      "position": [
+        296.0,
+        1518.0
+      ],
+      "properties": {},
+      "type": "procedural.Merge"
+    },
+    "long_rail": {
+      "inputs": {},
+      "position": [
+        0.0,
+        552.0
+      ],
+      "properties": {
+        "base_on_ground": false,
+        "center": {
+          "x": 0.075,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "divisions_x": 1,
+        "divisions_y": 1,
+        "divisions_z": 1,
+        "size": {
+          "x": 5.72,
+          "y": 0.13,
+          "z": 0.17
+        }
+      },
+      "type": "procedural.Box"
+    },
+    "masonry": {
+      "inputs": {
+        "inputs": [
+          "gate_vault.barrel",
+          "gate_vault.voussoirs"
+        ]
+      },
+      "position": [
+        148.0,
+        0.0
+      ],
+      "properties": {},
+      "type": "procedural.Merge"
+    },
+    "paired_bents": {
+      "inputs": {
+        "points": "paired_bents_stations.output",
+        "sources": [
+          "paired_bents_unit.output"
+        ]
+      },
+      "position": [
+        444.0,
+        736.0
+      ],
+      "properties": {
+        "group": "",
+        "target_attributes": [],
+        "variant": "variant"
+      },
+      "type": "procedural.Realize"
+    },
+    "paired_bents_stations": {
+      "inputs": {},
+      "position": [
+        296.0,
+        736.0
+      ],
+      "properties": {
+        "count": 6,
+        "end": {
+          "x": 2.75,
+          "y": 4.37,
+          "z": -1.65
+        },
+        "start": {
+          "x": -2.6,
+          "y": 4.37,
+          "z": -1.65
+        }
+      },
+      "type": "procedural.Line"
+    },
+    "paired_bents_unit": {
+      "inputs": {
+        "inputs": [
+          "gallery_post.output",
+          "back_post.output"
+        ]
+      },
+      "position": [
+        148.0,
+        736.0
+      ],
+      "properties": {},
+      "type": "procedural.Merge"
+    },
+    "raised_lattice": {
+      "inputs": {
+        "inputs": [
+          "hanging_bars.output",
+          "iron_transom.output"
+        ]
+      },
+      "position": [
+        0.0,
+        2312.0
+      ],
+      "properties": {},
+      "type": "procedural.Merge"
+    },
+    "ridge_curve": {
+      "inputs": {
+        "points": "ridge_stations.output"
+      },
+      "position": [
+        302.0,
+        1936.0
+      ],
+      "properties": {},
+      "type": "procedural.Polyline"
+    },
+    "ridge_roll": {
+      "inputs": {
+        "backbone": "ridge_curve.output"
+      },
+      "position": [
+        302.0,
+        1984.0
+      ],
+      "properties": {
+        "end_caps": true,
+        "height": 1.0,
+        "profile": "tube",
+        "radius": 0.102,
+        "scale_attribute": "",
+        "segments": 10,
+        "up": {
+          "x": 0.0,
+          "y": 1.0,
+          "z": 0.0
+        },
+        "width": 1.0
+      },
+      "type": "procedural.Sweep"
+    },
+    "ridge_stations": {
+      "inputs": {
+        "input": "roof_span.output"
+      },
+      "position": [
+        0.0,
+        1868.0
+      ],
+      "properties": {
+        "drop": 0.56
+      },
+      "type": "game.SpanSag"
+    },
+    "roof_span": {
+      "inputs": {},
+      "position": [
+        0.0,
+        1800.0
+      ],
+      "properties": {
+        "count": 21,
+        "end": {
+          "x": 4.66,
+          "y": 6.6,
+          "z": 0.07
+        },
+        "start": {
+          "x": -3.58,
+          "y": 7.96,
+          "z": 0.07
+        }
+      },
+      "type": "procedural.Line"
+    },
+    "small_windows": {
+      "inputs": {
+        "inputs": [
+          "front_lights.output",
+          "back_lights.output"
+        ]
+      },
+      "position": [
+        0.0,
+        1610.0
+      ],
+      "properties": {},
+      "type": "procedural.Merge"
+    },
+    "street_drip_line": {
+      "inputs": {
+        "points": "street_eave_stations.output"
+      },
+      "position": [
+        453.0,
+        1800.0
+      ],
+      "properties": {},
+      "type": "procedural.Polyline"
+    },
+    "street_eave_stations": {
+      "inputs": {
+        "input": "roof_span.output"
+      },
+      "position": [
+        151.0,
+        1868.0
+      ],
+      "properties": {
+        "pivot": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "rotate": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "scale": {
+          "x": 1.0,
+          "y": 0.0,
+          "z": 1.0
+        },
+        "translate": {
+          "x": 0.0,
+          "y": 6.04,
+          "z": -2.14
+        }
+      },
+      "type": "procedural.Transform"
+    },
+    "street_knee": {
+      "inputs": {
+        "input": "brace_blank.output"
+      },
+      "position": [
+        148.0,
+        828.0
+      ],
+      "properties": {
+        "pivot": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "rotate": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 39.0
+        },
+        "scale": {
+          "x": 1.0,
+          "y": 1.0,
+          "z": 1.0
+        },
+        "translate": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "type": "procedural.Transform"
+    },
+    "street_pitch": {
+      "inputs": {
+        "rail_a": "street_eave_stations.output",
+        "rail_b": "ridge_stations.output"
+      },
+      "position": [
+        0.0,
+        1936.0
+      ],
+      "properties": {
+        "thickness": 0.085
+      },
+      "type": "procedural.RailPanel"
+    },
+    "street_sill": {
+      "inputs": {
+        "input": "long_rail.output"
+      },
+      "position": [
+        148.0,
+        552.0
+      ],
+      "properties": {
+        "pivot": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "rotate": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "scale": {
+          "x": 1.0,
+          "y": 1.0,
+          "z": 1.0
+        },
+        "translate": {
+          "x": 0.0,
+          "y": 4.48,
+          "z": -1.65
+        }
+      },
+      "type": "procedural.Transform"
+    },
+    "street_wall_plate": {
+      "inputs": {
+        "input": "long_rail.output"
+      },
+      "position": [
+        444.0,
+        552.0
+      ],
+      "properties": {
+        "pivot": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "rotate": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "scale": {
+          "x": 1.0,
+          "y": 1.0,
+          "z": 1.0
+        },
+        "translate": {
+          "x": 0.0,
+          "y": 5.99,
+          "z": -1.65
+        }
+      },
+      "type": "procedural.Transform"
+    },
+    "street_window_rail": {
+      "inputs": {
+        "input": "long_rail.output"
+      },
+      "position": [
+        296.0,
+        552.0
+      ],
+      "properties": {
+        "pivot": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "rotate": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "scale": {
+          "x": 1.0,
+          "y": 1.0,
+          "z": 1.0
+        },
+        "translate": {
+          "x": 0.0,
+          "y": 4.95,
+          "z": -1.65
+        }
+      },
+      "type": "procedural.Transform"
+    },
+    "street_wings": {
+      "asset": "project/{9A736FB1-C585-4E24-860F-A3C4768021AC}",
+      "inputs": {},
+      "position": [
+        1126.0,
+        980.0
+      ],
+      "properties": {
+        "seed_offset": 0
+      },
+      "type": "procedural.AssetNode"
+    },
+    "through_joist": {
+      "inputs": {},
+      "position": [
+        148.0,
+        460.0
+      ],
+      "properties": {
+        "base_on_ground": false,
+        "center": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "divisions_x": 1,
+        "divisions_y": 1,
+        "divisions_z": 1,
+        "size": {
+          "x": 0.14,
+          "y": 0.17,
+          "z": 3.83
+        }
+      },
+      "type": "procedural.Box"
+    },
+    "tile_canopy": {
+      "inputs": {
+        "inputs": [
+          "street_pitch.panel",
+          "yard_pitch.panel",
+          "ridge_roll.output"
+        ]
+      },
+      "position": [
+        0.0,
+        1984.0
+      ],
+      "properties": {},
+      "type": "procedural.Merge"
+    },
+    "watchtowers": {
+      "asset": "project/{54A7615E-0A31-4C9A-A4EF-C570773302F6}",
+      "inputs": {},
+      "position": [
+        1274.0,
+        980.0
+      ],
+      "properties": {
+        "seed_offset": 0
+      },
+      "type": "procedural.AssetNode"
+    },
+    "west_hall": {
+      "asset": "project/{0778BF9B-7C6A-43A0-9FE0-A779C298263E}",
+      "inputs": {},
+      "position": [
+        978.0,
+        980.0
+      ],
+      "properties": {
+        "seed_offset": 0
+      },
+      "type": "procedural.AssetNode"
+    },
+    "yard_drip_line": {
+      "inputs": {
+        "points": "yard_eave_stations.output"
+      },
+      "position": [
+        453.0,
+        1868.0
+      ],
+      "properties": {},
+      "type": "procedural.Polyline"
+    },
+    "yard_eave_stations": {
+      "inputs": {
+        "input": "street_eave_stations.output"
+      },
+      "position": [
+        302.0,
+        1868.0
+      ],
+      "properties": {
+        "pivot": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "rotate": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "scale": {
+          "x": 1.0,
+          "y": 1.0,
+          "z": 1.0
+        },
+        "translate": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 4.28
+        }
+      },
+      "type": "procedural.Transform"
+    },
+    "yard_pitch": {
+      "inputs": {
+        "rail_a": "ridge_stations.output",
+        "rail_b": "yard_eave_stations.output"
+      },
+      "position": [
+        151.0,
+        1936.0
+      ],
+      "properties": {
+        "thickness": 0.085
+      },
+      "type": "procedural.RailPanel"
+    }
+  },
+  "parameters": [
+    {
+      "category": "Gate passage",
+      "description": "Stone jamb to jamb. The adjoining wings stay in place.",
+      "label": "Clear passage width (m)",
+      "name": "clear_width",
+      "targets": [
+        "gate_vault.clear_width"
+      ]
+    },
+    {
+      "category": "Gallery roof",
+      "description": "Vertical drop below the straight line between the two ridge seats. The eaves and the stone passage stay fixed.",
+      "label": "Roof midspan drop (m)",
+      "name": "roof_sag",
+      "targets": [
+        "ridge_stations.drop"
+      ]
+    }
+  ],
+  "settings": {
+    "display": "OUT_gatehouse",
+    "seed": 37
+  },
+  "version": 4
+}

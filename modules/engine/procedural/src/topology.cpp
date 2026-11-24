@@ -9,7 +9,7 @@ namespace atelier::procedural::detail {
 
 // Boundary halfedges, not fan diagonals. Across each edge, link corners around
 // their common point. A closed manifold has exactly one such cycle at each used point.
-Result<void> validate_shells(const Geometry& surface) {
+Result<void> validate_shells(const Geometry& surface, Array<std::uint32_t>* next_around_point) {
     struct Edge {
         std::uint64_t key;
 
@@ -58,6 +58,8 @@ Result<void> validate_shells(const Geometry& surface) {
             c = around[c];
         } while (c != start);
     }
+    if (next_around_point)
+        *next_around_point = std::move(around);
     return {};
 }
 

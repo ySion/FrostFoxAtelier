@@ -1,6 +1,7 @@
 // Moves each selected point by a random offset in [-amount, amount) per axis, scaled per axis.
 // Uses point `id` when present so offsets follow points across count changes, falling back to
 // the point index when `id` is absent (for example directly after Grid, Line or Box).
+[DESC = "按轴对选中点的位置施加可复现的随机偏移。优先以点 id 取样，缺少 id 时使用点序号。"]
 class procedural.Jitter : procedural.Node {
     [Label = "Group", DESC = "只修改选中点；空名称表示全选。"]
     String group = "";

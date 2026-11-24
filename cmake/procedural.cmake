@@ -4,6 +4,11 @@ function(atelier_add_procedural)
         modules/engine/procedural/src/operations.cpp
         modules/engine/procedural/src/topology.cpp
         modules/engine/procedural/src/boolean.cpp
+        modules/engine/procedural/src/bevel.cpp
+        modules/engine/procedural/src/bevel_attributes.cpp
+        modules/engine/procedural/src/bevel_clip.cpp
+        modules/engine/procedural/src/bevel_corner.cpp
+        modules/engine/procedural/src/bevel_offset.cpp
         modules/engine/procedural/src/constructors.cpp
         modules/engine/procedural/src/triangles.cpp
         modules/engine/procedural/src/volume.cpp

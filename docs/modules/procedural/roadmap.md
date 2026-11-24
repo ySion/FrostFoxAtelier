@@ -34,6 +34,7 @@ S0 契约静态对齐 → S1 原生拓扑/构造/体积采样/Realize，随后�
 
 | 项目 | 状态与下一步 |
 | --- | --- |
+| 双轨成板 | 门楼变坡屋面与[短桥及两端引板](../../../examples/Content/Procedural/README.md#短木桥-footbridge)共用已发布的 `procedural.RailPanel`。短桥沿线布置继续由 `Resample` 取站点、`Realize` 放原型。 |
 | S3 拓扑工具 | `Connectivity`、`Extrude`（法线外推/内缩封边/底盖及逐图元缩放属性）与 `Sweep`（最小旋转标架沿折线扫掠矩形/圆管/自定义闭合截面，三维扭曲侧面自动按对角线破分为满足 δ_p 的三角形流形）已接入 SOP 求值链，见[几何操作](README.md#操作)。后续按真实生成命题补齐 `Clip`、`Fuse/Triangulate` |
 | Remap／属性噪声 | E/F 已接通共同绑定与 Source 3D value noise / point float Remap，现行合同见[Noise / Remap](README.md#noise--remap-数值契约)。其他噪声族、导数和周期仍未排期 |
 | 语言能力 | 参数名与参数属性（含 `[In/Group(..., Port = "...")]` 与 SOP 定长列保护）、可写引用容器结构修改（`Array<T>&`/`String&`/`Struct&`）、自动合成 `Array<源码 struct/enum>`、`parallel_for`、复合赋值（`+=` 等）与短路 `?:`、显式 `fail("...")`、`math.is_finite`、`math.as_uint`/`math.as_int`、同步值区间读 self、字段元数据、数学函数、代码身份、引擎源码加载及按依赖复用编译单元已接入，语义见 [LANGUAGE.md](../../../LANGUAGE.md)、[数学模块](../../math.md)和[原生值借用](../../native-value-borrows.md) |
@@ -73,13 +74,15 @@ S0 契约静态对齐 → S1 原生拓扑/构造/体积采样/Realize，随后�
 | 1. 参数化基础图元与对齐（S4.5-1） | `Transform`（角度制欧拉旋转 + `pivot`）与 `MatchSize` | `Transform.rotate` 统一采用角度制 `X→Y→Z` 欧拉角并支持局部 `pivot`；新增 `MatchSize`（默认 XZ 居中、底面贴齐 `Y=0`，支持 `scale_to_fit` 与 `reference` 参考端口） | 已实现（S4.5-1） |
 | 2. 撒点遮罩与拓扑构造（S4.5-2） | `Scatter`（面组与密度） | primitive 布尔组选区已通过双坡屋面案例验证。出现同一选区内随湿度或距檐口距离连续变化的疏密需求时，再验证密度权重列 | 面组已实现；连续权重待案例 |
 | 2. 撒点遮罩与拓扑构造（S4.5-2） | `Clip`（平面裁切 + 可选封盖 `Cap` + 切口组） | 斜屋顶山墙、断壁残垣斜切口与岩石削切；开启 `Cap` 时补齐满足 δ_p 的闭合切面，保持下游 `Boolean` / `VolumeScatter` 可用 | 候选待推进 |
+| 2. 撒点遮罩与拓扑构造（S4.5-2） | [Bevel](bevel.md) | 为石构压顶、柱帽等闭合凸件按棱角阈值生成平倒角或多段圆角，保持实体封闭 | 闭合凸件已实现 |
 | 2. 撒点遮罩与拓扑构造（S4.5-2） | `Fuse`（空间哈希点焊接 + 退化图元清理） | `Merge`、`Realize` 或 L3 `emit_*` 拼合几何后，按距离阈值确定性焊接重合点并清理退化边面 | 候选待推进 |
 | 2. 撒点遮罩与拓扑构造（S4.5-2） | `Divide`（凸化 / 三角化 / Bricker 正交网格切分） | 多边形三角化与正交网格分块（Bricker），将不规则裁切面切成规整网格片以供噪声起伏或逐块 `Extrude` | 候选待推进 |
 | 3. 法线与 UV 完备化（S4.5-2） | `Normal`（按折痕角 `Cusp Angle` 重算法线） | `.source` 变形点位置 `P` 后，按平滑/硬边角度阈值重建 `vertex` 或 `point` 法线 | 候选待推进 |
 | 3. 法线与 UV 完备化（S4.5-2） | `UVProject`（Box 六向 / Planar / Cylindrical 投影） | 为 `Boolean`、`Extrude`、`Clip` 及 L3 生成几何赋予统一世界尺度（Texel Density）的 `vertex uv`，打通 Scene Lit 贴图表现 | 候选待推进 |
 | 4. 曲线、选组与分支（S4.5-2） | `Resample` 与 `Polyline` 闭合创建 | `Resample` 已支持折线定距/定段、可选保留转角、切向与弧长，兼容首尾共用点的闭环；`Polyline` 从纯点创建闭合线仍为候选 | 重采样已落地；闭合创建待推进 |
-| 4. 曲线、选组与分支（S4.5-2） | `Group` | 面法线夹角建组、读取现有组、同层并交差和视口高亮已落地；`GroupBox` 提供盒选点，球形范围与开口边界选组按案例推进 | 基础选组已实现；其余候选 |
-| 4. 曲线、选组与分支（S4.5-2） | `Switch`（按索引选择输入，`Evaluator` 惰性求值） | 配合 S4 暴露参数切换数字资产内部造型分支，仅求值被选中的单个上游分支，未选分支零求值开销 | 候选待推进 |
+| 4. 曲线、选组与分支（S4.5-2） | 按弧长取样、截段与等分布站 | [弧形石栏杆](../../../examples/Content/Procedural/README.md#弧形石栏杆-arcbalustrade)的柱脚与石缝都需按米定位。先验证共享的折线距离查询与保留内部折点的区间提取，再从 Resample 提供两端退距和按最大间距均分的布点策略。 | 案例已验证，公共接口候选 |
+| 4. 曲线、选组与分支（S4.5-2） | `Group` | 面法线夹角、已有组和 float 列闭区间三种条件、同层并交差及视口高亮已落地；`GroupBox` 提供盒选点，球形范围与开口边界选组按案例推进 | 基础选组已实现；其余候选 |
+| 4. 曲线、选组与分支（S4.5-2） | `Switch`（按索引选择输入，`Evaluator` 惰性求值） | 等数字资产出现互斥造型分支时验证。结构与环校验仍检查已连的分支，仅选中输入进入本次求值与缓存键。验收应覆盖未选分支报错或修改不影响输出、切换后返回所选分支首错、撤销切换后恢复。 | 候选 |
 
 ### Volume 表面带的首角舍入限制（未排期）
 

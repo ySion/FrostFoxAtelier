@@ -5,7 +5,7 @@
 | 头文件 | 内容 |
 | --- | --- |
 | [geometry.hpp](../../../modules/engine/procedural/include/procedural/geometry.hpp) | `Geometry` 值、层、用途（含 `Usage::orientation`）、属性列、拓扑与实例 |
-| [operations.hpp](../../../modules/engine/procedural/include/procedural/operations.hpp) | 导入、生成、挤出（`extrude`）、扫掠（`sweep`）、撒点、射线投射、变换、Promote、Copy to Points、Realize、包围盒 |
+| [operations.hpp](../../../modules/engine/procedural/include/procedural/operations.hpp) | 导入、生成、挤出、扫掠、倒角、撒点、射线投射、变换、Promote、Copy to Points、Realize、包围盒 |
 | [instances.hpp](../../../modules/engine/procedural/include/procedural/instances.hpp) | 把 instance 层发布为渲染用的实例集合 |
 | [bvh.hpp](../../../modules/engine/procedural/include/procedural/bvh.hpp) | 首角扇形 `Bvh` 与供 `.source` 并行只读查询的 `Spatial` 加速缓冲及 16 槽共享缓存 |
 | [graph.hpp](../../../modules/engine/procedural/include/procedural/graph.hpp) | `Graph`、统一 `Node` 基类（含受控 L3 `emit_*/set_*` 构建方法）、实例级 `ports`、`AssetSubgraph` 绑定与编辑入口 |
@@ -37,10 +37,11 @@
 - **`grid` / `line`**：`grid(GridSettings)` 支持 `zx`（+Y）、`xy`（+Z）、`yz`（+X）三参考平面上的 `quads`（默认四边形网格）、`triangles`（三角形网格）与 `points`（纯点阵）；表面模式要求 `rows/columns >= 2` 且尺寸为正，写出 `vertex` `N` 与 `[0,1]` 仿射 `uv`；双参数便捷入口 `grid(size, rows, columns)` 保持纯点阵语义。`line` 输出含两端的等距散点。
 - **`box` / `sphere` / `tube` / `wedge` / `circle` / `torus`**：按下述拓扑生成几何，表面均写出 `vertex` `N` 与 `vertex` `uv`。`box` 支持三轴细分（共享棱与角点构成单一闭合流形壳）及 `base_on_ground`（底面贴齐 `center.y`）；`tube` 支持独立 `radius_top`/`radius_bottom`（一端为 0 时生成共享尖顶三角锥面）、中空 `inner_radius`（凸梯形环盖）、多层 `rows` 与扇形 `arc_degrees`（自动封闭径向切口）；`wedge` 生成闭合楔形体或双坡屋顶棱柱（`peak_ratio` 覆盖 `0..1`）；`circle` 在三参考平面上输出闭合凸多边形（小于 360° 为过圆心的凸三角扇）、闭合折线或供 `Sweep` 拱门/弯墙直接消费的开放圆弧折线（`open_arc`）；`torus` 生成 `minor_radius < major_radius` 的无自交圆环或带盖弯管。预检总角数均须小于 2³²−1，表面消费者仍执行公共凸面判据。
 - **`Geometry::connect_points` / Polyline**：只接受纯点输入，不得带任何图元或 instance；按点序连接为一个开放图元，不焊接，不自动闭合，没有 closed 选项。0 点空进空出（保留 detail，与未连端口相容），1 点报错。全部 point 与 detail 列及其用途原样共享保留，不生成 N；已有空 vertex/primitive 列保留定义，分别扩为点数/1 个类型默认值，instance 列仍为空，不静默删列。`Line → Polyline` 先生成等距点，再连接相邻点；作者手填点数组的绘制曲线节点后移到 S2，见 roadmap。
-- **`Group`** 输出一列命名的 `bool` 属性。选 `normal` 时，用局部空间点位和多边形绕序计算面积法线；与 `direction` 的夹角 ≤ `max_angle`（0–180°）即入 primitive 组。边界包含在内，折线的条件值为假，零面积面报出首个图元索引。选 `existing` 时直接读取 `source_group` 的层和成员。默认 `replace` 写入条件结果；`unite / intersect / subtract` 计算“基组 ∪ 条件 / 基组 ∩ 条件 / 基组 − 条件”。输出可与任一操作数同名。显式命名的组须存在、为 bool，参与组合的组须同层。已有列替换遵守 Geometry 层与类型契约。
+- **`Group`** 输出一列命名的 `bool` 属性。选 `normal` 时，用局部空间点位和多边形绕序计算面积法线；与 `direction` 的夹角 ≤ `max_angle`（0–180°）即入 primitive 组。边界包含在内，折线的条件值为假，零面积面报出首个图元索引。选 `existing` 时直接读取 `source_group` 的层和成员。选 `range` 时，读取 `source_attribute` 指定的 float 列，在同一层对 `minimum ≤ 值 ≤ maximum` 写入成员。边界可相等；界值和列值须有限，反向区间报错，非有限列值报告首个元素索引。默认 `replace` 写入条件结果；`unite / intersect / subtract` 计算“基组 ∪ 条件 / 基组 ∩ 条件 / 基组 − 条件”。输出可与任一操作数同名。显式命名的组须存在、为 bool，参与组合的组须同层。已有列替换遵守 Geometry 层与类型契约。
 - **屋面示例**：对宽 2、高 1 的对称 `Wedge` 用 +Y、45° 得到两片 `roof_faces`；以右坡法线 (1,1,0)、0° 得到 `protected_side`。在 `Group` 里选 `existing`、`subtract`，以 `roof_faces` 为基组、`protected_side` 为条件，输出 `work_area`。下游 `Extrude.group = work_area` 只抬高左坡。Scene View 的 Guides → Highlight Group 可以检查该列，Geometry Info HUD 显示成员数和所在层的总数。
+- **算子用途**：在 Source 的 `class` 前写 `[DESC = "..."]`，说明接受什么输入、做什么、输出什么。编辑器 Tab 搜索可按说明中的关键词筛选，其行提示与 Control 的 `graph.inspect {"view":"catalog"}` 共用 Runtime 的类型说明。显式几何端口可在 `[Port, DESC = "..."]` 或原生 `APARAM(Port, DESC = "...")` 声明拓扑、坐标和接线条件；画布节点的提示与精确类型目录共读端口说明。
 - **命名属性契约**：类型目录和网络节点提示使用同一份声明。Source 的列参数可在 `In/Out/InOut/Group` 上加单行 `DESC` 说明用途，例如 `[In("id", Optional, DESC = "缺列时使用点序号。")]`。绑定器传入空数组，点序号回退由节点内核实现。原生 `Scatter` 声明所读的坡面组和写出的点列；`Realize / CopyToPoints` 声明具名的放置输入。任意源几何的列传播和 `Realize.target_attributes` 的显式广播仍由各自算子定义。Scatter 的 `density` 是每平方米的候选点数，输入几何上即便有同名列也不会自动加权。
-- **屋面长苔**：[MossRoof.procgraph](../../../examples/Content/Procedural/Graphs/MossRoof.procgraph) 用 `Wedge → Group → Scatter` 在朝 −X 的 45° 坡面取样；`RandomScale → Realize` 按点法线放置大小略有不同的扁球苔斑，最后与屋面合并。查看 `moss_anchors` 可单独检查锚点，翻转 `moss_faces.direction.x` 可切换坡面。固定图种子 17、散点种子 31 和最小间距 0.3 m 时，密度 2 点/m² 在左坡保留 18 个锚点，改为 1 点/m² 保留 10 个。
+- **屋面覆盖（选组灰模验收）**：[MossRoof.procgraph](../../../examples/Content/Procedural/Graphs/MossRoof.procgraph) 用 `Wedge → Group → Scatter` 在朝 −X 的 45° 坡面生成固定锚点。`cover_noise` 按点位写出 `moss_cover`；`moss_patch` 按闭区间生成同名点组，`RandomScale → Realize` 仅在组内放置代表苔斑的扁球，便于计数和辨认位置。保持上界 1，降低 `moss_patch.minimum` 会让苔斑向周围扩展，已有锚点保持原位。示例默认下界 0.55。
 - **`group_box`**：在各轴闭区间 `[minimum,maximum]` 内选 point，写入/替换同名 bool 列；边界须有限且逐轴有序。名字遵守 Geometry 标识符规则，已有异层/异类型列报错。GroupBox 节点在输入的 COW 副本上操作，不改输入；这是输出组名，不能用空名字表示全选，不支持表达式或反选。
 - **Connectivity** 按共享点索引将多边形、开放折线和散点划分为连通块，在 point 层写入 uint 属性（默认 `piece`）。编号从 0 开始，按每块最小点索引排序。仅位置重合的独立点保持分离，孤立点各有一个编号；实例层与其余属性原样传递。需要逐图元编号时接 Promote，目标层选 primitive，归约选 first。
 - **`scatter`**：接受三角形及凸平面多边形，不接受折线；按下述公共首角扇形视图采样。原图元 p、局部子三角 j 的随机源 s 在 j=0 时为 `hash(seed,p)`，j>0 时为 `hash(hash(seed,p),j)`；点数为面积 × 密度，以 `hash(s,0)` 按小数部分概率进位，第 k 个点使用 `hash(s,2*k+1)` 与 `hash(s,2*k+2)` 均匀采样重心坐标。输出按 p/j/k 顺序，k 在每个子三角内从零开始，不把展开下标或线程号混入随机源。可选最小间距通过紧凑双数组开放寻址空间哈希在全部候选上按这个顺序稳定淘汰，所有列一起压紧；格坐标超出 ±2⁶² 时失败。输出 P、N、`id`、`sourceprim`、`sourceordinal`、`sourceprimuv`；仅输入包含超过三角的面时在末尾追加 uint `sourcetri`（其他三角面的值为 0）。纯三角输入的六列顺序、算术与值不变。`id` 在 j=0 时为 `hash(p,k)`，否则为 `hash(hash(p,j),k)`，它只是非唯一随机种子；（p,j,k）是局部稳定来源。`sourceprimuv` 是子三角 j 内的 (b1,b2)，不是原多边形坐标。
@@ -83,6 +84,10 @@ Scatter 的 `group` 留空时在整个有效表面撒点；命名组必须是输
 模块内部 [triangles.cpp](../../../modules/engine/procedural/src/triangles.cpp) 是 Scatter、BVH/Ray、Volume 共用的数值判据与首角扇形视图，不生成第二份拓扑；借用期间 Geometry 必须保持不变且存活。图元 p 的第 j 个三角取原角 `(first, first+j+1, first+j+2)`，顺序为 p 再 j；折线明确失败。Scatter/BVH 的三角输入保留原先零面积跳过规则；Volume 要求三角面也通过非退化面校验。多边形都必须有可分辨的平面、简单凸边界及非零边，合法多边形中的零面积扇形片不算退化面。
 
 本节通用输入多边形的判据用 double 计算。每个原多边形 p 的距离容差 δ_p = 8 × float ε × max（该面各角最大绝对坐标分量，该面 AABB 对角线长），两个输入量都不依赖首角或扇形划分，没有固定米制下限；8 是为 float 输入和变换舍入预留的安全系数，不是容许任意翘曲的建模参数。`polygon_scale` 同时为凸面校验与 Volume 表面带提供这个尺度和容差。首角扇形的有向面积向量长度必须大于 δ_p × AABB 对角线长，点到所得平面的距离不超过 δ_p，投影边长须大于 δ_p。采用保守凸性规则：投影相邻边的有向叉积必须非负，即使负值来自舍入也拒绝，不用距离容差放过凹角；正向共线角仍有效，允许零面积扇形子三角。接近折返的角（点积非正、叉积不超过 δ_p × 两邻边长度之和）也拒绝。在此非负转角前提下，转角总和必须为 2π（double 累加容差 64 × ε × 角数），既排除多圈星形，也不让正反小回环抵消成一圈。检查为线性时间，不另建边对相交矩阵。适用于细节显著大于其绝对坐标 float 精度的模型；远离原点或极薄的不可分辨面报错，不静默修补。后续构造与拓扑工具复用此判据，不另定容差。
+
+### Bevel 实体倒角
+
+`procedural.Bevel` 的 `surface` 输入可以接一个闭合外向的凸件，也可以接多个分离的凸件。`angle_degrees` 按相邻面的外法线夹角选棱，共面剖分缝会跳过。`radius` 是米制圆角半径，两面垂直时等于两侧的退距。`segments=1` 生成平倒角，增加至 2–8 段可逼近圆弧。半径为零或无选中棱时原样输出。请参阅[几何算法与适用范围](bevel.md)。
 
 ### Boolean 实体建模
 
@@ -172,7 +177,7 @@ Release 下运行 `atelier_procedural_acceptance --profile-boolean <新的绝对
 | Torus | orientation=zx、major_radius=1、minor_radius=0.25、center=(0,0,0)、base_on_ground=false、major_segments=32、minor_segments=16、arc_degrees=360、end_caps=true | output |
 | Polyline | — | points → output |
 | Resample | mode=spacing、spacing=1 m 或 segments=8、preserve_corners=false | curves（折线）→ output |
-| Group | group="selected"、criterion=normal、direction=(0,1,0)、max_angle=45°、source_group=""、operation=replace、base_group="" | input → output |
+| Group | group="selected"、criterion=normal、direction=(0,1,0)、max_angle=45°、source_group=""、source_attribute=""、minimum=0、maximum=1、operation=replace、base_group="" | input → output |
 | GroupBox | group="selected"、minimum=(−.5,−.5,−.5)、maximum=(.5,.5,.5) | input → output |
 | Connectivity | attribute="piece"（point uint） | input → output |
 | Scatter | density、seed、min_distance、group=""（primitive bool）；节点种子为 hash(图种子, seed) | context, surface → points |
@@ -195,6 +200,10 @@ Release 下运行 `atelier_procedural_acceptance --profile-boolean <新的绝对
 
 原生节点的 `process(...) const noexcept` 返回 `atelier::Result<void>`，反射仍发布为业务结果 void，端口和 BorrowSafe 约束不变。业务失败在节点边界转换为 `invocation_failed` 并保留原始原因，不通过异常传递；`Resources::mesh` 和 `Context::mesh` 同样通过 noexcept Result 返回资源拒绝。未连接的单输入端口收到空几何。
 
+### 变截面扫掠
+
+Sweep 在每个骨架点读取 `scale_attribute` 指定的 point float，乘到截面的每个线性尺寸。默认列名为 `pscale`，空名或缺列时系数为 1。Control 的 `graph.inspect` 可在 `view: node` 下启用 `bindings` 查看绑定列、上游及回退状态。圆管截面达到 8 段时，侧面按实际相邻环的周向和纵向计算平滑角法线。直线上的锥台因此也能反映半径变化，端盖继续使用独立的平面法线。[弧形石栏杆案例](../../../examples/Content/Procedural/README.md#弧形石栏杆-arcbalustrade)
+
 ### 沿路径布点与保形重采样
 
 `Resample` 对每条折线分别从起点计算弧长。间距模式按 `0, spacing, 2 × spacing, …` 取样并保留精确终点，最后一段可以较短。段数模式沿原始弧长均分。默认相邻采样点直接相连，可能削平两点之间的转角；开启 `preserve_corners` 会额外插入原线的转折点，后面的采样位置不动。因此开启后实际段数可以增加。在直段内增加共线控制点不会额外布点。
@@ -204,6 +213,8 @@ Release 下运行 `atelier_procedural_acceptance --profile-boolean <新的绝对
 浮点和向量属性沿边线性插值，插值法线归一化；整数、组、旋转和矩阵选取最近端点，平局取边起点。图元和 detail 属性沿用原值。已有同名的三个输出属性须匹配点层及类型。各曲线独立生成点，未被折线使用的点不参与；空几何产生空输出，纯散点需先连接 `Polyline`。相邻重合控制点不占弧长。整条零长、非折线、实例、闭环不足三个采样点、超出几何容量或相邻样点在输出精度下重合时返回错误。小于终点位置精度的末尾短段与终点合为一站。
 
 ### 自有语言节点与正式类 Wrangle
+
+具名输入只由一个列绑定定义时，该绑定的 `DESC` 同时是端口接线说明。多个列共用输入时，各列保留各自的属性说明；显式 `Port` 的说明描述整个端口。可在 Control 的精确类型目录读取 `port_descriptions.inputs` 和 `port_descriptions.outputs`。
 
 工程或引擎中的任意 `.source` `class Name : procedural.Node` 只要声明合法的同步 `void process(...)` 即成为正式 SOP 节点（公开字段为节点参数，函数体内显式书写循环或多步逻辑，不经过文本宏拼接）。[assets/engine/procedural](../../../assets/engine/procedural) 里的文件是引擎源码模块，`ProjectCode::snapshot` 把它们并进每个工程快照（带 `engine/` 前缀），并在首次构建时向工程 Runtime 注册本模块原生类型：
 
@@ -216,6 +227,7 @@ Release 下运行 `atelier_procedural_acceptance --profile-boolean <新的绝对
 | normal_align.source | `procedural.NormalAlign`：`group`、`up`；校验 `up` 与输入 `N` 有限性，按 `align_to_normal(N, up)` 写组内 `orient`（自动获得 `Usage::orientation`）；若上游已有 `orient`，组外点保留原值。新建 `orient` 时，组外点遵循 `CopyToPoints` 的规则：零法线使用单位旋转，非零法线才读取可选的点层 `up` 并检查其有限性 |
 | noise.source | `procedural.Noise`：`[RunOver] layer`（默认 `point`）、`source_attribute="P"`、`attribute="noise"`、`group=""`、`seed=0`、`frequency=1`、`offset=(0,0,0)`；3D value noise，`lattice_bits` 通过零开销 `math.as_uint` 编码二补码格坐标 |
 | remap.source | `procedural.Remap`：`[RunOver] layer`（默认 `point`）、`source_attribute="noise"`、`attribute="pscale"`、`group=""` 及四端点；double 中间线性映射，允许反向与外推，不夹值 |
+| [rail_panel.source](../../../assets/engine/procedural/rail_panel.source) | `procedural.RailPanel` 将两列同向、等点数的点层 `P` 按点序逐站配对。沿 +X 前进时，较小 Z 接 `rail_a`、较大 Z 接 `rail_b`。两轨可有不同弧长。输出 `panel` 为封闭三角网格，带顶点层 `N`；`thickness` 默认 0.09 米，沿图局部负 Y 量取。 |
 | spatial.source | 结构体 `procedural.SurfaceHit`、`procedural.CurveSample` 及 `parallel_safe` 空间查询函数 `procedural.raycast_surface`、`closest_surface_point`、`closest_polyline`（遍历 `[Port] const procedural.Spatial&` 的 64 层近端优先 BVH，使用双精度计算相交条件、距离和剪枝界限） |
 
 ### Noise / Remap 数值契约

@@ -22,8 +22,9 @@ struct GraphPortInfo {
     bool operator==(const GraphPortInfo&) const = default;
 };
 
-struct GraphAttributeHelp {
-    std::vector<procedural::AttributeRule> rules;
+struct GraphNodeHelp {
+    std::vector<procedural::PortDescription> ports;
+    std::vector<procedural::AttributeRule> attributes;
     std::string text;
 };
 
@@ -42,7 +43,7 @@ struct GraphNodeCatalogEntry {
 
     GraphPortInfo ports;
 
-    std::shared_ptr<const GraphAttributeHelp> attribute_help{};
+    std::shared_ptr<const GraphNodeHelp> help{};
 
     bool operator==(const GraphNodeCatalogEntry&) const = default;
 };

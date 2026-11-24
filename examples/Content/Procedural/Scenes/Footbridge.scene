@@ -1,0 +1,686 @@
+{
+  "entities": [
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "graph": "project/{D939310F-FB4A-43F3-969D-766EF268C181}",
+          "id": "2",
+          "materials": [
+            {
+              "overridden": true,
+              "resource": "11",
+              "slot": "default"
+            }
+          ],
+          "name": "",
+          "properties": {
+            "chunk_size": 16.0,
+            "override_seed": false,
+            "seed": 0
+          },
+          "type": "world.ProceduralGeneratorComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "1",
+      "name": "Six-metre timber footbridge",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.ProceduralGeneratorEntity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "4",
+          "materials": [
+            {
+              "overridden": true,
+              "resource": "12",
+              "slot": "slot/0"
+            }
+          ],
+          "mesh": "builtin/cube",
+          "name": "StaticMeshComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "enabled": false,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.2,
+                "restitution": 0.0
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "type": "world.StaticMeshComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "3",
+      "name": "Creek surface",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          0,
+          -0.16,
+          0
+        ],
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          220,
+          0.12,
+          220
+        ]
+      },
+      "type": "world.StaticMeshEntity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "6",
+          "name": "",
+          "properties": {
+            "settings": {
+              "casts_shadow": true,
+              "color": {
+                "x": 1,
+                "y": 0.935,
+                "z": 0.81
+              },
+              "height": 1.0,
+              "intensity": 3.95,
+              "kind": "directional",
+              "range": 10.0,
+              "source_radius": 0.0,
+              "two_sided": false,
+              "width": 1.0
+            }
+          },
+          "type": "world.LightComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "5",
+      "name": "Slanting daylight",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          -12.0,
+          20.0,
+          -16.0
+        ],
+        "rotation": [
+          0.32774535,
+          0.40954748,
+          -0.16053763,
+          0.836111
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "8",
+          "name": "",
+          "properties": {
+            "far_clip": 400,
+            "near_clip": 0.05,
+            "vertical_fov": 26
+          },
+          "type": "world.CameraComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "7",
+      "name": "Creek bank view",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          5.9,
+          6.9,
+          -10.8
+        ],
+        "rotation": [
+          0.211644801,
+          -0.241427253,
+          0.054041252,
+          0.945515152
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "10",
+          "name": "",
+          "properties": {
+            "antialiasing": "smaa",
+            "ao_radius": 0.17,
+            "bloom": false,
+            "ddgi": false,
+            "direct_candidates": 8,
+            "exposure_ev": 0.0,
+            "gtao": true,
+            "indirect_gain": 1.0,
+            "main_camera": {
+              "$ref": "7"
+            },
+            "probe_bounce": 0.85,
+            "probe_rays": 128,
+            "probe_update_budget": 64,
+            "reflection_distance": 30.0,
+            "reflection_roughness": 0.6,
+            "shadows": true,
+            "sky_color": {
+              "x": 0.59,
+              "y": 0.7,
+              "z": 0.81
+            },
+            "sky_enabled": true,
+            "sky_intensity": 0.96,
+            "sky_rotation": 0.0,
+            "sssr": false,
+            "volume0": {
+              "blend_cells": 0.0,
+              "count_x": 10,
+              "count_y": 5,
+              "count_z": 7,
+              "enabled": true,
+              "maximum": {
+                "x": 5,
+                "y": 4,
+                "z": 3
+              },
+              "minimum": {
+                "x": -5,
+                "y": -0.4,
+                "z": -3
+              },
+              "placement": "fixed"
+            },
+            "volume1": {
+              "blend_cells": 0.0,
+              "count_x": 8,
+              "count_y": 4,
+              "count_z": 8,
+              "enabled": false,
+              "maximum": {
+                "x": 6.0,
+                "y": 5.0,
+                "z": 6.0
+              },
+              "minimum": {
+                "x": -6.0,
+                "y": -1.0,
+                "z": -6.0
+              },
+              "placement": "fixed"
+            },
+            "volume2": {
+              "blend_cells": 0.0,
+              "count_x": 8,
+              "count_y": 4,
+              "count_z": 8,
+              "enabled": false,
+              "maximum": {
+                "x": 6.0,
+                "y": 5.0,
+                "z": 6.0
+              },
+              "minimum": {
+                "x": -6.0,
+                "y": -1.0,
+                "z": -6.0
+              },
+              "placement": "fixed"
+            },
+            "volume3": {
+              "blend_cells": 0.0,
+              "count_x": 8,
+              "count_y": 4,
+              "count_z": 8,
+              "enabled": false,
+              "maximum": {
+                "x": 6.0,
+                "y": 5.0,
+                "z": 6.0
+              },
+              "minimum": {
+                "x": -6.0,
+                "y": -1.0,
+                "z": -6.0
+              },
+              "placement": "fixed"
+            }
+          },
+          "sky_map": "",
+          "type": "world.EnvironmentComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "9",
+      "name": "Creek daylight",
+      "properties": {},
+      "space": null,
+      "type": "world.Entity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "18",
+          "materials": [
+            {
+              "overridden": true,
+              "resource": "15",
+              "slot": "slot/0"
+            }
+          ],
+          "mesh": "builtin/cube",
+          "name": "StaticMeshComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "enabled": false,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.2,
+                "restitution": 0.0
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "type": "world.StaticMeshComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "17",
+      "name": "West landing bank",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          -57.0,
+          -0.15,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          105,
+          2.4,
+          210
+        ]
+      },
+      "type": "world.StaticMeshEntity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "20",
+          "materials": [
+            {
+              "overridden": true,
+              "resource": "15",
+              "slot": "slot/0"
+            }
+          ],
+          "mesh": "builtin/cube",
+          "name": "StaticMeshComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "enabled": false,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.2,
+                "restitution": 0.0
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "type": "world.StaticMeshComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "19",
+      "name": "East landing bank",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          57.0,
+          0.45,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "scale": [
+          105,
+          2.4,
+          210
+        ]
+      },
+      "type": "world.StaticMeshEntity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "22",
+          "materials": [
+            {
+              "overridden": true,
+              "resource": "15",
+              "slot": "slot/0"
+            }
+          ],
+          "mesh": "builtin/cube",
+          "name": "StaticMeshComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "enabled": false,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.2,
+                "restitution": 0.0
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "type": "world.StaticMeshComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "21",
+      "name": "West gravel slope",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          -3.70995551,
+          0.13436923,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          -0.2892144,
+          0.957264347
+        ],
+        "scale": [
+          2.329742475,
+          0.65,
+          210
+        ]
+      },
+      "type": "world.StaticMeshEntity"
+    },
+    {
+      "children": [],
+      "components": [
+        {
+          "enabled": true,
+          "id": "24",
+          "materials": [
+            {
+              "overridden": true,
+              "resource": "15",
+              "slot": "slot/0"
+            }
+          ],
+          "mesh": "builtin/cube",
+          "name": "StaticMeshComponent",
+          "properties": {
+            "body": {
+              "capsule_half_height": 0.5,
+              "category": 0,
+              "enabled": false,
+              "half_extents": {
+                "x": 0.5,
+                "y": 0.5,
+                "z": 0.5
+              },
+              "ignore_categories": 0,
+              "material": {
+                "friction": 0.2,
+                "restitution": 0.0
+              },
+              "motion": "stationary",
+              "overlap_categories": 0,
+              "radius": 0.5,
+              "sensor": false,
+              "shape": "box"
+            }
+          },
+          "type": "world.StaticMeshComponent"
+        }
+      ],
+      "enabled": true,
+      "id": "23",
+      "name": "East gravel slope",
+      "properties": {},
+      "space": {
+        "origin": null,
+        "position": [
+          3.75679025,
+          0.47221001,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0.376645121,
+          0.926357627
+        ],
+        "scale": [
+          2.708449741,
+          0.65,
+          210
+        ]
+      },
+      "type": "world.StaticMeshEntity"
+    }
+  ],
+  "materials": [
+    {
+      "id": "11",
+      "source": "project/{306357B4-37A2-4161-B8EF-D4396AFD598D}"
+    },
+    {
+      "entries": [
+        {
+          "enabled": true,
+          "path": "base_color",
+          "type": "vector4",
+          "value": [
+            0.043,
+            0.096,
+            0.1,
+            1
+          ]
+        },
+        {
+          "enabled": true,
+          "path": "roughness",
+          "type": "float",
+          "value": 0.33
+        },
+        {
+          "enabled": true,
+          "path": "metallic",
+          "type": "float",
+          "value": 0.0
+        },
+        {
+          "enabled": true,
+          "path": "emissive",
+          "type": "vector3",
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      ],
+      "id": "12",
+      "parent": "builtin/material/standard-opaque-double",
+      "source": ""
+    },
+    {
+      "entries": [
+        {
+          "enabled": true,
+          "path": "base_color",
+          "type": "vector4",
+          "value": [
+            0.21,
+            0.195,
+            0.148,
+            1
+          ]
+        },
+        {
+          "enabled": true,
+          "path": "roughness",
+          "type": "float",
+          "value": 0.97
+        },
+        {
+          "enabled": true,
+          "path": "metallic",
+          "type": "float",
+          "value": 0.0
+        },
+        {
+          "enabled": true,
+          "path": "emissive",
+          "type": "vector3",
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      ],
+      "id": "15",
+      "parent": "builtin/material/standard-opaque-double",
+      "source": ""
+    }
+  ],
+  "next_id": "25",
+  "roots": [
+    "1",
+    "3",
+    "5",
+    "7",
+    "9",
+    "17",
+    "19",
+    "21",
+    "23"
+  ],
+  "version": 10
+}

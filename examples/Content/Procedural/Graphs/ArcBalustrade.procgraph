@@ -1,0 +1,393 @@
+{
+  "nodes": {
+    "OUT_balustrade": {
+      "inputs": {
+        "input": "stonework.output"
+      },
+      "position": [
+        -150.0,
+        740.0
+      ],
+      "properties": {
+        "order": 0,
+        "port_name": "stonework"
+      },
+      "type": "procedural.GraphOutput"
+    },
+    "abacus": {
+      "inputs": {
+        "input": "plinth.output"
+      },
+      "position": [
+        525.0,
+        232.0
+      ],
+      "properties": {
+        "pivot": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "rotate": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "scale": {
+          "x": 1.0,
+          "y": 1.0,
+          "z": 1.0
+        },
+        "translate": {
+          "x": 0.0,
+          "y": 0.84,
+          "z": 0.0
+        }
+      },
+      "type": "procedural.Transform"
+    },
+    "balusters": {
+      "inputs": {
+        "points": "post_stations.feet",
+        "sources": [
+          "post_prototype.output"
+        ]
+      },
+      "position": [
+        275.0,
+        470.0
+      ],
+      "properties": {
+        "group": "",
+        "target_attributes": [],
+        "variant": "variant"
+      },
+      "type": "procedural.Realize"
+    },
+    "bedding": {
+      "inputs": {
+        "backbone": "courses.bedding"
+      },
+      "position": [
+        -215.0,
+        425.0
+      ],
+      "properties": {
+        "end_caps": true,
+        "height": 1.185,
+        "profile": "rectangle",
+        "radius": 0.5,
+        "scale_attribute": "pscale",
+        "segments": 8,
+        "up": {
+          "x": 0.0,
+          "y": 1.0,
+          "z": 0.0
+        },
+        "width": 0.5
+      },
+      "type": "procedural.Sweep"
+    },
+    "courses": {
+      "inputs": {
+        "guide": "measured_guide.output"
+      },
+      "position": [
+        -380.0,
+        245.0
+      ],
+      "properties": {},
+      "type": "game.BalustradeCourses"
+    },
+    "guide": {
+      "inputs": {},
+      "position": [
+        0.0,
+        0.0
+      ],
+      "properties": {
+        "arc_degrees": 132.0,
+        "center": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "orientation": "zx",
+        "primitive_type": "open_arc",
+        "radius": {
+          "x": 2.1,
+          "y": 2.1
+        },
+        "segments": 64,
+        "start_degrees": -66.0
+      },
+      "type": "procedural.Circle"
+    },
+    "handrail": {
+      "inputs": {
+        "backbone": "rail_axis.output",
+        "cross_section": "profiles.handrail"
+      },
+      "position": [
+        -20.0,
+        425.0
+      ],
+      "properties": {
+        "end_caps": true,
+        "height": 1.0,
+        "profile": "custom",
+        "radius": 0.5,
+        "scale_attribute": "pscale",
+        "segments": 8,
+        "up": {
+          "x": 0.0,
+          "y": 1.0,
+          "z": 0.0
+        },
+        "width": 1.0
+      },
+      "type": "procedural.Sweep"
+    },
+    "measured_guide": {
+      "inputs": {
+        "curves": "guide.output"
+      },
+      "position": [
+        0.0,
+        110.0
+      ],
+      "properties": {
+        "mode": "segments",
+        "preserve_corners": true,
+        "segments": 1,
+        "spacing": 1.0
+      },
+      "type": "procedural.Resample"
+    },
+    "plinth": {
+      "inputs": {
+        "surface": "plinth_blank.output"
+      },
+      "position": [
+        390.0,
+        110.0
+      ],
+      "properties": {
+        "angle_degrees": 30.0,
+        "radius": 0.012,
+        "segments": 1
+      },
+      "type": "procedural.Bevel"
+    },
+    "plinth_blank": {
+      "inputs": {},
+      "position": [
+        390.0,
+        0.0
+      ],
+      "properties": {
+        "base_on_ground": true,
+        "center": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "divisions_x": 1,
+        "divisions_y": 1,
+        "divisions_z": 1,
+        "size": {
+          "x": 0.33,
+          "y": 0.1,
+          "z": 0.33
+        }
+      },
+      "type": "procedural.Box"
+    },
+    "post_prototype": {
+      "inputs": {
+        "inputs": [
+          "plinth.output",
+          "spindle.output",
+          "abacus.output"
+        ]
+      },
+      "position": [
+        490.0,
+        350.0
+      ],
+      "properties": {},
+      "type": "procedural.Merge"
+    },
+    "post_stations": {
+      "inputs": {
+        "guide": "measured_guide.output"
+      },
+      "position": [
+        150.0,
+        250.0
+      ],
+      "properties": {
+        "spacing": 0.68
+      },
+      "type": "game.BalusterStations"
+    },
+    "profiles": {
+      "inputs": {},
+      "position": [
+        620.0,
+        0.0
+      ],
+      "properties": {},
+      "type": "game.BalustradeProfiles"
+    },
+    "rail_axis": {
+      "inputs": {
+        "input": "measured_guide.output"
+      },
+      "position": [
+        -80.0,
+        240.0
+      ],
+      "properties": {
+        "pivot": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "rotate": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "scale": {
+          "x": 1.0,
+          "y": 1.0,
+          "z": 1.0
+        },
+        "translate": {
+          "x": 0.0,
+          "y": 2.25,
+          "z": 0.0
+        }
+      },
+      "type": "procedural.Transform"
+    },
+    "sill_stones": {
+      "inputs": {
+        "backbone": "courses.coping",
+        "cross_section": "profiles.coping"
+      },
+      "position": [
+        -420.0,
+        425.0
+      ],
+      "properties": {
+        "end_caps": true,
+        "height": 1.0,
+        "profile": "custom",
+        "radius": 0.5,
+        "scale_attribute": "pscale",
+        "segments": 8,
+        "up": {
+          "x": 0.0,
+          "y": 1.0,
+          "z": 0.0
+        },
+        "width": 1.0
+      },
+      "type": "procedural.Sweep"
+    },
+    "spindle": {
+      "inputs": {
+        "backbone": "profiles.spindle_axis"
+      },
+      "position": [
+        750.0,
+        235.0
+      ],
+      "properties": {
+        "end_caps": true,
+        "height": 1.0,
+        "profile": "tube",
+        "radius": 1.0,
+        "scale_attribute": "shaft_scale",
+        "segments": 24,
+        "up": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 1.0
+        },
+        "width": 1.0
+      },
+      "type": "procedural.Sweep"
+    },
+    "stonework": {
+      "inputs": {
+        "inputs": [
+          "bedding.output",
+          "wall_stones.output",
+          "sill_stones.output",
+          "balusters.output",
+          "handrail.output"
+        ]
+      },
+      "position": [
+        -150.0,
+        620.0
+      ],
+      "properties": {},
+      "type": "procedural.Merge"
+    },
+    "wall_stones": {
+      "inputs": {
+        "backbone": "courses.courses",
+        "cross_section": "profiles.ashlar"
+      },
+      "position": [
+        -620.0,
+        425.0
+      ],
+      "properties": {
+        "end_caps": true,
+        "height": 1.0,
+        "profile": "custom",
+        "radius": 0.5,
+        "scale_attribute": "pscale",
+        "segments": 8,
+        "up": {
+          "x": 0.0,
+          "y": 1.0,
+          "z": 0.0
+        },
+        "width": 1.0
+      },
+      "type": "procedural.Sweep"
+    }
+  },
+  "parameters": [
+    {
+      "category": "Stonework",
+      "description": "Circular centreline radius in metres. Changes both horizontal axes, masonry runs, rail and post layout together.",
+      "label": "Arc radius (m)",
+      "name": "arc_radius",
+      "targets": [
+        "guide.radius.x",
+        "guide.radius.y"
+      ]
+    },
+    {
+      "category": "Stonework",
+      "description": "Maximum pitch measured along the arc. Both ends keep 0.22 m of stone beyond the outer post centres; the intervening bays share the length equally.",
+      "label": "Maximum post spacing (m)",
+      "name": "post_spacing",
+      "targets": [
+        "post_stations.spacing"
+      ]
+    }
+  ],
+  "settings": {
+    "display": "OUT_balustrade",
+    "seed": 19
+  },
+  "version": 4
+}

@@ -1,0 +1,230 @@
+// The guide is the single ordered horizontal polyline from Resample. Its
+// arclength column measures the actual chords, including both end stations.
+float game.balustrade_length(const Array<vector3>& P, const Array<float>& s) {
+    const uint n = P.size();
+    if (n < 2 || s.size() != n || s[0] != 0.0f) {
+        fail("Balustrade requires a single open Resample guide with arclength starting at zero.");
+    }
+    for (uint i = 0; i < n; i += 1) {
+        if (!math.is_finite(P[i]) || !math.is_finite(s[i]) || math.abs(P[i].y - P[0].y) > 0.0001f ||
+            (i > 0 && s[i] <= s[i - 1])) {
+            fail("Balustrade guide must be horizontal, finite and strictly increasing in arclength.");
+        }
+    }
+    return s[n - 1];
+}
+
+uint game.balustrade_span(const Array<float>& s, float distance) {
+    uint lo = 0;
+    uint hi = s.size() - 1;
+    while (hi - lo > 1) {
+        const uint mid = lo + (hi - lo) / 2;
+        if (s[mid] <= distance) { lo = mid; } else { hi = mid; }
+    }
+    return lo;
+}
+
+float game.balustrade_fraction(const Array<float>& s, uint i, float distance) {
+    return (distance - s[i]) / (s[i + 1] - s[i]);
+}
+
+[DESC = "石栏杆的柱脚布站。在一条水平导线上给两个端面各留 0.22 米，按最大柱距均分剩余弧长。输出柱脚和朝向，方柱座随导线转向。"]
+class game.BalusterStations : procedural.Node {
+    [Label = "Maximum post spacing (m)", Min = 0.36, Max = 1.2, LockMin,
+     DESC = "沿中心线的最大柱距（米）。两端退距固定，实际开间相等。0.33 米宽的柱脚必须能分开。"]
+    float spacing = 0.68f;
+
+    void process(
+        [In("P", Port = "guide", DESC = "单条水平开放折线，点序沿建造方向。")] const Array<vector3>& P,
+        [In("arclength", Port = "guide", DESC = "Resample 生成的逐点累计距离，单位米。")] const Array<float>& s,
+        [In("tangent", Port = "guide", DESC = "Resample 的逐点切向，决定柱脚的局部 +Z。")] const Array<vector3>& tangents,
+        [Port, DESC = "Realize 的放置点，位于基座之上 1.22 米。orient 令局部 +Z 顺着曲线、+Y 竖直，arclength 给出实际桩号。"] procedural.Geometry& feet) {
+        const float length = game.balustrade_length(P, s);
+        const float start = 0.22f;
+        const float span = length - 2.0f * start;
+        if (tangents.size() != P.size() || !(span >= 0.33f && math.is_finite(self.spacing) && self.spacing >= 0.36f)) {
+            fail("BalusterStations needs room for two feet and a finite maximum spacing of at least 0.36 m.");
+        }
+        const float count = math.ceil(span / self.spacing);
+        if (count >= 16777216.0f) { fail("Baluster stations exceed float indexing precision."); }
+        const uint bays = uint(count);
+        const float actual = span / count;
+        if (actual < 0.33f) { fail("Baluster feet would overlap at the fitted spacing."); }
+
+        Array<vector3> feet_p;
+        Array<quaternion> frames;
+        Array<float> distance;
+        const vector3 up = vector3(0.0f, 1.0f, 0.0f);
+        for (uint j = 0; j <= bays; j += 1) {
+            const float station = start + span * (float(j) / count);
+            const uint i = game.balustrade_span(s, station);
+            const float t = game.balustrade_fraction(s, i, station);
+            const vector3 direction = math.lerp(tangents[i], tangents[i + 1], t);
+            const vector3 forward = math.normalize_or_zero(vector3(direction.x, 0.0f, direction.z));
+            if (!(math.dot(forward, forward) > 0.99f)) { fail("Baluster guide has an unresolved horizontal tangent."); }
+            feet_p.add(math.lerp(P[i], P[i + 1], t) + up * 1.22f);
+            frames.add(procedural.frame_rotation(math.cross(up, forward), up, forward));
+            distance.add(station);
+        }
+        self.emit_points(feet_p, 0);
+        self.set_quat("orient", procedural.Layer::point, frames, 0);
+        self.set_float("arclength", procedural.Layer::point, distance, 0);
+    }
+};
+
+struct game.StonePaths {
+    Array<vector3> p;
+    Array<uint> corners;
+    Array<uint> offsets;
+};
+
+void game.stone_point(game.StonePaths& path, vector3 p) {
+    path.corners.add(path.p.size());
+    path.p.add(p);
+}
+
+void game.stone_break(game.StonePaths& path) {
+    path.offsets.add(path.corners.size());
+}
+
+// Keep the original arc stations inside each stone, so the outer skin and the
+// handrail follow the same faceted radius even when a mortar joint moves.
+void game.ashlar_run(game.StonePaths& path, const Array<vector3>& P, const Array<float>& s,
+                     float start, float end, float elevation) {
+    const uint first = game.balustrade_span(s, start);
+    const uint last = game.balustrade_span(s, end);
+    const vector3 lift = vector3(0.0f, elevation, 0.0f);
+    game.stone_point(path, lift + math.lerp(P[first], P[first + 1], game.balustrade_fraction(s, first, start)));
+    for (uint i = first + 1; i <= last; i += 1) {
+        if (s[i] - start > 0.0001f && end - s[i] > 0.0001f) { game.stone_point(path, P[i] + lift); }
+    }
+    game.stone_point(path, lift + math.lerp(P[last], P[last + 1], game.balustrade_fraction(s, last, end)));
+    game.stone_break(path);
+}
+
+void game.ashlar_course(game.StonePaths& runs, const Array<vector3>& P, const Array<float>& s,
+                        uint blocks, bool stagger, float height, float joint) {
+    const float length = s[s.size() - 1];
+    const uint pieces = stagger ? blocks + 1 : blocks;
+    const float phase = stagger ? 0.5f : 0.0f;
+    for (uint j = 0; j < pieces; j += 1) {
+        const float start = j == 0 ? 0.0f : length * ((float(j) - phase) / float(blocks)) + joint * 0.5f;
+        const float end = j + 1 == pieces ? length : length * ((float(j + 1) - phase) / float(blocks)) - joint * 0.5f;
+        game.ashlar_run(runs, P, s, start, end, height);
+    }
+}
+
+[DESC = "沿同一水平导线砌四皮交错曲面条石，并单独划分压顶石。每块输出一条保留原弧内部点的开放轴线。"]
+class game.BalustradeCourses : procedural.Node {
+    void process(
+        [In("P", Port = "guide", DESC = "按建造顺序排列的水平开放弧线点。")] const Array<vector3>& P,
+        [In("arclength", Port = "guide", DESC = "Resample 的逐点累计弧长，用于按米切出石块和灰缝。")] const Array<float>& s,
+        [Port, DESC = "四皮石墙，每块石料一条开放折线，交替半块错缝，竖缝宽 0.016 米。接墙石 Sweep.backbone。"] procedural.Geometry& courses,
+        [Port, DESC = "基座顶的一皮压顶石，每块一条弧线，竖缝宽 0.012 米。接压顶石 Sweep.backbone。"] procedural.Geometry& coping,
+        [Port, DESC = "墙和压顶内部的连续灰芯轴线，首尾各内退 0.018 米，避免与石端面重合。"] procedural.Geometry& bedding) {
+        const float length = game.balustrade_length(P, s);
+        if (length < 0.77f || length / 0.64f >= 16777216.0f) { fail("Arc length is outside the stone course range."); }
+        const uint blocks = uint(math.max(1.0f, math.floor(length / 0.64f + 0.5f)));
+        const uint caps = uint(math.max(1.0f, math.floor(length / 0.96f + 0.5f)));
+        game.StonePaths wall;
+        game.StonePaths sill;
+        wall.offsets.add(uint(0));
+        sill.offsets.add(uint(0));
+        for (uint row = 0; row < 4; row += 1) {
+            game.ashlar_course(wall, P, s, blocks, row % 2 == 1, (float(row) + 0.5f) * 0.26f, 0.016f);
+        }
+        game.ashlar_course(sill, P, s, caps, false, 1.13f, 0.012f);
+        self.emit_polylines(wall.p, wall.corners, wall.offsets, 0);
+        self.emit_polylines(sill.p, sill.corners, sill.offsets, 1);
+        game.StonePaths core;
+        core.offsets.add(uint(0));
+        game.ashlar_run(core, P, s, 0.018f, length - 0.018f, 0.6025f);
+        self.emit_polylines(core.p, core.corners, core.offsets, 2);
+    }
+};
+
+void game.turning_station(game.StonePaths& line, Array<float>& radii, float y, float radius) {
+    game.stone_point(line, vector3(0.0f, y, 0.0f));
+    radii.add(radius);
+}
+
+void game.eased_section(game.StonePaths& section, float width, float height, float lower, float upper) {
+    const float w = width * 0.5f;
+    const float h = height * 0.5f;
+    section.offsets.add(uint(0));
+    game.stone_point(section, vector3(-w + lower, -h, 0.0f));
+    game.stone_point(section, vector3( w - lower, -h, 0.0f));
+    game.stone_point(section, vector3( w, -h + lower, 0.0f));
+    game.stone_point(section, vector3( w,  h - upper, 0.0f));
+    game.stone_point(section, vector3( w - upper, h, 0.0f));
+    game.stone_point(section, vector3(-w + upper, h, 0.0f));
+    game.stone_point(section, vector3(-w, h - upper, 0.0f));
+    game.stone_point(section, vector3(-w, -h + lower, 0.0f));
+    game.stone_break(section);
+}
+
+[DESC = "本例的石工样板：栏柱的车削母线尺寸和三个局部 XY 闭合截面，交给 Sweep 生成几何。"]
+class game.BalustradeProfiles : procedural.Node {
+    void process(
+        [Port, DESC = "局部竖直开放轴线，point float shaft_scale 为逐站半径与 1 米的比值。接 tube Sweep.backbone，radius=1、scale_attribute=shaft_scale。"] procedural.Geometry& spindle_axis,
+        [Port, DESC = "墙石的 XY 倒棱截面，宽 0.54 米，高 0.248 米。接 custom Sweep.cross_section。"] procedural.Geometry& ashlar,
+        [Port, DESC = "基座压顶石的 XY 截面，宽 0.66 米，高 0.18 米。"] procedural.Geometry& coping,
+        [Port, DESC = "连续扶手的 XY 截面，底窄顶冠略收，宽 0.52 米，高 0.18 米。"] procedural.Geometry& handrail) {
+        game.StonePaths turning;
+        Array<float> radius;
+        turning.offsets.add(uint(0));
+        game.turning_station(turning, radius, 0.100f, 0.130f);
+        game.turning_station(turning, radius, 0.114f, 0.147f);
+        game.turning_station(turning, radius, 0.132f, 0.150f);
+        game.turning_station(turning, radius, 0.148f, 0.138f);
+        game.turning_station(turning, radius, 0.161f, 0.105f);
+        game.turning_station(turning, radius, 0.183f, 0.094f);
+        game.turning_station(turning, radius, 0.208f, 0.087f);
+        game.turning_station(turning, radius, 0.230f, 0.092f);
+        game.turning_station(turning, radius, 0.254f, 0.106f);
+        game.turning_station(turning, radius, 0.289f, 0.128f);
+        game.turning_station(turning, radius, 0.326f, 0.145f);
+        game.turning_station(turning, radius, 0.365f, 0.155f);
+        game.turning_station(turning, radius, 0.406f, 0.160f);
+        game.turning_station(turning, radius, 0.444f, 0.157f);
+        game.turning_station(turning, radius, 0.492f, 0.147f);
+        game.turning_station(turning, radius, 0.542f, 0.132f);
+        game.turning_station(turning, radius, 0.592f, 0.112f);
+        game.turning_station(turning, radius, 0.641f, 0.095f);
+        game.turning_station(turning, radius, 0.687f, 0.081f);
+        game.turning_station(turning, radius, 0.721f, 0.076f);
+        game.turning_station(turning, radius, 0.740f, 0.081f);
+        game.turning_station(turning, radius, 0.752f, 0.104f);
+        game.turning_station(turning, radius, 0.763f, 0.119f);
+        game.turning_station(turning, radius, 0.779f, 0.122f);
+        game.turning_station(turning, radius, 0.790f, 0.115f);
+        game.turning_station(turning, radius, 0.802f, 0.094f);
+        game.turning_station(turning, radius, 0.822f, 0.099f);
+        game.turning_station(turning, radius, 0.840f, 0.128f);
+        game.stone_break(turning);
+        self.emit_polylines(turning.p, turning.corners, turning.offsets, 0);
+        self.set_float("shaft_scale", procedural.Layer::point, radius, 0);
+
+        game.StonePaths block_section;
+        game.StonePaths sill_section;
+        game.eased_section(block_section, 0.54f, 0.248f, 0.012f, 0.012f);
+        game.eased_section(sill_section, 0.66f, 0.18f, 0.034f, 0.018f);
+        self.emit_polygons(block_section.p, block_section.corners, block_section.offsets, 1);
+        self.emit_polygons(sill_section.p, sill_section.corners, sill_section.offsets, 2);
+
+        game.StonePaths crown;
+        crown.offsets.add(uint(0));
+        game.stone_point(crown, vector3(-0.207f, -0.090f, 0.0f));
+        game.stone_point(crown, vector3(0.207f, -0.090f, 0.0f));
+        game.stone_point(crown, vector3(0.256f, -0.045f, 0.0f));
+        game.stone_point(crown, vector3(0.260f, 0.037f, 0.0f));
+        game.stone_point(crown, vector3(0.238f, 0.072f, 0.0f));
+        game.stone_point(crown, vector3(0.170f, 0.090f, 0.0f));
+        game.stone_point(crown, vector3(-0.170f, 0.090f, 0.0f));
+        game.stone_point(crown, vector3(-0.238f, 0.072f, 0.0f));
+        game.stone_point(crown, vector3(-0.260f, 0.037f, 0.0f));
+        game.stone_point(crown, vector3(-0.256f, -0.045f, 0.0f));
+        game.stone_break(crown);
+        self.emit_polygons(crown.p, crown.corners, crown.offsets, 3);
+    }
+};

@@ -1817,12 +1817,20 @@ Result<std::optional<GraphNodeCatalogEntry>> describe_sop(Runtime& runtime, Type
     if (!schema)
         return std::nullopt;
     std::string help;
+    for (const auto& port : schema->port_descriptions) {
+        if (!help.empty())
+            help += '\n';
+        help += std::format("{} {} · {}", port.output ? "output" : "input", port.port, port.description);
+    }
     for (const auto& rule : schema->attributes) {
         if (!help.empty())
             help += '\n';
         help += std::format("{} {}.{} · {} · {}", procedural::access_name(rule.access),
-                            rule.layer.empty() ? "$" + rule.layer_selector : rule.layer,
+                            rule.layer.empty() ? (rule.layer_selector.empty() ? "<column>" : "$" + rule.layer_selector)
+                                               : rule.layer,
                             rule.selector.empty() ? rule.name : "$" + rule.selector, rule.type, rule.missing);
+        if (!rule.when.field.empty())
+            help += std::format(" · when {}{}{}", rule.when.field, rule.when.exclude ? "!=" : "=", rule.when.value);
         if (!rule.unless_present.empty())
             help += std::format(" · unless {}", rule.unless_present);
         if (!rule.needs_present.empty())
@@ -1839,8 +1847,9 @@ Result<std::optional<GraphNodeCatalogEntry>> describe_sop(Runtime& runtime, Type
                                  {},
                                  {std::move(ports.inputs), std::move(ports.multiple), std::move(ports.outputs)},
                                  help.empty() ? nullptr
-                                              : std::make_shared<GraphAttributeHelp>(GraphAttributeHelp{
-                                                    std::move(schema->attributes), std::move(help)})};
+                                              : std::make_shared<GraphNodeHelp>(GraphNodeHelp{
+                                                    std::move(schema->port_descriptions), std::move(schema->attributes),
+                                                    std::move(help)})};
 }
 
 GraphNodeCatalogEntry describe_graph_asset(const assets::ProjectEntry& entry, TypeId asset_node,
@@ -6428,7 +6437,8 @@ Result<void> Session::graph_set_properties(std::string_view key, std::string_vie
                     if (const auto ctrl = graph_controlling_parameter(key, node_name, dotted)) {
                         return graph_error("Field '" + std::string(node_name) + "." + dotted +
                                            "' is controlled by promoted graph parameter '" + *ctrl +
-                                           "'; edit the graph parameter or unbind it first.");
+                                           "'. Use Set Graph Parameter with parameter='" + *ctrl +
+                                           "' to update all its bound targets, or unbind this field first.");
                     }
                 }
                 check_path.pop_back();
@@ -6522,6 +6532,28 @@ Result<procedural::Evaluator*> Session::prepare_graph_evaluator(OpenGraph& open,
                                                                  *program, ensure_procedural_cache_pool());
     }
     return open.evaluator.get();
+}
+
+Result<std::shared_ptr<const procedural::Bvh>> Session::graph_node_surface(std::string_view key, std::string_view name,
+                                                                           std::string_view output, Project* project) {
+    const auto id = graph_node_id(key, name);
+    if (id == ObjectId{})
+        return graph_error("Missing or unresolved graph node: " + std::string(name));
+    auto& open = *graphs_.find(std::string(key))->second;
+    ATELIER_TRY_BIND(evaluator, prepare_graph_evaluator(open, project));
+    ATELIER_TRY_BIND(ports, procedural::ports(runtime_, id));
+    const auto port = std::ranges::find(ports->outputs, output);
+    if (port == ports->outputs.end())
+        return graph_error("Unknown output port on " + std::string(name) + ": " + std::string(output));
+    ATELIER_TRY((*evaluator)->evaluate_node(id));
+    if (auto cause = (*evaluator)->target_error(id))
+        return std::unexpected(std::move(*cause));
+    const auto* geometry = (*evaluator)->node_output(id, static_cast<std::uint32_t>(port - ports->outputs.begin()));
+    if (!geometry)
+        return graph_error("The evaluated node has no geometry on output " + std::string(output));
+    if (geometry->count(procedural::Layer::instance))
+        return graph_error("Raycast requires polygon geometry; realize instances before querying this output.");
+    return procedural::Bvh::acquire(*geometry);
 }
 
 Result<procedural::NodeBindings> Session::graph_node_bindings(std::string_view key, std::string_view name,
