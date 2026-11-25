@@ -77,13 +77,18 @@
             const auto* geometry=published->find_table(hit->key);
             if (!geometry) return false;
             if (event.kind==EventKind::wheel) {
+                if (edit && states.at(edit->key).control.transient_edit && states.at(edit->key).control.rename_anchor) {
+                    if (!finish_edit(reply,true)) return true;
+                }
                 auto& offset=event.shift?state.scroll_x:state.scroll;
                 const auto limit=event.shift?state.scroll_x_limit:state.scroll_limit;
                 offset=std::clamp(offset-static_cast<double>(event.wheel)*48,0.0,limit);
                 reply.consumed=reply.redraw=true; return true;
             }
             if (event.kind==EventKind::pointer_move) {
-                reply.redraw=hover!=hit->key; hover=hit->key; reply.consumed=true;
+                const bool header_zone=contains(geometry->header,event.x,event.y);
+                reply.redraw|=hover!=hit->key || header_zone || contains(geometry->header,hover_x,hover_y);
+                hover=hit->key; hover_x=event.x; hover_y=event.y; reply.consumed=true;
                 for (const auto& header:geometry->columns) if (contains(header.resize,event.x,event.y) && contains(header.clip,event.x,event.y))
                     reply.cursor=Cursor::resize_horizontal;
                 return true;
@@ -107,9 +112,41 @@
                     for (const auto& header:geometry->columns) if (contains(header.clip,event.x,event.y) &&
                         (contains(header.bounds,event.x,event.y) || contains(header.resize,event.x,event.y))) {
                         next.table_column=header.column; next.table_resize=contains(header.resize,event.x,event.y);
-                        const auto column=std::find_if(geometry->data->columns.begin(),geometry->data->columns.end(),[&](const auto& column){return column.key==header.column;});
-                        next.original=next.value=column->width;
-                        if (next.table_resize) reply.cursor=Cursor::resize_horizontal;
+                        const auto col_it=std::find_if(geometry->data->columns.begin(),geometry->data->columns.end(),[&](const auto& column){return column.key==header.column;});
+                        next.original=next.value=col_it->width;
+                        if (next.table_resize) {
+                            reply.cursor=Cursor::resize_horizontal;
+                            if (event.clicks>=2) {
+                                const std::size_t col_idx=static_cast<std::size_t>(col_it-geometry->data->columns.begin());
+                                const auto& app_style=*state.resolved;
+                                const float pad_x=std::max(4.f,app_style.padding.left)+std::max(4.f,app_style.padding.right);
+                                float fitted=col_it->min_width;
+                                text.set(0,col_it->title,app_style.font,false,col_it->alignment);
+                                const auto hm=text.metrics(0,32768.f);
+                                if (!text_ok(reply,hm,hit->key)) return true;
+                                fitted=std::max(fitted,std::ceil(hm->width+pad_x+(geometry->data->sort.column==col_it->key?16.f:4.f)));
+                                const auto& all_rows=geometry->data->rows;
+                                const std::size_t start_row=geometry->row_stride>0?std::min(all_rows.size(),static_cast<std::size_t>(std::max(0.0,state.scroll*surface.dpi_scale/geometry->row_stride))):0;
+                                const std::size_t end_row=std::min(all_rows.size(),start_row+256);
+                                for (std::size_t r=start_row;r<end_row;++r) {
+                                    const auto& cell_val=all_rows[r].cells[col_idx];
+                                    const float icon_extra=cell_val.icon!=ControlIcon::none?app_style.indicator_size+6.f:0.f;
+                                    if (!cell_val.text.empty()) {
+                                        text.set(0,cell_val.text,app_style.font,false,col_it->alignment);
+                                        const auto cm=text.metrics(0,32768.f);
+                                        if (!text_ok(reply,cm,hit->key)) return true;
+                                        fitted=std::max(fitted,std::ceil(cm->width+pad_x+icon_extra+4.f));
+                                    } else if (icon_extra>0.f) {
+                                        fitted=std::max(fitted,std::ceil(pad_x+icon_extra));
+                                    }
+                                }
+                                fitted=std::clamp(fitted,col_it->min_width,std::max(col_it->min_width,640.f));
+                                if (fitted!=col_it->width)
+                                    action(reply,ActionKind::table_column_resize,hit->key,TableColumnResize{col_it->key,fitted});
+                                reply.redraw=true;
+                                return true;
+                            }
+                        }
                         break;
                     }
                 }
@@ -132,6 +169,35 @@
                 reply.consumed=reply.redraw=true; return true;
             }
             return false;
+        }
+        if (event.control && !event.alt && event.key==Key::c) {
+            reply.consumed=true;
+            const auto row_it=states.at(focus).table_index.find(selected.row);
+            if (row_it!=states.at(focus).table_index.end()) {
+                const auto& row_data=data.rows[row_it->second];
+                std::wstring copied;
+                if (details && !event.shift) {
+                    const auto col_it=std::find_if(data.columns.begin(),data.columns.end(),[&](const auto& col){return col.key==selected_column;});
+                    if (col_it!=data.columns.end())
+                        copied=row_data.cells[static_cast<std::size_t>(col_it-data.columns.begin())].text;
+                }
+                if (copied.empty()) {
+                    for (std::size_t i=0;i<row_data.cells.size();++i) {
+                        if (i) copied+=L'\t';
+                        copied+=row_data.cells[i].text;
+                    }
+                }
+                if (!copied.empty()) {
+                    if (copied.size()>65536) {
+                        copied.resize(65536);
+                        if (copied.back()>=0xd800 && copied.back()<=0xdbff) copied.pop_back();
+                    }
+                    table_clipboard=ClipboardRequest{ClipboardKind::copy,detail::new_identity(),
+                        EditToken{focus,box->incarnation,detail::new_identity(),detail::new_identity()},std::move(copied),65536u};
+                    platform(reply,*table_clipboard);
+                }
+            }
+            return true;
         }
         if (event.control || event.alt) return false;
         if (event.key==Key::enter) {

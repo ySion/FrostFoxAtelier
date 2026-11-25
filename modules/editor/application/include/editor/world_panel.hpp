@@ -35,6 +35,10 @@ inline constexpr ui::ControlKey performance_resources = root + 15;
 
 inline constexpr ui::ControlKey slot_first = root + 16;
 
+inline constexpr ui::ControlKey main_camera_text = root + 32;
+
+inline constexpr ui::ControlKey readout_first = root + 48;
+
 inline constexpr ui::ControlKey field_first = root + 256;
 
 inline constexpr ui::ControlKey choice_first = root + 4096;

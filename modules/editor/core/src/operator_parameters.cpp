@@ -17,6 +17,7 @@ Result<void> register_editor_types(Runtime& runtime) {
     definitions.push_back(reflection::Definition<SceneAddComponent>::build(runtime));
     definitions.push_back(reflection::Definition<SceneTransform>::build(runtime));
     definitions.push_back(reflection::Definition<SceneRename>::build(runtime));
+    definitions.push_back(reflection::Definition<SceneSetEnabled>::build(runtime));
     definitions.push_back(reflection::Definition<SceneSelectAll>::build(runtime));
     definitions.push_back(reflection::Definition<SceneTransformClear>::build(runtime));
     definitions.push_back(reflection::Definition<SceneSnap>::build(runtime));

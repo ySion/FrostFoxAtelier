@@ -170,7 +170,22 @@ public:
         info_glyph,
         snowflake,
         eye,
-        template_flag
+        template_flag,
+        eye_off,
+        scene,
+        material,
+        texture,
+        source_file,
+        procgraph,
+        physics,
+        camera,
+        copy,
+        save,
+        play,
+        stop,
+        build,
+        reload,
+        warning
     };
 
     std::shared_ptr<const Coverage> symbol(Symbol, std::uint32_t pixels);

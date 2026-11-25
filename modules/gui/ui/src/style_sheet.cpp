@@ -1,12 +1,13 @@
 #include "ui/style_sheet.hpp"
 #include "ui/text.hpp"
+#include "foundation/map.hpp"
 #include "foundation/result.hpp"
+#include "foundation/string.hpp"
 #include "platform/utf.hpp"
 #include <algorithm>
 #include <bit>
 #include <charconv>
 #include <cmath>
-#include <map>
 
 namespace atelier::ui {
 namespace {
@@ -74,9 +75,9 @@ class Parser {
 
     std::size_t at_{};
 
-    std::map<std::string, Value, std::less<>> tokens_;
+    Map<String, Value> tokens_;
 
-    std::map<std::string, std::shared_ptr<const ColorImage>, std::less<>> gradients_;
+    Map<String, std::shared_ptr<const ColorImage>> gradients_;
 
     std::vector<Block> blocks_;
 
@@ -173,10 +174,10 @@ class Parser {
             else {
                 ATELIER_TRY_BIND(type, identifier());
                 any = true;
-                constexpr std::string_view kinds[] = {"container", "label",    "button",    "list",      "item",
-                                                      "number",    "splitter", "viewport",  "text_edit", "checkbox",
-                                                      "foldout",   "popup",    "menu_item", "combo",     "tab",
-                                                      "slider",    "tree",     "tree_item", "table",     "code_editor"};
+                constexpr std::string_view kinds[] = {
+                    "container", "label",     "button",   "list",      "item",  "number",      "splitter",
+                    "viewport",  "text_edit", "checkbox", "foldout",   "popup", "menu_item",   "combo",
+                    "tab",       "slider",    "tree",     "tree_item", "table", "code_editor", "color_plane"};
                 const auto found = std::find(std::begin(kinds), std::end(kinds), *type);
                 if (found == std::end(kinds))
                     return fail("Unknown control type: " + *type);
@@ -230,10 +231,10 @@ class Parser {
         if (depth >= 32 || !input.text.ends_with(')'))
             return fail("Invalid or cyclic token reference", input.position);
         const auto key = trim(input.text.substr(6, input.text.size() - 7));
-        const auto found = tokens_.find(key);
-        if (found == tokens_.end())
+        const auto* found = tokens_.find(StringView{key});
+        if (!found)
             return fail("Unknown token: " + std::string(key), input.position);
-        return resolve(found->second, depth + 1);
+        return resolve(*found, depth + 1);
     }
 
     ParseResult<float> number(Value input, bool length = true) const {
@@ -306,9 +307,12 @@ class Parser {
 
     ParseResult<std::shared_ptr<const ColorImage>> gradient(Value value) {
         ATELIER_TRY_BIND(input, resolve(value));
-        const std::string key(input->text);
-        if (const auto found = gradients_.find(key); found != gradients_.end())
-            return found->second;
+        const StringView key_view{input->text};
+        if (const auto* found = gradients_.find(key_view))
+            return *found;
+        auto key = String::from_utf8(key_view);
+        if (!key)
+            return fail("Invalid UTF-8 in gradient", input->position);
         auto stops = trim(input->text.substr(16, input->text.size() - 17));
         bool horizontal = false;
         if (stops.starts_with("to right,")) {
@@ -339,7 +343,7 @@ class Parser {
                 image->pixels.push_back(encode(std::lerp(pair.first, pair.second, t)));
             image->pixels.push_back(static_cast<std::uint8_t>(std::lround(std::lerp(a->a, b->a, t) * 255)));
         }
-        gradients_.emplace(key, image);
+        gradients_.try_emplace(std::move(*key), image);
         return image;
     }
 
@@ -606,7 +610,7 @@ public:
                     ATELIER_TRY_BIND(id, identifier());
                     ATELIER_TRY(expect(':'));
                     ATELIER_TRY_BIND(item, value());
-                    if (!tokens_.emplace(*id, *item).second)
+                    if (!tokens_.try_emplace(String::from_utf8_validated(StringView{*id}), *item).inserted)
                         return fail("Duplicate token: " + *id, item->position);
                 }
                 continue;
@@ -627,7 +631,7 @@ public:
             if (blocks_.size() > 1024)
                 return fail("Too many style blocks");
         }
-        for (const auto& [name, item] : tokens_) {
+        for (auto [name, item] : tokens_) {
             (void)name;
             ATELIER_TRY(resolve(item));
         }
@@ -728,7 +732,7 @@ StyleSheet::Result StyleSheet::create(std::vector<StyleRule> rules) {
         auto& s = rule.selector;
         const auto bits = static_cast<unsigned>(s.states);
         if (!valid_properties(rule.properties) ||
-            (s.kind && static_cast<unsigned>(*s.kind) > static_cast<unsigned>(ControlKind::code_editor)) ||
+            (s.kind && static_cast<unsigned>(*s.kind) > static_cast<unsigned>(ControlKind::color_plane)) ||
             (s.role && static_cast<unsigned>(*s.role) > static_cast<unsigned>(Role::caption)) || bits > 255 ||
             has_all(s.states, flags_or(StyleState::enabled, StyleState::disabled)) ||
             invalid_state_properties(rule.properties, s.states) || s.classes.size() > 16 ||

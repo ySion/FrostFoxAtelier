@@ -71,9 +71,48 @@ Result<void> SourceEditor::load(File& file, std::string bytes) {
     return {};
 }
 
-SourceEditor::File* SourceEditor::active() const noexcept {
-    const auto at = std::ranges::find_if(files_, [&](const auto& file) { return file->key == selected_; });
+SourceEditor::File* SourceEditor::find(ui::ControlKey key) const noexcept {
+    const auto at = std::ranges::find_if(files_, [&](const auto& file) { return file->key == key; });
     return at == files_.end() ? nullptr : at->get();
+}
+
+SourceEditor::File* SourceEditor::active() const noexcept {
+    return find(selected_);
+}
+
+void SourceEditor::relocate(const std::filesystem::path& old_path, const std::filesystem::path& new_path) {
+    std::error_code ec;
+    const auto old_norm = std::filesystem::weakly_canonical(old_path, ec);
+    ec.clear();
+    const auto new_norm = std::filesystem::weakly_canonical(new_path, ec);
+    if (old_norm.empty() || new_norm.empty())
+        return;
+    const auto remap = [&](std::filesystem::path& target) {
+        if (target.empty())
+            return false;
+        const auto target_norm = target.lexically_normal();
+        if (_wcsicmp(target_norm.c_str(), old_norm.c_str()) == 0) {
+            target = new_norm;
+            return true;
+        }
+        const auto rel = target_norm.lexically_relative(old_norm);
+        if (!rel.empty() && rel != L"." && *rel.begin() != L"..") {
+            target = (new_norm / rel).lexically_normal();
+            return true;
+        }
+        return false;
+    };
+    for (auto& file : files_) {
+        if (remap(file->path)) {
+            ec.clear();
+            const auto stamp = std::filesystem::last_write_time(file->path, ec);
+            const auto size = ec ? 0 : std::filesystem::file_size(file->path, ec);
+            file->stamp = ec ? std::nullopt : std::optional{stamp};
+            file->disk_size = size;
+            file->storage_error.clear();
+        }
+    }
+    remap(problem_path_);
 }
 
 Result<void> SourceEditor::open(const std::filesystem::path& path) {
@@ -145,10 +184,15 @@ Result<void> SourceEditor::reload(File& file) {
 }
 
 void SourceEditor::close(ui::ControlKey key) {
+    const auto* closing = find(key);
+    const bool owns_problem = closing && closing->document == problem_document_.lock();
     std::erase_if(files_, [&](const auto& file) { return file->key == key; });
-    if (selected_ == key)
+    if (selected_ == key) {
         selected_ = files_.empty() ? 0 : files_.back()->key;
-    problem_line_ = 0;
+        problem_line_ = 0;
+    } else if (owns_problem) {
+        problem_line_ = 0;
+    }
 }
 
 void SourceEditor::clear() {
@@ -427,7 +471,16 @@ Result<void> SourceEditor::append(ui_language::ControlOutput controls, ui::Contr
     ATELIER_TRY_BIND(build_action, action({"project.build"}));
     ATELIER_TRY_BIND(start_play_action, action({"play.start"}));
     ATELIER_TRY_BIND(stop_play_action, action({"play.stop"}));
-    const std::array<InputValue, 17> inputs{
+    auto open_tabs = std::make_shared<std::vector<Item>>();
+    open_tabs->reserve(files_.size());
+    for (const auto& doc : files_) {
+        const bool is_sel = file && doc->key == file->key;
+        const std::wstring tab_label = bounded(doc->path.filename().wstring() + (doc->dirty() ? L" *" : L""));
+        open_tabs->push_back({doc->key + (source_control::close_document_offset * 2),
+                              {tab_label, is_sel, ActionBinding{doc->key, true},
+                               ActionBinding{doc->key + source_control::close_document_offset, true}}});
+    }
+    const std::array<InputValue, 19> inputs{
         CodeBinding{file ? file->document : empty_, file != nullptr},
         bounded(file ? file->path.filename().wstring() + (file->dirty() ? L" *" : L"") : L"No source document"),
         bounded(status),
@@ -444,7 +497,9 @@ Result<void> SourceEditor::append(ui_language::ControlOutput controls, ui::Contr
         std::move(*build_action),
         std::move(*start_play_action),
         std::move(*stop_play_action),
-        running};
+        running,
+        !files_.empty(),
+        ItemList{std::move(open_tabs)}};
     const std::array<KeyBinding, 3> keys{
         {{"buffer", source_control::buffer}, {"files", source_control::files}, {"problem", source_control::problem}}};
     ATELIER_TRY(live.append("CodePanel", parent, keys, inputs, controls));

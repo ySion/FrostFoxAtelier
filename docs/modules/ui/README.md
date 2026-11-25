@@ -75,11 +75,11 @@ DSL 的 `PanePath`、`ObjectHeader` 和内容页签 用普通 row/column、label
 布局缩进由父容器负责，编辑器所有参数类页面（Parameters、World、Material、Resource、Controls）只遵循一条规则：
 
 - 页面级列表（`parameter-list`）从父区域顶格开始，没有页面级内边距；列表、页签行或标题行之间不插入额外空隙。
-- 折叠标题（`foldout.section`，24 DIP）铺满父区域全宽，组之间以 1 DIP 间隔区分。
-- 只有折叠标题下的行容器（`section-body`）缩进：左 8、上 5、下 7 DIP，行距 5 DIP。
-- 页签行（`section-tabs`）固定 26.667 DIP，含底部 0.667 DIP 分隔线；页签本身没有左、右或顶部缩进。
-- 页头行（`object-header`：参数头、Entity Structure 工具栏、Material/Resource 头、Controls 头）固定 32 DIP，左 6、右 4 DIP，24 DIP 控件垂直居中。
-- 路径栏（`PanePath`、视口头、Asset Browser 工具栏）同为 32 DIP、左右 4 DIP，导航按钮 22×24、路径框与工具按钮 24 DIP 高，使相邻面板的路径与图标在同一水平线上。
+- 折叠标题（`foldout.section`，22 DIP）铺满父区域全宽，组之间以 1 DIP 间隔区分。
+- 只有折叠标题下的行容器（`section-body`）缩进：左 8、上 4、下 6 DIP，行距 3 DIP。
+- 页签行（`section-tabs`）固定 24 DIP，含底部细分隔线与选中强调条；页签本身没有左、右或顶部缩进。
+- 页头行（`object-header`：参数头、Material/Resource 头、Controls 头）固定 30 DIP，左 6、右 4 DIP，22 DIP 控件垂直居中。
+- 路径栏（`PanePath`、Scene Outliner 头部、视口头、Asset Browser 工具栏）同为 30 DIP（视口头 32 DIP）、左右 4 DIP，导航与工具按钮 22 DIP 高，使相邻面板的路径与图标在同一水平线上。
 - 底部过滤行与状态行左缩进 6 DIP（与页头一致），状态文字行高 20 DIP。
 - 占位文字（`empty-state`）与页头使用相同的 6 DIP 起始缩进。
 
@@ -87,7 +87,7 @@ DSL 的 `PanePath`、`ObjectHeader` 和内容页签 用普通 row/column、label
 
 `PathBar` 提供宿主拥有的路径 combo、后退/前进按钮身份及可用状态；路径图标与文字使用同一测量入口。`Control.icon` 可与文字并存，前置图标保留 indicator-size 加 6 DIP 的空间；没有文字时默认居中，可通过 `icon-align` 左/中/右对齐。下拉的方向标记限制在右侧预留区域内，较大的前置图标不会放大右侧箭头。路径菜单与普通下拉继续调用原菜单入口。
 
-[controls.hpp](../../../modules/gui/ui/include/ui/controls.hpp) 的 `append_parameter_row` 建立统一标题列和字段容器；文本、下拉与数值行共用此组合。`append_number_row` 在该容器中加入 1–4 个普通 number，传入各自的 key、值、默认值、范围和步长。标题宽 160 DIP，字段最小高 23 DIP；字号增大时数值行可随内容增高；分量紧邻排列，名称保留在描述中，不占用单独标签列。窄宽度通过现有 Flex wrap 将标题和字段分行，分量仍保持一行；重新排布不更换字段身份。主体最低宽度为每字段 24 DIP 加 2 DIP 间距，四字段为 102 DIP。组合层不创建焦点、草稿、业务对象或历史。
+[controls.hpp](../../../modules/gui/ui/include/ui/controls.hpp) 的 `append_parameter_row` 建立统一自适应比例标题列（34% 弹性基准、76–162 DIP 范围，超长单行省略）和字段容器；文本、勾选、下拉与数值行共用此组合。`append_number_row` 在该容器中加入 1–4 个普通 number，传入各自的 key、值、默认值、范围和步长。字段最小高 22 DIP（`single_line_height`）；字号增大时数值行可随内容增高；分量紧邻排列，名称保留在描述中，不占用单独标签列。窄宽度通过现有 Flex wrap 将标题和字段分行，分量仍保持一行；重新排布不更换字段身份。主体最低宽度为每字段 24 DIP 加 2 DIP 间距，四字段为 102 DIP。组合层不创建焦点、草稿、业务对象或历史。
 
 `append_number_row` 返回 `ui::Result<void>`，字段数量、轴或滑条范围无效时返回 `invalid_control` 与原诊断。`ui::Error::message` 是只借用静态存储期文本的 `string_view`，不拥有内存；原有错误默认无文本，错误值仍可平凡复制。组合失败可能已追加部分控件，调用方必须丢弃该候选，不能发布半行。
 
@@ -213,7 +213,7 @@ Surface的revision在客户区坐标映射或DPI变化时递增。尺寸/DPI变�
 
 ## 共享单行编辑
 
-`text_edit`以`Control.text`作为权威投影，number保留value/min/max及拖调策略；两者共用[TextEdit](../../../modules/gui/ui/include/ui/detail/text_edit.hpp)的唯一草稿、original、caret/anchor、选择和有界历史。number只增加完整有限数值解析、范围和格式化：有限数值超出 min/max 时夹到端点，与 Runtime 对有界字段的写入一致。输入文字本身不使用ASCII白名单：非数字或非有限的文字保留为invalid草稿，不写业务preview。
+`text_edit`以`Control.text`作为权威投影，支持 `read_only`（保持正常可读前景、鼠标拖拽刷选、Ctrl+A/C 与右键选中子串/全文复制，同时拦截文本修改、粘贴与 IME `input_anchor`）、`placeholder` 占位文字，以及 `transient_edit` + `rename_anchor`/`rename_cell` 原生锚定重命名与 `Session::focus(key, select_length)` 主干预选；`color_plane` 提供 64×64 SV 方块与 1×128 纵向色相光谱条缓存及归一化二维拖拽事务；`tree_item` 支持 `tree_badges` 右侧微徽标与独立触发 `activate` 的 `tree_trailing_icon`；`table` 支持表头/单元格单行省略、双击列分隔线自动适配列宽及 `Ctrl+C` 复制；number保留value/min/max及拖调策略；单行文本与数值共用[TextEdit](../../../modules/gui/ui/include/ui/detail/text_edit.hpp)的唯一草稿、original、caret/anchor、选择和有界历史。number只增加完整有限数值解析、范围和格式化：有限数值超出 min/max 时夹到端点，与 Runtime 对有界字段的写入一致。输入文字本身不使用ASCII白名单：非数字或非有限的文字保留为invalid草稿，不写业务preview。
 
 focus、文字模式和编辑事务分开。number普通拖动仍在超过原指针阈值后调值，Shift细调；单击进入文字模式后，拖动用于选择文字。仅聚焦时Enter或普通文字输入可进入文字模式。text_edit聚焦即可输入。移动caret、选择文字和进入模式均不建立事务。
 

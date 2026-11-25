@@ -47,17 +47,18 @@
         commit=commit && (!numeric || parsed.has_value());
         const auto value=numeric?(commit?*parsed:edit->original_value):0.0;
         auto content=commit?edit->buffer().current().text:edit->buffer().original();
+        const bool emit_action = edit->buffer().active() || state.control.transient_edit;
         std::optional<Edit> next;
-        if (keep_context && focus==key) {
+        if (keep_context && focus==key && !state.control.transient_edit) {
             auto candidate=Edit::create(state,numeric?format(state.control,value):content,value,!numeric,false);
             if (!text_ok(reply,candidate,key)) {
-                if (edit->buffer().active()) action(reply,ActionKind::edit_cancel,key,
+                if (emit_action) action(reply,ActionKind::edit_cancel,key,
                     numeric?ActionValue{edit->original_value}:ActionValue{edit->buffer().original()});
                 edit.reset();return false;
             }
             next.emplace(std::move(*candidate));
         }
-        if (edit->buffer().active()) action(reply,commit?ActionKind::edit_commit:ActionKind::edit_cancel,key,
+        if (emit_action) action(reply,commit?ActionKind::edit_commit:ActionKind::edit_cancel,key,
             numeric?ActionValue{value}:ActionValue{content});
         edit=std::move(next);
         reply.redraw=true; return true;
@@ -72,6 +73,8 @@
             if (old.dragging && !old.scrollbar) {
                 if (states.at(old.key).control.kind==ControlKind::tab || states.at(old.key).control.kind==ControlKind::tree_item)
                     action(reply,ActionKind::drag_cancel,old.key,DragPoint{old.last_x,old.last_y});
+                else if (states.at(old.key).control.kind==ControlKind::color_plane && states.at(old.key).control.drag_axis!=DragAxis::vertical)
+                    action(reply,ActionKind::edit_cancel,old.key,old.color_sv_original);
                 else action(reply,ActionKind::edit_cancel,old.key,old.original);
                 if (focus==old.key && states.at(old.key).control.kind==ControlKind::number) {
                     auto candidate=Edit::create(states.at(old.key),format(states.at(old.key).control,old.original),old.original,false,false);
@@ -79,9 +82,14 @@
                 }
             }
         }
-        if (!reply.error) finish_edit(reply,false,true);
-        else {cancel_composition(reply);edit.reset();}
-        retire_keyboard(reply); terminal_key=Key::none; hover=0; dismiss_popup(reply);
+        if (!reply.error) {
+            const bool passive_selection = edit && !edit->document && !edit->buffer().active() && !edit->composition &&
+                                           !edit->clipboard && !edit->ime_request &&
+                                           !states.at(edit->key).control.transient_edit;
+            if (!passive_selection)
+                finish_edit(reply,false,true);
+        } else {cancel_composition(reply);edit.reset();}
+        retire_keyboard(reply); terminal_key=Key::none; hover=0; table_clipboard.reset(); dismiss_popup(reply);
         return reply;
     }
     void changed(Reply& reply, const Result<detail::TextEdit::Change>& result, bool was_active) {
@@ -171,6 +179,13 @@
         platform(reply,*edit->clipboard);
     }
     void clipboard_result(Reply& reply, const ClipboardResult& result) {
+        if (table_clipboard && table_clipboard->operation_id==result.operation_id &&
+            table_clipboard->kind==result.kind && table_clipboard->token==result.token) {
+            const auto key=table_clipboard->token.key;
+            table_clipboard.reset(); reply.consumed=true;
+            if (!result.success) reply.error=Error{ErrorCode::platform_failed,key,result.native_error};
+            return;
+        }
         if (!edit || !edit->clipboard) return;
         const auto& request=*edit->clipboard;
         if (request.operation_id!=result.operation_id || request.kind!=result.kind ||

@@ -36,7 +36,8 @@
         reply.redraw=true;
     }
     void context_request(Reply& reply, const ControlBox& box, float x, float y, std::optional<TableSelection> table={}) {
-        if (!finish_edit(reply,true)) return;
+        const bool keep_passive_selection = edit && edit->key==box.key && !edit->buffer().active() && !edit->composition;
+        if (!keep_passive_selection && !finish_edit(reply,true)) return;
         if (focusable(box.kind)) set_focus(reply,box.key);
         action(reply,ActionKind::context_menu,box.context_target?box.context_target:box.key,
             ContextMenuRequest{box.key,box.context_group,x,y,table});
@@ -46,6 +47,14 @@
         auto* state=live(command.target);
         const auto* box=published?published->find(command.target):nullptr;
         if (!state || !box || !current(*box) || !text_field(state->control.kind)) return;
+        if (state->control.read_only && command.kind!=EditCommandKind::copy) return;
+        if (command.kind==EditCommandKind::copy && edit && edit->key==command.target && !edit->composition &&
+            edit->buffer().current().caret.offset!=edit->buffer().current().anchor.offset) {
+            set_focus(reply,command.target);
+            clipboard_command(reply,ClipboardKind::copy);
+            reply.redraw=true;
+            return;
+        }
         if (!finish_edit(reply,true)) return;
         set_focus(reply,command.target);
         if (!begin_edit(reply,command.target,true,true)) return;

@@ -2201,6 +2201,26 @@ Result<void> run_document(int argc, char** argv, std::string_view& stage) {
     require(single.selection().entity == entity && *restored == *mesh &&
                 take(single.presentation().render_items()).front().geometry == assets::mesh_assets().front().mesh,
             "Creation redo changed identity or mesh resource.");
+    ATELIER_TRY(changed(single.set_enabled(*restored, false)));
+    collect(single);
+    require(!take(world::inspect_component(single.world().runtime(), *restored)).enabled &&
+                take(single.presentation().render_items()).empty() && single.undo_count() == 2,
+            "Session::set_enabled(component, false) did not disable component rendering and record undo history.");
+    ATELIER_TRY(changed(single.undo()));
+    collect(single);
+    require(take(world::inspect_component(single.world().runtime(), *restored)).enabled &&
+                !take(single.presentation().render_items()).empty() && single.selection().object == *restored,
+            "Undo of Session::set_enabled(component) did not restore enabled state, rendering, and selection.");
+    ATELIER_TRY(changed(single.set_enabled(entity, false)));
+    collect(single);
+    require(!take(world::inspect_entity(single.world().runtime(), entity)).effective_enabled &&
+                take(single.presentation().render_items()).empty() && single.undo_count() == 2,
+            "Session::set_enabled(entity, false) did not disable entity rendering and record undo history.");
+    ATELIER_TRY(changed(single.undo()));
+    collect(single);
+    require(take(world::inspect_entity(single.world().runtime(), entity)).effective_enabled &&
+                !take(single.presentation().render_items()).empty() && single.selection().object == entity,
+            "Undo of Session::set_enabled(entity) did not restore entity enabled state, rendering, and selection.");
     ATELIER_TRY(changed(single.close()));
     stage = "glTF transform";
     verify_gltf_import();

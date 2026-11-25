@@ -21,6 +21,7 @@ namespace atelier::editor {
 class Project;
 
 class ProjectCode;
+
 struct ProjectDocument;
 
 struct Parameter {
@@ -292,6 +293,8 @@ public:
     Result<void> set_main_camera(ObjectId);
 
     Result<void> rename(ObjectId, std::wstring); // Document label; shares scene history and object identity.
+
+    Result<world::Commit> set_enabled(ObjectId, bool);
 
     Result<void> select(ObjectId);
 
@@ -840,7 +843,9 @@ public:
 
 private:
     friend ProjectDocument load_project_scene(Project&, std::string_view, LoadPolicy, bool, SessionRole);
+
     static Result<std::unique_ptr<Session>> restore_scene(std::string_view, Project&, Prepare, LoadPolicy, SessionRole);
+
     struct ReferenceFieldChange {
         ObjectRoot root;
 
@@ -979,6 +984,16 @@ private:
         std::wstring after;
     };
 
+    struct EnabledChange {
+        ObjectRoot root;
+
+        ObjectId entity;
+
+        bool before{};
+
+        bool after{};
+    };
+
     struct BodyChange {
         ObjectRoot root;
 
@@ -1040,10 +1055,10 @@ private:
 
     struct RetainedChange {}; // Explicit discard; the history entry's swaps carry the data.
 
-    using Change = std::variant<EntityChange, ComponentChange, FieldChange, NameChange, BodyChange, TransformChange,
-                                MaterialBindingChange, MaterialValueChange, ReparentChange, TransformPresenceChange,
-                                SpaceReferenceChange, FieldGroupChange, SkyMapChange, ProceduralGraphChange,
-                                RetainedChange, ReferenceFieldChange>;
+    using Change = std::variant<EntityChange, ComponentChange, FieldChange, NameChange, EnabledChange, BodyChange,
+                                TransformChange, MaterialBindingChange, MaterialValueChange, ReparentChange,
+                                TransformPresenceChange, SpaceReferenceChange, FieldGroupChange, SkyMapChange,
+                                ProceduralGraphChange, RetainedChange, ReferenceFieldChange>;
 
     // Sparse scene-record JSON text the loader could not apply. On the document entry,
     // materials are unreferenced definitions kept for write-back; on a component, they
@@ -1059,6 +1074,7 @@ private:
 
         // Material instances named solely by $ref in this owner's retained record or slot data.
         std::vector<std::pair<std::uint64_t, ObjectRoot>> reference_roots;
+
         void prune_reference_roots();
 
         bool empty() const noexcept { return type.empty() && record.empty() && slots.empty() && materials.empty(); }

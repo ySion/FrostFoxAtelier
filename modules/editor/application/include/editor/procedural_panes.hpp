@@ -40,6 +40,8 @@ inline constexpr ui::ControlKey page_prev = 1109;
 
 inline constexpr ui::ControlKey page_next = 1110;
 
+inline constexpr ui::ControlKey filter_clear = 1111;
+
 inline constexpr ui::ControlKey column_first = 1120;
 } // namespace spreadsheet_control
 
@@ -169,17 +171,26 @@ inline constexpr ui::ControlKey lock_toggle = popup_root + 536;
 class GeometryGroupGuide final {
 public:
     void select(procedural::Layer layer, std::string name);
+
     bool resolve(const procedural::Geometry& geometry);
+
     std::string_view name() const noexcept { return name_; }
+
     procedural::Layer layer() const noexcept { return layer_; }
+
     std::size_t count() const noexcept { return count_; }
+
     std::span<const std::uint32_t> samples() const noexcept { return samples_; }
 
 private:
     std::string name_;
+
     procedural::Layer layer_{procedural::Layer::primitive};
+
     SharedArray<bool> column_;
+
     std::size_t count_{};
+
     std::vector<std::uint32_t> samples_;
 };
 

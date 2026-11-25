@@ -19,6 +19,8 @@ inline constexpr ui::ControlKey files = 662;
 
 inline constexpr ui::ControlKey problem = 663;
 
+inline constexpr ui::ControlKey close_document_offset = 1ULL << 32;
+
 inline constexpr ui::ControlKey first_document = 1ULL << 45;
 }
 
@@ -71,7 +73,11 @@ public:
 
     bool select(ui::ControlKey);
 
+    File* find(ui::ControlKey) const noexcept;
+
     File* active() const noexcept;
+
+    void relocate(const std::filesystem::path& old_path, const std::filesystem::path& new_path);
 
     const std::vector<std::unique_ptr<File>>& files() const noexcept { return files_; }
 

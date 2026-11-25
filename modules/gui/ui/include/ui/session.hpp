@@ -172,6 +172,8 @@ struct Control {
 
     std::wstring text;
 
+    std::wstring placeholder; // text_edit only: muted hint rendered when text is empty and not composing.
+
     bool single_line{}; // Labels: one line with end ellipsis when their allocated width is exhausted.
 
     Role role{Role::normal};
@@ -245,6 +247,18 @@ struct Control {
     bool
         tree_draggable{}; // tree_item only: a primary drag past 4 px emits drag_begin/preview/commit instead of selecting.
 
+    std::array<ControlIcon, 4> tree_badges{}; // tree_item only: passive capability micro-icons in trailing gutter.
+
+    ControlIcon tree_trailing_icon{ControlIcon::none}; // tree_item only: interactive trailing action icon.
+
+    bool tree_trailing_dimmed{}; // tree_item only: dims the trailing icon when inactive.
+
+    bool transient_edit{}; // text_edit only: Enter/Esc/blur always emits edit_commit/edit_cancel even if unmodified.
+
+    ControlKey rename_anchor{}; // text_edit only: positions and clips over an earlier tree_item or table.
+
+    TableKey rename_cell{}; // text_edit only: target cell key when rename_anchor names a table.
+
     ControlKey popup_owner{}; // popup only: earlier visible local owner; zero for an externally owned surface.
 
     bool menu_branch{}; // Host opens a child menu; activating keeps this parent modal.
@@ -269,7 +283,11 @@ struct Control {
 
     std::shared_ptr<const CanvasData> canvas; // Container only: immutable 2D grid, boxes and capsule strokes.
 
-    bool read_only{}; // CodeEditor only: selectable/copyable, without text mutations or an IME binding.
+    bool read_only{}; // CodeEditor/TextEdit: selectable/copyable, without text mutations or an IME binding.
+
+    double color_hue{}; // color_plane only: hue angle in [0, 360].
+
+    double color_value{1}; // color_plane only: normalized brightness V in [0, 1] for 2D SV planes.
 
     bool operator==(const Control& other) const;
 };
@@ -279,11 +297,17 @@ struct Control {
 class ControlList {
 public:
     static std::uint64_t new_region_revision();
+
     void begin(std::uint64_t decoration_revision = 0);
+
     void require_full_submission() noexcept { baseline_ = 0; }
+
     void append(std::span<const Control>, std::uint64_t region_revision);
+
     void append(std::vector<Control>&&);
+
     std::span<const Control> controls() const { return std::span(values_).first(count_); }
+
     std::vector<Control> take() && {
         auto values = std::move(values_);
         *this = {};
@@ -299,26 +323,45 @@ public:
         regions_.resize(region_);
         finished_ = true;
     }
+
     void finish() {
         finish([](Control&) {});
     }
 
 private:
     friend class Session;
+
     struct Range {
-        std::size_t first{}, count{};
+        std::size_t first{};
+
+        std::size_t count{};
     };
+
     struct Region {
         Range range;
+
         std::uint64_t revision{};
     };
+
     bool advance(std::size_t count, std::uint64_t revision);
+
     std::vector<Control> values_;
+
     std::vector<Region> regions_;
+
     std::vector<Range> dirty_;
-    std::size_t count_{}, region_{};
-    std::uint64_t decoration_revision_{}, baseline_{};
-    bool finished_{}, submitted_{};
+
+    std::size_t count_{};
+
+    std::size_t region_{};
+
+    std::uint64_t decoration_revision_{};
+
+    std::uint64_t baseline_{};
+
+    bool finished_{};
+
+    bool submitted_{};
 };
 
 struct Surface {
@@ -499,6 +542,8 @@ struct TreeRowGeometry {
     std::uint32_t depth{}; // Accepted host row position.
 
     Rect disclosure; // Accepted physical hit area; empty on leaves.
+
+    Rect trailing_action{}; // Accepted physical hit area for tree_trailing_icon; empty when absent.
 
     bool expanded{};
 };
@@ -1003,7 +1048,7 @@ public:
     // Zero clears focus; other targets must be visible, current accepted controls.
     // A transition finishes the previous draft. Same focus preserves its draft,
     // selection and composition; text fields bind input immediately, numbers passively.
-    Reply focus(ControlKey);
+    Reply focus(ControlKey, std::optional<std::uint32_t> select_length = {});
 
     Reply execute(EditCommand,
                   std::uint64_t incarnation); // External menu command, guarded by its opening target lifetime.

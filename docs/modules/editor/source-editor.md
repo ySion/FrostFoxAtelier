@@ -8,7 +8,7 @@
 - **Project → Edit Project UI / Preview Project UI** 编辑或独立预览工程配置的 UI。
 - **File → Edit Editor UI Source** 打开编辑器自身的 UI DSL；开发工作树通常为 `assets/editor.ui.source`。
 - **File → Open Source…** 打开已有 UTF-8 文本；Asset Browser 中 Source 文件支持双击、Enter 和 Open。
-- **Window → Code** 显示可停靠代码面板。顶部文件菜单切换已打开的文档，名称后的 `*` 表示未保存。
+- **Window → Code** 显示可停靠代码面板。顶栏采用空气态图标+文字动作（Open / Save / New / Close / Build / Run / Stop），下方已打开文档标签条（`CodeFileTab`）可直接切换或独立关闭文档，名称后的 `*` 表示未保存修改，外部文件冲突在横幅（`.conflict-banner`）提示一键重载。
 - **Ctrl+S** 保存当前工作区域的文档：Code 区保存当前源码，其他区域保存场景。File → Save Scene 始终保存场景；Save All 保存已修改源码和当前场景。
 - **Ctrl+W** 在 Code 区关闭当前源码文档；没有文档时关闭面板。标签栏关闭只隐藏 Code 面板，文件内容和历史仍保留。
 - 关闭修改过的文档、切换工程或退出会询问保存；打开另一个场景保留源码文档。
@@ -30,7 +30,7 @@ LiveDocument 检测 UI 保存 → 捕获绑定 → 后台编译变更入口 → 
 
 Workspace 独立拥有编辑器 UI Runtime；场景切换清理旧业务绑定，保留最后提交的 UI 源码检查点以及所有源码文档。若启动时作者文件已损坏，会通过同一编译链使用随程序部署的 UI 源码恢复界面，同时保留原错误供修复；恢复不会覆盖损坏的源文件。部署副本也损坏时仍会报告启动失败。
 
-普通 `.source` 文件以工程为编译单元，诊断保留原文件、行列和磁盘版本。即使当前打开的是另一份源码，也能从错误入口跳到目标文件；定位前读取目标磁盘并与编译快照核对，干净但过期的已打开缓冲从该快照刷新；有草稿或磁盘已变成新版本则拒绝定位。连续点击同一诊断复用 CodeDocument，不重建其历史。Project Output 保留最近 256 行构建和运行输出。SS 文件可以编辑保存，仍在启动时加载。Code 面板中的生成 Source/LLVM IR 查看、语义补全、符号跳转、查找替换和调试交互仍待接入。Runtime/JIT 的[诊断](../../source-diagnostics.md)与[源码调试核心](../../source-debugger.md)已经可用；面板、快捷键和外部调试指令的共同接入方向见 [Editor Control](control.md#源码调试接入待实现)。
+普通 `.source` 文件以工程为编译单元，诊断保留原文件、行列和磁盘版本。即使当前打开的是另一份源码，也能从错误入口跳到目标文件；定位前读取目标磁盘并与编译快照核对，干净但过期的已打开缓冲从该快照刷新；有草稿或磁盘已变成新版本则拒绝定位。连续点击同一诊断复用 CodeDocument，不重建其历史。Project Output 内存缓存最多保留最近 4096 条记录（正文上限 8 MiB），每次轮询增量读取最多 256 行 / 256 KiB。工作树 `assets/editor.ss` 编辑保存后按去抖热重载生效，解析失败保留已接受样式并在状态栏报告行列诊断。Code 面板中的生成 Source/LLVM IR 查看、语义补全、符号跳转、查找替换和调试交互仍待接入。Runtime/JIT 的[诊断](../../source-diagnostics.md)与[源码调试核心](../../source-debugger.md)已经可用；面板、快捷键和外部调试指令的共同接入方向见 [Editor Control](control.md#源码调试接入待实现)。
 
 创建组件、添加属性、保存场景、运行及项目 UI 的完整用法见[工程源码与运行](projects.md#工程源码与运行)。项目 UI 的表达式和事件只在独立运行进程求值；Code 所在的编辑器只做编译检查。
 

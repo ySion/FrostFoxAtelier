@@ -23,8 +23,11 @@
 
 namespace {
 using atelier::application::Application;
+
 using atelier::Error;
+
 using atelier::ErrorCode;
+
 using atelier::Result;
 
 std::unexpected<Error> command_error(std::string message, ErrorCode code = ErrorCode::invalid_definition) {
@@ -427,7 +430,7 @@ Result<void> capture_editor_snapshot(Application& app, const std::filesystem::pa
         ATELIER_TRY(shot("snapshot-color-editor.png"));
         ATELIER_TRY(Access::ui_action(app, atelier::editor::control::color_done));
     }
-    // Layout review: category grouping and the Entity Structure page.
+    // Layout review: category grouping and Scene Outliner (including inline components).
     ATELIER_TRY(Access::ui_action(app, atelier::editor::control::group_categories, true));
     ATELIER_TRY(shot("snapshot-parameters-category.png"));
     ATELIER_TRY(Access::ui_action(app, atelier::editor::control::group_components, true));
@@ -435,8 +438,9 @@ Result<void> capture_editor_snapshot(Application& app, const std::filesystem::pa
     ATELIER_TRY(Access::invoke(app, "scene.rename"));
     ATELIER_TRY(shot("snapshot-inline-rename.png"));
     Access::cancel_rename(app);
-    Access::select_tab(app, atelier::editor::control::structure_tab);
+    ATELIER_TRY(Access::ui_action(app, atelier::editor::control::outliner_components_toggle, true));
     ATELIER_TRY(shot("snapshot-structure.png"));
+    ATELIER_TRY(Access::ui_action(app, atelier::editor::control::outliner_components_toggle, false));
     Access::select_tab(app, atelier::editor::control::scene_tab);
     ATELIER_TRY(Access::open_menu(app, atelier::editor::control::viewport_snap));
     ATELIER_TRY(settle());

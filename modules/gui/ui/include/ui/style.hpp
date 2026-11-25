@@ -2,7 +2,11 @@
 
 #include "ui/frame.hpp"
 #include "ui_layout/layout.hpp"
+#include <array>
+#include <optional>
 #include <string>
+#include <string_view>
+#include <utility>
 
 namespace atelier::ui {
 
@@ -82,10 +86,134 @@ enum class ControlIcon {
     info_glyph,
     snowflake,
     eye,
-    template_flag
+    template_flag,
+    eye_off,
+    scene,
+    material,
+    texture,
+    source_file,
+    procgraph,
+    physics,
+    camera,
+    copy,
+    save,
+    play,
+    stop,
+    build,
+    reload,
+    warning
 };
 
-inline constexpr ControlIcon last_control_icon = ControlIcon::template_flag;
+inline constexpr ControlIcon last_control_icon = ControlIcon::warning;
+
+constexpr std::optional<ControlIcon> parse_control_icon(std::string_view name) noexcept {
+    using enum ControlIcon;
+    constexpr std::pair<std::string_view, ControlIcon> table[]{
+        {"none", none},
+        {"close", close},
+        {"clear", close},
+        {"maximize", maximize},
+        {"restore", restore},
+        {"left", left},
+        {"right", right},
+        {"up", up},
+        {"down", down},
+        {"grip_horizontal", grip_horizontal},
+        {"grip_vertical", grip_vertical},
+        {"plus", plus},
+        {"add", plus},
+        {"back", back},
+        {"forward", forward},
+        {"world", world},
+        {"object", object},
+        {"axes", axes},
+        {"transform", axes},
+        {"component", component},
+        {"mesh", mesh},
+        {"folder", folder},
+        {"search", search},
+        {"view_list", view_list},
+        {"view_details", view_details},
+        {"view_tiles", view_tiles},
+        {"filter", filter},
+        {"more", more},
+        {"pointer", pointer},
+        {"translate", translate},
+        {"rotate", rotate},
+        {"scale", scale},
+        {"cursor3d", cursor3d},
+        {"magnet", magnet},
+        {"fly", fly},
+        {"point_light", point_light},
+        {"area_light", area_light},
+        {"sun_light", sun_light},
+        {"sky_light", sky_light},
+        {"shade_wire", shade_wire},
+        {"shade_solid", shade_solid},
+        {"shade_matcap", shade_matcap},
+        {"shade_lit", shade_lit},
+        {"overlays", overlays},
+        {"select_new", select_new},
+        {"select_extend", select_extend},
+        {"select_subtract", select_subtract},
+        {"select_invert", select_invert},
+        {"select_intersect", select_intersect},
+        {"grid", grid},
+        {"axes_origin", axes_origin},
+        {"wire_overlay", wire_overlay},
+        {"lights_off", lights_off},
+        {"fps", fps},
+        {"color_picker", color_picker},
+        {"rename", rename},
+        {"duplicate", duplicate},
+        {"trash", trash},
+        {"delete", trash},
+        {"unparent", unparent},
+        {"points", points},
+        {"point_normals", point_normals},
+        {"face_normals", face_normals},
+        {"orient_scale", orient_scale},
+        {"backface_tint", backface_tint},
+        {"bounds_cage", bounds_cage},
+        {"info", info},
+        {"sticky_note", sticky_note},
+        {"network_box", network_box},
+        {"palette", palette},
+        {"node_shapes", node_shapes},
+        {"network_layout", network_layout},
+        {"pin", pin},
+        {"isolate", isolate},
+        {"sliders", sliders},
+        {"bypass_arrow", bypass_arrow},
+        {"info_glyph", info_glyph},
+        {"snowflake", snowflake},
+        {"eye", eye},
+        {"template_flag", template_flag},
+        {"eye_off", eye_off},
+        {"scene", scene},
+        {"material", material},
+        {"texture", texture},
+        {"source_file", source_file},
+        {"code", source_file},
+        {"procgraph", procgraph},
+        {"graph", procgraph},
+        {"physics", physics},
+        {"camera", camera},
+        {"copy", copy},
+        {"save", save},
+        {"play", play},
+        {"run", play},
+        {"stop", stop},
+        {"build", build},
+        {"reload", reload},
+        {"refresh", reload},
+        {"warning", warning},
+    };
+    for (const auto& [key, value] : table)
+        if (key == name)
+            return value;
+    return std::nullopt;
+}
 
 enum class Role { normal, panel, title, caption };
 
@@ -129,7 +257,8 @@ enum class ControlKind {
     tree,
     tree_item,
     table,
-    code_editor
+    code_editor,
+    color_plane
 };
 
 struct Font {

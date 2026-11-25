@@ -71,7 +71,8 @@ enum class NodeKind {
     popup,
     menu_item,
     overlay,
-    code_editor
+    code_editor,
+    color_plane
 };
 
 enum class Property {
@@ -142,6 +143,10 @@ enum class Property {
     tooltip_title,
     tooltip_identity,
     draggable,
+    placeholder,
+    read_only,
+    hue,
+    brightness,
     argument
 };
 

@@ -720,6 +720,68 @@ std::shared_ptr<const Coverage> TextStore::symbol(Symbol symbol, std::uint32_t p
                                                        (px >= .12f && px <= .88f && py >= .48f &&
                                                         std::abs(std::hypot(px - .50f, py - .20f) - .48f) <= .044f) ||
                                                        std::hypot(px - .50f, py - .50f) <= .145f)
+                            : symbol == Symbol::eye_off
+                                ? (((px >= .12f && px <= .88f && py <= .52f &&
+                                     std::abs(std::hypot(px - .50f, py - .80f) - .48f) <= .042f) ||
+                                    (px >= .12f && px <= .88f && py >= .48f &&
+                                     std::abs(std::hypot(px - .50f, py - .20f) - .48f) <= .042f)) &&
+                                   std::abs((px - .5f) + (py - .5f)) > .09f) ||
+                                      segment(px, py, .18f, .82f, .82f, .18f)
+                            : symbol == Symbol::scene
+                                ? (outline(.12f, .18f, .88f, .82f) || segment(px, py, .12f, .56f, .88f, .56f) ||
+                                   segment(px, py, .50f, .56f, .24f, .82f) || segment(px, py, .50f, .56f, .76f, .82f) ||
+                                   std::hypot(px - .70f, py - .35f) <= .085f)
+                            : symbol == Symbol::material
+                                ? (std::abs(std::hypot(px - .50f, py - .50f) - .36f) <= .042f ||
+                                   (px >= .50f && std::hypot(px - .50f, py - .50f) <= .36f) ||
+                                   std::hypot(px - .35f, py - .36f) <= .065f)
+                            : symbol == Symbol::texture
+                                ? (outline(.14f, .16f, .86f, .84f) || std::hypot(px - .34f, py - .35f) <= .075f ||
+                                   segment(px, py, .16f, .76f, .44f, .46f) || segment(px, py, .44f, .46f, .60f, .64f) ||
+                                   segment(px, py, .60f, .64f, .73f, .50f) || segment(px, py, .73f, .50f, .85f, .76f))
+                            : symbol == Symbol::source_file
+                                ? (segment(px, py, .20f, .12f, .62f, .12f) || segment(px, py, .62f, .12f, .80f, .30f) ||
+                                   segment(px, py, .80f, .30f, .80f, .88f) || segment(px, py, .80f, .88f, .20f, .88f) ||
+                                   segment(px, py, .20f, .88f, .20f, .12f) || segment(px, py, .62f, .12f, .62f, .30f) ||
+                                   segment(px, py, .62f, .30f, .80f, .30f) || segment(px, py, .43f, .46f, .31f, .58f) ||
+                                   segment(px, py, .31f, .58f, .43f, .70f) || segment(px, py, .57f, .46f, .69f, .58f) ||
+                                   segment(px, py, .69f, .58f, .57f, .70f))
+                            : symbol == Symbol::procgraph
+                                ? (std::hypot(px - .26f, py - .24f) <= .12f ||
+                                   std::hypot(px - .74f, py - .24f) <= .12f ||
+                                   std::hypot(px - .50f, py - .76f) <= .13f ||
+                                   segment(px, py, .26f, .34f, .50f, .65f) || segment(px, py, .74f, .34f, .50f, .65f))
+                            : symbol == Symbol::physics
+                                ? (std::abs(std::hypot(px - .56f, py - .36f) - .20f) <= .042f ||
+                                   segment(px, py, .14f, .80f, .86f, .80f) || segment(px, py, .18f, .78f, .34f, .54f) ||
+                                   segment(px, py, .34f, .54f, .42f, .76f))
+                            : symbol == Symbol::camera
+                                ? (outline(.12f, .28f, .66f, .74f) || segment(px, py, .66f, .43f, .88f, .30f) ||
+                                   segment(px, py, .88f, .30f, .88f, .72f) || segment(px, py, .66f, .59f, .88f, .72f))
+                            : symbol == Symbol::copy
+                                ? (outline(.32f, .30f, .84f, .86f) || segment(px, py, .16f, .14f, .68f, .14f) ||
+                                   segment(px, py, .16f, .14f, .16f, .70f) || segment(px, py, .16f, .70f, .32f, .70f) ||
+                                   segment(px, py, .68f, .14f, .68f, .30f))
+                            : symbol == Symbol::save
+                                ? (segment(px, py, .16f, .16f, .70f, .16f) || segment(px, py, .70f, .16f, .84f, .30f) ||
+                                   segment(px, py, .84f, .30f, .84f, .84f) || segment(px, py, .84f, .84f, .16f, .84f) ||
+                                   segment(px, py, .16f, .84f, .16f, .16f) || outline(.30f, .16f, .64f, .40f) ||
+                                   outline(.28f, .54f, .72f, .84f))
+                            : symbol == Symbol::play
+                                ? (px >= .26f && px <= .80f && std::abs(py - .50f) <= (.80f - px) * .62f)
+                            : symbol == Symbol::stop ? (px >= .24f && px <= .76f && py >= .24f && py <= .76f)
+                            : symbol == Symbol::build
+                                ? (segment(px, py, .20f, .80f, .60f, .40f) || segment(px, py, .24f, .84f, .64f, .44f) ||
+                                   segment(px, py, .46f, .20f, .80f, .54f) || segment(px, py, .50f, .16f, .84f, .50f))
+                            : symbol == Symbol::reload
+                                ? ((std::abs(std::hypot(px - .50f, py - .50f) - .32f) <= .045f &&
+                                    !(px > .58f && py < .44f)) ||
+                                   segment(px, py, .78f, .18f, .78f, .40f) || segment(px, py, .56f, .40f, .78f, .40f))
+                            : symbol == Symbol::warning
+                                ? (segment(px, py, .50f, .15f, .87f, .82f) || segment(px, py, .87f, .82f, .13f, .82f) ||
+                                   segment(px, py, .13f, .82f, .50f, .15f) ||
+                                   (std::abs(px - .50f) <= .042f && py >= .38f && py <= .61f) ||
+                                   std::hypot(px - .50f, py - .71f) <= .052f)
                             : symbol == Symbol::template_flag
                                 ? ((py >= .21f && py <= .36f &&
                                     std::abs(px - .50f) <= .30f - std::max(0.f, .28f - py) * 1.15f) ||

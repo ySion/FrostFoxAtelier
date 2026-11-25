@@ -184,6 +184,34 @@ private:
 
     std::shared_ptr<const ui::StyleSheet> style_sheet_;
 
+    struct StyleWatch {
+        std::filesystem::path path;
+
+        std::filesystem::file_time_type time{};
+
+        std::uintmax_t size{};
+
+        int error{};
+
+        bool has_stamp{};
+
+        bool changed{};
+
+        bool read_failed{};
+
+        std::chrono::steady_clock::time_point next_poll{};
+
+        std::chrono::steady_clock::time_point changed_at{};
+
+        std::string accepted_source;
+
+        std::optional<std::string> failed_source;
+    };
+
+    StyleWatch style_watch_;
+
+    void poll_style();
+
     std::unique_ptr<PopupHost> popup_;
 
     std::vector<std::unique_ptr<PopupHost>> submenus_;
@@ -484,6 +512,10 @@ private:
 
     Result<void> save_source(editor::SourceEditor::File&, bool interactive = true);
 
+    Result<void> close_source_tab(ui::ControlKey, bool interactive);
+
+    void asset_relocated(const std::filesystem::path& old_relative, const std::filesystem::path& new_relative);
+
     bool has_any_undo_history() const;
 
     bool can_auto_rebuild(bool require_clean_source_drafts = false) const;
@@ -498,11 +530,14 @@ private:
     struct ProjectCandidate {
         // Procedural resource providers borrow this address during loading and after adoption.
         std::unique_ptr<editor::Project> project;
+
         std::string scene_text;
+
         editor::ProjectDocument document;
     };
 
     static Result<ProjectCandidate> prepare_project_scene(editor::Project, std::string, ProjectOpenPolicy);
+
     Result<void> publish_project(ProjectCandidate);
 
     void cancel_interaction(const ui::Reply&, std::string_view input_event = {},

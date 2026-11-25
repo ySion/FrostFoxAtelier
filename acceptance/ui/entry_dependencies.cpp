@@ -285,25 +285,25 @@ void verify_ui_entry_dependencies() {
         source.replace(at, original.size(), replacement);
     };
     reload(source);
-    present(56);
+    present(34);
     verify_number_row_sign(document.component("WorkbenchRgb"), next);
     const auto old = document.component("ToolShelf");
     const auto instance = document.statistics("ToolShelf")->instance;
     const auto types = runtime.type_count();
-    replace("return 56.0d;", "return 57.0d;");
+    replace("return 34.0d;", "return 35.0d;");
     reload(source);
-    present(57);
+    present(35);
     changed({"ToolShelf"}, Compilation::reused_dependencies);
     source.insert(0, "// move all author positions\n");
     reload(source);
-    present(57);
+    present(35);
     changed({}, Compilation::reused_source);
     const auto revision = document.revision();
     reload("double unused_probe() { return \"wrong\"; }\n" + source);
     require(document.diagnostic().contains(":1:32: Type mismatch") && document.revision() == revision &&
                 document.committed_source() == source,
             document.diagnostic());
-    present(57);
+    present(35);
     for (const std::string_view type_decl :
          {"struct RejectedUiType { double value; };\n", "[Flags] enum RejectedUiFlags : uint { bit = 1 }\n"}) {
         reload(std::string(type_decl) + source);
@@ -312,17 +312,17 @@ void verify_ui_entry_dependencies() {
                     document.revision() == revision && document.committed_source() == source &&
                     runtime.type_count() == types,
                 document.diagnostic());
-        present(57);
+        present(35);
     }
     source.insert(0, "double unused_probe() { return 1.0d; }\n");
     reload(source);
-    present(57);
+    present(35);
     changed({}, Compilation::reused_dependencies);
-    replace("return 57.0d;", "return rail_button_length(180.0d);");
+    replace("return 35.0d;", "return rail_button_length(180.0d);");
     reload(source);
-    present(36);
+    present(28);
     changed({"ToolShelf"}, Compilation::reused_dependencies);
-    replace("return 36.0d;", "return 38.0d;");
+    replace("return 28.0d;", "return 38.0d;");
     reload(source);
     present(38);
     changed({"PaneDivider", "ToolShelf"}, Compilation::reused_dependencies);
@@ -374,7 +374,7 @@ void verify_ui_entry_dependencies() {
     require(document.committed_source() == source && document.statistics("ToolShelf")->instance == instance,
             "A superseded failure displaced the accepted editor instance.");
     auto pinned = take(Instance::create(old, 0, next, keys, inputs));
-    require(pinned->controls().front().layout.height.value == 56, "Old ToolShelf lost its pinned entry.");
+    require(pinned->controls().front().layout.height.value == 34, "Old ToolShelf lost its pinned entry.");
     // A new Runtime type invalidates all 44 capture-time reuse decisions.
     save(path, newer);
     begin(document, now);

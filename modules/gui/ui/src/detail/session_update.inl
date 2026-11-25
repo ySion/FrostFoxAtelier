@@ -21,6 +21,12 @@
                 (control.edit_command->kind==EditCommandKind::reset && !target->default_value))
                 return std::unexpected(Error{ErrorCode::invalid_control,control.key});
         }
+        if (control.rename_anchor) {
+            const auto* target=lookup(control.rename_anchor);
+            if (!target || (target->kind!=ControlKind::tree_item && target->kind!=ControlKind::table) ||
+                ((control.rename_cell!=0)!=(target->kind==ControlKind::table)))
+                return std::unexpected(Error{ErrorCode::invalid_control,control.key});
+        }
         if (parent && ((parent->kind==ControlKind::tree && control.kind!=ControlKind::tree_item) ||
             (parent->kind!=ControlKind::container && parent->kind!=ControlKind::list && parent->kind!=ControlKind::popup &&
              parent->kind!=ControlKind::tree))) return std::unexpected(Error{ErrorCode::invalid_control,control.key});
@@ -32,7 +38,8 @@
             a.tree_branch==b.tree_branch && a.tree_expanded==b.tree_expanded &&
             a.popup_owner==b.popup_owner && a.selection_group==b.selection_group &&
             a.context_target==b.context_target && a.context_group==b.context_group && a.edit_command==b.edit_command &&
-            a.menu_branch==b.menu_branch;
+            a.menu_branch==b.menu_branch && a.rename_anchor==b.rename_anchor && a.rename_cell==b.rename_cell &&
+            a.transient_edit==b.transient_edit;
     }
     Result<Reply> apply_controls(std::span<const Control> controls,bool sparse) {
         if (controls.size()>10000) return std::unexpected(Error{ErrorCode::capacity_exceeded});
@@ -88,7 +95,8 @@
             }
             if ((control.parent && !precedes(control.parent,control_idx)) ||
                 (control.popup_owner && !precedes(control.popup_owner,control_idx)) ||
-                (control.edit_command && !precedes(control.edit_command->target,control_idx)))
+                (control.edit_command && !precedes(control.edit_command->target,control_idx)) ||
+                (control.rename_anchor && !precedes(control.rename_anchor,control_idx)))
                 return std::unexpected(Error{ErrorCode::invalid_control,control.key});
             if (control.kind==ControlKind::tree_item) {
                 // Rows ascend; an adjacent row is at most one level deeper, under an expanded branch.
@@ -146,7 +154,7 @@
         if (!sparse) for (const auto& [key,state]:states) if (!proposed.contains(key)) removed_keys.push_back(key);
         if (changes.empty() && added_keys.empty() && removed_keys.empty() && !structural) return Reply{};
         const auto revision=detail::new_identity();
-        const auto absent=[&](ControlKey key) {
+        const auto absent=[&](this auto const& self_absent, ControlKey key) -> bool {
             while (key) {
                 const auto* future=lookup(key);
                 const auto* previous=live(key);
@@ -156,6 +164,7 @@
                      future->button_behavior!=previous->control.button_behavior || future->menu_behavior!=previous->control.menu_behavior ||
                      future->radio_group!=previous->control.radio_group || (future->kind==ControlKind::tree_item &&
                      future->parent!=previous->control.parent)))) return true;
+                if (future->rename_anchor && self_absent(future->rename_anchor)) return true;
                 key=future->parent;
             }
             return false;
@@ -172,7 +181,11 @@
         const auto edit_policy_changed=[&](ControlKey key) {
             const auto* future=lookup(key);const auto* previous=live(key);
             return future && previous &&
-                (future->read_only!=previous->control.read_only || future->integral!=previous->control.integral);
+                (future->read_only!=previous->control.read_only || future->integral!=previous->control.integral ||
+                 future->drag_axis!=previous->control.drag_axis ||
+                 future->transient_edit!=previous->control.transient_edit ||
+                 future->rename_anchor!=previous->control.rename_anchor ||
+                 future->rename_cell!=previous->control.rename_cell);
         };
         // Retire pending clipboard/IME writes without clearing focus: forbidden
         // keys must remain owned by this field during the next-frame transition.
@@ -241,6 +254,7 @@
         // owned by old frames even when the mutable store drops its cache.
         for (const auto& [key,state]:removed) {
             text.erase(key);
+            text.erase(detail::TextKey{key,0,true});
             for (auto text_key:state.table_text) text.erase(text_key);
         }
         for (auto& [key,index]:table_indices) {
@@ -262,11 +276,14 @@
                 state.table_text.clear(); state.table_index.clear(); state.scroll_x=state.scroll_x_limit=0;
             }
             if (text_kind(before.kind) && !text_kind(after.kind)) text.erase(after.key);
+            if (!before.placeholder.empty() && (after.kind!=ControlKind::text_edit || before.placeholder!=after.placeholder))
+                text.erase(detail::TextKey{after.key,0,true});
             state.style_dirty|=before.parent!=after.parent || before.kind!=after.kind || before.role!=after.role ||
                 before.classes!=after.classes || before.style!=after.style || before.style_scope!=after.style_scope;
             state.layout_dirty|=before.kind!=after.kind || before.layout!=after.layout || before.text!=after.text ||
                 before.single_line!=after.single_line || before.tree_index!=after.tree_index ||
-                before.tree_row_count!=after.tree_row_count ||
+                before.tree_row_count!=after.tree_row_count || before.tree_badges!=after.tree_badges ||
+                before.tree_trailing_icon!=after.tree_trailing_icon || before.rename_anchor!=after.rename_anchor ||
                 (text_field(after.kind) && (before.value!=after.value || before.single_precision!=after.single_precision ||
                                             before.integral!=after.integral));
             if (!after.tree_primary) state.tree_reveal=false;

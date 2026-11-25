@@ -29,6 +29,14 @@ inline constexpr ui::ControlKey health = base + 6;
 inline constexpr ui::ControlKey clear_filters = base + 7;
 
 inline constexpr ui::ControlKey empty = base + 8;
+
+inline constexpr ui::ControlKey health_toggle = base + 9;
+
+inline constexpr ui::ControlKey splitter = base + 10;
+
+inline constexpr ui::ControlKey detail_text = base + 11;
+
+inline constexpr ui::ControlKey clear_search = base + 12;
 }
 
 // One UI-thread projection, independent of the logging backend's worker. Disk
@@ -130,7 +138,7 @@ public:
     // Failure retains the old cache, but never returns it for a new selection.
     ui::Result<std::shared_ptr<ui::CodeDocument>> body() const;
 
-    ui::Result<void> append(ui_language::ControlOutput, ui::ControlKey, ui_language::LiveDocument&, float height);
+    Result<void> append(ui_language::ControlOutput, ui::ControlKey, ui_language::LiveDocument&, float height);
 
 private:
     std::vector<std::unique_ptr<Stream>> streams_;
@@ -166,6 +174,10 @@ private:
     std::wstring category_;
 
     std::wstring query_;
+
+    bool health_open_{};
+
+    float split_ratio_{.56f};
 
     std::wstring attachment_error_;
 

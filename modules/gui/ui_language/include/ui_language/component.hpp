@@ -37,6 +37,18 @@ struct TextEditBinding {
 
     bool enabled{true};
 
+    bool invalid{};
+
+    bool transient{};
+
+    ui::ControlKey rename_anchor{};
+
+    ui::TableKey rename_cell{};
+
+    bool read_only{};
+
+    std::wstring placeholder{};
+
     bool operator==(const TextEditBinding&) const = default;
 };
 
@@ -94,6 +106,12 @@ struct TreeRowBinding {
     bool primary{};
 
     std::bitset<128> lines;
+
+    std::array<ui::ControlIcon, 4> badges{};
+
+    ui::ControlIcon trailing_icon{ui::ControlIcon::none};
+
+    bool trailing_dimmed{};
 
     bool operator==(const TreeRowBinding&) const = default;
 };

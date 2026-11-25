@@ -101,6 +101,10 @@ ResolvedStyle resolve_style(const Style& style, Role role, ControlKind kind, Vis
         value.background = p.panel;
         value.border_width = style.border_width;
     }
+    if (kind == ControlKind::color_plane) {
+        value.background = p.field;
+        value.border_width = style.border_width;
+    }
     if (button || item || number || toggle)
         value.padding = style.control_padding;
     if (button || number || splitter)
@@ -146,7 +150,7 @@ ui_layout::Insets effective_padding(const Control& control, const ResolvedStyle&
                 (control.kind == ControlKind::combo && (control.icon == ControlIcon::none || !control.text.empty())
                      ? (style.combo_indicator == ComboIndicator::caret  ? style.indicator_size + 1
                         : style.combo_indicator == ComboIndicator::none ? 0.f
-                                                                        : 18.f)
+                                                                        : 15.f)
                      : 0.f),
             padding.bottom + style.padding.bottom};
 }

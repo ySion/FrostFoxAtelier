@@ -28,7 +28,8 @@ std::wstring visible_text(std::wstring_view input, bool one_line = false) {
     for (auto c : input) {
         if (one_line && (c == L'\n' || c == L'\t')) {
             result += c == L'\n' ? L"\\n" : L"\\t";
-        } else if ((c < 32 && c != L'\n' && c != L'\t') || (c >= 127 && c <= 159)) {
+        } else if ((c < 32 && c != L'\n' && c != L'\t') || (c >= 127 && c <= 159) ||
+                   (one_line && (c == 0x2028 || c == 0x2029))) {
             result += L"\\u";
             for (int shift = 12; shift >= 0; shift -= 4)
                 result += hex[(c >> shift) & 15];
@@ -401,8 +402,11 @@ void Output::rebuild() const {
             delivery += L" · " + submission_name(*value.rejection);
         // Cell identity is table-wide, unlike the stable column keys above.
         const auto cell = row.key * 8;
+        const auto sev_icon = entry.severity >= logging::Severity::warning ? ui::ControlIcon::warning
+                              : entry.severity == logging::Severity::info  ? ui::ControlIcon::info_glyph
+                                                                           : ui::ControlIcon::none;
         table->rows.push_back({row.key,
-                               {{cell + 1, platform::utf8_to_utf16_validated(logging::name(entry.severity))},
+                               {{cell + 1, platform::utf8_to_utf16_validated(logging::name(entry.severity)), sev_icon},
                                 {cell + 2, platform::utf8_to_utf16_validated(entry.category)},
                                 {cell + 3, std::move(message)},
                                 {cell + 4, short_text(std::move(source), 1024)},
@@ -575,6 +579,11 @@ bool Output::apply(const ui::Action& action) {
         }
         return true;
     }
+    if (action.key == output_control::splitter) {
+        if (const auto* value = std::get_if<double>(&action.value); value && std::isfinite(*value))
+            split_ratio_ = std::clamp(static_cast<float>(*value), .05f, .95f);
+        return true;
+    }
     if (action.key == output_control::category || action.key == output_control::search) {
         if (const auto* text = std::get_if<std::wstring>(&action.value))
             filter(minimum_, action.key == output_control::category ? *text : category_,
@@ -583,6 +592,17 @@ bool Output::apply(const ui::Action& action) {
     }
     if (action.kind != ui::ActionKind::activate)
         return false;
+    if (action.key == output_control::health_toggle) {
+        if (const auto* checked = std::get_if<bool>(&action.value))
+            health_open_ = *checked;
+        else
+            health_open_ = !health_open_;
+        return true;
+    }
+    if (action.key == output_control::clear_search) {
+        filter(minimum_, category_, {});
+        return true;
+    }
     if (action.key == output_control::clear_filters) {
         filter(logging::Severity::trace);
         return true;
@@ -597,11 +617,11 @@ bool Output::apply(const ui::Action& action) {
     return false;
 }
 
-ui::Result<void> Output::append(ui_language::ControlOutput controls, ui::ControlKey parent,
-                                ui_language::LiveDocument& live, float height) {
+Result<void> Output::append(ui_language::ControlOutput controls, ui::ControlKey parent, ui_language::LiveDocument& live,
+                            float height) {
     using namespace ui_language;
     rebuild();
-    ATELIER_TRY_BIND(document, body());
+    ATELIER_TRY_BIND(document, body().transform_error(application::ui_error));
     const auto* selected = selected_record();
     const auto detail =
         selected ? short_text(L"Read only · " + platform::utf8_to_utf16_validated(selected->entry.event_code) + L" · " +
@@ -611,32 +631,75 @@ ui::Result<void> Output::append(ui_language::ControlOutput controls, ui::Control
     const auto level = minimum_ == logging::Severity::trace
                            ? L"Level: All"
                            : L"Level: " + platform::utf8_to_utf16_validated(logging::name(minimum_)) + L"+";
-    const double list_height = std::max(40.f, selected ? (height - 124) * .4f : height - 96);
-    const std::array<InputValue, 15> inputs{
+    std::size_t err_count{};
+    std::size_t warn_count{};
+    for (const auto& item : records_) {
+        if (item.record.entry.severity >= logging::Severity::error)
+            ++err_count;
+        else if (item.record.entry.severity == logging::Severity::warning)
+            ++warn_count;
+    }
+    bool health_alert = !attachment_error_.empty() || statistics_.evicted_records > 0 ||
+                        statistics_.invalid_owned > 0 || statistics_.uncertain_submissions > 0;
+    for (const auto& stream : streams_) {
+        const auto& s = stream->status;
+        if (s.sequence_gaps || s.rotation_losses || s.invalid_lines || s.io_failures || s.unquantified_loss)
+            health_alert = true;
+    }
+    const float safe_h = std::isfinite(height) ? std::max(0.f, height) : 0.f;
+    const float health_h = health_open_ ? std::clamp((safe_h - 30.f) * .28f, 18.f, 42.f) : 0.f;
+    const float splitter_h = selected ? 5.f : 0.f;
+    const float avail = std::max(16.f, safe_h - 30.f - health_h - splitter_h);
+    const float min_list = std::min(36.f, avail * .25f);
+    const float min_detail = std::min(44.f, avail * .30f);
+    const float max_list = std::max(min_list, avail - min_detail);
+    const double min_ratio = std::clamp(static_cast<double>(min_list / avail), 0.05, 0.90);
+    const double max_ratio = std::max(min_ratio + 0.01, std::clamp(static_cast<double>(max_list / avail), 0.10, 0.95));
+    const double effective_ratio = std::clamp(static_cast<double>(split_ratio_), min_ratio, max_ratio);
+    const double list_height = selected ? avail * effective_ratio : avail;
+    const double split_step = 1.0 / std::max(40.0, static_cast<double>(avail));
+    TextEditBinding detail_edit{output_control::detail_text, detail};
+    detail_edit.read_only = true;
+    const std::array<InputValue, 27> full_inputs{
         TableBinding{table_, {selected_, 3}},
         CodeBinding{std::move(*document), true, true},
         TextEditBinding{output_control::category, category_},
         TextEditBinding{output_control::search, query_},
+        query_.empty(),
+        ActionBinding{output_control::clear_search, !query_.empty()},
         level,
+        std::to_wstring(err_count) + L" Err",
+        std::to_wstring(warn_count) + L" Warn",
         health_text(),
-        detail,
+        health_open_,
+        static_cast<double>(health_h),
+        ActionBinding{output_control::health_toggle, true},
+        double(health_alert ? ui::ControlIcon::warning : ui::ControlIcon::info),
+        std::move(detail_edit),
         rows_.empty(),
         selected != nullptr,
         list_height,
+        effective_ratio,
+        min_ratio,
+        max_ratio,
+        split_step,
         ActionBinding{output_control::level},
-        ActionBinding{output_control::clear_filters},
+        ActionBinding{output_control::clear_filters,
+                      minimum_ != logging::Severity::trace || !category_.empty() || !query_.empty()},
         ActionBinding{output_control::locate, selected_source().has_value()},
         ActionBinding{output_control::open_directory, !selected_directory().empty()},
         std::wstring(records_.empty() ? L"No records yet. Waiting for output." : L"No records match these filters.")};
-    const std::array<KeyBinding, 8> keys{{{"messages", output_control::table},
-                                          {"body", output_control::body},
-                                          {"health", output_control::health},
-                                          {"empty", output_control::empty},
-                                          {"level", output_control::level},
-                                          {"locate", output_control::locate},
-                                          {"logs", output_control::open_directory},
-                                          {"clear", output_control::clear_filters}}};
-    static_cast<void>(live.append("ProjectOutput", parent, keys, inputs, controls));
+    const std::array<KeyBinding, 10> keys{{{"messages", output_control::table},
+                                           {"body", output_control::body},
+                                           {"health", output_control::health},
+                                           {"health_btn", output_control::health_toggle},
+                                           {"split", output_control::splitter},
+                                           {"empty", output_control::empty},
+                                           {"level", output_control::level},
+                                           {"locate", output_control::locate},
+                                           {"logs", output_control::open_directory},
+                                           {"clear", output_control::clear_filters}}};
+    ATELIER_TRY(live.append("ProjectOutput", parent, keys, full_inputs, controls));
     return {};
 }
 }

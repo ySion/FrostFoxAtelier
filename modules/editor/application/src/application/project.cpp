@@ -606,6 +606,41 @@ Result<void> Application::save_documents(const editor::Context& context, bool al
     return {};
 }
 
+Result<void> Application::close_source_tab(ui::ControlKey key, bool interactive) {
+    close_menu(false);
+    auto* file = workspace_.source_editor.find(key);
+    if (!file)
+        return {};
+    const bool was_active = workspace_.source_editor.active() == file;
+    const auto confirmed = confirm_source(*file, interactive);
+    if (!confirmed)
+        return std::unexpected(confirmed.error());
+    if (*confirmed) {
+        if (was_active) {
+            effects(ui_.focus(0));
+            pending_source_focus_ = true;
+        }
+        workspace_.source_editor.close(key);
+    }
+    return {};
+}
+
+void Application::asset_relocated(const std::filesystem::path& old_relative,
+                                  const std::filesystem::path& new_relative) {
+    if (!project_)
+        return;
+    workspace_.source_editor.relocate(project_->root() / old_relative, project_->root() / new_relative);
+    if (!scene_path_.empty()) {
+        if (scene_path_ == old_relative) {
+            scene_path_ = new_relative;
+        } else {
+            const auto rel = scene_path_.lexically_relative(old_relative);
+            if (!rel.empty() && rel != L"." && *rel.begin() != L"..")
+                scene_path_ = (new_relative / rel).lexically_normal();
+        }
+    }
+}
+
 Result<void> Application::close_source(bool interactive) {
     close_menu(false);
     auto* file = workspace_.source_editor.active();

@@ -5,14 +5,17 @@
 #include <array>
 #include <map>
 #include <memory>
-#include <unordered_map>
 
 namespace atelier::ui_language {
 class LiveDocument;
+
 class ControlOutput;
 
 struct Item;
+
 struct ItemList;
+
+struct TextEditBinding;
 }
 
 namespace atelier::editor {
@@ -86,8 +89,9 @@ public:
 
     void reset(bool has_project);
 
-    [[nodiscard]] ui::Result<void> append(ui_language::ControlOutput, ui::ControlKey parent, const Project*,
-                                          bool can_create, const ui::UiFrame*, ui_language::LiveDocument&);
+    [[nodiscard]] Result<void> append(ui_language::ControlOutput, ui::ControlKey parent, const Project*,
+                                      bool can_create, const ui::UiFrame*, ui_language::LiveDocument&,
+                                      const ui_language::TextEditBinding* rename = nullptr);
 
     bool apply(const ui::Action&);
 
@@ -95,10 +99,11 @@ public:
 
     const std::optional<Item>& selected() const noexcept { return selected_; }
 
-    // Project files and folders below the top-level roots; Engine resources are read-only.
+    // Project files and folders below the top-level roots, excluding startup scene and UI source.
     bool can_rename() const noexcept {
         return !engine_ && selected_ && !selected_->path.empty() &&
-               std::distance(selected_->path.begin(), selected_->path.end()) >= 2;
+               std::distance(selected_->path.begin(), selected_->path.end()) >= 2 &&
+               selected_->path != startup_scene_ && (ui_source_.empty() || selected_->path != ui_source_);
     }
 
     void reselect(const std::filesystem::path& path) {
@@ -170,7 +175,11 @@ private:
 
     std::vector<Item> items_;
 
-    std::unordered_map<ui::TableKey, std::size_t> row_indices_;
+    Map<ui::TableKey, std::size_t> row_indices_;
+
+    std::filesystem::path startup_scene_;
+
+    std::filesystem::path ui_source_;
 
     ui::TableSort sort_{browser_control::name_column, ui::TableSortDirection::ascending};
 

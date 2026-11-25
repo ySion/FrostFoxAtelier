@@ -95,7 +95,7 @@ Result<OperatorReport> call(OperatorRegistry&, OperatorHost&, const Context&, co
 
 ```cpp
 struct Selection { ObjectId active;  /* active Entity */ ObjectId object; /* 被检视的对象：Entity、组件或材质 */ std::vector<ObjectId> entities; };
-enum class RegionKind : std::uint32_t { none, viewport, scene_tree, structure, parameters, assets, code, output, world, controls };
+enum class RegionKind : std::uint32_t { none, viewport, scene_tree, parameters, assets, code, output, world, controls, network, spreadsheet };
 struct Region { RegionKind kind{}; ui::ControlKey instance{}; };   // instance 是 Dock 页的键，现在每种只有一个
 struct ViewportContext {
     CameraState camera; ViewportView view;          // 已接受帧的投影与范围
@@ -268,6 +268,7 @@ struct KeymapEntry { RegionKind region; KeyChord chord; KeyPhase phase; std::str
 | duplicate_selected | `scene.duplicate {place}`（false 默认直接复制；视口 Shift+D 的 true 启动人类放置） |
 | erase_selected / erase_entities | `scene.delete {target: object\|entities}` |
 | rename_selected | `scene.rename {name}`（空 name 需要人类内联重命名） |
+| set_enabled | `scene.set_enabled {enabled}`（切换 Context object 的 Entity 或 Component 启用状态，undo） |
 | unparent_selected | `scene.parent_set {parent: null, keep_world: true}` |
 | add_transform / remove_transform | `scene.transform_add` / `scene.transform_remove` |
 | clear_location / rotation / scale | `scene.transform_clear {channel}` |
@@ -285,7 +286,7 @@ struct KeymapEntry { RegionKind region; KeyChord chord; KeyPhase phase; std::str
 | view_from_camera | `view.from_camera`（一次性复制 Context active 相机的完整位姿和投影，无作者历史） |
 | viewport_options / show_fps | `view.toggle {option: tool_options\|fps}` |
 | fit_probe_scene / fit_probe_scene_focus | `view.lighting_fit {mode: scene\|scene_focus}`（undo） |
-| show_scene / parameters / entities / structure / assets / code / output / controls / world_settings | `layout.show {tab}` |
+| show_scene / parameters / entities / network / spreadsheet / assets / code / output / controls / world_settings | `layout.show {tab}` |
 | previous_tab / next_tab / close_tab / maximize_pane / reset_layout | `layout.cycle_tab {direction}` / `layout.close_tab` / `layout.maximize` / `layout.reset` |
 
 ### 现在不是命令的 UI 动作 → 操作符

@@ -4,7 +4,7 @@ SS 是基础 UI 模块的样式资源。文本文件与 C++ 都生成同一个�
 
 ## 作者入口
 
-编辑器的实际样式位于 [assets/editor.ss](../../../assets/editor.ss)。构建将它复制到可执行文件旁；应用按可执行文件位置读取，不依赖工作目录。修改源文件后构建并重启生效。缺失文件或非法内容会中止启动并报告错误；SS 解析错误包含行、列。当前没有文件监视器。
+编辑器的实际样式位于 [assets/editor.ss](../../../assets/editor.ss)。构建将它复制到可执行文件旁；开发工作树构建优先读取源文件并按 100 ms 轮询、200 ms 去抖热重载，缺失源目录时按可执行文件位置读取，不依赖工作目录。启动缺失文件或非法内容会中止启动并报告错误；运行期热重载遇到解析错误时保留已接受样式并在状态栏报告行列诊断。
 
 ```css
 @tokens {
@@ -34,7 +34,7 @@ text_edit:focus { border-color: token(accent); }
 ## 支持的语法
 
 - 单控件选择器：`button`、`*`、`.compact`、`button.compact.danger`，可用逗号共享声明。
-- 种类：`container / label / button / list / item / number / splitter / viewport / text_edit / checkbox / foldout / popup / menu_item / combo / tab / slider / tree / tree_item`。
+- 种类：`container / label / button / list / item / number / splitter / viewport / text_edit / checkbox / foldout / popup / menu_item / combo / tab / slider / tree / tree_item / code_editor / color_plane`。
 - 角色：`:role(normal|panel|title|caption)`。
 - 状态：`:enabled / :disabled / :hover / :pressed / :focus / :selected / :invalid / :modified`，可组合；enabled 与 disabled 不能共存。`modified` 来自宿主的默认值比较，与焦点、选中和非法草稿分别表达。
 - `@tokens { name: value; }` 与全值 `token(name)`；支持前向引用，拒绝循环及未知 token。
@@ -58,7 +58,7 @@ text_edit:focus { border-color: token(accent); }
 | `icon-align` | `left / center / right`；纯内容图标的水平对齐，默认 center，不继承，仅影响绘制。带文字图标仍遵循 icon-placement，分隔条点阵等专用标记保持自己的几何 |
 | `indicator-background / indicator-border-color` | 勾选框、滑条拇指的背景与边缘颜色；最大化图标也使用 indicator-background 绘制对角底色 |
 | `indicator-color` | 勾选/折叠标记及下拉箭头的颜色；缺省跟随文字前景，tree_item 的类型图标也使用此属性，其他内容图标使用 color |
-| `combo-indicator` | `down`（默认）或 `arrows`；上下双箭头仍开启同一原生菜单，右侧预留宽度不变 |
+| `combo-indicator` | `down`（默认）、`caret`、`arrows` 或 `none`；非 `none` 指示器右侧预留宽度不变，`none` 不绘制角标且不额外预留角标槽 |
 | `accent-width` | 0–16 DIP，控件底部提示线厚度；0 隐藏。滑条填充色也使用 accent-color |
 | `padding` | 1、2 或 4 个长度；四值依次上、右、下、左，0–128 DIP |
 | `border-radius` | 1、2 或 4 个长度；四值依次左上、右上、右下、左下，0–32768 DIP |
@@ -70,7 +70,7 @@ text_edit:focus { border-color: token(accent); }
 | `tree-alternate-color / tree-line-color` | tree 空白区交替行底色与层级连接线颜色 |
 | `background-image / scrollbar-image` | `image(name)`、`linear-gradient(起色, 终色)` 或 `none`；可在两色前指定 `to right,` 或 `to bottom,`；name 由宿主传入 `NamedImage` 绑定 |
 
-list/tree/popup 的滚动条使用 `scrollbar-color` 和可选 `scrollbar-image` 绘制滑块及可用的步进按钮，`indicator-background` 绘制轨道，`indicator-border-color` 绘制细边和点阵握柄的亮侧；暗侧使用同透明度的黑色。到达端点后相应按钮变暗。宽度和 inset 同时参与布局留白及接受帧命中；颜色仍只影响绘制。编辑器 SS 采用 16 DIP 宽度、21.333 DIP 步进按钮和 24 DIP 最短滑块。工作区及内容页签的 hover 保持原底色，选中页签以底面区分。
+list/tree/popup 的滚动条使用 `scrollbar-color` 和可选 `scrollbar-image` 绘制滑块及可用的步进按钮，`indicator-background` 绘制轨道，`indicator-border-color` 绘制细边；到达端点后相应按钮变暗。宽度和 inset 同时参与布局留白及接受帧命中；颜色仍只影响绘制。编辑器 SS 采用 7 DIP 紧凑无按钮滚动条（`scrollbar-button-size: 0dip`）与 22 DIP 最短滑块，不再绘制旧式浮雕点阵握柄。活动停靠窗格页签显示顶部钢蓝焦点边，选中页签以底面区分。
 
 长度可带 `dip`，裸数也按 DIP。圆角双值分别作用于左上/右下、右上/左下。输入最多 1 MiB、1024 个块、4096 条展开规则，每个选择器最多 16 个类。原生 `StyleSheet::create` 使用相同属性与选择器校验；其诊断无文本位置，行列为零。
 

@@ -161,6 +161,10 @@ bool GeometrySpreadsheet::apply(const ui::Action& action) {
     }
     if (action.kind != ui::ActionKind::activate)
         return false;
+    if (action.key == spreadsheet_control::filter_clear) {
+        set_filter({});
+        return true;
+    }
     if (action.key == spreadsheet_control::follow_toggle) {
         if (const auto* checked = std::get_if<bool>(&action.value))
             set_follow_selected(*checked);
@@ -395,9 +399,11 @@ void GeometrySpreadsheet::append(ui_language::ControlOutput controls, ui::Contro
             ? std::wstring(error_text)
             : (target_label.empty() ? L"Open a Procedural Graph to inspect geometry." : L"No elements in this layer.");
 
-    const std::array<InputValue, 20> inputs{
+    const std::array<InputValue, 22> inputs{
         TableBinding{data, {selected_row_, spreadsheet_control::column_first}},
         TextEditBinding{spreadsheet_control::filter, filter_},
+        filter_.empty(),
+        ActionBinding{spreadsheet_control::filter_clear, !filter_.empty()},
         std::wstring(target_label.empty() ? L"No graph" : target_label),
         follow_selected_,
         ActionBinding{spreadsheet_control::follow_toggle},

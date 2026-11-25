@@ -400,6 +400,278 @@ void integral_slider_and_number_quantization() {
     escape.key = ui::Key::escape;
     consumer.ui.input(escape);
 }
+
+void standardized_kit_and_style_contracts() {
+    // 1. StyleSheet @tokens, color_plane selector, and transient state layout-mutation rejection.
+    require(
+        ui::StyleSheet::parse("@tokens { ink: #d4d4d4; } color_plane { border-width: 1dip; border-color: token(ink); }")
+            .has_value(),
+        "StyleSheet failed to parse @tokens and color_plane selector.");
+    require(!ui::StyleSheet::parse("button:hover { padding: 4dip; }").has_value(),
+            "StyleSheet allowed padding mutation on :hover.");
+    require(!ui::StyleSheet::parse("button:focus { font-weight: 600; }").has_value(),
+            "StyleSheet allowed font-weight mutation on transient :focus.");
+
+    // 2. Read-only text_edit + placeholder: renders hint when empty, suppresses IME anchor, blocks mutation, allows Ctrl+C.
+    Consumer consumer;
+    ui::Control ro = leaf(50, ui::ControlKind::text_edit, 10, L"");
+    ro.read_only = true;
+    ro.placeholder = L"Filter hint...";
+    consumer.controls = {ro};
+    consumer.prepare();
+    require(!first_text(*consumer.frame).coverage->pixels.empty(), "Empty read-only field did not render placeholder.");
+    require(!consumer.ui.focus(50).error, "Failed to focus read-only text_edit.");
+    consumer.prepare();
+    require(!consumer.frame->input_anchor.has_value(), "Read-only text_edit exposed an active IME input_anchor.");
+
+    ro.text = L"entity://copy_target";
+    consumer.controls = {ro};
+    consumer.prepare();
+    require(!consumer.ui.focus(50).error, "Failed to focus populated read-only text_edit.");
+    ui::Event typed{ui::EventKind::text};
+    typed.data = std::wstring{L"X"};
+    const auto mut_reply = consumer.ui.input(typed);
+    require(std::ranges::none_of(mut_reply.effects,
+                                 [](const ui::Effect& e) { return std::holds_alternative<ui::Action>(e); }),
+            "Read-only text_edit emitted an edit action on text input.");
+    ui::Event key{ui::EventKind::key_down};
+    key.control = true;
+    key.key = ui::Key::a;
+    consumer.ui.input(key);
+    key.key = ui::Key::c;
+    const auto copy_reply = consumer.ui.input(key);
+    require(std::ranges::any_of(copy_reply.effects,
+                                [](const ui::Effect& e) {
+                                    const auto* p = std::get_if<ui::PlatformRequest>(&e);
+                                    const auto* cb = p ? std::get_if<ui::ClipboardRequest>(p) : nullptr;
+                                    return cb && cb->kind == ui::ClipboardKind::copy &&
+                                           cb->text == L"entity://copy_target";
+                                }),
+            "Read-only text_edit did not copy selected value on Ctrl+C.");
+    key.key = ui::Key::z;
+    const auto ro_undo_reply = consumer.ui.input(key);
+    require(!ro_undo_reply.consumed && !consumer.ui.wants_keyboard(),
+            "Read-only text_edit swallowed Ctrl+Z or claimed wants_keyboard.");
+    require(!consumer.ui.focus(50, 6).error, "Failed to select prefix on read-only text_edit.");
+    static_cast<void>(consumer.ui.cancel_interaction());
+    key.key = ui::Key::c;
+    const auto partial_copy = consumer.ui.input(key);
+    require(std::ranges::any_of(partial_copy.effects,
+                                [](const ui::Effect& e) {
+                                    const auto* p = std::get_if<ui::PlatformRequest>(&e);
+                                    const auto* cb = p ? std::get_if<ui::ClipboardRequest>(p) : nullptr;
+                                    return cb && cb->kind == ui::ClipboardKind::copy && cb->text == L"entity";
+                                }),
+            "cancel_interaction() wiped passive read-only substring selection before copy.");
+
+    // 3. Tree trailing observability gutter + native anchored inline rename + stem focus selection.
+    ui::Control tree;
+    tree.key = 200;
+    tree.kind = ui::ControlKind::tree;
+    tree.layout = ui_layout::NodeInput::column();
+    tree.layout.width = ui_layout::Axis::fixed(260);
+    tree.layout.height = ui_layout::Axis::fixed(120);
+    tree.tree_row_count = 2;
+
+    ui::Control root_item;
+    root_item.key = 2001;
+    root_item.parent = 200;
+    root_item.kind = ui::ControlKind::tree_item;
+    root_item.text = L"World";
+    root_item.icon = ui::ControlIcon::world;
+    root_item.tree_index = 0;
+    root_item.tree_depth = 0;
+    root_item.tree_branch = true;
+    root_item.tree_expanded = true;
+
+    ui::Control item;
+    item.key = 201;
+    item.parent = 200;
+    item.kind = ui::ControlKind::tree_item;
+    item.text = L"HeroMesh.gltf";
+    item.icon = ui::ControlIcon::mesh;
+    item.tree_index = 1;
+    item.tree_depth = 1;
+    item.tree_badges = {ui::ControlIcon::physics, ui::ControlIcon::procgraph};
+    item.tree_trailing_icon = ui::ControlIcon::eye;
+
+    ui::Control rename;
+    rename.key = 202;
+    rename.parent = 0;
+    rename.kind = ui::ControlKind::text_edit;
+    rename.text = L"HeroMesh.gltf";
+    rename.transient_edit = true;
+    rename.rename_anchor = 201;
+    rename.layout = ui_layout::NodeInput::box(120, 22);
+    rename.layout.out_of_flow = true;
+
+    consumer.controls = {tree, root_item, item, rename};
+    consumer.prepare();
+    const auto* item_box = consumer.frame->find(201);
+    const auto* ren_box = consumer.frame->find(202);
+    require(item_box && ren_box && ren_box->bounds.x > item_box->bounds.x &&
+                std::abs(ren_box->bounds.y - item_box->bounds.y) < 4.f,
+            "Anchored inline rename was not positioned over its target TreeItem.");
+    require(!consumer.ui.focus(202, 8).error, "Failed to focus anchored rename field with stem selection.");
+    key.control = true;
+    key.key = ui::Key::c;
+    const auto stem_copy = consumer.ui.input(key);
+    require(std::ranges::any_of(stem_copy.effects,
+                                [](const ui::Effect& e) {
+                                    const auto* p = std::get_if<ui::PlatformRequest>(&e);
+                                    const auto* cb = p ? std::get_if<ui::ClipboardRequest>(p) : nullptr;
+                                    return cb && cb->kind == ui::ClipboardKind::copy && cb->text == L"HeroMesh";
+                                }),
+            "Session::focus(key, select_length) did not select the file stem.");
+    ui::Event enter{ui::EventKind::key_down};
+    enter.key = ui::Key::enter;
+    const auto commit_reply = consumer.ui.input(enter);
+    require(std::ranges::any_of(commit_reply.effects,
+                                [](const ui::Effect& e) {
+                                    const auto* a = std::get_if<ui::Action>(&e);
+                                    return a && a->kind == ui::ActionKind::edit_commit && a->key == 202 &&
+                                           std::get<std::wstring>(a->value) == L"HeroMesh.gltf";
+                                }),
+            "Unmodified transient_edit field did not emit edit_commit on Enter.");
+
+    // Unmount rename overlay and verify TreeItem trailing eye icon emits activate without select.
+    consumer.controls = {tree, root_item, item};
+    consumer.prepare();
+    item_box = consumer.frame->find(201);
+    const float trail_x = item_box->bounds.x + item_box->bounds.width - 9.f;
+    const float trail_y = item_box->bounds.y + item_box->bounds.height * .5f;
+    consumer.ui.input({ui::EventKind::pointer_down, trail_x, trail_y});
+    const auto trail_up = consumer.ui.input({ui::EventKind::pointer_up, trail_x, trail_y});
+    bool got_activate = false;
+    bool got_select = false;
+    for (const auto& e : trail_up.effects) {
+        if (const auto* a = std::get_if<ui::Action>(&e)) {
+            if (a->key == 201 && a->kind == ui::ActionKind::activate)
+                got_activate = true;
+            if (a->key == 201 && a->kind == ui::ActionKind::select)
+                got_select = true;
+        }
+    }
+    require(got_activate && !got_select, "TreeItem trailing icon click did not isolate activate from row select.");
+
+    // 4. 2D ColorPlane pointer drag emits edit_begin / edit_preview / edit_commit with normalized DragPoint.
+    ui::Control plane = leaf(300, ui::ControlKind::color_plane, 10);
+    plane.layout = ui_layout::NodeInput::box(120, 100);
+    plane.color_hue = 200.0;
+    plane.value = .3;
+    plane.color_value = .6;
+    consumer.controls = {plane};
+    consumer.prepare();
+    require(
+        std::ranges::any_of(consumer.frame->drawing->draws, [](const ui::DrawQuad& q) { return q.image != nullptr; }),
+        "ColorPlane did not emit cached gradient ColorImage quad.");
+    const auto* plane_box = consumer.frame->find(300);
+    const auto p_down =
+        consumer.ui.input({ui::EventKind::pointer_down, plane_box->bounds.x + 24.f, plane_box->bounds.y + 30.f});
+    const auto p_move =
+        consumer.ui.input({ui::EventKind::pointer_move, plane_box->bounds.x + 90.f, plane_box->bounds.y + 25.f});
+    const auto p_up =
+        consumer.ui.input({ui::EventKind::pointer_up, plane_box->bounds.x + 90.f, plane_box->bounds.y + 25.f});
+    require(std::ranges::any_of(p_down.effects,
+                                [](const ui::Effect& e) {
+                                    const auto* a = std::get_if<ui::Action>(&e);
+                                    return a && a->key == 300 && a->kind == ui::ActionKind::edit_begin;
+                                }) &&
+                std::ranges::any_of(p_move.effects,
+                                    [](const ui::Effect& e) {
+                                        const auto* a = std::get_if<ui::Action>(&e);
+                                        if (!a || a->key != 300 || a->kind != ui::ActionKind::edit_preview)
+                                            return false;
+                                        const auto pt = std::get<ui::DragPoint>(a->value);
+                                        return pt.x > .6f && pt.x <= 1.f && pt.y > .6f && pt.y <= 1.f;
+                                    }) &&
+                std::ranges::any_of(p_up.effects,
+                                    [](const ui::Effect& e) {
+                                        const auto* a = std::get_if<ui::Action>(&e);
+                                        return a && a->key == 300 && a->kind == ui::ActionKind::edit_commit;
+                                    }),
+            "ColorPlane drag gesture did not emit edit_begin / edit_preview / edit_commit.");
+
+    // 5. Table Ctrl+C copy and double-click column border auto-fit.
+    auto table_data = std::make_shared<ui::TableData>();
+    table_data->columns = {{1, L"Name", 64.f, 40.f, ui::TextAlign::left, true},
+                           {2, L"Type", 72.f, 40.f, ui::TextAlign::left, true}};
+    table_data->rows = {{10, {{101, L"VeryLongArchitecturalPillarAssetName", ui::ControlIcon::mesh}, {102, L"Mesh"}}}};
+    ui::Control tbl;
+    tbl.key = 400;
+    tbl.kind = ui::ControlKind::table;
+    tbl.layout = ui_layout::NodeInput::box(280, 120);
+    tbl.table = table_data;
+    tbl.table_selection = {10, 1};
+    consumer.controls = {tbl};
+    consumer.prepare();
+    require(!consumer.ui.focus(400).error, "Failed to focus Table.");
+    key.control = true;
+    key.key = ui::Key::c;
+    const auto tbl_copy = consumer.ui.input(key);
+    require(std::ranges::any_of(tbl_copy.effects,
+                                [](const ui::Effect& e) {
+                                    const auto* p = std::get_if<ui::PlatformRequest>(&e);
+                                    const auto* cb = p ? std::get_if<ui::ClipboardRequest>(p) : nullptr;
+                                    return cb && cb->kind == ui::ClipboardKind::copy &&
+                                           cb->text.contains(L"VeryLongArchitecturalPillarAssetName");
+                                }),
+            "Table Ctrl+C did not copy the selected row/cell text.");
+    const auto* tbl_info = consumer.frame->find_table(400);
+    require(tbl_info && !tbl_info->columns.empty(), "Missing accepted Table column geometry.");
+    const float border_x = tbl_info->columns.front().resize.x + tbl_info->columns.front().resize.width * .5f;
+    const float border_y = tbl_info->columns.front().resize.y + tbl_info->columns.front().resize.height * .5f;
+    ui::Event dbl{ui::EventKind::pointer_down, border_x, border_y};
+    dbl.clicks = 2;
+    const auto fit_reply = consumer.ui.input(dbl);
+    require(std::ranges::any_of(fit_reply.effects,
+                                [](const ui::Effect& e) {
+                                    const auto* a = std::get_if<ui::Action>(&e);
+                                    if (!a || a->key != 400 || a->kind != ui::ActionKind::table_column_resize)
+                                        return false;
+                                    const auto r = std::get<ui::TableColumnResize>(a->value);
+                                    return r.column == 1 && r.width > 96.f;
+                                }),
+            "Double-clicking Table column divider did not auto-fit column width to visible text.");
+
+    // 6. Table rename_cell anchoring in both details and tiles views + wheel auto-commit.
+    ui::Control cell_rename;
+    cell_rename.key = 401;
+    cell_rename.parent = 0;
+    cell_rename.kind = ui::ControlKind::text_edit;
+    cell_rename.text = L"RenamedPillar";
+    cell_rename.transient_edit = true;
+    cell_rename.rename_anchor = 400;
+    cell_rename.rename_cell = 101;
+    cell_rename.layout = ui_layout::NodeInput::box(80, 20);
+    cell_rename.layout.out_of_flow = true;
+    consumer.controls = {tbl, cell_rename};
+    consumer.prepare();
+    const auto* details_cell_box = consumer.frame->find(401);
+    const auto* tbl_box = consumer.frame->find(400);
+    require(details_cell_box && tbl_box && details_cell_box->bounds.x >= tbl_box->bounds.x &&
+                details_cell_box->bounds.y > tbl_box->bounds.y,
+            "Table rename_cell overlay was not anchored in details view.");
+    tbl.table_layout.view = ui::TableView::tiles;
+    consumer.controls = {tbl, cell_rename};
+    consumer.prepare();
+    tbl_box = consumer.frame->find(400);
+    const auto* tiles_cell_box = consumer.frame->find(401);
+    const float dpi = consumer.frame->drawing->dpi_scale;
+    require(tbl_box && tiles_cell_box && tiles_cell_box->bounds.height <= 24.f * dpi &&
+                tiles_cell_box->bounds.y > tbl_box->bounds.y + 16.f * dpi,
+            "Table rename_cell overlay was not anchored to bottom label band in tiles view.");
+    require(!consumer.ui.focus(401).error, "Failed to focus Table cell rename overlay.");
+    ui::Event wheel{ui::EventKind::wheel, tiles_cell_box->bounds.x + 8.f, tiles_cell_box->bounds.y + 4.f};
+    wheel.wheel = -1.f;
+    const auto wheel_reply = consumer.ui.input(wheel);
+    require(std::ranges::any_of(wheel_reply.effects,
+                                [](const ui::Effect& e) {
+                                    const auto* a = std::get_if<ui::Action>(&e);
+                                    return a && a->key == 401 && a->kind == ui::ActionKind::edit_commit;
+                                }),
+            "Scrolling a Table with an active anchored rename field did not commit the edit.");
+}
 }
 
 int main() {
@@ -408,8 +680,9 @@ int main() {
     bounded_document_history();
     repeat_updates();
     integral_slider_and_number_quantization();
+    standardized_kit_and_style_contracts();
     verify_ui_error_recovery();
     verify_ui_entry_dependencies();
     std::puts(
-        "UI acceptance: PASS (accepted frames, bounded document history, Repeat, error recovery, editor entry dependencies)");
+        "UI acceptance: PASS (accepted frames, bounded document history, Repeat, standardized kit, error recovery, editor entry dependencies)");
 }

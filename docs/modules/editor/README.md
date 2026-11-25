@@ -7,7 +7,7 @@
 当前消费者将正式 Entity/Component/World 接入同一编辑器，并使用自动反射、共享调用合同与基础值类型。输入、视觉合同及验收入口见下文。World 使用可选内联空间的 Entity、StaticMeshComponent 和真实 StaticMeshEntity；网格使用中立的不可变 `geometry::MeshRef`，遵循[World 合同](../world/README.md)。
 模型与渲染消费完整 TRS；参数面板展示实例的公开标量和内联记录。位置、欧拉角和缩放使用三分量行，规范数学类型按元数据组合 Vector2/3/4，材质颜色按 RGB 展示；选择 Material 时编辑共享材质参数，其他资源显示元数据。已接入真实网格拾取、多选/框选、变换手柄及 G/R/S 操作。已声明默认值、修改状态、折叠分组、独立菜单、中键数值阶梯继续复用同一控件链；编辑器内 JIT 单步交互、可浮动编辑器视图、布局文件保存、参数面板固定目标仍未实施。
 
-UI 作者层已将 Parameters 的查询、Position、属性组、Entity Structure 和 Scene Tree 迁入 [editor.ui.source](../../../assets/editor.ui.source)，使用有类型的组件组合、动态项和原单行编辑器。在 Dev / Release 开发工作树保存声明文件即可更新面板；代码按组件复用，兼容的 Instance / Context 保留，只增删对应子实例，源码失败保留旧定义与交互。布局、样式、输入与业务事务继续沿用现有设施；作者语法、生命周期和更新边界见[原生声明式 UI](declarative-ui.md)。
+UI 作者层已将 Parameters 的查询、Position、属性组与统一的 Scene Outliner 迁入 [editor.ui.source](../../../assets/editor.ui.source)，使用有类型的组件组合、动态项和原单行编辑器。在 Dev / Release 开发工作树保存声明文件或 [assets/editor.ss](../../../assets/editor.ss) 即可热更面板与样式；代码按组件复用，兼容的 Instance / Context 保留，只增删对应子实例，源码失败保留旧定义与交互。布局、样式、输入与业务事务继续沿用现有设施；作者语法、生命周期和更新边界见[原生声明式 UI](declarative-ui.md)。
 
 ## 工程与文件
 
@@ -23,7 +23,7 @@ File → Edit Editor UI Source 可直接打开并修改当前 UI 声明；Code �
 
 ## 当前 UI 作者入口
 
-现有编辑器界面统一由 [editor.ui.source](../../../assets/editor.ui.source) 描述，包含总外壳、顶部菜单栏、工具架、状态栏、停靠栏/分隔条、Scene View、Parameters、World、Scene Tree、Entity Structure、Network、Geometry Spreadsheet、Asset Browser、Controls、Code、Project Output 和原生窗口内的弹出菜单。C++ 提供数据与身份、业务命令和原生机制；各区域不再保留另一条 C++ 界面组装路径。支持范围、视觉层级规范、动态内容槽和更新事务见[声明式 UI](declarative-ui.md)。
+现有编辑器界面统一由 [editor.ui.source](../../../assets/editor.ui.source) 描述，包含总外壳、顶部菜单栏、34 DIP 紧凑单行工具架、状态栏、停靠栏/分隔条、Scene View、Parameters、World、Scene Outliner、Network、Geometry Spreadsheet、Asset Browser、Controls、Code、Project Output、二维 ColorEditor 和原生窗口内的弹出菜单。C++ 提供数据与身份、业务命令和原生机制；各区域不再保留另一条 C++ 界面组装路径。支持范围、视觉层级规范、动态内容槽和更新事务见[声明式 UI](declarative-ui.md)。
 
 ## 正式执行链
 
@@ -43,7 +43,7 @@ WndProc 的输入事件只复制和排队，不重入 UI/业务；同步输入�
 系统模态窗口的 `WM_CANCELMODE` 在 WndProc 内立即交给 `DefWindowProcW` 释放原生鼠标捕获，同时排队保留业务取消事件。文件选择和保存确认会暂停应用主循环，不能把原生捕获释放也延后到该循环；否则已禁用的主窗口会继续截获对话框的鼠标输入。业务取消仍在原有事件泵中执行，不从系统回调重入 UI、场景或渲染。该时序遵循 [Windows WM_CANCELMODE 合同](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-cancelmode)。
 剪贴板失败保留草稿/选区/历史供重试；业务 Action 失败停止同组剩余普通 effects，仍执行 UI 取消、业务回滚、IME 与捕获清理，保留首错并报告清理失败。
 
-[World](../../../modules/engine/world/include/world/world.hpp)和 Runtime 管理唯一 Entity/Component 身份、组成与成员资格。编辑 World 保持 stopped；Entity 的 AttachedInactive 状态仍可呈现和编辑，renderer 不按 Active 状态筛除编辑内容。
+[World](../../../modules/engine/world/include/world/world.hpp)和 Runtime 管理唯一 Entity/Component 身份、组成与成员资格。编辑 World 保持 stopped：已挂接且有效启用的成员虽处于 `AttachedInactive` 运行态，仍正常参与编辑与呈现提取；而显式设为 `enabled == false`（或因祖先停用导致 `effective_enabled == false`）的 Entity 与 Component（含网格、程序化生成器、灯光、环境与相机）均停止呈现输出，撤销或重新启用后恢复。
 World 的原生类型与字段元数据由[自动反射](../../reflection.md)生成，经 `world::register_types` 发布到 Session 拥有的 Runtime；项目 Source 派生类型在 Session::Prepare 中由同一 Runtime 类型系统发布。编辑器使用该入口返回的类型和字段路径；生成头、World 库及正式编辑器均由当前工作树、当前配置的 CMake 依赖链构建。
 [Session](../../../modules/editor/core/include/editor/session.hpp)是文档唯一写入口，保存 `{entity, object}` 选择和统一的 Entity、组件、字段历史。字段事务捕获具体对象 ObjectId、正式 FieldPath 和控制会话，不再从当前选择或类型顺序猜目标。一次拖调连续改真实字段，提交只记一次历史。Entity 的空间字段可能使四元数其他分量规范化，所以记录完整 TRS 前后值，经 World 原子恢复；不是删除时的对象图快照。属性 undo/redo 恢复该字段所属对象作为检查目标，并保留其 Entity 上下文。同一目标重复选择不取消草稿；换目标先取消事务。
 Entity 删除记录保存完整子树根、原组合父与成员位置；组件独立移除记录保存组件根及 owner/组成顺序。Undo 恢复同一 ObjectId 的当前组成与成员资格，重新生成 UI 绑定。裁剪历史/redo 与关闭文档只释放持有，不隐式 destroy。历史最多128项，编辑器最多256个 Entity；只有 World 成员可编辑，没有离线写入或多写者冲突机制。
@@ -85,7 +85,7 @@ G／R／S 通过同一 ViewportTool 与 Session 事务预览、提交和撤销 T
 
 父子多选时，继承去重只减少实际写入对象；活动 Entity 的世界原点和朝向独立保留，用于 Local 基底、吸附、手柄拾取、中键择轴、约束线与读数。缩放统一使用 Local。框选与变换互斥；约束切换、反选和清除变换只处理首次按下，修饰键释放会立即更新当前预览。相机拖动转入全局命令时，先结束旧拖动再释放捕获，迟到的鼠标释放不会恢复旧手势。
 
-Scene View 左侧 38 DIP 工具栏以 32 DIP 单元排列选择、通用、移动、旋转、缩放，选择与手柄工具之间及底部吸附开关前各有 `#4d4d4d` 细分隔，选中态 `#5d7289`。工具图标使用 [Tabler 掩码](../../../assets/icons/README.md) 与原生超采样矢量图标栅格化，沿原生符号栅格化、主题着色和缓存链绘制，不复制 Houdini 专有图标素材。视口右侧显示栏（34 DIP）包含参考网格、原点轴、线框叠加、纯线框、三角边、背面绕序青蓝高亮（Backface Winding Tint，工作室着色下启用）、Cavity、Scene Lit、FPS；在 SOP 图上下文或世界态选中 `ProceduralGeneratorEntity` 时，右侧显示栏与 Guides 菜单同步展开 6 项程序化几何诊断开关：点标记（纯点云节点默认自动开启，点击后转为显式开关，支持 `Cd` 点色与半球深度消隐）、点法线（`N`）、图元面法线、姿态与缩放环（`orient` + `pscale`）、包围盒与实例空间分块（AABB + Chunks）以及右上角几何信息 HUD 卡片（汇总点数/顶点数/图元数/实例数/尺寸/属性列表与求值耗时）。全工作区工具栏、停靠栏、显示栏与节点检索面板按钮统一挂载“英文控件标题（含快捷键）+ 中文功能说明”悬停提示。每个显示栏按钮只改其对应的一项视图或诊断设置，与头部着色段、Guides 菜单和 Z 饼菜单同源同步，不进入场景历史。
+Scene View 左侧 38 DIP 工具栏以 32 DIP 单元排列选择、通用、移动、旋转、缩放，选择与手柄工具之间及底部吸附开关前各有细分隔，选中态使用 `token(accent-active)`（`#56738c`）。工具图标使用 [Tabler 掩码](../../../assets/icons/README.md) 与原生超采样矢量图标栅格化，沿原生符号栅格化、主题着色和缓存链绘制，不复制 Houdini 专有图标素材。视口右侧显示栏（34 DIP）包含参考网格、原点轴、线框叠加、纯线框、三角边、背面绕序青蓝高亮（Backface Winding Tint，工作室着色下启用）、Cavity、Scene Lit、FPS；在 SOP 图上下文或世界态选中 `ProceduralGeneratorEntity` 时，右侧显示栏与 Guides 菜单同步展开 6 项程序化几何诊断开关：点标记（纯点云节点默认自动开启，点击后转为显式开关，支持 `Cd` 点色与半球深度消隐）、点法线（`N`）、图元面法线、姿态与缩放环（`orient` + `pscale`）、包围盒与实例空间分块（AABB + Chunks）以及右上角几何信息 HUD 卡片（汇总点数/顶点数/图元数/实例数/尺寸/属性列表与求值耗时）。全工作区工具栏、停靠栏、显示栏与节点检索面板按钮统一挂载“英文控件标题（含快捷键）+ 中文功能说明”悬停提示。每个显示栏按钮只改其对应的一项视图或诊断设置，与头部着色段、Guides 菜单和 Z 饼菜单同源同步，不进入场景历史。
 
 Guides → Highlight Group 列出当前显示几何的点组和图元组。选择点组显示琥珀色点，选择面组显示面心和内缩轮廓；共享边两侧仍可辨认。折线组沿开放线段绘制。Geometry Info HUD 显示完整的成员数 / 层元素总数；超过 2048 个成员时按成员顺序均匀抽样并标出抽样数。每帧最多绘制 16384 段组轮廓，超出预算的图元仍有中心标记。切换显示节点后按同名同层列重新取值，列缺失时高亮消失。
 
@@ -93,12 +93,12 @@ Guides → Highlight Group 列出当前显示几何的点组和图元组。选�
 
 吸附菜单按 Blender 吸附面板分节（带灰色节标题）：总开关、步长（0.1/0.2/0.5/1 m）、Affect（Move/Rotate/Scale 各自是否随吸附开关吸附）、旋转步长（1°/5°/15°/45°）、选择/游标对齐；G/R/S 的 Ctrl 仍临时反转吸附，缩放步长 0.1。操作栏的 Global/Local 下拉即 Blender 变换朝向：Local 时移动/旋转手柄与 X/Y/Z 约束沿活动 Entity 的自身轴，网格吸附只在 Global 下生效（网格是世界格）；缩放始终沿局部轴。Normal/View/Cursor/Parent 朝向尚未实现，不在菜单中显示。
 
-头部下方是可折叠的 28 DIP 操作控制栏（`#2e2e2e`，黑色上边与 `#424242` 内沿），左侧为 Blender 五段选择模式（Set / Extend / Subtract / Invert / Intersect，决定右键点选和框选如何与当前选择合并；Shift 仍为切换、Ctrl 仍为减选），随后是轴空间、枢轴名称和表面游标；G/R/S 期间整条换成 Blender 头部读数（如 `D: 0.9499 m (0.9499 m) along global Z`、`Rotation: 22.90 along global X`，键入值显示为 `[2|]`）。视口左上是带阴影的白色操作名与图标，右上是半透明圆角视图胶囊（`Persp ▾`），左下为 Houdini 彩色圆片坐标轴，底边一行为当前工具的鼠标/按键提示，右、下两边绘制 `#424242/#666666` 凹边。背景渐变为 `#657f8c → #bec6c6`，选中描边为 Houdini 黄 `#ffd900`。
+头部下方是可折叠的 26 DIP 操作控制栏，左侧为 Blender 五段选择模式（Set / Extend / Subtract / Invert / Intersect，决定右键点选和框选如何与当前选择合并；Shift 仍为切换、Ctrl 仍为减选），随后是轴空间、枢轴名称和表面游标；G/R/S 期间整条换成 Blender 头部读数（如 `D: 0.9499 m (0.9499 m) along global Z`、`Rotation: 22.90 along global X`，键入值显示为 `[2|]`）。视口左上是带阴影的白色操作名与图标，右上是半透明圆角视图胶囊（`Persp ▾`），左下为 Houdini 彩色圆片坐标轴，底边一行为当前工具的鼠标/按键提示，右、下两边绘制 `#424242/#666666` 凹边。背景渐变为 `#657f8c → #bec6c6`，选中描边为 Houdini 黄 `#ffd900`。
 
 | 操作 | 行为 |
 | --- | --- |
 | 右键单击物体 | 对实际网格三角形求最近命中；无可渲染网格的空间根以十字定位点命中 |
-| Shift / Ctrl + 右键 | Shift 切换该 Entity 的选择，Ctrl 移除；Scene Tree 中 Ctrl 切换、Shift 选择可见范围 |
+| Shift / Ctrl + 右键 | Shift 切换该 Entity 的选择，Ctrl 移除；Scene Outliner 中 Ctrl 切换、Shift 选择可见范围 |
 | 右键拖动 / B 后左键拖动 | 以投影包围范围框选，包含遮挡后的对象；Shift 添加、Ctrl 减选，Esc 取消 |
 | Q | 切换纯选择工具，便于框选和选中被手柄覆盖的物体 |
 | 左键拖手柄 | 箭头平移、平面菱形约束平移、圆环旋转、轴端方块缩放；中心方块进行视平面移动或等比缩放。手柄比例与配色取自 Houdini：`#ff1414/#14ff14/#1414ff`，拾取高亮 `#ffd900`；旋转球的背面弧段淡化，外圈为紫色视平面环 |
@@ -150,7 +150,7 @@ Scene View 导航行末尾的 **Cavity** 菜单控制屏幕空间凹凸增强：
 
 Scene View 的显示菜单只提供着色预览与边线模式，`Scene Lit` 与 Smooth、Flat、MatCap 放在同一互斥组。场景作者参数沿 World 页和同一 ViewOption / Session 路由编辑，修改进入场景撤销栈，随 Scene 保存。直接光对保守灯列表中的解析灯逐盏确定求值，投影光源的遮挡来自阴影 atlas；`Direct candidates`（1～32，默认 8）只控制 DDGI 探针命中点的局部光候选数。AA 默认 SMAA；显示模式、相机和诊断开关仍属于视口。Scene Lit 管线由 Renderer 在工作线程上按设置分组准备，首次使用某组时不阻塞编辑器：视口先继续显示上一个已画出的 Scene Lit 视图，还没画过时显示 Smooth，状态栏显示 `Compiling shaders n/m`（n/m 按当前视图需要的组计算，打开新组时总数会变大），就绪后自动切回。准备失败时状态栏显示错误，视口保持 Smooth。编辑器和 Play 进程把编译结果缓存到环境变量 `ATELIER_SHADER_CACHE` 指定的目录，未设置时为 `%LOCALAPPDATA%\FrostFoxAtelier\ShaderCache`。快照、性能采样模式和 Control 验收在宿主未设置该变量时改用编辑器可执行文件旁的 `shader-cache`（即 `out\dev\shader-cache` 与 `out\release\shader-cache`，两种配置不共用），并由它们启动的 Play 进程继承，不写用户缓存。验收需要冷启动（强制出现未就绪和回退）时，宿主在启动编辑器或 `atelier_editor_control_acceptance` 前把 `ATELIER_SHADER_CACHE` 设为一个新建的空目录；已设置的值不会被覆盖。
 
-**Window → World Settings** 打开可停靠的 World 页。页面由 `editor.ui.source` 声明，子页为 Lighting、DDGI、Effects、Diagnostics、Performance。Lighting 提供曝光、阴影、直接光候选数与 Sky 组（均匀天光的开关、强度和颜色）；这些作者值写在 Environment 组件上，第一次编辑时创建它，与这次写入是同一条历史。具体灯光通过 Scene Tree / Entity Structure 选择，并在 Parameters 编辑，World 页不枚举场景灯光。Effects 提供 GTAO、SSSR、Bloom、AA 与半径/距离。DDGI 可选择四个固定槽位，编辑启用、Fixed / Follow Focus、边界、三轴数量、混合边界、共享更新预算、射线数、反馈和间接光增益。Follow Focus 持久化模式和相对边界；实际焦点由宿主提供，编辑器使用观察目标。Diagnostics 包含探针命中点的空间选灯开关、探针球体、接收面指标、体积、X-Ray、反馈可见性和 CPU 布局读数，不进入 Scene。
+**Window → World Settings** 打开可停靠的 World 页。页面由 `editor.ui.source` 声明，子页为 Lighting、DDGI、Effects、Diagnostics、Performance。Lighting 提供曝光、阴影、直接光候选数与 Sky 组（均匀天光的开关、强度和颜色）；这些作者值写在 Environment 组件上，第一次编辑时创建它，与这次写入是同一条历史。具体灯光通过 Scene Outliner 选择，并在 Parameters 编辑，World 页不枚举场景灯光。Effects 提供 GTAO、SSSR、Bloom、AA 与半径/距离。DDGI 可选择四个固定槽位，编辑启用、Fixed / Follow Focus、边界、三轴数量、混合边界、共享更新预算、射线数、反馈和间接光增益。Follow Focus 持久化模式和相对边界；实际焦点由宿主提供，编辑器使用观察目标。Diagnostics 包含探针命中点的空间选灯开关、探针球体、接收面指标、体积、X-Ray、反馈可见性和 CPU 布局读数，不进入 Scene。
 
 World 字段的 label、category、description 与类型、范围、枚举值统一声明在 `ViewOptionInfo` 原定义表中，面板不再维护另一份逐项名称或帮助表。同一描述供共享属性行与 Control 查询使用；Probe Volume 的四个槽位和 XYZ 分量共用说明，Follow Focus 只按真实语义把边界标题改为 Min / Max offset。World 与 Entity 参数共用属性行和悬浮说明的呈现契约；World 仍是场景持有的设置值，通过完整候选值验证与 Session 撤销提交，不为显示参数创建 Entity。视口诊断保持独立生命周期，不进入 Scene 数据。
 
@@ -231,7 +231,7 @@ GPU 段：
 
 主窗体只组织四个区域：顶部菜单栏、工具架、中间 DockSpace 内容区和底部状态栏。业务功能以可停靠的 Tab 子页组成，不将页面业务提升为固定外壳控件。
 
-默认布局参照 Houdini 的分区：Scene View/Code 在左上，Asset Browser/Project Output/Geometry Spreadsheet 在左下，Parameters/Controls/World 共用右上标签组，Scene Tree/Entity Structure/Network 在右下。各视图只保留一份业务状态，可以移到其他标签组或分割区域。
+默认布局参照 Houdini 的分区：Scene View/Code 在左上，Asset Browser/Project Output/Geometry Spreadsheet 在左下，Parameters/Controls/World 共用右上标签组，Scene Outliner/Network 在右下。各视图只保留一份业务状态，可以移到其他标签组或分割区域；当前活动停靠窗格页签显示顶部钢蓝焦点强调边（`focused-tab`）。
 
 ### 程序化 SOP 视口上下文、Network 与 Geometry Spreadsheet
 
@@ -255,7 +255,7 @@ Network 在 CPU 上保留视口及周边连线的曲线采样点。同一拓扑�
 - 样本与场景历史按照最近操作的视图选择，允许 Controls 与 Parameters 同时显示。视图隐藏/移动时，未提交交互仍通过 Session 的取消/失焦合同结束；业务字段 key 依对象实际成员生命周期退役，隐藏面板不退役对象绑定。
 - Scene View 隐藏时提交空场景矩形，不生成场景实例；其他 UI 继续走原窗口、renderer 和接受帧。参数面板标题与可选搜索固定，实验台另外保留示例内容页签；下方内容滚动以适应较矮的区域；窄参数行仍使用公共 Flex 换行。
 
-以 Houdini UI Scale 1.75 为同机参照：数值字段最低 23 DIP、标签列 160 DIP、行间 7 DIP。菜单栏为 32 DIP，Tab 栏为 22 DIP；菜单栏与工具架的收起把手和整行恢复条尺寸见下方[首版操作](#首版操作)。当前中英文正文与 Tab 使用 12.5 DIP Sarasa UI SC，菜单栏文字为 13.5 DIP。Tab 选中后使用灰色底面，键盘焦点不额外画框；文字字段保留输入焦点提示。F10/Alt 菜单快捷键会展开收起的菜单栏；恢复布局一并展开菜单栏和工具架。系统 DPI 仍只有 Window → Surface 的一个换算入口。外部观察见[工作区研究](../../research/houdini-workspace-reference-20261001.md)，当前行为以本页为准。独立原生浮窗、多份同类视图和持久布局尚未实现。
+以紧凑工业暗色密度为基准：单行数值与文本字段高 22 DIP，参数标签列采用 34% 自适应比例（范围 76–162 DIP，超长单行省略），组内行距 3 DIP。顶部菜单栏为 26 DIP，工具架为 34 DIP，Tab 栏为 22 DIP；菜单栏与工具架的收起把手和整行恢复条尺寸见下方[首版操作](#首版操作)。当前中英文正文与 Tab 使用 12.5 DIP Sarasa UI SC，数值读数使用 Source Code Pro。当前活动停靠窗格页签显示顶部钢蓝强调线，选中页签以底面区分，普通按钮焦点不额外画外框；文字与数值字段聚焦显示钢蓝细边框。F10/Alt 菜单快捷键会展开收起的菜单栏；恢复布局一并展开菜单栏和工具架。系统 DPI 仍只有 Window → Surface 的一个换算入口。外部观察见[工作区研究](../../research/houdini-workspace-reference-20261001.md)，当前行为以本页为准。独立原生浮窗、多份同类视图和持久布局尚未实现。
 
 布局与参数的 SideFX 来源及固定版本观察见 [Pane 细节](../../research/houdini-pane-details-20261001.md)，不作为本项目的验收结果。
 
@@ -263,9 +263,9 @@ Network 在 CPU 上保留视口及周边连线的曲线采样点。同一拓扑�
 
 **Controls** 标签打开实验台；选择 **Parameters** 回到实际场景参数，也可将两者分栏同时显示。实验台使用同一个 `ui::Session`、SS、布局、输入法和 renderer，没有独立绘制循环。
 
-- 可编辑 Position Vector3、Exposure、Unicode 名称、Enabled 勾选、Vector4 和 Projection 下拉样本。Position / Vector4 使用显式轴提示色线；Exposure 同时提供数值框和滑条，合法数值为 0–32、滑条显示 0–16，支持拖动、键盘细调、撤销及取消。数值与下拉共用右对齐标签列，名称位于固定的 Sample 标题行；数值字段从 23 DIP 起，共用黑色输入框、凹入边缘、轻渐变按钮；默认灰白文字、非默认数值加粗、灰色编辑边界和菜单定位；勾选使用勾号，折叠使用三角。参数勾选项与折叠标题没有悬停或按下底色。参数下拉按钮高 26.667 DIP（150% 缩放下约 40 px），文字两侧保留 14 / 12 DIP，尾部使用单向下箭头。普通命令菜单不绘制勾选或互斥圆环，也不预留空的标记列；只有布尔项和单选项使用对应标记。
-- 右键菜单提供分量/整组默认值、复制和粘贴；Ctrl+中键直接恢复默认值，中键按住调出数值阶梯。整组恢复仍只记一次撤销，全部样本保留统一 Reset。Projection 和 Vector4 均为独立样本，不向 World 添加虚构字段。
-- Disable sample fields 检查禁用传播，Show long labels 检查换行，Transform and display 与 Color components 标题支持鼠标与 Enter/Space 折叠。
+- 可编辑 Position Vector3、Exposure、Unicode 名称、Enabled 勾选、Vector4、Projection 下拉、二维 `SV + Hue` 色盘以及只读可复制（`Read-Only & Copyable`）样本，顶部 `SearchBox` 可实时按关键字过滤实验台分组与控件行。Position / Vector4 使用显式轴提示色线；Exposure 同时提供数值框和滑条，合法数值为 0–32、滑条显示 0–16，支持拖动、键盘细调、撤销及取消。数值与下拉共用自适应比例标签列；字段高 22 DIP，共用深色凹槽输入框、1px 细边与微渐变下拉（高 22 DIP，尾部 `caret` 指示器）。普通命令菜单不绘制勾选或互斥圆环，也不预留空的标记列；只有布尔项和单选项使用对应标记。
+- 右键菜单提供分量/整组默认值、复制和粘贴（只读字段仅保留 `Copy Value`）；Ctrl+中键直接恢复默认值，中键按住调出数值阶梯。整组恢复仍只记一次撤销，全部样本保留统一 Reset。Projection 和 Vector4 均为独立样本，不向 World 添加虚构字段。
+- Disable sample fields 检查禁用传播，Show long labels 检查标签省略与窄面板换行，Transform and display、Read-Only & Copyable 与 Color components 标题支持鼠标与 Enter/Space 折叠。
 - 分隔条由视图最小尺寸和当前工作区空间共同约束。窄面板保持字段可达，超出可用高度的样本通过同一 list 滚动。
 - 样本最多保留 64 次提交历史；UI 活动草稿仍优先使用共享文本历史。实验台打开时，Edit 菜单 Undo/Redo 与无本地事务的 Ctrl+Z/Y 进入样本历史，Delete 不穿透到场景删除。样本值不写入 World。
 
@@ -273,27 +273,27 @@ Network 在 CPU 上保留视口及周边连线的曲线采样点。同一拓扑�
 
 ## 首版操作
 
-顶部菜单栏提供 File / Edit / Create / Project / View / Window / Help。Create 快捷区创建 Entity 或 Static Mesh Entity，View 快捷区聚焦选择和重置相机；Window 打开视图、切换/关闭页签、最大化和恢复布局。无参数启动为空文档；[Examples](../../../examples/README.md) 是通过 File → Open Project 或 `--project` 打开的独立工程，没有专用菜单或隐式复制。Parameters 通过真实类型显示检查目标及其连续属性区。Entity Structure 递归展示 Entity 子树与所属组件，负责选择、添加和删除；Scene Tree 递归展示 Entity 组合层级。没有空间时不显示实体 TRS；Edit 和组成菜单的 Add Transform / Remove Transform 操作同一内联空间；没有检查目标时显示空状态。
+顶部菜单栏提供 File / Edit / Create / Project / View / Window / Help。Create 快捷区创建 Entity 或 Static Mesh Entity，View 快捷区聚焦选择和重置相机；Window 打开视图、切换/关闭页签、最大化和恢复布局。无参数启动为空文档；[Examples](../../../examples/README.md) 是通过 File → Open Project 或 `--project` 打开的独立工程，没有专用菜单或隐式复制。Parameters 通过真实类型显示检查目标及其连续属性区。统一的 Scene Outliner 在同一树中递归展示 Entity 组合层级与内联组件子行，负责选择、启用开关、组件增删与层级换父。没有空间时不显示实体 TRS；Edit 和组成菜单的 Add Transform / Remove Transform 操作同一内联空间；没有检查目标时显示空状态。
 
 `OperatorRegistry` 是编辑器动作的权威入口，poll 判定当前可用性，`call` 严格解码参数并执行。菜单和顶部快捷区读取 `menu_bindings.hpp` 的 `OperatorCall`；非 modal 快捷键从 keymap 解析同一调用，菜单快捷键文字也来自 keymap。执行时再次检查可用性；UI 只产生通用 Action，不直接修改 World。输入字段和拖动仍通过 Session 事务入口，详见[操作符](operators.md)。
 
-菜单栏通过 `EditorShell`、工具架通过 `ToolShelf` DSL 描述同一套收起交互，共用 `stow_*` 尺寸和 `bar-stow` 样式。展开把手宽 12 DIP，当前 150% 缩放下为 18px；箭头位于顶部 12 DIP 方形区。收起时同一个按钮铺满整条横栏，高 12 DIP，任何位置均可点击恢复，箭头保持左对齐。展开把手和收起横条的常态、悬停、焦点均为灰色渐变；仅按住时采用灰蓝渐变 `#5D7389 → #748CA5`，松开即恢复灰色，箭头始终为黑色。两栏分别使用自身实际占用高度分配剩余工作区。
+菜单栏通过 `EditorShell`、工具架通过 `ToolShelf` DSL 描述同一套收起交互，共用 `stow_*` 尺寸和 `bar-stow` 样式。展开把手宽 12 DIP，当前 150% 缩放下为 18px；箭头位于顶部 12 DIP 方形区。收起时同一个按钮铺满整条横栏，高 12 DIP，任何位置均可点击恢复，箭头保持左对齐。展开把手和收起横条采用平坦深色底面，按住时切换为钢蓝强调态（`token(accent-active)`），松开恢复。两栏分别使用自身实际占用高度分配剩余工作区。
 
-顶部工具架使用 18 DIP 分类行与紧凑图标区，总高 56 DIP；收起后为上述整行恢复条。分类选择跨收起/展开保留，收起不会改变场景历史，Reset Layout 恢复展开。工具按钮统一宽 64 DIP、18 DIP 图标与 10.5 DIP 短标签，菜单保留完整指令名。图标和文字由同一按钮绘制/命中，`icon-placement: above` 由共享 SS 测量与绘制处理。
+顶部工具架（`ToolShelf`）采用 34 DIP 单行紧凑横栏：左侧为 `Create | View` 分段切换，右侧紧接 `26 DIP` 空气态横向图文动作按钮（`shelf-tool`）；收起后为 12 DIP 整行恢复条。分类选择跨收起/展开保留，收起不会改变场景历史，Reset Layout 恢复展开。
 
 Asset Browser 是独立可停靠视图，浏览工程目录与引擎资源；单击选择，Add to Scene 执行共享创建命令，支持名称/类型过滤与 List/Details/Tiles。工具行、目录树、状态行和全部结果视图由 DSL 声明；List/Details/Tiles 通过 TableBinding 接入共享 Table，提供排序、列宽拖动、当前单元格、键盘导航和双击/Enter Open。三种呈现复用同一数据快照和选择状态，详见[工程与资源浏览](projects.md)。顶部快捷创建继续引用相同内置资源。World/renderer 不按 Cube 名字分支；拖放、吸附和模型缩略图尚未实施。
 数值控件支持普通拖动和中键七档数值阶梯；上下移动选步长，左右移动调值，Shift 细调，释放提交一次、Esc 取消。右键或 Menu/Shift+F10 打开参数菜单；Ctrl+中键恢复分量或标题对应整组默认值。菜单期间视口输入暂停，外部点击只关闭菜单，Esc/Tab 返回原焦点。普通拖动用于调值，单击进入文字模式后拖动用于选字。首次实际文字修改才建立事务；合法 Enter 提交，非法 Enter 保留草稿，Esc 恢复整次编辑的原值。结束后保留字段焦点，数值退出文字模式。字段焦点下 Delete/Backspace 只编辑文字。
 文本与数值共用 Unicode 字素边界、视觉光标、双向选区、横滚及本地撤销/重做。Ctrl+A/C/X/V 提供全选、复制、剪切、粘贴。存在本地事务时 Ctrl+Z/Y 只操作本地历史，即使历史耗尽也不穿透；仅聚焦无事务时进入场景历史，Ctrl+Shift+Z 同样重做。历史合组、容量和 Unicode 覆盖见 [UI 模块](../ui/README.md#共享单行编辑)。
 Parameters 的 Component / Category 子页切换组织方式。`AFIELD(Label="Position (m)", Category="Transform")` 提供显示名与分类；`Category` 是标准拼写。内联记录的分类向下继承，子字段的非空分类可覆盖；向量分量沿用聚合字段的标签。无标签时按字段名生成标题，无分类时归入 General。Component 模式保留 Entity 内联 TRS 的整组编辑与默认值恢复；Category 模式按元数据汇集属性，字段仍绑定同一 ObjectId/FieldPath，分组不改变持久身份或场景历史。Source 生成的未声明元数据保持空值，本轮没有添加 Source 注解语法。
 
-子区域使用共享 `section-tabs` / `section-tab`：26 DIP 页签、0.667 DIP 细边、未选中 #555555→#303030 渐变、选中 #4F4F4F 平面与 #3A3A3A 条带。Parameters 和 World 的第一个页签从条带左边缘起排，不预留空槽；停靠页签继续使用自己的 `dock-tab` 样式。
+子区域使用共享 `section-tabs` / `section-tab`：24 DIP 页签行与底部激活强调条，Parameters 和 World 的第一个页签从条带左边缘起排，不预留空槽；停靠页签继续使用自己的 `dock-tab` 样式。
 
 参数搜索按实际属性、类型名，以及位置/旋转/缩放行的名称与别名过滤。确认文字实时过滤，IME 预编辑不改变查询；Enter 或普通换焦点提交查询，Esc/OS 失焦/Surface 失效恢复原查询。查询属于 Workspace 查看状态，不写场景历史。相机与变换操作见上方[视口编辑](#视口编辑)。
 调整窗口尺寸、DPI变化、失焦或外部捕获丢失都会取消当前未提交编辑。应用主动释放捕获产生的同步通知不会误取消刚进入的文本编辑。
 
 ### 独立菜单窗口
 
-菜单栏、参数右键、Projection 下拉和 Pane 菜单全部通过同一个 PopupHost，使用独立 owned HWND，主窗口保留输入焦点。F10 或 Alt+F/E/C/P/V/W/H 打开顶部菜单；Scene Tree 非文本焦点下，Alt+P 优先解除父级。打开后左右键或悬停切换菜单，Right 优先展开当前可用分支；上下/Home/End 导航，Enter/Space 执行，Esc/Tab 关闭并返回原焦点。F10、面板最大化/关闭等一次性命令忽略自动重复，文本删除和历史导航保留重复。快捷键列与分隔线来自同一菜单模型。首项始终不绘制组间分隔线。菜单尺寸通过独立的 CPU 测量会话计算；勾选或可用性更新在尺寸不变时直接更新当前输入表面，保留悬停、焦点、滚动和行身份。窗口外点击只关闭，不执行背后的编辑器命令；视口和场景快捷键在菜单期间暂停。
+菜单栏、参数右键、Projection 下拉和 Pane 菜单全部通过同一个 PopupHost，使用独立 owned HWND，主窗口保留输入焦点。F10 或 Alt+F/E/C/P/V/W/H 打开顶部菜单；Scene Outliner 非文本焦点下，Alt+P 优先解除父级。打开后左右键或悬停切换菜单，Right 优先展开当前可用分支；上下/Home/End 导航，Enter/Space 执行，Esc/Tab 关闭并返回原焦点。F10、面板最大化/关闭等一次性命令忽略自动重复，文本删除和历史导航保留重复。快捷键列与分隔线来自同一菜单模型。首项始终不绘制组间分隔线。菜单尺寸通过独立的 CPU 测量会话计算；勾选或可用性更新在尺寸不变时直接更新当前输入表面，保留悬停、焦点、滚动和行身份。窗口外点击只关闭，不执行背后的编辑器命令；视口和场景快捷键在菜单期间暂停。
 
 菜单切换请求立即退役旧菜单的输入身份；新菜单首帧接受前只消费过渡输入，不能执行旧条目。普通命令先关闭旧菜单，再接管输入或捕获；checkbox 的 keep-open 路径仍保留当前菜单。
 
@@ -339,21 +339,21 @@ PopupHost 的测量 Session 也遵循 Surface 变化取消模态状态的规则�
 
 控件宽度按 Houdini 取内容而非整行：枚举菜单按标签收缩（最小 96 DIP，选项显示首字母大写的名称），单个数值字段宽度为一个元组列（140 DIP，可在窄面板中缩小），勾选框只占其文字宽度；向量元组和带滑条的数值仍填满数值列。
 
-类型图标来自与工具图标相同的 Tabler 线框集（[assets/icons](../../../assets/icons/README.md)），以 1.5 笔宽栅格化，尺寸按 Houdini 同屏比例收小（路径导航 20、路径图标 18、标签栏工具 11～13、树行 13、头部 16 DIP；组合框下拉箭头统一不超过 9 DIP）：点光 `bulb`、矩形光 `rectangle`、方向光 `sun`、天空光 `cloud`、网格 `box`、普通 Entity `cube-3d-sphere`、组件 `packages`，以及 World、文件夹、搜索。工具架、Scene Tree、Entity Structure 和参数标题使用同一判定：StaticMeshEntity 为网格，含灯光组件的 Entity 按灯光类型，其余为普通 Entity。Scene Tree 行只显示名称，类型由图标表达。状态栏左侧为当前消息，右侧以灰色显示场景计数，二者以间距而非竖线分隔，文字在 23 DIP 栏内垂直居中。
+类型图标来自与工具图标相同的 Tabler 线框集（[assets/icons](../../../assets/icons/README.md)），以 1.5 笔宽栅格化，尺寸按 Houdini 同屏比例收小（路径导航 20、路径图标 18、标签栏工具 11～13、树行 13、头部 16 DIP；组合框下拉箭头统一不超过 9 DIP）：点光 `bulb`、矩形光 `rectangle`、方向光 `sun`、天空光 `cloud`、网格 `box`、普通 Entity `cube-3d-sphere`、组件 `packages`，以及 World、文件夹、搜索。工具架、Scene Outliner 和参数标题使用同一判定：StaticMeshEntity 为网格，含灯光组件的 Entity 按灯光类型，其余为普通 Entity。Scene Outliner 行显示名称、能力微徽标与尾端启用开关，实体与组件类型由前置图标表达。状态栏左侧为当前消息，右侧以灰色显示场景计数，二者以间距而非竖线分隔，文字在 22 DIP 栏内垂直居中。
 
 路径栏显示 World 上下文；固定对象标题用类型图标、类型和名称输入框表达当前 Entity，右侧放大镜控制参数搜索。名称是 editor::Session 的文档标签，通过对象身份索引，重命名、删除恢复和撤销重做共用场景历史；标签本身不持有运行时对象，GC 完成后清理失效索引。名称随场景 JSON 持久化，不是新增的 World 反射字段。
 
 路径栏的下拉通过同一原生菜单选择 World 或 Entity；前后箭头浏览最近的选择。导航历史属于 Workspace，最多保存 64 个不保活的身份，保留 World 入口并清理失效对象；导航调用现有 Session::select，不增加场景撤销条目。路径框、普通输入框、内容页签和滚动条使用同一 [SS 样式](../ui/style-sheets.md)，当前色值由 [editor.ss](../../../assets/editor.ss)定义。
 
-Parameters 展示所选对象的连续属性区，不预设 Transform／Components 内容页签。类型、名称、Object/Category 分组页签与搜索按钮同在一行标题内（Houdini 单行参数头），不再单独占一行。颜色元组末尾的色块可点击，打开颜色编辑器：新色/原色对比（点原色恢复）、RGB 与 HSV 两行数值编辑同一颜色、六位十六进制输入；从打开到 Done 或点外部关闭为一次 Session 组编辑（`begin_group_edit`），只记一条历史，Esc 同样保留当前值，撤销一次恢复三个通道。选择 Entity 时展示 Entity 自身字段和所拥有组件的属性分组（对挂载 `ProceduralGeneratorComponent` 的 Entity，组件下方直接内联展示所绑定 `.procgraph` 的公开参数滑杆与差量覆写开关）；选择组件时只展示该组件，标题中的组件类型只读。Entity 名称仍可编辑。搜索默认收起，点击名称右侧的放大镜在标题下方展开，并在首个接受帧后聚焦；收起停止筛选、归还行高并保留查询文字。查询筛选实际字段与类型分组，不改变组成或撤销历史。结构增删只在 Entity Structure 提供。布局使用 UI DSL 的 PropertyGroup／PropertyRow，数值、勾选、枚举复用共享参数行；枚举只显示元数据中的命名选项，不接受任意整数。数值的合法范围取字段声明的硬边界（`HardMin`/`HardMax`，或带 `LockMin`/`LockMax` 的 `Min`/`Max`），没有时取类型范围；当前值已在范围外（可信原生写入）时放宽到包含它。键入或拖调的越界值夹到合法范围，与 Runtime 写入一致。声明了 UI 范围的浮点与整数标量均在数值框后显示滑条（整数滑条与横拖按按下起点连续位移做步进 `1` 量化），端点为 UI 范围，单侧缺失时用硬边界；布尔、枚举和向量分量不显示滑条。程序化节点支持 `Meta("ui.visible_when", "field=a|b")` 条件可见以及按需局部 `Category` 分节，不改动全局 Entity 顶层变换行布局。World 模式下跟随选中 Entity 的 Network 面板与下钻进入的 `AssetNode` 子图默认处于 **Locked Preview**，显式点击 `Unlock` 后直接编辑共享 `.procgraph` 定义并即时传播到所有未冻结实例。悬浮说明在字段描述后附范围，例如“范围 0 – 1，上下限锁定”“硬下限 0”。Position、旋转和缩放仍按上方应用参数描述。图标来源与许可见[图标说明](../../../assets/icons/README.md)。搜索入口参照 [SideFX Parameters](https://www.sidefx.com/docs/houdini/network/parms.html#searching-and-filtering-parameters)；收起保留查询是本编辑器的合同，不据此推断外部软件的隐藏状态。
+Parameters 展示所选对象的连续属性区，不预设 Transform／Components 内容页签。类型、名称、Object/Category 分组页签与搜索按钮同在一行标题内（Houdini 单行参数头），不再单独占一行。颜色元组末尾的色块可点击，打开二维颜色编辑器（`ColorEditor`）：交互式 `SV` 明度/饱和度二维色盘、纵向 `Hue` 全光谱条、HDR 强度滑条（`Intensity`）、新色/原色双半色块对比（点 Revert 恢复）、RGB 与 HSV 数值行及六位十六进制输入；从打开到 Done 或点外部关闭为一次 Session 组编辑（`begin_group_edit`），只记一条历史，Esc 同样保留当前值，撤销一次恢复三个通道。选择 Entity 时展示 Entity 自身字段和所拥有组件的属性分组（对挂载 `ProceduralGeneratorComponent` 的 Entity，组件下方直接内联展示所绑定 `.procgraph` 的公开参数滑杆与差量覆写开关）；选择组件时只展示该组件，标题中的对象名称转为只读可复制。Entity 名称仍可编辑。搜索默认收起，点击名称右侧的放大镜在标题下方展开 `SearchBox`，并在首个接受帧后聚焦；收起停止筛选、归还行高并保留查询文字。查询筛选实际字段与类型分组，不改变组成或撤销历史。组件增删与启用切换在 Scene Outliner 提供。布局使用 UI DSL 的 PropertyGroup／PropertyRow，数值、勾选、枚举复用共享参数行；枚举只显示元数据中的命名选项，不接受任意整数。数值的合法范围取字段声明的硬边界（`HardMin`/`HardMax`，或带 `LockMin`/`LockMax` 的 `Min`/`Max`），没有时取类型范围；当前值已在范围外（可信原生写入）时放宽到包含它。键入或拖调的越界值夹到合法范围，与 Runtime 写入一致。声明了 UI 范围的浮点与整数标量均在数值框后显示滑条（整数滑条与横拖按按下起点连续位移做步进 `1` 量化），端点为 UI 范围，单侧缺失时用硬边界；布尔、枚举和向量分量不显示滑条。程序化节点支持 `Meta("ui.visible_when", "field=a|b")` 条件可见以及按需局部 `Category` 分节，不改动全局 Entity 顶层变换行布局。World 模式下跟随选中 Entity 的 Network 面板与下钻进入的 `AssetNode` 子图默认处于 **Locked Preview**，显式点击 `Unlock` 后直接编辑共享 `.procgraph` 定义并即时传播到所有未冻结实例。悬浮说明在字段描述后附范围，例如“范围 0 – 1，上下限锁定”“硬下限 0”。Position、旋转和缩放仍按上方应用参数描述。图标来源与许可见[图标说明](../../../assets/icons/README.md)。搜索入口参照 [SideFX Parameters](https://www.sidefx.com/docs/houdini/network/parms.html#searching-and-filtering-parameters)；收起保留查询是本编辑器的合同，不据此推断外部软件的隐藏状态。
 
-Scene Tree 与 Asset Browser 支持就地重命名：树行 F2 或双击已选中行，资源 F2 或右键 Rename，在名称文字位置覆盖一个输入框（不遮图标），Enter 提交、Esc 或失焦取消；Entity 重命名进入场景历史，资源重命名通过 `Project::rename` 同时移动 `.asset.json` 身份文件，资源键与场景引用不变，拒绝非法字符、同名覆盖、顶层文件夹及配置中的启动场景/UI 源。Scene Tree 行可拖动：拖到另一行使其成为该 Entity 的子级，拖到 World 行或下方空白解除父级；目标行高亮，不能拖到自身或其后代。换父保持世界变换（keep world），一次拖放一条历史，完成后选中被移动的 Entity 并展开到它。右键行先选中该行，再弹出 Rename（F2，聚焦参数头名称）、Duplicate、Delete、Clear Parent（Alt+P）与 Focus；树获得焦点时 Delete、F2、Ctrl+D/Shift+D、Alt+P 生效。
+Scene Outliner 与 Asset Browser 支持原生锚定就地重命名（`InlineRenameField`）：树行 F2 或双击已选中 Entity 行，资源 F2 或右键 Rename，在目标行或单元格文字区域精确锚定单行输入框（资源重命名自动选中不含扩展名的主干名，随列表滚动裁剪，非法名称提交保留草稿并标红，Enter 提交、Esc 或失焦取消）；Entity 重命名进入场景历史，资源重命名通过 `Project::rename` 同时移动 `.asset.json` 身份文件，资源键与场景引用不变，拒绝非法字符、同名覆盖、顶层文件夹及配置中的启动场景/UI 源。Scene Outliner 行可拖动：拖到另一 Entity 行使其成为子级，拖到 World 行或下方空白解除父级；目标行高亮，不能拖到自身或其后代。换父保持世界变换（keep world），一次拖放一条历史，完成后选中被移动的 Entity 并展开到它。
 
-Entity Structure 是可移动、关闭、重开的独立子页：Entity 递归显示组合子实体和有序组件。它表达真实组成归属；空间参考是独立关系，组件不再标记 Root。选择组件保留 Entity 上下文，视口和 Scene Tree 仍指向其拥有者；Delete 删除检查目标，删除组件后回到 Entity，Undo 恢复组件身份与选择。树行、属性分组和字段分别持有稳定 UI key，避免两个可见页对同一对象复用控件身份。Control 已提供组合换父与空间参考设置；当前没有对应的跨面板拖放手势。
+Scene Outliner 统一整合了原 Scene Tree 与 Entity Structure：默认在每个 Entity 下方内联展示其挂载组件子行（顶栏开关可一键折叠组件层进入纯实体大纲模式），每行右侧槽位展示最多 4 枚能力微徽标（网格、程序化图、灯光、相机、刚体）与可点击的启用状态眼睛图标（调用 `Session::set_enabled` 切换 Entity 或 Component 启用态，记一步撤销并同步转发至 Play）。顶栏右侧提供 Add Component 菜单与移除命令；选择组件保留 Entity 上下文，视口仍指向其拥有者，Delete 删除当前检查目标后回到 Entity，Undo 恢复组件身份与选择。
 
 ### 类定义、实例与默认值
 
-目前支持原生及 Source 类定义，实例通过同一个 Runtime 创建，字段声明默认值参与初始化。Scene 持久化限定类型名和实例值。当前没有 Class 资产、组件模板或显式 override 集，也没有模板默认值编辑器。选择场景对象时 Parameters 编辑当前实例；选择 Asset Browser 条目时显示资源类型、资源键、位置、文件大小及已知网格统计，资源不会冒充 Entity 或可编辑类模板。返回 Scene Tree、路径导航或视口操作后恢复实例检查。两类查看共享参数页和 DSL 控件身份分配入口，不增加场景历史。
+目前支持原生及 Source 类定义，实例通过同一个 Runtime 创建，字段声明默认值参与初始化。Scene 持久化限定类型名和实例值。当前没有 Class 资产、组件模板或显式 override 集，也没有模板默认值编辑器。选择场景对象时 Parameters 编辑当前实例；选择 Asset Browser 条目时显示资源类型、资源键、位置、文件大小及已知网格统计，资源不会冒充 Entity 或可编辑类模板。返回 Scene Outliner、路径导航或视口操作后恢复实例检查。两类查看共享参数页和 DSL 控件身份分配入口，不增加场景历史。
 
 现有值与默认值的比较仅用于显示修改状态。没有声明默认值的原生字段不假定为零，也不伪造恢复默认值能力。修改 Source 字段默认值需重建类型，已保存实例值会恢复，不自动随新默认值传播。未来 Class 资产必须先明确持久身份、组件模板、覆盖和传播规则，再复用同一个检查入口。
 
@@ -365,9 +365,9 @@ Controls 的 Parameters / Appearance 使用同一组合，Appearance 内的 Colo
 
 全局交互样式区分按下、选中与焦点：普通按钮和列表用灰色底面反馈，菜单栏展开标题及当前菜单条目用橙色底面反馈；普通控件获得焦点不增加外框。焦点通过文字或控件标记的亮度表达；文本和数值编辑器保留原宽度的细灰色边界，非法输入仍使用红色。鼠标点击保留键盘焦点，Tab、方向键、Enter/Space 和菜单返回继续使用同一焦点状态。
 
-Tab 标签悬停不改变背景，统一使用正体。列表有带握柄和双步进按钮的滚动条，支持拖动、翻页和滚轮；字段不会伸到滚动条下方。数字调整、文本、分隔条、停靠拖动与视口观察使用对应鼠标指针。组合行为与来源见[UI 参数合同](../ui/README.md#可组合参数控件)；完整 Ramp、二维色盘、动画/表达式编辑仍未实现。
+Tab 标签统一使用正体。滚动容器采用 7 DIP 紧凑无按钮滚动条（最短滑块 22 DIP），支持拖动、轨道翻页和滚轮；字段不会伸到滚动条下方。数字调整、文本、分隔条、停靠拖动与视口观察使用对应鼠标指针。组合行为与来源见[UI 参数合同](../ui/README.md#可组合参数控件)；完整 Ramp、方向球与动画/表达式编辑仍未实现。
 
-Workspace 声明 `normal/panel/title/caption` 角色、enabled/selected 等语义状态及菜单栏、参数区域等类名。基础主题和 [editor.ss](../../../assets/editor.ss) 通过同一 UI 解析得到最终样式；应用启动时从可执行文件旁读取 SS，非法内容报告行列。对象类型使用 object-type 样式，说明和状态文字使用 caption；容器结构 padding 留在 NodeInput，文字内容内距由最终样式提供。菜单栏标题宽度按文字测量并保留最小宽度。样式覆盖、图片/圆角和相邻合批合同见 [SS 文档](../ui/style-sheets.md)。
+Workspace 声明 `normal/panel/title/caption` 角色、enabled/selected 等语义状态及菜单栏、参数区域等类名。基础主题和 [editor.ss](../../../assets/editor.ss) 通过同一 UI 解析得到最终样式；开发工作树优先读取 `assets/editor.ss` 并支持保存热重载，缺失源目录时读取可执行文件旁部署副本，非法内容报告行列诊断并保留已接受样式。对象类型使用 object-type 样式，说明和状态文字使用 caption；容器结构 padding 留在 NodeInput，文字内容内距由最终样式提供。菜单栏标题宽度按文字测量并保留最小宽度。样式覆盖、图片/圆角和相邻合批合同见 [SS 文档](../ui/style-sheets.md)。
 主窗口和原生菜单通过同一 `editor_fonts()` 加载 Sarasa UI SC，数字使用 Source Code Pro；额外缺字及 emoji 沿系统回退，应用不修改系统字体设置。构建部署 `fonts/` 和两份 SIL OFL 许可证；选择依据、字重、体积与来源见[字体说明](../../../assets/fonts/README.md)。窄面板继续同一 Flex 换行。
 `Application::set_style` 直接进入 UI 的整体校验/应用路径，应用不保存另一份主题。颜色复用文字 Coverage，字体族、字重和字号经同一 TextStore 更新度量、caret 和栅格；已接受帧仍保有旧几何与不可变内容。具体样式、版本及状态合同见 [UI 模块](../ui/README.md)。
 
@@ -401,7 +401,7 @@ Play 的 World Tick/协程按宿主调用推进，物理累积器不代表整个
 
 ### 未实现的交互
 
-当前吸附和着色设置使用已有菜单；带分段按钮、图标列表和勾选组合的富弹出面板仍待建设，须复用 PopupHost 的焦点、Esc 和外部点击政策。Normal/View/Cursor/Parent 变换朝向、顶点/边/面吸附、视口独立可见性/可选性状态、长按工具组、Ramp、方向球和 HSV 二维色盘尚未实现；现有 RGB/HSV/Hex 数值颜色编辑不是二维色盘。
+当前吸附和着色设置使用已有菜单；带分段按钮、图标列表和勾选组合的富弹出面板仍待建设，须复用 PopupHost 的焦点、Esc 和外部点击政策。Normal/View/Cursor/Parent 变换朝向、顶点/边/面吸附、视口独立可见性/可选性状态、长按工具组、Ramp 和方向球尚未实现。
 
 多份同类面板、固定检查目标、浮动视图和布局持久化沿现有 DockSpace 与稳定业务身份扩展，不复制场景状态。资源缩略图及跨区域拖放的责任见[声明式 UI 边界](declarative-ui.md#区域与手势边界)；源码调试接入复用[Runtime/JIT 核心](../../source-debugger.md)和[Control 方案](control.md#源码调试接入待实现)，不是另建源码执行宿主。SOP Network 二维节点连线画布已将节点选择（含多选）、作者图对象与持久化 Display 输出严格分开，并通过同一 `Session` 图事务维护单步撤销。
 
@@ -432,11 +432,11 @@ Control 验收夹具关闭编辑器时，投递 `WM_CLOSE` 后最多等待 300 �
 
 目前没有真实系统输入法的自动验收。改到输入法、组合或候选位置链路时，按[工程指南](../../engineering.md#迁移验收)在本机手动检查真实 IME。
 
-## Scene Tree
+## Scene Outliner
 
-Scene Tree 使用共享 `tree/tree_item`，投影 World → Entity 递归组合关系。行标签同时显示实例名称和 Runtime 发布的实际类型；World、Entity、StaticMeshEntity 使用不同的原生矢量符号和颜色。组件组成在 Entity Structure 中显示，不进入 Scene Tree。Entity 组合 parent 决定树缩进；无空间的组织 Entity 仍显示，组件保留在 Entity Structure，不另建组件空间树。行绑定实际 ObjectId，视图状态不持有业务根，不增加场景撤销。
+Scene Outliner 使用共享 `tree/tree_item`，在同一大纲树中统一投影 World → Entity 递归组合关系与可选内联挂载组件子行。顶栏开关（`Inline Components`）控制是否展开每个 Entity 下的组件列表，收起时若当前选中了组件子行会自动回退聚焦其所属 Entity；行右侧观测槽展示最多 4 枚能力微徽标（网格、程序化图、灯光、相机、物理）与可点击的启用状态眼睛开关（通过 `scene.set_enabled` 切换 Entity 或 Component 启用态）。行绑定实际 ObjectId，视图状态不持有业务根，不增加场景撤销。
 
-参照 Houdini 22.0.429 的 Tree View：20 DIP 等高行、18 DIP 逐层缩进、空白区连续交替底色、细层级连接线、圆形加减按钮、类型图标和底部 Filter。全行选择采用灰色，遵循当前编辑器无黄色焦点框的约定。Workspace 持有 Scene Tree 与 Entity Structure 的展开状态（按 ObjectId，两棵树各自一份），资源目录树由 AssetBrowser 按目录路径持有，目录行首次出现时当前目录及其祖先展开、其余目录折叠；状态跨停靠、隐藏及重开保留，随对象退役清理，不进入撤销历史。每帧宿主按组合先序展平全部成员（O(n)），只为视口附近约三屏的行、首末行以及选中、焦点、重命名行和它们的祖先生成 TreeItem 描述，Dungeons（3617 个 Entity）停靠布局下 Scene Tree 每帧描述约 35 行。展开请求经 `Workspace::set_tree_expanded`（Entity 身份、绝对值、整体校验）或 `AssetBrowser::set_expanded`（目录路径）进入；选中行或其父变化时展开祖先一次，F2 通过 `reveal_in_tree` 展开祖先后开始内联重命名。底部过滤保留祖先并展开结果，不改写保存的展开状态。场景树和结构树在同一次控件提交中发布可见行、对象映射及自动展开的祖先。读取 World、展平或构建控件失败时，工作区保留上一次成功的树，沿 Result 返回首个诊断。
+大纲采用 21 DIP 等高行、16 DIP 逐层缩进、空白区连续交替底色、细层级连接线、折叠指示器、类型图标和顶栏 `SearchBox` 过滤。Workspace 按 ObjectId 持有单份展开状态（`expansion_`），资源目录树由 AssetBrowser 按目录路径持有，目录行首次出现时当前目录及其祖先展开、其余目录折叠；状态跨停靠、隐藏及重开保留，随对象退役清理，不进入撤销历史。每帧宿主按先序展平全部可见成员（O(n)），只为视口附近约三屏的行、首末行以及选中、焦点、重命名行和它们的祖先生成 TreeItem 描述，Dungeons（3617 个 Entity）停靠布局下每帧仅描述约 35 行。展开请求经 `Workspace::set_tree_expanded`（Entity 身份、绝对值、整体校验）或 `AssetBrowser::set_expanded`（目录路径）进入；选中行或其父变化时展开祖先一次，F2 通过 `reveal_in_tree` 展开祖先后在目标行锚定 `InlineRenameField` 开始就地重命名。搜索过滤保留匹配项祖先并临时展开结果（同时匹配 Entity 名称与类型名），不改写保存的展开状态。读取 World、展平或构建控件失败时，工作区保留上一次成功的树，沿 Result 返回首个诊断。
 
 上下/Home/End 导航并显露选中行，左/右键回父层、折叠和展开。Ctrl 切换 Entity 选择，Shift 按宿主展平的行选择范围（含尚未描述的行）；选择与视口共用 Session 的有序 Entity 集及活动 Entity。复用当前路径栏、字号、滚动条、输入捕获与接受帧；树层级来自真实 Entity 组合关系。
 
