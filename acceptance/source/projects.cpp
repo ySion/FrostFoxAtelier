@@ -1514,9 +1514,22 @@ const Array<tab.Station> tab.STATIONS = {
 };
 const Array<int> tab.EMPTY = {};
 const uint tab.PROFILE_LEN = tab.PROFILE.size();
+const uint tab.DEG_ONE_BITS = math.as_uint(math.degrees(1.0f));
+const float tab.CLAMP_NAN = math.clamp(0.0f / 0.0f, 0.25f, 1.0f);
+const float tab.MIN_NAN2 = math.min(1.5f, 0.0f / 0.0f);
+const float tab.STEP_NAN = math.step(0.5f, 0.0f / 0.0f);
+const float tab.SSTEP_DEG = math.smoothstep(1.0f, 1.0f, 1.0f);
+const float tab.BIG_DIST = math.distance(vector3(1e25f, 0.0f, 0.0f), vector3(-1e25f, 0.0f, 0.0f));
+const vector3 tab.NAN_NORM = math.normalize_or_zero(vector3(0.0f / 0.0f, 1.0f, 0.0f));
+const vector3 tab.ROT_X = math.rotate(quaternion(0.0f, 0.0f, 0.70710678f, 0.70710678f), vector3(1.0f, 0.0f, 0.0f));
 
 [DESC = "Initial docstring v1."]
 float tab.read_profile_radius(uint idx) {
+    if (tab.DEG_ONE_BITS != 0x42652ee1u || tab.CLAMP_NAN != 0.25f || tab.MIN_NAN2 != 1.5f ||
+        tab.STEP_NAN != 1.0f || tab.SSTEP_DEG != 0.0f || tab.BIG_DIST < 1.99e25f ||
+        tab.NAN_NORM != vector3(0.0f) || math.abs(tab.ROT_X.y - 1.0f) > 1e-5f) {
+        fail("Constant-folding math parity check failed.");
+    }
     return tab.PROFILE[idx].y + tab.UP.y * 0.0f + tab.ID_ROT.w * 0.0f + float(tab.EMPTY.size());
 }
 

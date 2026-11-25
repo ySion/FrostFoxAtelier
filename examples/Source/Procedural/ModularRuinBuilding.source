@@ -14,7 +14,7 @@ float game.ruin_survival_ceiling(uint seed,
     const vector2 dir = vector2(math.cos(angle), math.sin(angle));
     const float proj = (x * dir.x + z * dir.y) / math.max(1.0f, half_span);
     const float n1 = procedural.sample_value_noise(seed, vector3(x * 0.28f + 5.1f, 1.7f, z * 0.28f - 3.4f)) * 2.0f - 1.0f;
-    const float n2 = procedural.sample_value_noise(procedural.hash2(seed, uint(918273)),
+    const float n2 = procedural.sample_value_noise(procedural.hash2(seed, 918273u),
                                                    vector3(x * 0.67f - 2.3f, 6.2f, z * 0.67f + 4.8f)) * 2.0f - 1.0f;
     const float exposure = 0.5f * (proj + 1.15f) + 0.28f * n1 + 0.14f * n2;
     return math.max(0.45f, total_h * (1.28f - collapse * (0.85f + 0.85f * exposure)));
@@ -96,7 +96,7 @@ class game.ModularBuildingLayout : procedural.Node {
     [Category = "Ruin Weathering", Min = 0.0, Max = 0.92, LockMin, LockMax, Label = "Ruin Collapse", DESC = "坍塌侵蚀程度：0 为完整殿堂，增大时从屋脊向墙体阶梯式崩落。"]
     float ruin_collapse = 0.36f;
 
-    [Category = "Ruin Weathering", Min = 0.0, Max = 6.283185, LockMin, LockMax, Label = "Collapse Direction", DESC = "坍塌主前锋的水平方位角（弧度）。"]
+    [Category = "Ruin Weathering", Min = 0.0, Max = math.TAU, LockMin, LockMax, Label = "Collapse Direction", DESC = "坍塌主前锋的水平方位角（弧度）。"]
     float ruin_angle = 0.68f;
 
     [Category = "Ruin Weathering", Label = "Seed", DESC = "与图种子混合的建筑风化与残骸种子。"]
@@ -240,9 +240,9 @@ class game.ModularBuildingLayout : procedural.Node {
             }
         }
 
-        self.emit_quads(wall_pts, wall_quads, uint(0));
-        self.set_float("ext_dist", procedural.Layer::primitive, wall_dists, uint(0));
-        self.set_float("ext_inset", procedural.Layer::primitive, wall_insets, uint(0));
+        self.emit_quads(wall_pts, wall_quads, 0u);
+        self.set_float("ext_dist", procedural.Layer::primitive, wall_dists, 0u);
+        self.set_float("ext_inset", procedural.Layer::primitive, wall_insets, 0u);
 
         // 2. Foundation floor plates, exterior podium apron, porch steps, and fractured upper gallery slabs.
         Array<vector3> slab_pts;
@@ -281,13 +281,13 @@ class game.ModularBuildingLayout : procedural.Node {
         const float step_w = math.min(w * 0.42f, cell_w * 1.4f);
         game.append_slab_quad(slab_pts, slab_quads, -0.5f * step_w, 0.5f * step_w, -half_d - 1.35f, -half_d - 0.55f, 0.02f);
         game.append_slab_quad(slab_pts, slab_quads, -0.44f * step_w, 0.44f * step_w, -half_d - 0.85f, -half_d - 0.15f, 0.18f);
-        self.emit_quads(slab_pts, slab_quads, uint(1));
+        self.emit_quads(slab_pts, slab_quads, 1u);
 
         // 3. Exposed gabled timber ridge beam and paired rafters (clipped by collapse front).
         Array<vector3> timber_pts;
         Array<uint> timber_vp;
         Array<uint> timber_off;
-        timber_off.add(uint(0));
+        timber_off.add(0u);
 
         const uint rafter_pairs = bays_z * 2 + 1;
         const float overhang_x = 0.38f;
@@ -336,7 +336,7 @@ class game.ModularBuildingLayout : procedural.Node {
             }
         }
         if (timber_off.size() > 1) {
-            self.emit_polylines(timber_pts, timber_vp, timber_off, uint(2));
+            self.emit_polylines(timber_pts, timber_vp, timber_off, 2u);
         }
 
         // 4. Rubble & sanctuary relic candidate points around collapsed zone + exterior colonnade.
@@ -356,7 +356,7 @@ class game.ModularBuildingLayout : procedural.Node {
             }
         }
         if (cand_pts.size() > 0) {
-            self.emit_points(cand_pts, uint(3));
+            self.emit_points(cand_pts, 3u);
         }
     }
 }
@@ -395,7 +395,7 @@ class game.RuinRubbleGrounder : procedural.Node {
         parallel_for (uint i : count) {
             const vector3 p = cand_P[i];
             if (!math.is_finite(p)) {
-                fail("RuinRubbleGrounder input positions must be finite.");
+                fail("RuinRubbleGrounder input positions must be finite.", procedural.Layer::point, i);
             }
 
             const procedural.SurfaceHit ground = procedural.raycast_surface(
@@ -442,10 +442,10 @@ class game.RuinRubbleGrounder : procedural.Node {
         }
 
         if (out_P.size() > 0) {
-            self.emit_points(out_P, uint(0));
-            self.set_quat("orient", procedural.Layer::point, out_orient, uint(0));
-            self.set_float("pscale", procedural.Layer::point, out_scale, uint(0));
-            self.set_uint("variant", procedural.Layer::point, out_variant, uint(0));
+            self.emit_points(out_P, 0u);
+            self.set_quat("orient", procedural.Layer::point, out_orient, 0u);
+            self.set_float("pscale", procedural.Layer::point, out_scale, 0u);
+            self.set_uint("variant", procedural.Layer::point, out_variant, 0u);
         }
     }
 }

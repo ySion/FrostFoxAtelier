@@ -1,13 +1,7 @@
-// Two's-complement lattice encoding via zero-cost 32-bit reinterpretation.
-uint procedural.lattice_bits(int value) {
-    return math.as_uint(value);
-}
-
 [DESC = "在整数格点 (x, y, z) 上计算 [0, 1) 确定性三维晶格哈希标量。"]
 float procedural.lattice_value(uint seed, int x, int y, int z) {
-    return procedural.unit(procedural.hash2(
-        procedural.hash2(procedural.hash2(seed, procedural.lattice_bits(x)), procedural.lattice_bits(y)),
-        procedural.lattice_bits(z)));
+    return procedural.unit(
+        procedural.hash2(procedural.hash2(procedural.hash2(seed, math.as_uint(x)), math.as_uint(y)), math.as_uint(z)));
 }
 
 [DESC = "采样三维平滑插值值噪声，返回 [0, 1]；要求坐标 q 有限且各分量在 [-2147483648, 2147483648) 内。"]
@@ -45,7 +39,7 @@ class procedural.Noise : procedural.Node {
     [Label = "Frequency", DESC = "每单位输入坐标的格数；0 为常量场，负数为镜像。"]
     float frequency = 1.0f;
     [Label = "Offset", DESC = "缩放后加上的噪声格坐标偏移。"]
-    vector3 offset = vector3(0.0f, 0.0f, 0.0f);
+    vector3 offset = vector3();
 
     void process(const procedural.Context& context,
                  [In(From = "source_attribute")] const Array<vector3>& source,
@@ -67,7 +61,7 @@ class procedural.Noise : procedural.Node {
                 if (!(q.x >= -2147483648.0f && q.x < 2147483648.0f &&
                       q.y >= -2147483648.0f && q.y < 2147483648.0f &&
                       q.z >= -2147483648.0f && q.z < 2147483648.0f)) {
-                    fail("Noise coordinates must be finite and in [-2147483648,2147483648).");
+                    fail("Noise coordinates must be finite and in [-2147483648,2147483648).", i);
                 }
                 values[i] = procedural.sample_value_noise(seed, q);
             }
@@ -78,7 +72,7 @@ class procedural.Noise : procedural.Node {
                 if (!(q.x >= -2147483648.0f && q.x < 2147483648.0f &&
                       q.y >= -2147483648.0f && q.y < 2147483648.0f &&
                       q.z >= -2147483648.0f && q.z < 2147483648.0f)) {
-                    fail("Noise coordinates must be finite and in [-2147483648,2147483648).");
+                    fail("Noise coordinates must be finite and in [-2147483648,2147483648).", i);
                 }
                 values[i] = procedural.sample_value_noise(seed, q);
             }

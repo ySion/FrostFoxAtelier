@@ -12,15 +12,15 @@ class game.SpanSag : procedural.Node {
         const vector3 last = P[n - 1];
         if (!(math.is_finite(first) && math.is_finite(last))) { fail("SpanSag requires finite end stations."); }
         const vector2 span = vector2(last.x - first.x, last.z - first.z);
-        const float span2 = math.dot(span, span);
+        const float span2 = math.length_squared(span);
         if (!(math.is_finite(span2) && span2 > 0.0f)) { fail("SpanSag requires a nonzero finite horizontal span."); }
         float previous = 0.0f;
         for (uint i = 1; i + 1 < n; i += 1) {
             const vector3 p = P[i];
             const float t = math.dot(vector2(p.x - first.x, p.z - first.z), span) / span2;
-            if (!(t > previous && t < 1.0f)) { fail("SpanSag stations must advance along the horizontal span."); }
+            if (!(t > previous && t < 1.0f)) { fail("SpanSag stations must advance along the horizontal span.", i); }
             const float y = p.y - self.drop * (4.0f * t * (1.0f - t));
-            if (!math.is_finite(y)) { fail("SpanSag produced a non-finite height."); }
+            if (!math.is_finite(y)) { fail("SpanSag produced a non-finite height.", i); }
             P[i] = vector3(p.x, y, p.z);
             previous = t;
         }

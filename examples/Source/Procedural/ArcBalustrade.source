@@ -13,6 +13,9 @@ class game.BalusterFeet : procedural.Node {
         Array<vector3> origins;
         Array<quaternion> frames;
         Array<float> marks;
+        origins.reserve(n);
+        frames.reserve(n);
+        marks.reserve(n);
         const vector3 up = vector3(0.0f, 1.0f, 0.0f);
         for (uint i = 0; i < n; i += 1) {
             if (!math.is_finite(s[i]) || (i > 0 && s[i] - s[i - 1] < 0.33f)) {
@@ -65,6 +68,10 @@ void game.ashlar_course(game.StoneCuts& cuts, float length, uint blocks, bool st
 
 void game.lift_stones(game.StonePaths& paths, const Array<vector3>& points, const Array<uint>& offsets,
                       const Array<float>& heights, uint first, uint end) {
+    const uint v_count = offsets[end] - offsets[first];
+    paths.p.reserve(v_count);
+    paths.corners.reserve(v_count);
+    paths.offsets.reserve((end - first) + 1u);
     paths.offsets.add(0u);
     for (uint i = first; i < end; i += 1) {
         const vector3 lift = vector3(0.0f, heights[i], 0.0f);
@@ -95,7 +102,10 @@ class game.BalustradeCourses : procedural.Node {
         }
         const uint blocks = math.max(1u, uint(math.round(length / 0.64f)));
         const uint caps = math.max(1u, uint(math.round(length / 0.96f)));
+        const uint cut_count = 4u * blocks + caps + 3u;
         game.StoneCuts cuts;
+        cuts.intervals.reserve(cut_count);
+        cuts.elevations.reserve(cut_count);
         for (uint row = 0; row < 4; row += 1) {
             game.ashlar_course(cuts, length, blocks, row % 2 == 1, (float(row) + 0.5f) * 0.26f, 0.016f);
         }
@@ -170,6 +180,9 @@ const Array<uint> game.CROWN_OFFSETS = { 0u, 10u };
 void game.eased_section(game.StonePaths& section, float width, float height, float lower, float upper) {
     const float w = width * 0.5f;
     const float h = height * 0.5f;
+    section.p.reserve(8u);
+    section.corners.reserve(8u);
+    section.offsets.reserve(2u);
     section.offsets.add(0u);
     game.stone_point(section, vector3(-w + lower, -h, 0.0f));
     game.stone_point(section, vector3( w - lower, -h, 0.0f));

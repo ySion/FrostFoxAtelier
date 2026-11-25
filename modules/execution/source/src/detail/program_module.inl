@@ -245,18 +245,14 @@ Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const langua
                                                     "Vector field defaults are " + field.type + "(), " + field.type +
                                                         "(scalar), or " + field.type +
                                                         " with one constant per component."));
-            if (arguments.size() == 1) {
-                ATELIER_TRY_BIND(value, fold_scalar(snapshot, arguments[0], leaf));
-                result.default_leaves.assign(components, *value);
-            } else {
-                for (const auto& argument : arguments) {
-                    ATELIER_TRY_BIND(value, fold_scalar(snapshot, argument, leaf));
-                    result.default_leaves.push_back(*value);
-                }
+            for (const auto& argument : arguments) {
+                ATELIER_TRY_BIND(value, fold_scalar(snapshot, argument, leaf));
+                result.default_leaves.push_back(*value);
             }
         }
-        if (result.default_leaves.empty())
-            result.default_leaves.assign(components, zero_leaf(leaf));
+        if (result.default_leaves.size() < components)
+            result.default_leaves.resize(components, result.default_leaves.empty() ? zero_leaf(leaf)
+                                                                                   : result.default_leaves.front());
     } else {
         ATELIER_TRY_BIND(value, initializer.text.empty() ? Result<Scalar>{zero_leaf(leaf)}
                                                          : fold_scalar(snapshot, initializer, leaf));

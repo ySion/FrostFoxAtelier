@@ -69,11 +69,11 @@ class game.TerraceIsland : procedural.Node {
         parallel_for (uint i : count) {
             const vector3 pos = P[i];
             if (!math.is_finite(pos)) {
-                fail("TerraceIsland input positions must be finite.");
+                fail("TerraceIsland input positions must be finite.", i);
             }
             const float coord_limit = 7.4e9f;
             if (!(math.abs(pos.x) <= coord_limit && math.abs(pos.z) <= coord_limit)) {
-                fail("TerraceIsland input coordinates exceed noise lattice range.");
+                fail("TerraceIsland input coordinates exceed noise lattice range.", i);
             }
             const float h = game.terrace_height(mixed_seed, pos.x, pos.z, radius, height, steps, sharpness, warp);
             const float hx0 = game.terrace_height(mixed_seed, pos.x - eps, pos.z, radius, height, steps, sharpness, warp);
@@ -85,7 +85,7 @@ class game.TerraceIsland : procedural.Node {
             const float dhdz = (hz1 - hz0) / (2.0f * eps);
             const float next_y = pos.y + h;
             if (!math.is_finite(next_y)) {
-                fail("TerraceIsland displaced height overflowed.");
+                fail("TerraceIsland displaced height overflowed.", i);
             }
             P[i] = vector3(pos.x, next_y, pos.z);
             const vector3 nrm = math.normalize_or_zero(vector3(-dhdx, 1.0f, -dhdz));
@@ -132,7 +132,7 @@ class game.OutpostPlacement : procedural.Node {
             const vector3 nrm = N[i];
             const float in_scale = pscale[i];
             if (!(math.is_finite(pos) && math.is_finite(nrm) && math.is_finite(in_scale))) {
-                fail("OutpostPlacement input point attributes must be finite.");
+                fail("OutpostPlacement input point attributes must be finite.", i);
             }
             const float yaw = procedural.unit(procedural.hash2(mixed_seed, i)) * math.TAU;
             const vector3 up_axis = vector3(0.0f, 1.0f, 0.0f);
@@ -157,18 +157,14 @@ class game.OutpostPlacement : procedural.Node {
                 }
             }
 
-            vector3 y_axis = math.normalize_or_zero(math.lerp(up_axis, target_nrm, tilt));
-            if (y_axis == vector3()) {
-                y_axis = up_axis;
-            }
             const vector3 heading = vector3(math.cos(yaw), 0.0f, math.sin(yaw));
             const float next_scale = in_scale * scale_mul;
             if (!math.is_finite(next_scale)) {
-                fail("OutpostPlacement output pscale overflowed.");
+                fail("OutpostPlacement output pscale overflowed.", i);
             }
 
             variant[i] = chosen;
-            orient[i] = procedural.align_to_up(y_axis, heading);
+            orient[i] = procedural.align_to_up(math.lerp(up_axis, target_nrm, tilt), heading);
             pscale[i] = next_scale;
         }
     }

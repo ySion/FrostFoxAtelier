@@ -100,7 +100,7 @@ class procedural.Remap : procedural.Node {
                 const double mapped = procedural.efit_wide(source[i], low, input_span, output_low, output_span);
                 // Also rejects non-finite source values, including infinity * a zero output span.
                 if (!(mapped >= -limit && mapped <= limit)) {
-                    fail("Remap result must fit a finite float.");
+                    fail("Remap result must fit a finite float.", i);
                 }
                 values[i] = float(mapped);
             }
@@ -109,7 +109,7 @@ class procedural.Remap : procedural.Node {
                 if (!selected[i]) { continue; }
                 const double mapped = procedural.efit_wide(source[i], low, input_span, output_low, output_span);
                 if (!(mapped >= -limit && mapped <= limit)) {
-                    fail("Remap result must fit a finite float.");
+                    fail("Remap result must fit a finite float.", i);
                 }
                 values[i] = float(mapped);
             }

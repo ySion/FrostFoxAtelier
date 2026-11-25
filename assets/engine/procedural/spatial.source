@@ -31,11 +31,16 @@ struct procedural.CurveSample {
     uint primitive;
 };
 
+struct procedural.BvhEntry {
+    double entry;
+    uint node;
+};
+
 struct procedural.BvhStack4 {
-    uint x;
-    uint y;
-    uint z;
-    uint w;
+    procedural.BvhEntry x;
+    procedural.BvhEntry y;
+    procedural.BvhEntry z;
+    procedural.BvhEntry w;
 };
 
 struct procedural.BvhStack16 {
@@ -53,88 +58,103 @@ struct procedural.BvhStack64 {
     uint size;
 };
 
-void procedural.bvh_stack4_set(procedural.BvhStack4& s, uint k, uint value) {
-    if (k == 0) { s.x = value; }
-    else if (k == 1) { s.y = value; }
-    else if (k == 2) { s.z = value; }
+void procedural.bvh_stack4_set(procedural.BvhStack4& s, uint k, procedural.BvhEntry value) {
+    if (k == 0u) { s.x = value; }
+    else if (k == 1u) { s.y = value; }
+    else if (k == 2u) { s.z = value; }
     else { s.w = value; }
 }
 
-uint procedural.bvh_stack4_get(const procedural.BvhStack4& s, uint k) {
-    return k == 0 ? s.x : k == 1 ? s.y : k == 2 ? s.z : s.w;
+procedural.BvhEntry procedural.bvh_stack4_get(const procedural.BvhStack4& s, uint k) {
+    if (k == 0u) { return s.x; }
+    if (k == 1u) { return s.y; }
+    if (k == 2u) { return s.z; }
+    return s.w;
 }
 
-void procedural.bvh_stack16_set(procedural.BvhStack16& s, uint k, uint value) {
-    const uint sub = k >> 2;
-    const uint lane = k & 3;
-    if (sub == 0) { procedural.bvh_stack4_set(s.a, lane, value); }
-    else if (sub == 1) { procedural.bvh_stack4_set(s.b, lane, value); }
-    else if (sub == 2) { procedural.bvh_stack4_set(s.c, lane, value); }
+void procedural.bvh_stack16_set(procedural.BvhStack16& s, uint k, procedural.BvhEntry value) {
+    const uint sub = k >> 2u;
+    const uint lane = k & 3u;
+    if (sub == 0u) { procedural.bvh_stack4_set(s.a, lane, value); }
+    else if (sub == 1u) { procedural.bvh_stack4_set(s.b, lane, value); }
+    else if (sub == 2u) { procedural.bvh_stack4_set(s.c, lane, value); }
     else { procedural.bvh_stack4_set(s.d, lane, value); }
 }
 
-uint procedural.bvh_stack16_get(const procedural.BvhStack16& s, uint k) {
-    const uint sub = k >> 2;
-    const uint lane = k & 3;
-    return sub == 0 ? procedural.bvh_stack4_get(s.a, lane)
-         : sub == 1 ? procedural.bvh_stack4_get(s.b, lane)
-         : sub == 2 ? procedural.bvh_stack4_get(s.c, lane)
-                    : procedural.bvh_stack4_get(s.d, lane);
+procedural.BvhEntry procedural.bvh_stack16_get(const procedural.BvhStack16& s, uint k) {
+    const uint sub = k >> 2u;
+    const uint lane = k & 3u;
+    if (sub == 0u) { return procedural.bvh_stack4_get(s.a, lane); }
+    if (sub == 1u) { return procedural.bvh_stack4_get(s.b, lane); }
+    if (sub == 2u) { return procedural.bvh_stack4_get(s.c, lane); }
+    return procedural.bvh_stack4_get(s.d, lane);
 }
 
-void procedural.bvh_stack_push(procedural.BvhStack64& s, uint value) {
-    if (s.size >= 64) { return; }
+void procedural.bvh_stack_push(procedural.BvhStack64& s, uint node, double entry) {
+    if (s.size >= 64u) { return; }
     const uint idx = s.size;
-    s.size += 1;
-    const uint bank = idx >> 4;
-    const uint rem = idx & 15;
-    if (bank == 0) { procedural.bvh_stack16_set(s.s0, rem, value); }
-    else if (bank == 1) { procedural.bvh_stack16_set(s.s1, rem, value); }
-    else if (bank == 2) { procedural.bvh_stack16_set(s.s2, rem, value); }
-    else { procedural.bvh_stack16_set(s.s3, rem, value); }
+    s.size += 1u;
+    procedural.BvhEntry item;
+    item.entry = entry;
+    item.node = node;
+    const uint bank = idx >> 4u;
+    const uint rem = idx & 15u;
+    if (bank == 0u) { procedural.bvh_stack16_set(s.s0, rem, item); }
+    else if (bank == 1u) { procedural.bvh_stack16_set(s.s1, rem, item); }
+    else if (bank == 2u) { procedural.bvh_stack16_set(s.s2, rem, item); }
+    else { procedural.bvh_stack16_set(s.s3, rem, item); }
 }
 
-uint procedural.bvh_stack_pop(procedural.BvhStack64& s) {
-    s.size -= 1;
+procedural.BvhEntry procedural.bvh_stack_pop(procedural.BvhStack64& s) {
+    s.size -= 1u;
     const uint idx = s.size;
-    const uint bank = idx >> 4;
-    const uint rem = idx & 15;
-    return bank == 0 ? procedural.bvh_stack16_get(s.s0, rem)
-         : bank == 1 ? procedural.bvh_stack16_get(s.s1, rem)
-         : bank == 2 ? procedural.bvh_stack16_get(s.s2, rem)
-                     : procedural.bvh_stack16_get(s.s3, rem);
+    const uint bank = idx >> 4u;
+    const uint rem = idx & 15u;
+    if (bank == 0u) { return procedural.bvh_stack16_get(s.s0, rem); }
+    if (bank == 1u) { return procedural.bvh_stack16_get(s.s1, rem); }
+    if (bank == 2u) { return procedural.bvh_stack16_get(s.s2, rem); }
+    return procedural.bvh_stack16_get(s.s3, rem);
 }
 
 void procedural.bvh_push_ordered(procedural.BvhStack64& stack, uint left, double dl, double dr, double limit) {
-    const uint right = left + 1;
+    const uint right = left + 1u;
     if (dl <= limit && dr <= limit) {
-        procedural.bvh_stack_push(stack, dl <= dr ? right : left);
-        procedural.bvh_stack_push(stack, dl <= dr ? left : right);
+        if (dl <= dr) {
+            procedural.bvh_stack_push(stack, right, dr);
+            procedural.bvh_stack_push(stack, left, dl);
+        } else {
+            procedural.bvh_stack_push(stack, left, dl);
+            procedural.bvh_stack_push(stack, right, dr);
+        }
     } else if (dl <= limit) {
-        procedural.bvh_stack_push(stack, left);
+        procedural.bvh_stack_push(stack, left, dl);
     } else if (dr <= limit) {
-        procedural.bvh_stack_push(stack, right);
+        procedural.bvh_stack_push(stack, right, dr);
     }
 }
 
-bool procedural.bvh_ray_slab(double o, double d, double lo, double hi, double& tmin, double& tmax) {
+bool procedural.bvh_ray_slab(double o, double d, double inv_d, double lo, double hi, double& tmin, double& tmax) {
     if (d == 0.0d) {
         return o >= lo && o <= hi;
     }
-    const double inv = 1.0d / d;
-    const double t0 = (lo - o) * inv;
-    const double t1 = (hi - o) * inv;
+    const double t0 = (lo - o) * inv_d;
+    const double t1 = (hi - o) * inv_d;
     tmin = math.max(tmin, math.min(t0, t1));
     tmax = math.min(tmax, math.max(t0, t1));
     return tmin <= tmax;
 }
 
-double procedural.bvh_ray_box(vector3 bmin, vector3 bmax, vector3d origin, vector3d dir, double max_dist) {
+double procedural.bvh_ray_box(vector3 bmin,
+                              vector3 bmax,
+                              vector3d origin,
+                              vector3d dir,
+                              vector3d inv_dir,
+                              double max_dist) {
     double tmin = 0.0d;
     double tmax = max_dist;
-    return (procedural.bvh_ray_slab(origin.x, dir.x, double(bmin.x), double(bmax.x), tmin, tmax) &&
-            procedural.bvh_ray_slab(origin.y, dir.y, double(bmin.y), double(bmax.y), tmin, tmax) &&
-            procedural.bvh_ray_slab(origin.z, dir.z, double(bmin.z), double(bmax.z), tmin, tmax))
+    return (procedural.bvh_ray_slab(origin.x, dir.x, inv_dir.x, double(bmin.x), double(bmax.x), tmin, tmax) &&
+            procedural.bvh_ray_slab(origin.y, dir.y, inv_dir.y, double(bmin.y), double(bmax.y), tmin, tmax) &&
+            procedural.bvh_ray_slab(origin.z, dir.z, inv_dir.z, double(bmin.z), double(bmax.z), tmin, tmax))
                ? tmin
                : max_dist + math.max(max_dist, 1.0d);
 }
@@ -198,24 +218,29 @@ procedural.SurfaceHit procedural.raycast_surface(const procedural.Spatial& spati
         return result;
     }
 
+    const vector3d inv_dir = vector3d(dir.x != 0.0d ? 1.0d / dir.x : 0.0d,
+                                      dir.y != 0.0d ? 1.0d / dir.y : 0.0d,
+                                      dir.z != 0.0d ? 1.0d / dir.z : 0.0d);
     double best_dist = double(max_distance);
     const procedural.SpatialNode root_node = spatial[root];
-    if (procedural.bvh_ray_box(root_node.a, root_node.b, origin_d, dir, best_dist) > best_dist) {
+    const double root_entry = procedural.bvh_ray_box(root_node.a, root_node.b, origin_d, dir, inv_dir, best_dist);
+    if (root_entry > best_dist) {
         return result;
     }
 
     procedural.BvhStack64 stack;
-    procedural.bvh_stack_push(stack, root);
-    while (stack.size > 0) {
-        const procedural.SpatialNode node = spatial[procedural.bvh_stack_pop(stack)];
-        if (procedural.bvh_ray_box(node.a, node.b, origin_d, dir, best_dist) > best_dist) {
+    procedural.bvh_stack_push(stack, root, root_entry);
+    while (stack.size > 0u) {
+        const procedural.BvhEntry top = procedural.bvh_stack_pop(stack);
+        if (top.entry > best_dist) {
             continue;
         }
-        if (node.u1 > 0) {
-            for (uint k = 0; k < node.u1; k += 1) {
-                const uint base = node.u0 + k * 2;
+        const procedural.SpatialNode node = spatial[top.node];
+        if (node.u1 > 0u) {
+            for (uint k = 0u; k < node.u1; k += 1u) {
+                const uint base = node.u0 + k * 2u;
                 const procedural.SpatialNode w0 = spatial[base];
-                const procedural.SpatialNode w1 = spatial[base + 1];
+                const procedural.SpatialNode w1 = spatial[base + 1u];
                 const vector3d vertex = vector3d(w0.a);
                 const vector3d e1 = vector3d(w0.b) - vertex;
                 const vector3d e2 = vector3d(w1.a) - vertex;
@@ -246,11 +271,11 @@ procedural.SurfaceHit procedural.raycast_surface(const procedural.Spatial& spati
             continue;
         }
         const procedural.SpatialNode ln = spatial[node.u0];
-        const procedural.SpatialNode rn = spatial[node.u0 + 1];
+        const procedural.SpatialNode rn = spatial[node.u0 + 1u];
         procedural.bvh_push_ordered(stack,
                                     node.u0,
-                                    procedural.bvh_ray_box(ln.a, ln.b, origin_d, dir, best_dist),
-                                    procedural.bvh_ray_box(rn.a, rn.b, origin_d, dir, best_dist),
+                                    procedural.bvh_ray_box(ln.a, ln.b, origin_d, dir, inv_dir, best_dist),
+                                    procedural.bvh_ray_box(rn.a, rn.b, origin_d, dir, inv_dir, best_dist),
                                     best_dist);
     }
     return result;
@@ -273,22 +298,24 @@ procedural.SurfaceHit procedural.closest_surface_point(const procedural.Spatial&
     const vector3d point_d = vector3d(point);
     double best_dist_sq = double(max_distance) * double(max_distance);
     const procedural.SpatialNode root_node = spatial[root];
-    if (procedural.bvh_point_box_dist_sq(root_node.a, root_node.b, point_d) > best_dist_sq) {
+    const double root_d2 = procedural.bvh_point_box_dist_sq(root_node.a, root_node.b, point_d);
+    if (root_d2 > best_dist_sq) {
         return result;
     }
 
     procedural.BvhStack64 stack;
-    procedural.bvh_stack_push(stack, root);
-    while (stack.size > 0) {
-        const procedural.SpatialNode node = spatial[procedural.bvh_stack_pop(stack)];
-        if (procedural.bvh_point_box_dist_sq(node.a, node.b, point_d) > best_dist_sq) {
+    procedural.bvh_stack_push(stack, root, root_d2);
+    while (stack.size > 0u) {
+        const procedural.BvhEntry top = procedural.bvh_stack_pop(stack);
+        if (top.entry > best_dist_sq) {
             continue;
         }
-        if (node.u1 > 0) {
-            for (uint k = 0; k < node.u1; k += 1) {
-                const uint base = node.u0 + k * 2;
+        const procedural.SpatialNode node = spatial[top.node];
+        if (node.u1 > 0u) {
+            for (uint k = 0u; k < node.u1; k += 1u) {
+                const uint base = node.u0 + k * 2u;
                 const procedural.SpatialNode w0 = spatial[base];
-                const procedural.SpatialNode w1 = spatial[base + 1];
+                const procedural.SpatialNode w1 = spatial[base + 1u];
                 const vector3d q = procedural.closest_point_on_triangle(
                     point_d, vector3d(w0.a), vector3d(w0.b), vector3d(w1.a));
                 const double d2 = math.distance_squared(q, point_d);
@@ -304,7 +331,7 @@ procedural.SurfaceHit procedural.closest_surface_point(const procedural.Spatial&
             continue;
         }
         const procedural.SpatialNode ln = spatial[node.u0];
-        const procedural.SpatialNode rn = spatial[node.u0 + 1];
+        const procedural.SpatialNode rn = spatial[node.u0 + 1u];
         procedural.bvh_push_ordered(stack,
                                     node.u0,
                                     procedural.bvh_point_box_dist_sq(ln.a, ln.b, point_d),
@@ -331,22 +358,24 @@ procedural.CurveSample procedural.closest_polyline(const procedural.Spatial& spa
     const vector3d point_d = vector3d(point);
     double best_dist_sq = double(max_distance) * double(max_distance);
     const procedural.SpatialNode root_node = spatial[root];
-    if (procedural.bvh_point_box_dist_sq(root_node.a, root_node.b, point_d) > best_dist_sq) {
+    const double root_d2 = procedural.bvh_point_box_dist_sq(root_node.a, root_node.b, point_d);
+    if (root_d2 > best_dist_sq) {
         return result;
     }
 
     procedural.BvhStack64 stack;
-    procedural.bvh_stack_push(stack, root);
-    while (stack.size > 0) {
-        const procedural.SpatialNode node = spatial[procedural.bvh_stack_pop(stack)];
-        if (procedural.bvh_point_box_dist_sq(node.a, node.b, point_d) > best_dist_sq) {
+    procedural.bvh_stack_push(stack, root, root_d2);
+    while (stack.size > 0u) {
+        const procedural.BvhEntry top = procedural.bvh_stack_pop(stack);
+        if (top.entry > best_dist_sq) {
             continue;
         }
-        if (node.u1 > 0) {
-            for (uint k = 0; k < node.u1; k += 1) {
-                const uint base = node.u0 + k * 2;
+        const procedural.SpatialNode node = spatial[top.node];
+        if (node.u1 > 0u) {
+            for (uint k = 0u; k < node.u1; k += 1u) {
+                const uint base = node.u0 + k * 2u;
                 const procedural.SpatialNode w0 = spatial[base];
-                const procedural.SpatialNode w1 = spatial[base + 1];
+                const procedural.SpatialNode w1 = spatial[base + 1u];
                 const vector3d a = vector3d(w0.a);
                 const vector3d ab = vector3d(w0.b) - a;
                 const double denom = math.length_squared(ab);
@@ -366,7 +395,7 @@ procedural.CurveSample procedural.closest_polyline(const procedural.Spatial& spa
             continue;
         }
         const procedural.SpatialNode ln = spatial[node.u0];
-        const procedural.SpatialNode rn = spatial[node.u0 + 1];
+        const procedural.SpatialNode rn = spatial[node.u0 + 1u];
         procedural.bvh_push_ordered(stack,
                                     node.u0,
                                     procedural.bvh_point_box_dist_sq(ln.a, ln.b, point_d),

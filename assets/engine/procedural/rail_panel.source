@@ -1,6 +1,10 @@
-void procedural.rail_panel_triangle(const Array<vector3>& p, Array<uint>& corners, Array<uint>& offsets,
-                         Array<vector3>& normals, uint a, uint b, uint c) {
-    const vector3 normal = math.normalize_or_zero(math.cross(p[b] - p[a], p[c] - p[a]));
+void procedural.rail_panel_emit_tri(Array<uint>& corners,
+                                    Array<uint>& offsets,
+                                    Array<vector3>& normals,
+                                    uint a,
+                                    uint b,
+                                    uint c,
+                                    vector3 normal) {
     corners.add(a);
     corners.add(b);
     corners.add(c);
@@ -10,10 +14,16 @@ void procedural.rail_panel_triangle(const Array<vector3>& p, Array<uint>& corner
     normals.add(normal);
 }
 
-void procedural.rail_panel_quad(const Array<vector3>& p, Array<uint>& corners, Array<uint>& offsets,
-                     Array<vector3>& normals, uint a, uint b, uint c, uint d) {
-    procedural.rail_panel_triangle(p, corners, offsets, normals, a, b, c);
-    procedural.rail_panel_triangle(p, corners, offsets, normals, a, c, d);
+void procedural.rail_panel_flat_quad(Array<uint>& corners,
+                                     Array<uint>& offsets,
+                                     Array<vector3>& normals,
+                                     uint a,
+                                     uint b,
+                                     uint c,
+                                     uint d,
+                                     vector3 normal) {
+    procedural.rail_panel_emit_tri(corners, offsets, normals, a, b, c, normal);
+    procedural.rail_panel_emit_tri(corners, offsets, normals, a, c, d, normal);
 }
 
 [DESC = "将两条同向、逐站对应的有序边线连成板面，沿图局部负 Y 加厚并封边。适用于变坡屋面、桥面和引板。"]
@@ -44,6 +54,9 @@ class procedural.RailPanel : procedural.Node {
                 fail("RailPanel requires a single open polyline or ordered points on each rail.");
             }
             self.read_primitive_points(rail_a, 0u, order_a);
+            if (order_a.size() >= 2u && order_a[0u] == order_a[order_a.size() - 1u]) {
+                fail("RailPanel requires a single open polyline or ordered points on each rail.");
+            }
         }
         if (prims_b == 1u) {
             const procedural.PrimitiveSpan span_b = self.primitive_span(rail_b, 0u);
@@ -51,10 +64,20 @@ class procedural.RailPanel : procedural.Node {
                 fail("RailPanel requires a single open polyline or ordered points on each rail.");
             }
             self.read_primitive_points(rail_b, 0u, order_b);
+            if (order_b.size() >= 2u && order_b[0u] == order_b[order_b.size() - 1u]) {
+                fail("RailPanel requires a single open polyline or ordered points on each rail.");
+            }
         }
         const uint n = prims_a == 1u ? order_a.size() : A.size();
         const uint n_b = prims_b == 1u ? order_b.size() : B.size();
         if (n != n_b || n < 2u) { fail("RailPanel requires two equally sized rails with at least two stations."); }
+        const vector3 first_a = prims_a == 1u ? A[order_a[0u]] : A[0u];
+        const vector3 last_a = prims_a == 1u ? A[order_a[n - 1u]] : A[n - 1u];
+        const vector3 first_b = prims_b == 1u ? B[order_b[0u]] : B[0u];
+        const vector3 last_b = prims_b == 1u ? B[order_b[n - 1u]] : B[n - 1u];
+        if (first_a == last_a || first_b == last_b) {
+            fail("RailPanel requires open rails whose start and end stations do not coincide.");
+        }
         // Each interval contributes 24 corners, and the two end caps contribute 12.
         if (n > 178956971u) { fail("RailPanel exceeds the geometry corner limit."); }
         if (!(math.is_finite(self.thickness) && self.thickness > 0.0f)) { fail("RailPanel thickness must be finite and positive."); }
@@ -82,19 +105,37 @@ class procedural.RailPanel : procedural.Node {
             if (i > 0u) {
                 const uint a = (i - 1u) * 4u;
                 const uint b = i * 4u;
-                if (!(math.cross(p[a + 1u] - p[a], p[b + 1u] - p[a]).y > 0.0f &&
-                      math.cross(p[b + 1u] - p[a], p[b] - p[a]).y > 0.0f)) {
+                const vector3 diag = p[b + 1u] - p[a];
+                const vector3 edge_a = p[b] - p[a];
+                const vector3 edge_b = p[b + 1u] - p[a + 1u];
+                const vector3 c0 = math.cross(p[a + 1u] - p[a], diag);
+                const vector3 c1 = math.cross(diag, edge_a);
+                if (!(c0.y > 0.0f && c1.y > 0.0f)) {
                     fail("RailPanel rails cross, repeat a station or face down; check rail order.", i - 1u);
                 }
-                procedural.rail_panel_quad(p, corners, offsets, normals, a, a + 1u, b + 1u, b);
-                procedural.rail_panel_quad(p, corners, offsets, normals, a + 2u, b + 2u, b + 3u, a + 3u);
-                procedural.rail_panel_quad(p, corners, offsets, normals, a, b, b + 2u, a + 2u);
-                procedural.rail_panel_quad(p, corners, offsets, normals, a + 1u, a + 3u, b + 3u, b + 1u);
+                const vector3 top_n0 = math.normalize_or_zero(c0);
+                const vector3 top_n1 = math.normalize_or_zero(c1);
+                procedural.rail_panel_emit_tri(corners, offsets, normals, a, a + 1u, b + 1u, top_n0);
+                procedural.rail_panel_emit_tri(corners, offsets, normals, a, b + 1u, b, top_n1);
+                procedural.rail_panel_emit_tri(corners, offsets, normals, a + 2u, b + 2u, b + 3u, -top_n1);
+                procedural.rail_panel_emit_tri(corners, offsets, normals, a + 2u, b + 3u, a + 3u, -top_n0);
+                procedural.rail_panel_flat_quad(
+                    corners, offsets, normals, a, b, b + 2u, a + 2u,
+                    math.normalize_or_zero(vector3(edge_a.z, 0.0f, -edge_a.x)));
+                procedural.rail_panel_flat_quad(
+                    corners, offsets, normals, a + 1u, a + 3u, b + 3u, b + 1u,
+                    math.normalize_or_zero(vector3(-edge_b.z, 0.0f, edge_b.x)));
             }
         }
         const uint end = (n - 1u) * 4u;
-        procedural.rail_panel_quad(p, corners, offsets, normals, 0u, 2u, 3u, 1u);
-        procedural.rail_panel_quad(p, corners, offsets, normals, end, end + 1u, end + 3u, end + 2u);
+        const vector3 start_rung = p[1u] - p[0u];
+        const vector3 end_rung = p[end + 1u] - p[end];
+        procedural.rail_panel_flat_quad(
+            corners, offsets, normals, 0u, 2u, 3u, 1u,
+            math.normalize_or_zero(vector3(-start_rung.z, 0.0f, start_rung.x)));
+        procedural.rail_panel_flat_quad(
+            corners, offsets, normals, end, end + 1u, end + 3u, end + 2u,
+            math.normalize_or_zero(vector3(end_rung.z, 0.0f, -end_rung.x)));
         self.emit_polygons(p, corners, offsets, 0u);
         self.set_vec3("N", procedural.Layer::vertex, normals, 0u);
     }

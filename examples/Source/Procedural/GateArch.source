@@ -52,6 +52,7 @@ void game.arch_block(Array<vector3>& p, Array<uint>& faces, vector2 a, vector2 b
 }
 
 void game.arch_normals(const Array<vector3>& p, const Array<uint>& faces, Array<vector3>& normals) {
+    normals.reserve(faces.size());
     for (uint face = 0; face < faces.size() / 4; face += 1) {
         const uint at = 4 * face;
         const vector3 n = math.normalize_or_zero(math.cross(p[faces[at + 1]] - p[faces[at]], p[faces[at + 2]] - p[faces[at]]));
@@ -79,6 +80,11 @@ class game.GateArch : procedural.Node {
         const float step = math.PI / float(count);
         Array<vector3> p; Array<uint> f; Array<vector3> normals;
         Array<vector3> stones; Array<uint> blocks; Array<vector3> stone_normals;
+        p.reserve((count + 1u) * 4u + 16u);
+        f.reserve((4u * count + 18u) * 4u);
+        const uint stone_count = 2u * (count + 10u);
+        stones.reserve(stone_count * 8u);
+        blocks.reserve(stone_count * 24u);
         uint last_low = 0; uint last_high = 0;
         for (uint i = 0; i < count + 1; i += 1) {
             const float theta = step * float(i);

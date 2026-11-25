@@ -2318,6 +2318,10 @@ void test_orient_contracts(const vector3& up, const vector3& forward, const vect
     between_q = procedural.rotation_between(up, forward);
 }
 
+void test_shortest_arc(const vector3& z, quaternion& out) {
+    out = procedural.shortest_arc(z);
+}
+
 void test_remap_contracts(float val, float in_a, float in_b, float out_a, float out_b, vector4& out) {
     out = vector4(procedural.unlerp(val, in_a, in_b),
                   procedural.fit(val, in_a, in_b, out_a, out_b),
@@ -2375,6 +2379,31 @@ void test_remap_contracts(float val, float in_a, float in_b, float out_a, float 
                             {0.f, 1.f, 0.f}, 0.f, up_frame, euler_q, axis_q, between_q));
     require(!math::is_finite(up_frame) && !math::is_finite(between_q),
             "align_to_up or rotation_between masked a non-finite input vector.");
+
+    // Exact opposite vector (1, 1, 6) -> (-1, -1, -6) must rotate 180 deg (not collapse to identity when 1+dot ~ 1.2e-7),
+    // and non-axis-aligned collinear align_to_up(up, 0.7 * up) must deterministically match shortest-arc +Y -> up.
+    const Vector3 opp_from{1.f, 1.f, 6.f};
+    const Vector3 opp_to{-1.f, -1.f, -6.f};
+    take(eval_orient.invoke({}, opp_from, opp_to, {}, {0.f, 1.f, 0.f}, 0.f, up_frame, euler_q, axis_q, between_q));
+    require(near(math::rotate(between_q, normalized(opp_from)), normalized(opp_to), 1e-5f),
+            "rotation_between(v, -v) collapsed to identity instead of rotating 180 degrees.");
+    const Vector3 non_axis_up{0.3f, 0.9f, -0.2f};
+    Quaternion expected_tilt{};
+    Quaternion dummy_q{};
+    take(eval_orient.invoke({}, {0.f, 1.f, 0.f}, non_axis_up, {}, {0.f, 1.f, 0.f}, 0.f, dummy_q, euler_q, axis_q,
+                            expected_tilt));
+    take(eval_orient.invoke({}, non_axis_up, non_axis_up * 0.7f, {}, {0.f, 1.f, 0.f}, 0.f, up_frame, euler_q, axis_q,
+                            between_q));
+    require(near({up_frame.x, up_frame.y, up_frame.z}, {expected_tilt.x, expected_tilt.y, expected_tilt.z}, 1e-5f) &&
+                near(up_frame.w, expected_tilt.w, 1e-5f),
+            "Collinear align_to_up(up, 0.7 * up) amplified 1-ULP cross residual instead of shortest-arc fallback.");
+    auto eval_sarc = take(take(program->pin("test_shortest_arc")).bind<void, const Vector3&, Quaternion&>());
+    Quaternion sarc_nan{};
+    Quaternion sarc_negz{};
+    take(eval_sarc.invoke({}, Vector3{std::numeric_limits<float>::quiet_NaN(), 0.f, -1.f}, sarc_nan));
+    take(eval_sarc.invoke({}, Vector3{0.f, 0.f, -0.99999988f}, sarc_negz));
+    require(!math::is_finite(sarc_nan) && sarc_negz == Quaternion{1.f, 0.f, 0.f, 0.f},
+            "shortest_arc failed NaN propagation or 2-ULP -Z antiparallel check.");
 
     // 2. Range mapping functions: clamping (`fit`/`fit01`) vs extrapolation (`efit`), reversed ranges,
     //    coincident input bounds (`in_min == in_max`), and NaN preservation.
@@ -2495,6 +2524,36 @@ class test.TopologyProbe : procedural.Node {
         self.set_uint("label_tag", procedural.Layer::detail, tags, 0u);
     }
 }
+
+class test.CowWithInputTopo : procedural.Node {
+    void process([Port] const procedural.Geometry& input,
+                 [Out("arc_len")] Array<float>& arc_len) {
+        const float total = self.polyline_length(input, 1u);
+        for (uint i = 0u; i < arc_len.size(); i += 1u) {
+            arc_len[i] = total;
+        }
+    }
+}
+
+bool test.probe_raycast(const procedural.Spatial& spatial,
+                        float ox, float oy, float oz,
+                        float dx, float dy, float dz,
+                        float max_distance,
+                        float& out_distance) {
+    const procedural.SurfaceHit hit =
+        procedural.raycast_surface(spatial, vector3(ox, oy, oz), vector3(dx, dy, dz), max_distance);
+    out_distance = hit.distance;
+    return hit.hit;
+}
+
+bool test.probe_closest(const procedural.Spatial& spatial,
+                        float px, float py, float pz,
+                        float max_distance,
+                        float& out_distance) {
+    const procedural.SurfaceHit hit = procedural.closest_surface_point(spatial, vector3(px, py, pz), max_distance);
+    out_distance = hit.distance;
+    return hit.hit;
+}
 )"});
     auto program = take(source::Program::create(runtime));
     auto cand = take(source::Program::prepare(take(program->request({"batch2_sop", 1, std::move(files)}))));
@@ -2548,17 +2607,45 @@ class test.TopologyProbe : procedural.Node {
     require(span_col != nullptr && span_col->size() == 3u && (*span_col)[0] == 0.0f,
             "Updated self.<String> attribute or polygon PrimitiveSpan mismatched.");
 
-    // Calling polyline_length on polygon primitive 0 or out-of-bounds primitive 9 must fail cleanly.
+    // Calling polyline_length on polygon primitive 0 or out-of-bounds primitive 9 must fail cleanly with ErrorElement.
     take(runtime.write(probe.id(), req_len_field, true));
     take(evaluator.evaluate());
     require(evaluator.output() == nullptr && evaluator.status(probe.id()) && evaluator.status(probe.id())->error &&
-                evaluator.status(probe.id())->error->message.contains("Expected a polyline"),
-            "polyline_length on a polygon primitive must fail with polyline diagnostic.");
+                evaluator.status(probe.id())->error->message.contains("Expected a polyline") &&
+                evaluator.status(probe.id())->error->element == ErrorElement{"primitive", 0u},
+            "polyline_length on a polygon primitive must fail with polyline diagnostic and ErrorElement.");
     take(runtime.write(probe.id(), prim_field, 9u));
     take(evaluator.evaluate());
     require(evaluator.output() == nullptr && evaluator.status(probe.id()) && evaluator.status(probe.id())->error &&
-                evaluator.status(probe.id())->error->message.contains("out of bounds"),
-            "Out-of-bounds primitive_span must fail cleanly.");
+                evaluator.status(probe.id())->error->message.contains("out of bounds") &&
+                evaluator.status(probe.id())->error->element == ErrorElement{"primitive", 9u},
+            "Out-of-bounds primitive_span must fail cleanly with ErrorElement.");
+
+    // Setting self.attribute = "P" on an L3 node must be rejected rather than overwriting positions P:
+    take(runtime.write(probe.id(), prim_field, 1u));
+    auto reserved_p = String::literal<"P">();
+    take(runtime.write(probe.id(), attr_field, ValueInput{string_type, &reserved_p}));
+    take(evaluator.evaluate());
+    require(evaluator.output() == nullptr && evaluator.display_error() &&
+                evaluator.display_error()->message.contains("Point attribute P is set by"),
+            "set_output_column allowed overwriting reserved attribute P.");
+
+    // Primary-stream COW SOP declaring [Port] const Geometry& input alongside [Out] shares port 0 ("input") cleanly:
+    const auto cow_topo_type = take(runtime.find_type("test.CowWithInputTopo"));
+    auto cow_graph = take(runtime.create(graph_type));
+    auto cow_in = take(procedural::add_node(runtime, cow_graph.id(), input_type));
+    auto cow_node = take(procedural::add_node(runtime, cow_graph.id(), cow_topo_type));
+    require(take(procedural::ports(runtime, cow_node.id())).inputs.size() == 1u,
+            "CowWithInputTopo should expose a single shared 'input' port.");
+    take(procedural::connect(runtime, cow_graph.id(), cow_in.id(), 0u, cow_node.id(), 0u));
+    take(procedural::set_display(runtime, cow_graph.id(), cow_node.id()));
+    procedural::Evaluator cow_eval(runtime, cow_graph, resources, program.get());
+    const std::array<procedural::Evaluator::ExternalInput, 1> cow_ext{{{cow_in.id(), mixed_geo, 1u, 0u}}};
+    cow_eval.set_external_inputs(cow_ext);
+    take(cow_eval.evaluate());
+    const auto* cow_col = take(cow_eval.output()->read<float>("arc_len", procedural::Layer::point));
+    require(cow_col != nullptr && cow_col->size() == 5u && near((*cow_col)[0], 7.f),
+            "Primary-stream COW SOP could not read polyline_length from shared [Port] const Geometry& input.");
 
     // 3. RailPanel follows primitive vertex order even when rail_a has extra unreferenced points and rail_b's
     //    point array is stored in reverse order relative to its polyline vertices.
@@ -2600,6 +2687,69 @@ class test.TopologyProbe : procedural.Node {
     require(panel_geo.count(procedural::Layer::point) == 12u && panel_geo.count(procedural::Layer::primitive) == 20u &&
                 panel_geo.count(procedural::Layer::vertex) == 60u,
             "RailPanel output topology counts mismatched expected 3-station closed panel.");
+    const auto* panel_n = take(panel_geo.read<Vector3>("N", procedural::Layer::vertex));
+    require(panel_n != nullptr && panel_n->size() == 60u, "RailPanel did not emit vertex normals N.");
+    for (std::uint32_t f = 0u; f < 20u; ++f) {
+        const auto prim = panel_geo.primitive(f);
+        const auto vp = panel_geo.vertex_points();
+        const auto& pos = panel_geo.positions();
+        const Vector3 expected = math::try_normalize(math::cross(pos[vp[prim.first + 1u]] - pos[vp[prim.first]],
+                                                                 pos[vp[prim.first + 2u]] - pos[vp[prim.first]]))
+                                     .value_or(Vector3{});
+        for (std::uint32_t k = 0u; k < 3u; ++k) {
+            const Vector3 got = (*panel_n)[prim.first + k];
+            require(math::distance(got, expected) < 1e-5f,
+                    "RailPanel vertex normal diverged from triangle outward normal.");
+        }
+    }
+
+    // Multi-level BVH parity check: `spatial.source` (oblique rays + closest surface points) vs native `Bvh`.
+    const auto hills_mesh = terrain_mesh(16, 16.0f);
+    const auto hills_geo = procedural::import_mesh(*hills_mesh);
+    const auto native_bvh = take(procedural::Bvh::build(hills_geo));
+    const auto spatial_bvh = take(procedural::Spatial::build(hills_geo));
+    const auto ray_fn =
+        take(take(program->entry("test.probe_raycast"))
+                 .bind<bool, const procedural::Spatial&, float, float, float, float, float, float, float, float&>());
+    const auto closest_fn = take(take(program->entry("test.probe_closest"))
+                                     .bind<bool, const procedural::Spatial&, float, float, float, float, float&>());
+    for (std::uint32_t i = 0u; i < 64u; ++i) {
+        const float fx = float(i % 8u) * 2.1f + 0.37f;
+        const float fz = float(i / 8u) * 2.1f + 0.41f;
+        const Vector3 ray_o{fx - 1.2f, 8.0f, fz - 0.8f};
+        const Vector3 ray_d = math::try_normalize(Vector3{0.23f, -1.0f, 0.17f}).value_or(Vector3{});
+        const float max_d = 20.0f;
+        const auto cpp_ray = native_bvh.ray(ray_o, ray_d, max_d);
+        float src_dist{};
+        const bool src_hit = take(ray_fn.invoke(ObjectId{}, spatial_bvh, ray_o.x, ray_o.y, ray_o.z, ray_d.x, ray_d.y,
+                                                ray_d.z, max_d, src_dist));
+        require(src_hit == cpp_ray.has_value() && (!cpp_ray || std::abs(src_dist - cpp_ray->distance) < 1e-4f),
+                "Multi-level BVH raycast_surface diverged from native Bvh::ray.");
+
+        const Vector3 q_pt{fx, 1.5f, fz};
+        const auto cpp_cl = native_bvh.closest(q_pt, max_d);
+        float cl_dist{};
+        const bool cl_hit = take(closest_fn.invoke(ObjectId{}, spatial_bvh, q_pt.x, q_pt.y, q_pt.z, max_d, cl_dist));
+        require(cl_hit == cpp_cl.has_value() && (!cpp_cl || std::abs(cl_dist - cpp_cl->distance) < 1e-4f),
+                "Multi-level BVH closest_surface_point diverged from native Bvh::closest.");
+    }
+
+    // Closed polyline rails must be rejected rather than emitting internal coincident end-cap walls:
+    Array<Vector3> ring_a_p{{0.f, 0.f, 0.f}, {2.f, 0.f, 0.f}, {2.f, 0.f, 2.f}, {0.f, 0.f, 2.f}};
+    Array<Vector3> ring_b_p{{-1.f, 0.f, -1.f}, {3.f, 0.f, -1.f}, {3.f, 0.f, 3.f}, {-1.f, 0.f, 3.f}};
+    Array<std::uint32_t> ring_vp{0u, 1u, 2u, 3u, 0u};
+    Array<std::uint32_t> ring_offs{0u, 5u};
+    Array<procedural::PrimitiveKind> ring_kinds{procedural::PrimitiveKind::polyline};
+    const auto ring_a_geo = take(procedural::Geometry::primitives(
+        std::move(ring_a_p), Array<std::uint32_t>{ring_vp}, ring_offs, Array<procedural::PrimitiveKind>{ring_kinds}));
+    const auto ring_b_geo = take(
+        procedural::Geometry::primitives(std::move(ring_b_p), std::move(ring_vp), ring_offs, std::move(ring_kinds)));
+    const std::array<procedural::Evaluator::ExternalInput, 2> ring_inputs{
+        {{in_a.id(), ring_a_geo, 3u, 0u}, {in_b.id(), ring_b_geo, 4u, 0u}}};
+    rp_eval.set_external_inputs(ring_inputs);
+    take(rp_eval.evaluate());
+    require(rp_eval.output() == nullptr && rp_eval.display_error() && rp_eval.display_error()->message.contains("open"),
+            "RailPanel failed to reject closed polyline loops.");
 }
 
 void source_sop_batch3_contracts() {

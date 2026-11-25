@@ -109,6 +109,13 @@ Result<Geometry> Geometry::polygons(Array<math::Vector3> positions, Array<std::u
     return primitives(std::move(positions), std::move(vertex_points), offsets, std::move(kinds));
 }
 
+Result<Geometry> Geometry::polylines(Array<math::Vector3> positions, Array<std::uint32_t> vertex_points,
+                                     const Array<std::uint32_t>& offsets) {
+    Array<PrimitiveKind> kinds;
+    kinds.resize(offsets.empty() ? 0 : offsets.size() - 1, PrimitiveKind::polyline);
+    return primitives(std::move(positions), std::move(vertex_points), offsets, std::move(kinds));
+}
+
 Result<Geometry> Geometry::primitives(Array<math::Vector3> positions, Array<std::uint32_t> vertex_points,
                                       const Array<std::uint32_t>& offsets, Array<PrimitiveKind> kinds) {
     auto result = points(std::move(positions));

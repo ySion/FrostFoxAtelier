@@ -907,8 +907,7 @@ Result<Geometry> circle(const CircleSettings& settings) {
         if (closed_loop)
             vertex_points.add(0);
         Array<std::uint32_t> offsets{0, vtx_count};
-        Array<PrimitiveKind> kinds{PrimitiveKind::polyline};
-        return Geometry::primitives(std::move(positions), std::move(vertex_points), offsets, std::move(kinds));
+        return Geometry::polylines(std::move(positions), std::move(vertex_points), offsets);
     }
 
     if (settings.primitive_type != CirclePrimitive::polygon)

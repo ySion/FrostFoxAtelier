@@ -23,13 +23,17 @@ quaternion procedural.frame_rotation(vector3 x, vector3 y, vector3 z) {
 }
 
 // The shortest rotation taking +Z to the unit vector z; half a turn about X when z is -Z.
-[DESC = "将局部 +Z 最短弧旋转到单位向量 z；z 为 -Z 时绕 +X 旋转 180 度。"]
+[DESC = "将局部 +Z 最短弧旋转到单位向量 z；z 为 -Z 时绕 +X 旋转 180 度；非有限输入返回 NaN。"]
 quaternion procedural.shortest_arc(vector3 z) {
-    const float w = 1.0f + z.z;
-    if (w < 0.0000001f) {
+    if (!math.is_finite(z)) {
+        const float nan = 0.0f / 0.0f;
+        return quaternion(nan, nan, nan, nan);
+    }
+    const double w = 1.0d + double(z.z);
+    if (w < 0.0000001d || (z.x == 0.0f && z.y == 0.0f && z.z < 0.0f)) {
         return quaternion(1.0f, 0.0f, 0.0f, 0.0f);
     }
-    return math.normalize_or_zero(quaternion(-z.y, z.x, 0.0f, w));
+    return quaternion(math.normalize_or_zero(quaterniond(-double(z.y), double(z.x), 0.0d, w)));
 }
 
 // Shortest-arc unit rotation taking normalized `from` to normalized `to`.
@@ -39,22 +43,22 @@ quaternion procedural.shortest_arc(vector3 z) {
 [DESC = "计算从向量 from 到向量 to 的最短弧单位四元数（内部自动归一化；任一为零向量返回单位四元数；反向时绕确定性正交轴旋转 180 度；非有限输入返回 NaN）。"]
 quaternion procedural.rotation_between(vector3 from, vector3 to) {
     if (!math.is_finite(from) || !math.is_finite(to)) {
-        const float invalid = math.length((from - from) + (to - to));
-        return quaternion(invalid, invalid, invalid, 1.0f + invalid);
+        const float nan = 0.0f / 0.0f;
+        return quaternion(nan, nan, nan, nan);
     }
-    const vector3 a = math.normalize_or_zero(from);
-    const vector3 b = math.normalize_or_zero(to);
-    if (a == vector3() || b == vector3()) {
+    const vector3d a = math.normalize_or_zero(vector3d(from));
+    const vector3d b = math.normalize_or_zero(vector3d(to));
+    if (a == vector3d() || b == vector3d()) {
         return quaternion();
     }
-    const float w = 1.0f + math.dot(a, b);
-    if (w < 0.0000001f) {
-        const vector3 ref = math.abs(a.y) < 0.9f ? vector3(0.0f, 1.0f, 0.0f) : vector3(1.0f, 0.0f, 0.0f);
-        const vector3 ortho = math.normalize_or_zero(math.cross(ref, a));
-        return quaternion(ortho.x, ortho.y, ortho.z, 0.0f);
+    const double w = 1.0d + math.dot(a, b);
+    if (w < 0.000000000001d) {
+        const vector3d ref = math.abs(a.y) < 0.9d ? vector3d(0.0d, 1.0d, 0.0d) : vector3d(1.0d, 0.0d, 0.0d);
+        const vector3d ortho = math.normalize_or_zero(math.cross(ref, a));
+        return quaternion(quaterniond(ortho.x, ortho.y, ortho.z, 0.0d));
     }
-    const vector3 c = math.cross(a, b);
-    return math.normalize_or_zero(quaternion(c.x, c.y, c.z, w));
+    const vector3d c = math.cross(a, b);
+    return quaternion(math.normalize_or_zero(quaterniond(c.x, c.y, c.z, w)));
 }
 
 // The orientation Copy to Points derives from a normal and an up vector: +Z along the normal and
@@ -62,10 +66,13 @@ quaternion procedural.rotation_between(vector3 from, vector3 to) {
 // not finite. A zero normal leaves the identity; a non-finite one gives a non-finite result.
 [DESC = "CopyToPoints 同款法线标架：局部 +Z 严格对齐 normal，局部 +Y 尽量朝向 up；up 为零或与 normal 共线时退化为 +Z 到 normal 的最短弧，零 normal 返回单位四元数。"]
 quaternion procedural.align_to_normal(vector3 normal, vector3 up) {
+    if (!math.is_finite(normal)) {
+        const float nan = 0.0f / 0.0f;
+        return quaternion(nan, nan, nan, nan);
+    }
     const vector3 z = math.normalize_or_zero(normal);
     if (z == vector3()) {
-        const float invalid = math.length(normal - normal); // 0 when finite, NaN otherwise.
-        return quaternion(invalid, invalid, invalid, 1.0f + invalid);
+        return quaternion();
     }
     const vector3 x = math.normalize_or_zero(math.cross(up, z));
     if (x == vector3()) {
@@ -80,16 +87,20 @@ quaternion procedural.align_to_normal(vector3 normal, vector3 up) {
 // exact identity when `up` is +Y). A zero finite `up` returns identity; non-finite `up` returns NaN.
 [DESC = "竖直建筑与植被标架：局部 +Y 严格对齐 up，局部 +Z 对齐 forward 在垂直于 up 平面上的投影（+X = +Y x +Z）；forward 共线或为零时退化为 +Y 到 up 的最短弧，零 up 返回单位四元数。"]
 quaternion procedural.align_to_up(vector3 up, vector3 forward) {
+    if (!math.is_finite(up)) {
+        const float nan = 0.0f / 0.0f;
+        return quaternion(nan, nan, nan, nan);
+    }
     const vector3 y = math.normalize_or_zero(up);
     if (y == vector3()) {
-        const float invalid = math.length(up - up);
-        return quaternion(invalid, invalid, invalid, 1.0f + invalid);
+        return quaternion();
     }
     const vector3 f = math.normalize_or_zero(forward);
-    const vector3 x = math.normalize_or_zero(math.cross(y, f));
-    if (x == vector3()) {
+    const vector3 raw_x = math.cross(y, f);
+    if (!(math.length_squared(raw_x) > 0.000000000001f)) {
         return procedural.rotation_between(vector3(0.0f, 1.0f, 0.0f), y);
     }
+    const vector3 x = math.normalize_or_zero(raw_x);
     return procedural.frame_rotation(x, y, math.cross(x, y));
 }
 

@@ -817,10 +817,16 @@ class Hlsl {
             result += "(";
             if (node.kind == Kind::source_call)
                 result += "ms_environment";
+            const bool vector_intrinsic = node.kind == Kind::math_intrinsic && node.type.kind == ValueType::record &&
+                                          program_.value_layouts[node.type.type_index].math;
             for (std::size_t i = 0; i < node.arguments.size(); ++i) {
                 if (i || node.kind == Kind::source_call)
                     result += ",";
-                result += operand(node.arguments[i]);
+                const auto arg_id = node.arguments[i];
+                if (vector_intrinsic && function.expressions[arg_id].type == ValueType::f32)
+                    result += "((" + type(node.type) + ")(" + operand(arg_id) + "))";
+                else
+                    result += operand(arg_id);
             }
             return result + ")";
         }

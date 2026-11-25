@@ -1518,10 +1518,6 @@ private:
         }
         if (node.kind == language::Expression::Kind::local)
             return locals_.at(node.value);
-        if (node.kind == language::Expression::Kind::field && node.type.kind == language::ValueType::string) {
-            trace_event(DiagnosticCall::field_read);
-            return field_address(native_receiver(expression(node.receiver)), node.value);
-        }
         if (node.kind == language::Expression::Kind::string_literal)
             return expression(id);
         if (node.kind == language::Expression::Kind::value_field)
@@ -1554,7 +1550,8 @@ private:
             return ir_.CreateInBoundsGEP(ir_.getInt8Ty(), input.data, ir_.CreateMul(offset, ir_.getInt64(stride)));
         }
         if (managed_value(node.type) &&
-            (node.kind == language::Expression::Kind::call || node.kind == language::Expression::Kind::source_call ||
+            (node.kind == language::Expression::Kind::field || node.kind == language::Expression::Kind::call ||
+             node.kind == language::Expression::Kind::source_call ||
              node.kind == language::Expression::Kind::conditional))
             return expression(id);
         if (math_type(node.type))
@@ -1603,7 +1600,7 @@ private:
             if (node.kind == Kind::math_intrinsic && node.math_operation == language::MathOperation::abs &&
                 node.type == language::ValueType::i32) {
                 check_value(ir_.CreateICmpNE(arguments[0], ir_.getInt32(0x80000000u)), EntryFailure::integer_overflow);
-                return ir_.CreateBinaryIntrinsic(llvm::Intrinsic::abs, arguments[0], ir_.getFalse());
+                return ir_.CreateBinaryIntrinsic(llvm::Intrinsic::abs, arguments[0], ir_.getTrue());
             }
             MathLowering lowering{ir_, *module_};
             if (node.kind == Kind::math_construct)

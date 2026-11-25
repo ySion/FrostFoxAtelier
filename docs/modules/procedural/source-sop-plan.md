@@ -1,6 +1,6 @@
 # Source SOP 语言、拓扑接口与自省演进计划
 
-状态：前四批（Batch 1–Batch 4）均已落地并通过双配置验收；候选子项 `S-SOP-1b` 按需推进。正式行为分别以 [LANGUAGE.md](../../../LANGUAGE.md)、[数学规范](../../math.md)、[程序化模块](README.md) 和 [Editor Control](../editor/control.md) 为唯一权威。
+状态：前四批（Batch 1–Batch 4）均已落地，当前正按 [source-sop-review.md](source-sop-review.md) 分轮开展代码审查与收敛加固；候选子项 `S-SOP-1b` 按需推进。正式行为分别以 [LANGUAGE.md](../../../LANGUAGE.md)、[数学规范](../../math.md)、[程序化模块](README.md) 和 [Editor Control](../editor/control.md) 为唯一权威。
 
 ## 背景与目标
 

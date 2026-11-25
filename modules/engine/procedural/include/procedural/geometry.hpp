@@ -180,6 +180,10 @@ public:
     static Result<Geometry> polygons(Array<math::Vector3> positions, Array<std::uint32_t> vertex_points,
                                      const Array<std::uint32_t>& offsets);
 
+    // Open polylines over `positions`, with at least two vertices per primitive.
+    static Result<Geometry> polylines(Array<math::Vector3> positions, Array<std::uint32_t> vertex_points,
+                                      const Array<std::uint32_t>& offsets);
+
     // The same topology with one kind per primitive. Polylines need at least two
     // vertices and connect only adjacent vertices, never implicitly last to first.
     static Result<Geometry> primitives(Array<math::Vector3> positions, Array<std::uint32_t> vertex_points,

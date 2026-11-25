@@ -1680,26 +1680,11 @@ private:
             std::array<std::byte, 128> rhs_bytes{};
             ATELIER_TRY(fold_value_bytes(node.left, std::span<std::byte>{lhs_bytes.data(), mtype.size()}));
             ATELIER_TRY(fold_value_bytes(node.right, std::span<std::byte>{rhs_bytes.data(), mtype.size()}));
-            bool all_equal = true;
-            bool any_unequal = false;
-            for (std::size_t lane = 0; lane < mtype.components(); ++lane) {
-                if (mtype.precision == math::Precision::f64) {
-                    double a{};
-                    double b{};
-                    std::memcpy(&a, lhs_bytes.data() + lane * 8, 8);
-                    std::memcpy(&b, rhs_bytes.data() + lane * 8, 8);
-                    all_equal &= (a == b);
-                    any_unequal |= !(a == b);
-                } else {
-                    float a{};
-                    float b{};
-                    std::memcpy(&a, lhs_bytes.data() + lane * 4, 4);
-                    std::memcpy(&b, rhs_bytes.data() + lane * 4, 4);
-                    all_equal &= (a == b);
-                    any_unequal |= !(a == b);
-                }
-            }
-            return node.operation == Operation::equal ? (all_equal ? 1u : 0u) : (any_unequal ? 1u : 0u);
+            return mtype.precision == math::Precision::f64
+                       ? compare_math_lanes<double>(node.operation, lhs_bytes.data(), rhs_bytes.data(),
+                                                    mtype.components())
+                       : compare_math_lanes<float>(node.operation, lhs_bytes.data(), rhs_bytes.data(),
+                                                   mtype.components());
         }
         ATELIER_TRY_BIND(left_result, fold_constant(node.left));
         const auto left = *left_result;
@@ -1759,6 +1744,39 @@ private:
     }
 
     template <class T>
+    static void eval_norm_lanes(std::span<const T> input, bool normalize, std::span<T> out) noexcept {
+        T maximum = T{0};
+        bool finite = true;
+        bool has_nan = false;
+        for (const T raw : input) {
+            const T x = std::abs(raw);
+            if (x > maximum)
+                maximum = x;
+            finite = finite && (x <= std::numeric_limits<T>::max());
+            has_nan = has_nan || std::isnan(x);
+        }
+        const bool valid = finite && (maximum > T{0});
+        const T divisor = valid ? maximum : T{1};
+        std::array<T, 16> scaled{};
+        T sum = T{0};
+        for (std::size_t i = 0; i < input.size(); ++i) {
+            scaled[i] = (valid ? input[i] : T{0}) / divisor;
+            sum += scaled[i] * scaled[i];
+        }
+        const T magnitude = std::sqrt(sum);
+        if (normalize) {
+            const T norm_divisor = valid ? magnitude : T{1};
+            for (std::size_t i = 0; i < input.size(); ++i)
+                out[i] = scaled[i] / norm_divisor;
+            return;
+        }
+        T result = finite ? (maximum * magnitude) : std::numeric_limits<T>::infinity();
+        if (has_nan && maximum != std::numeric_limits<T>::infinity())
+            result = std::numeric_limits<T>::quiet_NaN();
+        out[0] = result;
+    }
+
+    template <class T>
     static std::expected<void, Diagnostic> eval_math_lanes(MathOperation op, std::size_t lanes,
                                                            std::span<const std::array<T, 16>> args,
                                                            std::span<std::byte> out, SourcePosition pos) {
@@ -1789,24 +1807,24 @@ private:
                 case Op::fract: {
                     const T diff = a - std::floor(a);
                     const T max_under_one = std::nextafter(T{1}, T{0});
-                    res[i] = std::isnan(diff) ? diff : (diff > max_under_one ? max_under_one : diff);
+                    res[i] = (max_under_one < diff) ? max_under_one : diff;
                     break;
                 }
                 case Op::abs:
                     res[i] = std::abs(a);
                     break;
                 case Op::sign:
-                    res[i] = std::isnan(a) ? a : (a > T{0} ? T{1} : (a < T{0} ? T{-1} : T{0}));
+                    res[i] = a > T{0} ? T{1} : (a < T{0} ? T{-1} : a);
                     break;
                 case Op::min:
-                    res[i] = std::isnan(a) ? a : (std::isnan(b) ? b : (a < b ? a : b));
+                    res[i] = (b < a) ? b : a;
                     break;
                 case Op::max:
-                    res[i] = std::isnan(a) ? a : (std::isnan(b) ? b : (a > b ? a : b));
+                    res[i] = (a < b) ? b : a;
                     break;
                 case Op::clamp: {
-                    const T hi = std::isnan(a) ? a : (std::isnan(c) ? c : (a < c ? a : c));
-                    res[i] = std::isnan(hi) ? hi : (std::isnan(b) ? b : (hi > b ? hi : b));
+                    const T m = (c < a) ? c : a;
+                    res[i] = (b < m) ? m : b;
                     break;
                 }
                 case Op::cwise_mul:
@@ -1816,20 +1834,21 @@ private:
                     res[i] = a / b;
                     break;
                 case Op::radians:
-                    res[i] = a * (std::numbers::pi_v<T> / T{180});
+                    res[i] = a * static_cast<T>(std::numbers::pi_v<double> / 180.0);
                     break;
                 case Op::degrees:
-                    res[i] = a * (T{180} / std::numbers::pi_v<T>);
+                    res[i] = a * static_cast<T>(180.0 / std::numbers::pi_v<double>);
                     break;
                 case Op::lerp:
                     res[i] = a * (T{1} - c) + b * c;
                     break;
                 case Op::step:
-                    res[i] = (std::isnan(a) || std::isnan(b)) ? (T{0} / T{0}) : (b < a ? T{0} : T{1});
+                    res[i] = (b < a) ? T{0} : T{1};
                     break;
                 case Op::smoothstep: {
                     const T raw = (c - a) / (b - a);
-                    const T t = std::isnan(raw) ? raw : (raw < T{0} ? T{0} : (raw > T{1} ? T{1} : raw));
+                    const T m = (T{1} < raw) ? T{1} : raw;
+                    const T t = (T{0} < m) ? m : T{0};
                     res[i] = t * t * (T{3} - T{2} * t);
                     break;
                 }
@@ -1849,7 +1868,12 @@ private:
                     res[i] = std::log(a);
                     break;
                 case Op::pow:
-                    res[i] = std::pow(a, b);
+                    if (b == T{0} || a == T{1})
+                        res[i] = T{1};
+                    else if (std::isnan(a) || std::isnan(b) || a < T{0})
+                        res[i] = std::numeric_limits<T>::quiet_NaN();
+                    else
+                        res[i] = std::pow(std::abs(a), b);
                     break;
                 default:
                     return reject(pos, "This math operation is not supported in compile-time constant initializers.");
@@ -1881,14 +1905,10 @@ private:
             write_out(1);
             return {};
         }
-        case Op::length: {
-            T sum{};
-            for (std::size_t i = 0; i < lanes; ++i)
-                sum += args[0][i] * args[0][i];
-            res[0] = std::sqrt(sum);
+        case Op::length:
+            eval_norm_lanes<T>(std::span<const T>{args[0].data(), lanes}, false, std::span<T>{res.data(), 1});
             write_out(1);
             return {};
-        }
         case Op::distance_squared: {
             T sum{};
             for (std::size_t i = 0; i < lanes; ++i) {
@@ -1900,30 +1920,17 @@ private:
             return {};
         }
         case Op::distance: {
-            T sum{};
-            for (std::size_t i = 0; i < lanes; ++i) {
-                const T d = args[1][i] - args[0][i];
-                sum += d * d;
-            }
-            res[0] = std::sqrt(sum);
+            std::array<T, 16> diff{};
+            for (std::size_t i = 0; i < lanes; ++i)
+                diff[i] = args[1][i] - args[0][i];
+            eval_norm_lanes<T>(std::span<const T>{diff.data(), lanes}, false, std::span<T>{res.data(), 1});
             write_out(1);
             return {};
         }
-        case Op::normalize_or_zero: {
-            T sum{};
-            for (std::size_t i = 0; i < lanes; ++i)
-                sum += args[0][i] * args[0][i];
-            const T len = std::sqrt(sum);
-            if (std::isfinite(len) && len > T{0}) {
-                for (std::size_t i = 0; i < lanes; ++i)
-                    res[i] = args[0][i] / len;
-            } else if (!std::isfinite(sum)) {
-                for (std::size_t i = 0; i < lanes; ++i)
-                    res[i] = T{0} / T{0};
-            }
+        case Op::normalize_or_zero:
+            eval_norm_lanes<T>(std::span<const T>{args[0].data(), lanes}, true, std::span<T>{res.data(), lanes});
             write_out(lanes);
             return {};
-        }
         case Op::conjugate:
             res[0] = -args[0][0];
             res[1] = -args[0][1];
@@ -1931,6 +1938,42 @@ private:
             res[3] = args[0][3];
             write_out(4);
             return {};
+        case Op::rotate: {
+            const T qx = args[0][0];
+            const T qy = args[0][1];
+            const T qz = args[0][2];
+            const T qw = args[0][3];
+            const T vx = args[1][0];
+            const T vy = args[1][1];
+            const T vz = args[1][2];
+            const T tx = (qy * vz - qz * vy) * T{2};
+            const T ty = (qz * vx - qx * vz) * T{2};
+            const T tz = (qx * vy - qy * vx) * T{2};
+            res[0] = (vx + tx * qw) + (qy * tz - qz * ty);
+            res[1] = (vy + ty * qw) + (qz * tx - qx * tz);
+            res[2] = (vz + tz * qw) + (qx * ty - qy * tx);
+            write_out(3);
+            return {};
+        }
+        case Op::transpose:
+            for (std::size_t r = 0; r < 4; ++r)
+                for (std::size_t c = 0; c < 4; ++c)
+                    res[r * 4 + c] = args[0][c * 4 + r];
+            write_out(16);
+            return {};
+        case Op::transform_point:
+        case Op::transform_direction: {
+            const T vx = args[0][0];
+            const T vy = args[0][1];
+            const T vz = args[0][2];
+            for (std::size_t c = 0; c < 3; ++c) {
+                res[c] = (vx * args[1][c] + vy * args[1][4 + c]) + vz * args[1][8 + c];
+                if (op == Op::transform_point)
+                    res[c] += args[1][12 + c];
+            }
+            write_out(3);
+            return {};
+        }
         default:
             return reject(pos, "This math operation is not supported in compile-time constant initializers.");
         }
@@ -1955,35 +1998,24 @@ private:
                 return {};
             }
             ATELIER_TRY_BIND(b_bits, fold_constant(node.arguments[1]));
-            if (node.type == ValueType::i32) {
-                const auto a = std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(*a_bits));
-                const auto b = std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(*b_bits));
-                if (node.math_operation == Op::min) {
-                    write_scalar_bytes(node.type, static_cast<std::uint32_t>(std::min(a, b)), out.data());
-                    return {};
-                }
-                if (node.math_operation == Op::max) {
-                    write_scalar_bytes(node.type, static_cast<std::uint32_t>(std::max(a, b)), out.data());
-                    return {};
-                }
+            std::uint64_t c_raw{};
+            if (node.math_operation == Op::clamp) {
                 ATELIER_TRY_BIND(c_bits, fold_constant(node.arguments[2]));
-                const auto c = std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(*c_bits));
-                write_scalar_bytes(node.type, static_cast<std::uint32_t>(std::max(b, std::min(a, c))), out.data());
-                return {};
+                c_raw = *c_bits;
             }
-            const auto a = static_cast<std::uint32_t>(*a_bits);
-            const auto b = static_cast<std::uint32_t>(*b_bits);
-            if (node.math_operation == Op::min) {
-                write_scalar_bytes(node.type, std::min(a, b), out.data());
-                return {};
-            }
-            if (node.math_operation == Op::max) {
-                write_scalar_bytes(node.type, std::max(a, b), out.data());
-                return {};
-            }
-            ATELIER_TRY_BIND(c_bits, fold_constant(node.arguments[2]));
-            const auto c = static_cast<std::uint32_t>(*c_bits);
-            write_scalar_bytes(node.type, std::max(b, std::min(a, c)), out.data());
+            const auto eval_int = [&](auto a, auto b, auto c) {
+                const auto res = node.math_operation == Op::min   ? std::min(a, b)
+                                 : node.math_operation == Op::max ? std::max(a, b)
+                                                                  : std::max(b, std::min(a, c));
+                write_scalar_bytes(node.type, static_cast<std::uint32_t>(res), out.data());
+            };
+            if (node.type == ValueType::i32)
+                eval_int(std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(*a_bits)),
+                         std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(*b_bits)),
+                         std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(c_raw)));
+            else
+                eval_int(static_cast<std::uint32_t>(*a_bits), static_cast<std::uint32_t>(*b_bits),
+                         static_cast<std::uint32_t>(c_raw));
             return {};
         }
         if (node.math_operation == Op::is_finite) {
@@ -1994,18 +2026,8 @@ private:
             ATELIER_TRY(fold_value_bytes(node.arguments[0], std::span<std::byte>{arg_bytes.data(), sz}));
             const std::size_t lanes = m ? m.components() : 1;
             const bool f64 = m ? m.precision == math::Precision::f64 : arg_type == ValueType::f64;
-            bool ok = true;
-            for (std::size_t i = 0; i < lanes; ++i) {
-                if (f64) {
-                    double v{};
-                    std::memcpy(&v, arg_bytes.data() + i * 8, 8);
-                    ok &= std::isfinite(v);
-                } else {
-                    float v{};
-                    std::memcpy(&v, arg_bytes.data() + i * 4, 4);
-                    ok &= std::isfinite(v);
-                }
-            }
+            const bool ok =
+                f64 ? lanes_finite<double>(arg_bytes.data(), lanes) : lanes_finite<float>(arg_bytes.data(), lanes);
             write_scalar_bytes(ValueType::boolean, ok ? 1u : 0u, out.data());
             return {};
         }
@@ -2016,40 +2038,66 @@ private:
         const bool is_f64 = (res_math && res_math.precision == math::Precision::f64) ||
                             (first_math && first_math.precision == math::Precision::f64) ||
                             first_type == ValueType::f64 || node.type == ValueType::f64;
-        if (is_f64) {
-            std::array<std::array<double, 16>, 3> unpacked{};
-            for (std::size_t a = 0; a < node.arguments.size(); ++a) {
-                const auto atype = function_.expressions[node.arguments[a]].type;
-                const auto amath = math_type(atype);
-                std::array<std::byte, 128> raw{};
-                ATELIER_TRY(fold_value_bytes(node.arguments[a], std::span<std::byte>{raw.data(), value_size(atype)}));
-                if (amath) {
-                    std::memcpy(unpacked[a].data(), raw.data(), amath.components() * sizeof(double));
-                } else {
-                    double scalar_val{};
-                    std::memcpy(&scalar_val, raw.data(), sizeof(double));
-                    unpacked[a].fill(scalar_val);
-                }
-            }
-            return eval_math_lanes<double>(node.math_operation, lanes,
-                                           std::span{unpacked.data(), node.arguments.size()}, out, node.position);
+        return is_f64 ? fold_float_math_intrinsic<double>(node, lanes, out)
+                      : fold_float_math_intrinsic<float>(node, lanes, out);
+    }
+
+    template <class T>
+    static std::uint64_t compare_math_lanes(Operation op, const std::byte* lhs, const std::byte* rhs,
+                                            std::size_t lanes) noexcept {
+        bool all_equal = true;
+        bool any_unequal = false;
+        for (std::size_t lane = 0; lane < lanes; ++lane) {
+            T a{};
+            T b{};
+            std::memcpy(&a, lhs + lane * sizeof(T), sizeof(T));
+            std::memcpy(&b, rhs + lane * sizeof(T), sizeof(T));
+            all_equal &= (a == b);
+            any_unequal |= !(a == b);
         }
-        std::array<std::array<float, 16>, 3> unpacked{};
+        return op == Operation::equal ? (all_equal ? 1u : 0u) : (any_unequal ? 1u : 0u);
+    }
+
+    template <class T>
+    static bool lanes_finite(const std::byte* bytes, std::size_t lanes) noexcept {
+        bool ok = true;
+        for (std::size_t i = 0; i < lanes; ++i) {
+            T v{};
+            std::memcpy(&v, bytes + i * sizeof(T), sizeof(T));
+            ok &= std::isfinite(v);
+        }
+        return ok;
+    }
+
+    template <class T>
+    static void negate_lanes(std::byte* bytes, std::size_t lanes) noexcept {
+        for (std::size_t i = 0; i < lanes; ++i) {
+            T v{};
+            std::memcpy(&v, bytes + i * sizeof(T), sizeof(T));
+            v = -v;
+            std::memcpy(bytes + i * sizeof(T), &v, sizeof(T));
+        }
+    }
+
+    template <class T>
+    std::expected<void, Diagnostic> fold_float_math_intrinsic(const Expression& node, std::size_t lanes,
+                                                              std::span<std::byte> out) {
+        std::array<std::array<T, 16>, 3> unpacked{};
         for (std::size_t a = 0; a < node.arguments.size(); ++a) {
             const auto atype = function_.expressions[node.arguments[a]].type;
             const auto amath = math_type(atype);
             std::array<std::byte, 128> raw{};
             ATELIER_TRY(fold_value_bytes(node.arguments[a], std::span<std::byte>{raw.data(), value_size(atype)}));
             if (amath) {
-                std::memcpy(unpacked[a].data(), raw.data(), amath.components() * sizeof(float));
+                std::memcpy(unpacked[a].data(), raw.data(), amath.components() * sizeof(T));
             } else {
-                float scalar_val{};
-                std::memcpy(&scalar_val, raw.data(), sizeof(float));
+                T scalar_val{};
+                std::memcpy(&scalar_val, raw.data(), sizeof(T));
                 unpacked[a].fill(scalar_val);
             }
         }
-        return eval_math_lanes<float>(node.math_operation, lanes, std::span{unpacked.data(), node.arguments.size()},
-                                      out, node.position);
+        return eval_math_lanes<T>(node.math_operation, lanes, std::span{unpacked.data(), node.arguments.size()}, out,
+                                  node.position);
     }
 
     template <class T>
@@ -2214,19 +2262,10 @@ private:
             if (node.kind == Expression::Kind::unary) {
                 ATELIER_TRY(fold_value_bytes(node.left, out));
                 if (node.operation == Operation::negate) {
-                    for (std::size_t i = 0; i < mtype.components(); ++i) {
-                        if (f64) {
-                            double v{};
-                            std::memcpy(&v, out.data() + i * 8, 8);
-                            v = -v;
-                            std::memcpy(out.data() + i * 8, &v, 8);
-                        } else {
-                            float v{};
-                            std::memcpy(&v, out.data() + i * 4, 4);
-                            v = -v;
-                            std::memcpy(out.data() + i * 4, &v, 4);
-                        }
-                    }
+                    if (f64)
+                        negate_lanes<double>(out.data(), mtype.components());
+                    else
+                        negate_lanes<float>(out.data(), mtype.components());
                 }
                 return {};
             }
@@ -3084,45 +3123,31 @@ private:
     std::expected<NodeId, Diagnostic> numeric_literal(const Token& token) {
         auto text = token.text;
         const bool is_hex = text.size() > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X');
-        const auto suffix = text.back();
-        const bool explicit_unsigned = suffix == 'u' || suffix == 'U';
-        if (explicit_unsigned)
-            text.remove_suffix(1);
-        if (is_hex || explicit_unsigned) {
-            int base = 10;
-            if (is_hex) {
-                text.remove_prefix(2);
-                base = 16;
+        if (!is_hex) {
+            const auto suffix = text.back();
+            const bool is_double = suffix == 'd' || suffix == 'D';
+            const bool is_float = suffix == 'f' || suffix == 'F';
+            if (is_float || is_double)
+                text.remove_suffix(1);
+            if (is_double) {
+                double value{};
+                const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+                if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || !std::isfinite(value))
+                    return reject(token.position, "Double literal is out of range or invalid.");
+                return literal(ValueType::f64, token.position, std::bit_cast<std::uint64_t>(value));
             }
-            std::uint32_t value{};
-            const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value, base);
-            if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
-                return reject(token.position, "Uint literal is outside 0..4294967295.");
-            return literal(ValueType::u32, token.position, value, explicit_unsigned);
+            if (is_float || text.find_first_of(".eE") != std::string_view::npos) {
+                float value{};
+                const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+                if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || !std::isfinite(value))
+                    return reject(token.position, "Float literal is out of range or invalid.");
+                return literal(ValueType::f32, token.position, std::bit_cast<std::uint32_t>(value));
+            }
         }
-        const bool is_double = suffix == 'd' || suffix == 'D';
-        const bool is_float = suffix == 'f' || suffix == 'F';
-        if (is_float || is_double)
-            text.remove_suffix(1);
-        if (is_double) {
-            double value{};
-            const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
-            if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || !std::isfinite(value))
-                return reject(token.position, "Double literal is out of range or invalid.");
-            return literal(ValueType::f64, token.position, std::bit_cast<std::uint64_t>(value));
-        }
-        if (is_float || text.find_first_of(".eE") != std::string_view::npos) {
-            float value{};
-            const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
-            if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || !std::isfinite(value))
-                return reject(token.position, "Float literal is out of range or invalid.");
-            return literal(ValueType::f32, token.position, std::bit_cast<std::uint32_t>(value));
-        }
-        std::uint32_t value{};
-        const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
-        if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
+        ParsedUint32Literal parsed{};
+        if (!parse_uint32_literal(token.text, parsed))
             return reject(token.position, "Uint literal is outside 0..4294967295.");
-        return literal(ValueType::u32, token.position, value);
+        return literal(ValueType::u32, token.position, parsed.value, parsed.explicit_unsigned);
     }
 
     std::expected<NodeId, Diagnostic> math_call(std::string_view name, SourcePosition position, ValueType constructed) {
@@ -3169,115 +3194,63 @@ private:
             result.arguments = std::move(arguments);
             return add(std::move(result));
         }
-        MathOperation operation;
-        std::size_t arity = 1;
-        if (name == "math.dot") {
-            operation = MathOperation::dot;
-            arity = 2;
-        } else if (name == "math.cross") {
-            operation = MathOperation::cross;
-            arity = 2;
-        } else if (name == "math.length")
-            operation = MathOperation::length;
-        else if (name == "math.length_squared")
-            operation = MathOperation::length_squared;
-        else if (name == "math.distance") {
-            operation = MathOperation::distance;
-            arity = 2;
-        } else if (name == "math.distance_squared") {
-            operation = MathOperation::distance_squared;
-            arity = 2;
-        } else if (name == "math.normalize_or_zero")
-            operation = MathOperation::normalize_or_zero;
-        else if (name == "math.fast_normalize_or_zero")
-            operation = MathOperation::fast_normalize_or_zero;
-        else if (name == "math.conjugate")
-            operation = MathOperation::conjugate;
-        else if (name == "math.slerp01") {
-            operation = MathOperation::slerp01;
-            arity = 3;
-        } else if (name == "math.fast_slerp01") {
-            operation = MathOperation::fast_slerp01;
-            arity = 3;
-        } else if (name == "math.rotate") {
-            operation = MathOperation::rotate;
-            arity = 2;
-        } else if (name == "math.transpose")
-            operation = MathOperation::transpose;
-        else if (name == "math.transform_point") {
-            operation = MathOperation::transform_point;
-            arity = 2;
-        } else if (name == "math.transform_direction") {
-            operation = MathOperation::transform_direction;
-            arity = 2;
-        } else if (name == "math.sqrt")
-            operation = MathOperation::square_root;
-        else if (name == "math.fast_rsqrt")
-            operation = MathOperation::fast_rsqrt;
-        else if (name == "math.floor")
-            operation = MathOperation::floor;
-        else if (name == "math.ceil")
-            operation = MathOperation::ceil;
-        else if (name == "math.trunc")
-            operation = MathOperation::trunc;
-        else if (name == "math.round")
-            operation = MathOperation::round;
-        else if (name == "math.fract")
-            operation = MathOperation::fract;
-        else if (name == "math.abs")
-            operation = MathOperation::abs;
-        else if (name == "math.sign")
-            operation = MathOperation::sign;
-        else if (name == "math.min") {
-            operation = MathOperation::min;
-            arity = 2;
-        } else if (name == "math.max") {
-            operation = MathOperation::max;
-            arity = 2;
-        } else if (name == "math.step") {
-            operation = MathOperation::step;
-            arity = 2;
-        } else if (name == "math.clamp") {
-            operation = MathOperation::clamp;
-            arity = 3;
-        } else if (name == "math.cwise_mul") {
-            operation = MathOperation::cwise_mul;
-            arity = 2;
-        } else if (name == "math.cwise_div") {
-            operation = MathOperation::cwise_div;
-            arity = 2;
-        } else if (name == "math.radians")
-            operation = MathOperation::radians;
-        else if (name == "math.degrees")
-            operation = MathOperation::degrees;
-        else if (name == "math.lerp") {
-            operation = MathOperation::lerp;
-            arity = 3;
-        } else if (name == "math.smoothstep") {
-            operation = MathOperation::smoothstep;
-            arity = 3;
-        } else if (name == "math.sin")
-            operation = MathOperation::sin;
-        else if (name == "math.cos")
-            operation = MathOperation::cos;
-        else if (name == "math.atan2") {
-            operation = MathOperation::atan2;
-            arity = 2;
-        } else if (name == "math.exp")
-            operation = MathOperation::exp;
-        else if (name == "math.log")
-            operation = MathOperation::log;
-        else if (name == "math.pow") {
-            operation = MathOperation::pow;
-            arity = 2;
-        } else if (name == "math.is_finite")
-            operation = MathOperation::is_finite;
-        else if (name == "math.as_uint")
-            operation = MathOperation::as_uint;
-        else if (name == "math.as_int")
-            operation = MathOperation::as_int;
-        else
+        struct MathIntrinsicEntry {
+            std::string_view name;
+
+            MathOperation operation;
+
+            std::uint8_t arity;
+        };
+        static constexpr std::array<MathIntrinsicEntry, 43> intrinsics{{
+            {"math.dot", MathOperation::dot, 2},
+            {"math.cross", MathOperation::cross, 2},
+            {"math.length", MathOperation::length, 1},
+            {"math.length_squared", MathOperation::length_squared, 1},
+            {"math.distance", MathOperation::distance, 2},
+            {"math.distance_squared", MathOperation::distance_squared, 2},
+            {"math.normalize_or_zero", MathOperation::normalize_or_zero, 1},
+            {"math.fast_normalize_or_zero", MathOperation::fast_normalize_or_zero, 1},
+            {"math.conjugate", MathOperation::conjugate, 1},
+            {"math.slerp01", MathOperation::slerp01, 3},
+            {"math.fast_slerp01", MathOperation::fast_slerp01, 3},
+            {"math.rotate", MathOperation::rotate, 2},
+            {"math.transpose", MathOperation::transpose, 1},
+            {"math.transform_point", MathOperation::transform_point, 2},
+            {"math.transform_direction", MathOperation::transform_direction, 2},
+            {"math.sqrt", MathOperation::square_root, 1},
+            {"math.fast_rsqrt", MathOperation::fast_rsqrt, 1},
+            {"math.floor", MathOperation::floor, 1},
+            {"math.ceil", MathOperation::ceil, 1},
+            {"math.trunc", MathOperation::trunc, 1},
+            {"math.round", MathOperation::round, 1},
+            {"math.fract", MathOperation::fract, 1},
+            {"math.abs", MathOperation::abs, 1},
+            {"math.sign", MathOperation::sign, 1},
+            {"math.min", MathOperation::min, 2},
+            {"math.max", MathOperation::max, 2},
+            {"math.step", MathOperation::step, 2},
+            {"math.clamp", MathOperation::clamp, 3},
+            {"math.cwise_mul", MathOperation::cwise_mul, 2},
+            {"math.cwise_div", MathOperation::cwise_div, 2},
+            {"math.radians", MathOperation::radians, 1},
+            {"math.degrees", MathOperation::degrees, 1},
+            {"math.lerp", MathOperation::lerp, 3},
+            {"math.smoothstep", MathOperation::smoothstep, 3},
+            {"math.sin", MathOperation::sin, 1},
+            {"math.cos", MathOperation::cos, 1},
+            {"math.atan2", MathOperation::atan2, 2},
+            {"math.exp", MathOperation::exp, 1},
+            {"math.log", MathOperation::log, 1},
+            {"math.pow", MathOperation::pow, 2},
+            {"math.is_finite", MathOperation::is_finite, 1},
+            {"math.as_uint", MathOperation::as_uint, 1},
+            {"math.as_int", MathOperation::as_int, 1},
+        }};
+        const auto match = std::ranges::find(intrinsics, name, &MathIntrinsicEntry::name);
+        if (match == intrinsics.end())
             return reject(position, "Unknown built-in math operation '" + std::string(name) + "'.");
+        const auto operation = match->operation;
+        const std::size_t arity = match->arity;
         if (arguments.size() != arity)
             return reject(position, "Math operation argument count mismatch.");
         const auto first = function_.expressions[arguments[0]].type;

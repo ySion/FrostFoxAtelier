@@ -76,15 +76,10 @@ public:
     llvm::Value* binary(language::Operation operation, llvm::Value* left, llvm::Value* right, math::Type left_type,
                         math::Type right_type) {
         using Op = language::Operation;
-        if (operation == Op::equal || operation == Op::not_equal) {
-            auto* comparisons =
-                operation == Op::equal ? ir_.CreateFCmpOEQ(left, right) : ir_.CreateFCmpUNE(left, right);
-            llvm::Value* result = ir_.getInt1(operation == Op::equal);
-            for (unsigned i = 0; i < left_type.components(); ++i)
-                result = operation == Op::equal ? ir_.CreateAnd(result, lane(comparisons, i))
-                                                : ir_.CreateOr(result, lane(comparisons, i));
-            return result;
-        }
+        if (operation == Op::equal)
+            return ir_.CreateAndReduce(ir_.CreateFCmpOEQ(left, right));
+        if (operation == Op::not_equal)
+            return ir_.CreateOrReduce(ir_.CreateFCmpUNE(left, right));
         if (operation == Op::multiply && left_type && right_type) {
             if (left_type.shape == math::Shape::quaternion)
                 return quaternion_product(left, right);
@@ -767,27 +762,24 @@ private:
         const auto count = type->getNumElements();
         auto* zero = llvm::ConstantFP::get(scalar, 0);
         auto* one = llvm::ConstantFP::get(scalar, 1);
-        auto* limit = llvm::ConstantFP::get(scalar, scalar->isDoubleTy() ? std::numeric_limits<double>::max()
-                                                                         : std::numeric_limits<float>::max());
+        const double max_finite =
+            scalar->isDoubleTy() ? std::numeric_limits<double>::max() : std::numeric_limits<float>::max();
         llvm::Value* maximum = zero;
-        llvm::Value* finite = ir_.getTrue();
-        llvm::Value* has_nan = ir_.getFalse();
         auto* magnitudes = intrinsic(llvm::Intrinsic::fabs, input);
         for (unsigned i = 0; i < count; ++i) {
             auto* x = lane(magnitudes, i);
             maximum = ir_.CreateSelect(ir_.CreateFCmpOGT(x, maximum), x, maximum);
-            finite = ir_.CreateAnd(finite, ir_.CreateFCmpOLE(x, limit));
-            has_nan = ir_.CreateOr(has_nan, ir_.CreateFCmpUNO(x, x));
         }
+        auto* finite = ir_.CreateAndReduce(ir_.CreateFCmpOLE(magnitudes, llvm::ConstantFP::get(type, max_finite)));
         auto* valid = ir_.CreateAnd(finite, ir_.CreateFCmpOGT(maximum, zero));
         auto* divisor = ir_.CreateVectorSplat(count, ir_.CreateSelect(valid, maximum, one));
         auto* scaled = ir_.CreateFDiv(ir_.CreateSelect(valid, input, llvm::Constant::getNullValue(type)), divisor);
         auto* magnitude = intrinsic(llvm::Intrinsic::sqrt, dot(scaled, scaled));
         if (normalize)
             return ir_.CreateFDiv(scaled, ir_.CreateVectorSplat(count, ir_.CreateSelect(valid, magnitude, one)));
-        auto* result = ir_.CreateFMul(maximum, magnitude);
-        result = ir_.CreateSelect(finite, result, llvm::ConstantFP::getInfinity(scalar));
         auto* infinity = llvm::ConstantFP::getInfinity(scalar);
+        auto* result = ir_.CreateSelect(finite, ir_.CreateFMul(maximum, magnitude), infinity);
+        auto* has_nan = ir_.CreateOrReduce(ir_.CreateFCmpUNO(magnitudes, magnitudes));
         return ir_.CreateSelect(ir_.CreateAnd(has_nan, ir_.CreateFCmpONE(maximum, infinity)),
                                 llvm::ConstantFP::getNaN(scalar), result);
     }

@@ -168,8 +168,19 @@ Result<void> validate_emitted_polygons(const Geometry& geometry) {
 template <Element T>
 Result<void> set_output_column(const Node& self, const String& name, Layer layer, const Array<T>& values,
                                std::uint32_t output_port) noexcept {
+    if (name.view() == StringView{"P"})
+        return error(ErrorCode::invocation_failed,
+                     "Point attribute P is set by emit_points, emit_polylines, emit_polygons, or emit_quads.");
     ATELIER_TRY_BIND(out, target_output(self, output_port));
     return builder_result((*out)->set(name, layer, SharedArray<T>{Array<T>{values}}));
+}
+
+Result<PrimitiveRange> checked_primitive(const Geometry& geometry, std::uint32_t primitive) noexcept {
+    if (primitive >= geometry.count(Layer::primitive))
+        return std::unexpected(Error{ErrorCode::invocation_failed,
+                                     "Primitive index " + std::to_string(primitive) + " is out of bounds.",
+                                     std::nullopt, ErrorElement{"primitive", primitive}});
+    return geometry.primitive(primitive);
 }
 
 } // namespace
@@ -181,26 +192,17 @@ Result<std::uint32_t> Node::count_elements(const Geometry& geometry, Layer layer
 }
 
 Result<PrimitiveSpan> Node::primitive_span(const Geometry& geometry, std::uint32_t primitive) const noexcept {
-    if (primitive >= geometry.count(Layer::primitive))
-        return std::unexpected(Error{ErrorCode::invocation_failed,
-                                     "Primitive index " + std::to_string(primitive) + " is out of bounds.",
-                                     std::nullopt, ErrorElement{"primitive", primitive}});
-    const auto range = geometry.primitive(primitive);
-    return PrimitiveSpan{range.first, range.count,
-                         range.kind == PrimitiveKind::polyline ? PrimitiveType::polyline : PrimitiveType::polygon};
+    ATELIER_TRY_BIND(range, checked_primitive(geometry, primitive));
+    return PrimitiveSpan{range->first, range->count,
+                         range->kind == PrimitiveKind::polyline ? PrimitiveType::polyline : PrimitiveType::polygon};
 }
 
 Result<void> Node::read_primitive_points(const Geometry& geometry, std::uint32_t primitive,
                                          Array<std::uint32_t>& points) const noexcept {
-    if (primitive >= geometry.count(Layer::primitive))
-        return std::unexpected(Error{ErrorCode::invocation_failed,
-                                     "Primitive index " + std::to_string(primitive) + " is out of bounds.",
-                                     std::nullopt, ErrorElement{"primitive", primitive}});
-    const auto range = geometry.primitive(primitive);
-    const auto span = geometry.vertex_points().subspan(range.first, range.count);
-    points.resize(span.size());
-    if (!span.empty())
-        std::memcpy(points.data(), span.data(), span.size_bytes());
+    ATELIER_TRY_BIND(range, checked_primitive(geometry, primitive));
+    const auto span = geometry.vertex_points().subspan(range->first, range->count);
+    points.clear();
+    points.append({span.data(), span.size()});
     return {};
 }
 
@@ -224,11 +226,8 @@ Result<void> Node::read_curve_slices(const Geometry& curves, std::uint32_t primi
 Result<void> Node::emit_polylines(const Array<math::Vector3>& positions, const Array<std::uint32_t>& vertex_points,
                                   const Array<std::uint32_t>& offsets, std::uint32_t output_port) const noexcept {
     ATELIER_TRY_BIND(out, target_output(*this, output_port));
-    Array<PrimitiveKind> kinds;
-    kinds.resize(offsets.empty() ? 0 : offsets.size() - 1, PrimitiveKind::polyline);
-    ATELIER_TRY_BIND(
-        built, builder_result(Geometry::primitives(Array<math::Vector3>{positions}, Array<std::uint32_t>{vertex_points},
-                                                   offsets, std::move(kinds))));
+    ATELIER_TRY_BIND(built, builder_result(Geometry::polylines(Array<math::Vector3>{positions},
+                                                               Array<std::uint32_t>{vertex_points}, offsets)));
     **out = std::move(*built);
     return {};
 }
@@ -500,6 +499,7 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
         std::string_view port;
 
         bool optional{};
+
         std::string_view purpose;
     };
     std::vector<ParsedMeta> parsed_meta(signature->parameters.size());
@@ -538,7 +538,7 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
     if (plan.uses_primary_stream) {
         plan.ports.inputs.push_back("input");
         plan.ports.multiple.push_back(false);
-        explicit_input_port.push_back(true);
+        explicit_input_port.push_back(false);
         plan.ports.outputs.push_back("output");
     }
 
@@ -727,7 +727,7 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
     // describes only its own binding; an explicit Port owns the port-wide description.
     if (port_descriptions) {
         for (std::size_t i = 0; i < plan.ports.inputs.size(); ++i) {
-            if (explicit_input_port[i])
+            if (explicit_input_port[i] || (plan.uses_primary_stream && i == 0))
                 continue;
             const auto& port = plan.ports.inputs[i];
             const auto binding = std::ranges::find(parsed_meta, port, &ParsedMeta::port);

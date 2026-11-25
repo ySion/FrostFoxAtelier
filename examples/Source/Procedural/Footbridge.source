@@ -9,7 +9,7 @@ void game.prepare_bridge_axes(game.BridgeAxes& axes, uint count) {
     axes.points.reserve(count * 2);
     axes.vertices.reserve(count * 2);
     axes.offsets.reserve(count + 1);
-    axes.offsets.add(uint(0));
+    axes.offsets.add(0u);
 }
 
 void game.add_bridge_axis(game.BridgeAxes& axes, vector3 a, vector3 b) {
@@ -72,7 +72,8 @@ class game.FootbridgeLayout : procedural.Node {
         for (uint i = 1; i < n; i += 1) {
             const vector3 p = stations[i];
             if (!(math.is_finite(p) && p.x > stations[i - 1].x && p.y == start.y && p.z == start.z)) {
-                fail("FootbridgeLayout stations must advance along +X on a single horizontal centreline.");
+                fail("FootbridgeLayout stations must advance along +X on a single horizontal centreline.",
+                     procedural.Layer::point, i);
             }
         }
 

@@ -105,8 +105,10 @@ int main() {
             struct Params { float scale; };
             Params defaults() { Params p; p.scale = 2.0f; return p; }
             material.Output shade(material.Context c, Params p) {
-                const vector3 splat = vector3(p.scale);
-                const vector3 prod = math.cwise_div(math.cwise_mul(splat, vector3(1.5f, 3.0f, 4.5f)), 2.0f);
+                const float clamped_s = math.clamp(p.scale, 0.0f, 3.0f);
+                const float half_s = math.cwise_div(clamped_s, 1.0f);
+                const vector3 splat = vector3(half_s);
+                const vector3 prod = math.clamp(math.cwise_div(math.cwise_mul(splat, vector3(1.5f, 3.0f, 4.5f)), 2.0f), 0.0f, 5.0f);
                 const float d2 = math.distance_squared(vector2(1.0f, 2.0f), vector2(4.0f, 6.0f));
                 const float len2 = math.length_squared(vector3(1.0f, 2.0f, 2.0f));
                 const float dist = math.distance(vector2(0.0f), vector2(3.0f, 4.0f));
@@ -120,7 +122,9 @@ int main() {
         const auto math_hlsl = take(math_mat->hlsl("test_math"));
         const auto math_cov = take(math_mat->hlsl_coverage("test_math"));
         const auto math_fp = take(math_mat->hlsl_footprint("test_math"));
-        require(math_hlsl.contains("((float3)(") && math_cov.contains("float ms_coverage(") &&
+        require(math_hlsl.contains("float ms_clamp(float a,float b,float c)") &&
+                    math_hlsl.contains("float3 ms_clamp(float3 a,float3 b,float3 c)") &&
+                    math_hlsl.contains(",((float3)(") && math_cov.contains("float ms_coverage(") &&
                     math_fp.contains("(float3)(") && math_fp.contains("ms_dround(") &&
                     math_fp.contains("ms_ddistance_squared("),
                 "Material HLSL/coverage/footprint failed to emit DXC-safe scalar splat or Batch 1 math helpers.");

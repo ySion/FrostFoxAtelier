@@ -2,7 +2,33 @@
 #include "language/source.hpp"
 #include "foundation/result.hpp"
 
+#include <charconv>
+
 namespace atelier::language::detail {
+struct ParsedUint32Literal {
+    std::uint32_t value{};
+
+    bool explicit_unsigned{};
+};
+
+inline bool parse_uint32_literal(std::string_view text, ParsedUint32Literal& out) noexcept {
+    out = {};
+    if (text.empty())
+        return false;
+    out.explicit_unsigned = text.back() == 'u' || text.back() == 'U';
+    if (out.explicit_unsigned)
+        text.remove_suffix(1);
+    int base = 10;
+    if (text.size() > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
+        text.remove_prefix(2);
+        base = 16;
+    }
+    if (text.empty() || text.front() == '+' || text.front() == '-')
+        return false;
+    const auto converted = std::from_chars(text.data(), text.data() + text.size(), out.value, base);
+    return converted.ec == std::errc{} && converted.ptr == text.data() + text.size();
+}
+
 inline std::unexpected<Diagnostic> reject(SourcePosition position, std::string message) {
     return std::unexpected(Diagnostic{position, std::move(message)});
 }
@@ -149,13 +175,9 @@ public:
                 while (digit(peek()))
                     advance();
             }
-            if (is_float) {
-                if (peek() == 'f' || peek() == 'F' || peek() == 'd' || peek() == 'D')
-                    advance();
-            } else if (peek() == 'f' || peek() == 'F' || peek() == 'd' || peek() == 'D' || peek() == 'u' ||
-                       peek() == 'U') {
+            if (peek() == 'f' || peek() == 'F' || peek() == 'd' || peek() == 'D' ||
+                (!is_float && (peek() == 'u' || peek() == 'U')))
                 advance();
-            }
             if (letter(peek()) || digit(peek()))
                 return reject(start, "Invalid numeric literal suffix.");
             return token(Token::Kind::number, start);

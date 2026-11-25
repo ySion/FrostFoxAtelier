@@ -207,27 +207,15 @@ std::expected<TypeDeclaration, Diagnostic> detail::parse_type_declaration(Tokens
                 ATELIER_TRY_BIND(number, tokens.consume());
                 if (number->kind != Token::Kind::number)
                     return reject(number->position, "Enum values require a 32-bit integer literal.");
-                auto text = number->text;
-                const bool explicit_unsigned = !text.empty() && (text.back() == 'u' || text.back() == 'U');
-                if (explicit_unsigned) {
-                    if (*negative)
-                        return reject(number->position,
-                                      "Unary minus cannot be applied to an unsigned integer literal.");
-                    text.remove_suffix(1);
-                }
-                int base = 10;
-                if (text.size() > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
-                    text.remove_prefix(2);
-                    base = 16;
-                }
-                std::uint64_t magnitude{};
-                const auto converted = std::from_chars(text.data(), text.data() + text.size(), magnitude, base);
-                if (converted.ec != std::errc{} || converted.ptr != text.data() + text.size() ||
-                    magnitude > 4294967295ull)
+                ParsedUint32Literal parsed{};
+                const bool valid_uint = parse_uint32_literal(number->text, parsed);
+                if (*negative && parsed.explicit_unsigned)
+                    return reject(number->position, "Unary minus cannot be applied to an unsigned integer literal.");
+                if (!valid_uint)
                     return reject(number->position, "Enum values require a 32-bit integer literal.");
-                if (explicit_unsigned && result.signed_enum)
+                if (parsed.explicit_unsigned && result.signed_enum)
                     return reject(number->position, "Unsigned integer literal requires a ': uint' enum.");
-                value = *negative ? -static_cast<std::int64_t>(magnitude) : static_cast<std::int64_t>(magnitude);
+                value = *negative ? -static_cast<std::int64_t>(parsed.value) : static_cast<std::int64_t>(parsed.value);
             }
             if (value < (result.signed_enum ? -2147483648ll : 0ll) ||
                 value > (result.signed_enum ? 2147483647ll : 4294967295ll))
