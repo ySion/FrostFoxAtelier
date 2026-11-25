@@ -1549,6 +1549,8 @@ std::expected<MaterialModule, Diagnostic> compile_material(std::string_view name
             case Kind::texture_orientation:
                 node.offset = slot_offset;
                 break;
+            case Kind::constant_data:
+                return reject(node.position, "Material constants require scalar or float vector types.");
             default:
                 return reject(node.position, "Operation is not part of the pure material subset.");
             }

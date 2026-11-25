@@ -94,6 +94,8 @@ struct FunctionDeclaration {
     std::string signature;
 
     std::vector<std::string> parameters;
+
+    std::string description{};
 };
 
 // A top-level struct, enum, constant or function. uses names every other top-level
@@ -114,6 +116,8 @@ struct TopLevel {
     std::vector<std::uint32_t> uses;
 
     std::string property; // eligible accessor projection for the complete project type-name check
+
+    std::string description{};
 };
 
 struct ClassDeclaration {

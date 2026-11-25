@@ -20,6 +20,65 @@ std::expected<std::string, Diagnostic> detail::parse_presentation_text(Tokens& t
     return text;
 }
 
+std::expected<std::string_view, Diagnostic> detail::peek_attributed_keyword(const Tokens& tokens) {
+    auto probe = tokens;
+    while (probe.token_.text == "[") {
+        ATELIER_TRY(probe.consume());
+        while (probe.token_.text != "]") {
+            if (probe.token_.kind == Token::Kind::end || probe.token_.text == "[")
+                return reject(probe.token_.position, "Expected ']' to close attribute list.");
+            ATELIER_TRY(probe.consume());
+        }
+        ATELIER_TRY(probe.consume());
+    }
+    return probe.token_.text;
+}
+
+std::expected<std::string, Diagnostic> detail::parse_description_attribute(Tokens& tokens,
+                                                                           std::string_view target_kind) {
+    std::string description;
+    bool seen_desc = false;
+    while (tokens.token_.text == "[") {
+        ATELIER_TRY(tokens.consume());
+        for (;;) {
+            ATELIER_TRY_BIND(option, tokens.identifier());
+            if (option->text != "DESC")
+                return reject(option->position,
+                              "Unknown " + std::string(target_kind) + " attribute: " + std::string(option->text));
+            if (seen_desc)
+                return reject(option->position, "Duplicate DESC attribute.");
+            ATELIER_TRY_ASSIGN(description, parse_presentation_text(tokens, *option));
+            seen_desc = true;
+            ATELIER_TRY_BIND(more, tokens.accept(","));
+            if (!*more)
+                break;
+        }
+        ATELIER_TRY(tokens.expect("]"));
+    }
+    return description;
+}
+
+std::expected<void, Diagnostic> detail::skip_constant_initializer(Tokens& tokens) {
+    std::size_t brace_depth = 0;
+    for (;;) {
+        if (brace_depth == 0) {
+            ATELIER_TRY_BIND(closed, tokens.accept(";"));
+            if (*closed)
+                return {};
+        }
+        if (tokens.token_.kind == Token::Kind::end)
+            return reject(tokens.token_.position, "Expected ';' to close a module constant.");
+        if (tokens.token_.text == "{") {
+            ++brace_depth;
+        } else if (tokens.token_.text == "}") {
+            if (brace_depth == 0)
+                return reject(tokens.token_.position, "Expected ';' to close a module constant.");
+            --brace_depth;
+        }
+        ATELIER_TRY(tokens.consume());
+    }
+}
+
 std::expected<TypeName, Diagnostic> detail::parse_type_name(Tokens& tokens) {
     TypeName result;
     for (;;) {
@@ -47,18 +106,41 @@ std::expected<TypeName, Diagnostic> detail::parse_type_name(Tokens& tokens) {
 std::expected<TypeDeclaration, Diagnostic> detail::parse_type_declaration(Tokens& tokens) {
     TypeDeclaration result;
     result.position = tokens.token_.position;
-    ATELIER_TRY_BIND(attributed, tokens.accept("["));
-    if (*attributed) {
-        ATELIER_TRY_BIND(option, tokens.identifier());
-        if (option->text != "Flags")
-            return reject(option->position, "Unknown enum attribute: " + std::string(option->text));
-        if (tokens.token_.text == "=")
-            return reject(option->position, "Flags is a flag without a value.");
-        result.flags = true;
-        ATELIER_TRY(tokens.expect("]"));
-        if (tokens.token_.text != "enum")
-            return reject(result.position, "[Flags] applies to enum declarations only.");
+    std::string_view target_keyword = tokens.token_.text;
+    if (target_keyword == "[") {
+        ATELIER_TRY_ASSIGN(target_keyword, peek_attributed_keyword(tokens));
     }
+    bool seen_flags = false;
+    bool seen_desc = false;
+    while (tokens.token_.text == "[") {
+        ATELIER_TRY(tokens.consume());
+        for (;;) {
+            ATELIER_TRY_BIND(option, tokens.identifier());
+            if (option->text == "Flags") {
+                if (seen_flags)
+                    return reject(option->position, "Duplicate Flags attribute.");
+                if (tokens.token_.text == "=")
+                    return reject(option->position, "Flags is a flag without a value.");
+                result.flags = true;
+                seen_flags = true;
+            } else if (option->text == "DESC") {
+                if (seen_desc)
+                    return reject(option->position, "Duplicate DESC attribute.");
+                ATELIER_TRY_ASSIGN(result.description, parse_presentation_text(tokens, *option));
+                seen_desc = true;
+            } else {
+                const std::string_view kind_label = target_keyword == "enum" ? "enum" : "struct";
+                return reject(option->position,
+                              "Unknown " + std::string(kind_label) + " attribute: " + std::string(option->text));
+            }
+            ATELIER_TRY_BIND(more, tokens.accept(","));
+            if (!*more)
+                break;
+        }
+        ATELIER_TRY(tokens.expect("]"));
+    }
+    if (result.flags && tokens.token_.text != "enum")
+        return reject(result.position, "[Flags] applies to enum declarations only.");
     ATELIER_TRY_BIND(enumeration, tokens.accept("enum"));
     result.enumeration = *enumeration;
     if (!result.enumeration) {
@@ -159,12 +241,14 @@ std::expected<TypeDeclaration, Diagnostic> detail::parse_type_declaration(Tokens
                 ATELIER_TRY(tokens.expect(","));
             }
         } else {
+            ATELIER_TRY_BIND(field_desc, parse_description_attribute(tokens, "struct field"));
             ATELIER_TRY_BIND(type, parse_type_name(tokens));
             ATELIER_TRY_BIND(name, tokens.identifier());
             ATELIER_TRY(tokens.expect(";"));
             if (std::ranges::any_of(result.fields, [&](const auto& field) { return field.first == name->text; }))
                 return reject(name->position, "Duplicate struct field name.");
             result.fields.emplace_back(name->text, std::move(*type));
+            result.field_descriptions.push_back(std::move(*field_desc));
         }
     }
     if (!result.enumeration) {
@@ -315,7 +399,14 @@ std::expected<std::vector<TypeDeclaration>, Diagnostic> collect_declarations(std
     auto& tokens = *created;
     std::vector<TypeDeclaration> result;
     while (tokens.token_.kind != Token::Kind::end) {
-        if (tokens.token_.text == "[" || tokens.token_.text == "enum" || tokens.token_.text == "struct") {
+        bool is_type = tokens.token_.text == "enum" || tokens.token_.text == "struct";
+        if (tokens.token_.text == "[") {
+            ATELIER_TRY_BIND(target, peek_attributed_keyword(tokens));
+            if (*target == "const")
+                return reject(tokens.token_.position, "Attributes do not apply to module constants.");
+            is_type = *target == "enum" || *target == "struct";
+        }
+        if (is_type) {
             if (result.size() == 1024)
                 return reject(tokens.token_.position, "A source module supports at most 1024 type declarations.");
             ATELIER_TRY_BIND(declaration, parse_type_declaration(tokens));
@@ -327,16 +418,10 @@ std::expected<std::vector<TypeDeclaration>, Diagnostic> collect_declarations(std
         ATELIER_TRY_BIND(constant, tokens.accept("const"));
         if (*constant) {
             // Full typing and constant evaluation belong to the typed parser.
-            for (;;) {
-                ATELIER_TRY_BIND(closed, tokens.accept(";"));
-                if (*closed)
-                    break;
-                if (tokens.token_.kind == Token::Kind::end || tokens.token_.text == "{" || tokens.token_.text == "}")
-                    return reject(tokens.token_.position, "Expected ';' to close a module constant.");
-                ATELIER_TRY(tokens.consume());
-            }
+            ATELIER_TRY(skip_constant_initializer(tokens));
             continue;
         }
+        ATELIER_TRY(parse_description_attribute(tokens, "function"));
         // Function syntax and bodies are checked by the full typed parser.
         // The lexer skips comments, keeps strings whole and tracks author positions.
         for (;;) {

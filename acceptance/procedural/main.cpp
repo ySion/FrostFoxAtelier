@@ -2713,6 +2713,84 @@ class test.BadSliceSop : procedural.Node {
             "read_curve_slices did not report failing interval index 2 through NativeFailure.");
 }
 
+void source_sop_batch4_contracts() {
+    Runtime runtime;
+    take(register_types(runtime));
+    Meshes resources;
+
+    auto files = take(source::engine_sources(source::default_engine_root()));
+    files.push_back({"Source/Procedural/Batch4Profile.source", 1, R"(
+const Array<vector3> test.QUAD_PTS = {
+    vector3(-0.5f, 0.0f, -0.5f),
+    vector3( 0.5f, 0.0f, -0.5f),
+    vector3( 0.5f, 0.0f,  0.5f),
+    vector3(-0.5f, 0.0f,  0.5f),
+};
+const Array<uint> test.QUAD_VERTS = { 0u, 1u, 2u, 3u };
+const Array<uint> test.QUAD_OFFS = { 0u, 4u };
+const Array<float> test.WEIGHTS = { 1.0f, 2.0f, 3.0f, 4.0f };
+
+[DESC = "Emits a quad directly from .rdata constant tables and scales weights in parallel_for."]
+class test.ConstQuadSop : procedural.Node {
+    float gain = 2.0f;
+
+    void process([Port] procedural.Geometry& out) {
+        self.emit_polygons(test.QUAD_PTS, test.QUAD_VERTS, test.QUAD_OFFS, 0u);
+        const uint n = test.WEIGHTS.size();
+        Array<float> scaled;
+        scaled.resize(n);
+        const float g = self.gain;
+        parallel_for (uint i : n) {
+            scaled[i] = procedural.fit01(test.WEIGHTS[i] * 0.25f, 0.0f, g);
+        }
+        self.set_float("weight", procedural.Layer::point, scaled, 0u);
+    }
+}
+)"});
+
+    auto program = take(source::Program::create(runtime));
+    auto candidate = take(source::Program::prepare(take(program->request({"Batch4Procedural", 1, std::move(files)}))));
+    take(program->try_publish(candidate));
+
+    // Verify engine/procedural stdlib functions are published in Program::functions() with parallel_safe & DESC:
+    const auto fns = program->functions();
+    for (std::string_view expected_fn :
+         {"procedural.align_to_normal", "procedural.align_to_up", "procedural.rotation_between",
+          "procedural.unit_axis_angle", "procedural.euler_degrees", "procedural.fit", "procedural.fit01",
+          "procedural.efit", "procedural.unlerp", "procedural.hash", "procedural.hash2", "procedural.unit",
+          "procedural.random_vector", "procedural.sample_value_noise", "procedural.raycast_surface",
+          "procedural.closest_surface_point", "procedural.closest_polyline"}) {
+        const auto it = std::ranges::find(fns, expected_fn, &source::FunctionInfo::name);
+        require(it != fns.end() && it->engine_module == "procedural" && it->parallel_safe && !it->description.empty(),
+                "Engine procedural function missing parallel_safe or DESC in Program::functions(): " +
+                    std::string(expected_fn));
+    }
+
+    // Verify SurfaceHit & CurveSample struct/field descriptions in Runtime:
+    const auto hit_type = take(runtime.find_type("procedural.SurfaceHit"));
+    const auto* hit_info = take(runtime.describe(hit_type));
+    require(!hit_info->description.empty() && hit_info->fields.size() == 5 && !hit_info->fields[0].description.empty(),
+            "procedural.SurfaceHit missing struct or field DESC in Runtime.");
+
+    // Evaluate ConstQuadSop directly from .rdata tables:
+    const auto graph_type = take(runtime.native_type<procedural::Graph>());
+    const auto quad_sop_type = take(runtime.find_type("test.ConstQuadSop"));
+    auto graph = take(runtime.create(graph_type));
+    auto sop = take(procedural::add_node(runtime, graph.id(), quad_sop_type));
+    take(procedural::set_display(runtime, graph.id(), sop.id()));
+
+    procedural::Evaluator eval(runtime, graph, resources, program.get());
+    take(eval.evaluate());
+    const auto* out_geom = eval.output();
+    require(out_geom && out_geom->count(procedural::Layer::point) == 4u &&
+                out_geom->count(procedural::Layer::primitive) == 1u,
+            "ConstQuadSop did not emit 4 points and 1 polygon from .rdata constant tables.");
+    const auto* weights_col = take(out_geom->read<float>("weight", procedural::Layer::point));
+    require(weights_col && weights_col->size() == 4u && std::abs((*weights_col)[0] - 0.5f) < 1e-6f &&
+                std::abs((*weights_col)[3] - 2.0f) < 1e-6f,
+            "ConstQuadSop parallel_for over .rdata constant Array produced unexpected attribute values.");
+}
+
 }
 
 int main(int argc, char** argv) {
@@ -2742,6 +2820,7 @@ int main(int argc, char** argv) {
     source_sop_batch1_contracts();
     source_sop_batch2_contracts();
     source_sop_batch3_contracts();
+    source_sop_batch4_contracts();
     std::puts("procedural acceptance passed");
     return 0;
 }

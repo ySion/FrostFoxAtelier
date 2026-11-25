@@ -3,12 +3,14 @@ uint procedural.lattice_bits(int value) {
     return math.as_uint(value);
 }
 
+[DESC = "在整数格点 (x, y, z) 上计算 [0, 1) 确定性三维晶格哈希标量。"]
 float procedural.lattice_value(uint seed, int x, int y, int z) {
     return procedural.unit(procedural.hash2(
         procedural.hash2(procedural.hash2(seed, procedural.lattice_bits(x)), procedural.lattice_bits(y)),
         procedural.lattice_bits(z)));
 }
 
+[DESC = "采样三维平滑插值值噪声，返回 [0, 1]；要求坐标 q 有限且各分量在 [-2147483648, 2147483648) 内。"]
 float procedural.sample_value_noise(uint seed, vector3 q) {
     const vector3 cell = math.floor(q);
     const int x = int(cell.x);

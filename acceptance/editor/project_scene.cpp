@@ -28,6 +28,7 @@ void changed(Result<world::Commit> result) {
 
 struct Entity : world::Entity {
     std::int32_t health{100};
+
     String label;
 
     Result<void> validate() const {
@@ -1024,6 +1025,24 @@ void verify_examples_procedural_showcases() {
                         board_nv && board_nv->root_error_node == "board" && after_nv &&
                         after_nv->root_error_node == "board",
                     "Session::inspect_graph did not preserve root_error_node, ErrorElement, and SourceLocation.");
+        }
+
+        // Verify Session::procedural_source_program exposes both engine procedural and Examples project functions:
+        {
+            const auto* prog = take(loaded.session->procedural_source_program());
+            require(prog != nullptr, "Session::procedural_source_program returned null.");
+            const auto fns = prog->functions();
+            const bool has_align_up = std::ranges::any_of(fns, [](const source::FunctionInfo& f) {
+                return f.name == "procedural.align_to_up" && f.engine_module == "procedural" && f.parallel_safe &&
+                       !f.description.empty();
+            });
+            const bool has_eased = std::ranges::any_of(fns, [](const source::FunctionInfo& f) {
+                return f.name == "game.eased_section" && f.engine_module.empty() && !f.parameters.empty() &&
+                       f.parameters[0].mutates_structure;
+            });
+            require(
+                has_align_up && has_eased,
+                "Examples procedural_source_program missed engine procedural.align_to_up or project game.eased_section.");
         }
 
         std::printf(

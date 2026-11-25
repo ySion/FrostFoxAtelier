@@ -259,7 +259,8 @@ struct Expression {
         scalar_cast,
         texture_sample,
         texture_orientation,
-        conditional
+        conditional,
+        constant_data
     };
 
     Kind kind;
@@ -373,7 +374,17 @@ struct Function {
 
     bool used_in_parallel{};
 
+    std::string description{};
+
     std::vector<std::string> strings;
+};
+
+struct ConstantData {
+    ValueType type;
+
+    std::size_t element_count{};
+
+    std::vector<std::byte> bytes;
 };
 
 struct Program {
@@ -382,6 +393,8 @@ struct Program {
     std::string object_type_name;
 
     std::vector<ValueLayout> value_layouts;
+
+    std::vector<ConstantData> constants;
 
     std::vector<Function> functions;
 

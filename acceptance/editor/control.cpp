@@ -85,7 +85,8 @@ struct Process {
                                      FILE_ATTRIBUTE_NORMAL, nullptr);
         if (out == INVALID_HANDLE_VALUE)
             return system_failure("Cannot create child log");
-        NativeHandle log{out}, in;
+        NativeHandle log{out};
+        NativeHandle in;
         if (!input.empty()) {
             const auto file = CreateFileW(input.c_str(), GENERIC_READ, FILE_SHARE_READ, &security, OPEN_EXISTING,
                                           FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -626,8 +627,11 @@ Result<void> prune_passed_smoke_runs(const std::filesystem::path& base, std::siz
 
 struct ControlCli {
     const std::filesystem::path& executable;
+
     const std::filesystem::path& directory;
+
     std::string instance;
+
     std::string token;
 
     Result<json::Document> call(std::string_view op, DWORD exit_code, const json::Document& args = {},
@@ -1385,8 +1389,13 @@ Result<void> verify_editor_trees(application::Application& app, editor::Session&
 
     struct VisibleRow {
         ui::ControlKey key;
-        std::uint32_t index, depth;
+
+        std::uint32_t index;
+
+        std::uint32_t depth;
+
         bool expanded;
+
         bool operator==(const VisibleRow&) const = default;
     };
     const auto visible = [&](ui::ControlKey tree) {
@@ -1662,6 +1671,59 @@ Result<void> verify_graph_discovery_cli(ControlCli& cli) {
     }
     if (!group_listed || *types->root().at("result")->find("display_summary"))
         return fixture_failure("Expected the SOP catalog before opening a graph");
+
+    // Verify graph.inspect view=library works without an open graph, hides undocumented engine helpers by default,
+    // supports prefix/symbol filters, and lists procedural.Node BorrowSafe methods and value_types:
+    ATELIER_TRY_BIND(lib_all, cli.call("graph.inspect", 0, json::Document::literal<R"({"view":"library"})">()));
+    const auto lib_res = *lib_all->root().at("result");
+    bool has_align_up = false;
+    bool has_fit = false;
+    bool has_internal_bvh = false;
+    for (const auto fn : *lib_res.at("functions")->array()) {
+        const auto fn_name = fn.string({"name"}).value_or("");
+        if (fn_name == "procedural.align_to_up")
+            has_align_up = fn.boolean({"parallel_safe"}) == true && !fn.string({"description"}).value_or("").empty();
+        if (fn_name == "procedural.fit")
+            has_fit = fn.string({"module"}) == "procedural" && !fn.string({"signature"}).value_or("").empty();
+        if (fn_name == "procedural.bvh_stack4_set")
+            has_internal_bvh = true;
+    }
+    bool has_polyline_len = false;
+    bool has_emit_polygons = false;
+    for (const auto m : *lib_res.at("node_methods")->array()) {
+        if (m.string({"name"}) == "polyline_length")
+            has_polyline_len = m.boolean({"parallel_safe"}) == false && !m.string({"description"}).value_or("").empty();
+        if (m.string({"name"}) == "emit_polygons")
+            has_emit_polygons = m.at("parameters")->size() == 4;
+    }
+    bool has_surface_hit = false;
+    bool has_layer_enum = false;
+    for (const auto vt : *lib_res.at("value_types")->array()) {
+        if (vt.string({"name"}) == "procedural.SurfaceHit")
+            has_surface_hit = vt.string({"kind"}) == "struct" && vt.at("fields")->size() == 5 &&
+                              !vt.string({"description"}).value_or("").empty();
+        if (vt.string({"name"}) == "procedural.Layer")
+            has_layer_enum = vt.string({"kind"}) == "enum" && vt.at("enumerators")->size() >= 5;
+    }
+    if (!has_align_up || !has_fit || has_internal_bvh || !has_polyline_len || !has_emit_polygons || !has_surface_hit ||
+        !has_layer_enum)
+        return fixture_failure("graph.inspect view=library omitted public Source symbols, node_methods or value_types");
+
+    ATELIER_TRY_BIND(lib_sym,
+                     cli.call("graph.inspect", 0,
+                              json::Document::literal<R"({"view":"library","symbol":"procedural.efit_wide"})">()));
+    if (lib_sym->root().at("result")->at("functions")->size() != 1 ||
+        lib_sym->root().at("result")->at("node_methods")->size() != 0)
+        return fixture_failure("graph.inspect view=library explicit symbol lookup failed for internal helper");
+    ATELIER_TRY_BIND(
+        lib_pref,
+        cli.call("graph.inspect", 0, json::Document::literal<R"({"view":"library","prefix":"procedural.align_"})">()));
+    if (lib_pref->root().at("result")->at("functions")->size() != 2)
+        return fixture_failure("graph.inspect view=library prefix filter returned unexpected function count");
+    ATELIER_TRY_BIND(bad_lib_arg, cli.call("graph.inspect", 1,
+                                           json::Document::literal<R"({"view":"catalog","prefix":"procedural."})">()));
+    if (bad_lib_arg->root().string({"error", "code"}) != "invalid_request")
+        return fixture_failure("prefix without view=library did not return invalid_request");
     ATELIER_TRY_BIND(sweep, cli.call("graph.inspect", 0,
                                      json::Document::literal<R"({"view":"catalog","type":"procedural.Sweep"})">()));
     const auto hints = *sweep->root().at("result");
@@ -1822,7 +1884,8 @@ Result<void> verify_moss_range_cli(ControlCli& cli) {
         return fixture_failure("Missing point selection in the cooked moss roof");
     };
     ATELIER_TRY_BIND(explained, cli.call("graph.inspect", 0, bindings));
-    bool reads_cover = false, writes_patch = false;
+    bool reads_cover = false;
+    bool writes_patch = false;
     for (const auto row : *explained->root().at("result")->at("bindings")->at("attributes")->array()) {
         reads_cover |= row.string({"name"}) == "moss_cover" && row.string({"column_source"}) == "cover_noise" &&
                        row.string({"layer"}) == "point" && row.string({"status"}) == "bound";
@@ -1855,7 +1918,8 @@ Result<void> verify_moss_range_cli(ControlCli& cli) {
             return fixture_failure("Realize did not place exactly one clump per selected roof anchor");
         return *count;
     };
-    std::uint64_t runs_low{}, runs_high{};
+    std::uint64_t runs_low{};
+    std::uint64_t runs_high{};
     ATELIER_TRY_BIND(low, cook(.4f, runs_low));
     ATELIER_TRY_BIND(high, cook(.7f, runs_high));
     if (!*high || *high >= *low || runs_low != runs_high)
@@ -1908,7 +1972,8 @@ Result<void> verify_moss_roof_cli(ControlCli& cli) {
         if (!count || count > 32 || result.boolean({"display_summary", "valid"}) != true ||
             result.u64({"display_summary", "counts", "primitive"}).value_or(0) <= 5)
             return fixture_failure("Moss roof did not produce a complete set of anchors and attached clumps");
-        bool positions = false, provenance = false;
+        bool positions = false;
+        bool provenance = false;
         for (const auto attr : *anchors.at("attributes")->array()) {
             if (attr.string({"name"}) == "sourceprim") {
                 const auto expected = left ? 2u : 1u;
@@ -1926,7 +1991,9 @@ Result<void> verify_moss_roof_cli(ControlCli& cli) {
                 const auto row = tuple->root();
                 if (row.kind() != json::Kind::array || row.size() != 3)
                     return fixture_failure("Missing moss anchor coordinates");
-                const auto x = *row.at(0)->number(), y = *row.at(1)->number(), z = *row.at(2)->number();
+                const auto x = *row.at(0)->number();
+                const auto y = *row.at(1)->number();
+                const auto z = *row.at(2)->number();
                 const auto side_x = left ? -x : x;
                 // The Wedge spans [-2,2] in X/Z, with eaves at Y=0 and its ridge at (0,2).
                 // P samples are printed to four significant digits.
@@ -2023,7 +2090,8 @@ Result<void> verify_rail_panel_cli(ControlCli& cli) {
     ATELIER_TRY_BIND(hints, schema->root().path({"result", "port_descriptions"}).transform_error(json_error));
     ATELIER_TRY_BIND(inputs, hints->at("inputs").and_then(&json::Value::object_items).transform_error(json_error));
     ATELIER_TRY_BIND(outputs, hints->at("outputs").and_then(&json::Value::object_items).transform_error(json_error));
-    std::string_view low_z, high_z;
+    std::string_view low_z;
+    std::string_view high_z;
     for (const auto& [port, hint] : *inputs) {
         const auto purpose = hint.string().value_or("");
         if (purpose.contains("Z 较小"))
@@ -2090,7 +2158,9 @@ Result<void> verify_bevel_cli(ControlCli& cli) {
     if (!input.contains("闭合") || !input.contains("凸") ||
         type.string({"port_descriptions", "outputs", "output"}).value_or("").empty())
         return fixture_failure("Bevel catalog did not describe the closed convex surface contract");
-    bool radius = false, angle = false, segments = false;
+    bool radius = false;
+    bool angle = false;
+    bool segments = false;
     for (const auto field : *type.at("fields")->array()) {
         const auto help = field.string({"description"}).value_or("");
         if (field.string({"path"}) == "radius")

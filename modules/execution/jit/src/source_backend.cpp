@@ -361,16 +361,25 @@ bool uses_receiver_slot(const language::Function& function, const BusinessEnviro
            (function.requires_receiver || function.is_coroutine || options.diagnostics || options.debugging);
 }
 
+struct ConstantGlobal {
+    llvm::GlobalVariable* data{};
+
+    llvm::GlobalVariable* array_header{};
+
+    std::size_t element_count{};
+};
+
 class SourceLowering {
 public:
     SourceLowering(llvm::LLVMContext& context, llvm::Module& module, const language::Program& source,
                    std::uint32_t function, const std::vector<llvm::Function*>& functions,
-                   const std::vector<llvm::Function*>& parallel_functions, std::uint32_t strong_base,
-                   std::uint32_t weak_base, DiagnosticCatalog* catalog, CompileOptions options,
-                   const BusinessEnvironment& environment, bool parallel_callee = false)
+                   const std::vector<llvm::Function*>& parallel_functions,
+                   std::span<const ConstantGlobal> constant_globals, std::uint32_t strong_base, std::uint32_t weak_base,
+                   DiagnosticCatalog* catalog, CompileOptions options, const BusinessEnvironment& environment,
+                   bool parallel_callee = false)
         : function_(source.functions[function]), source_(source), functions_(functions),
-          parallel_functions_(parallel_functions), context_(&context), module_(&module), ir_(context),
-          entry_(parallel_callee ? parallel_functions[function] : functions[function]),
+          parallel_functions_(parallel_functions), constant_globals_(constant_globals), context_(&context),
+          module_(&module), ir_(context), entry_(parallel_callee ? parallel_functions[function] : functions[function]),
           local_slots_(function_.locals.size(), null_reference_slot),
           temporary_slots_(function_.expressions.size(), null_reference_slot), strong_slots_(strong_base),
           weak_slots_(weak_base), first_strong_slot_(strong_base), first_weak_slot_(weak_base),
@@ -1457,6 +1466,10 @@ private:
 
     Sequence sequence(language::NodeId id) {
         const auto& node = function_.expressions[id];
+        if (node.kind == language::Expression::Kind::constant_data) {
+            const auto& constant = constant_globals_[node.value];
+            return {constant.data, ir_.getInt64(constant.element_count)};
+        }
         if (node.kind == language::Expression::Kind::local && node.value < parameter_views_.size() &&
             parameter_views_[node.value].data)
             return parameter_views_[node.value];
@@ -1499,6 +1512,10 @@ private:
                                std::span<const std::pair<language::NodeId, llvm::Value*>> prepared_indices = {}) {
         const auto& node = function_.expressions[id];
         PositionScope position(position_, node.position);
+        if (node.kind == language::Expression::Kind::constant_data) {
+            const auto& constant = constant_globals_[node.value];
+            return node.type.kind == language::ValueType::array ? constant.array_header : constant.data;
+        }
         if (node.kind == language::Expression::Kind::local)
             return locals_.at(node.value);
         if (node.kind == language::Expression::Kind::field && node.type.kind == language::ValueType::string) {
@@ -1518,9 +1535,11 @@ private:
                     break;
                 }
             Sequence input;
-            if (function_.expressions[node.left].kind == language::Expression::Kind::local &&
-                function_.expressions[node.left].value < parameter_views_.size() &&
-                parameter_views_[function_.expressions[node.left].value].data)
+            if (function_.expressions[node.left].kind == language::Expression::Kind::constant_data)
+                input = sequence(node.left);
+            else if (function_.expressions[node.left].kind == language::Expression::Kind::local &&
+                     function_.expressions[node.left].value < parameter_views_.size() &&
+                     parameter_views_[function_.expressions[node.left].value].data)
                 input = parameter_views_[function_.expressions[node.left].value];
             else
                 input =
@@ -1600,6 +1619,8 @@ private:
             if (node.type == language::ValueType::boolean)
                 return ir_.getInt1(node.bits != 0);
             return ir_.getInt32(static_cast<std::uint32_t>(node.bits));
+        case Kind::constant_data:
+            return value_address(index);
         case Kind::string_literal: {
             auto* storage = temporary_value(node.type, nullptr, "text.literal");
             write_text(node.type, storage, node.value, SequenceMutation::assign_text);
@@ -2304,9 +2325,10 @@ private:
 
     SourceLowering(SourceLowering& parent, llvm::Function* chunk_fn, language::SourcePosition position)
         : function_(parent.function_), source_(parent.source_), functions_(parent.functions_),
-          parallel_functions_(parent.parallel_functions_), context_(parent.context_), module_(parent.module_),
-          ir_(*parent.context_), entry_(chunk_fn), invocation_(llvm::ConstantPointerNull::get(ir_.getPtrTy())),
-          failure_output_(chunk_fn->getArg(3)), local_slots_(function_.locals.size(), null_reference_slot),
+          parallel_functions_(parent.parallel_functions_), constant_globals_(parent.constant_globals_),
+          context_(parent.context_), module_(parent.module_), ir_(*parent.context_), entry_(chunk_fn),
+          invocation_(llvm::ConstantPointerNull::get(ir_.getPtrTy())), failure_output_(chunk_fn->getArg(3)),
+          local_slots_(function_.locals.size(), null_reference_slot),
           temporary_slots_(function_.expressions.size(), null_reference_slot), strong_slots_(0), weak_slots_(0),
           first_strong_slot_(0), first_weak_slot_(0), public_entry_(false), typed_entry_(false),
           owns_receiver_slot_(false), diagnostics_(parent.diagnostics_),
@@ -2754,6 +2776,8 @@ private:
 
     const std::vector<llvm::Function*>& parallel_functions_;
 
+    std::span<const ConstantGlobal> constant_globals_;
+
     llvm::LLVMContext* context_;
 
     llvm::Module* module_;
@@ -3157,12 +3181,55 @@ generate_business(LLJIT& jit, llvm::TargetMachine& machine, const language::Prog
                                                 : llvm::ConstantPointerNull::get(ptr));
         ir.CreateRet(ir.CreateCall(direct, arguments));
     }
+    auto* i8 = llvm::Type::getInt8Ty(*context);
+    auto* i64 = llvm::Type::getInt64Ty(*context);
+    auto* const_array_header_ty = llvm::StructType::get(*context, {ptr, i64, i64});
+    std::vector<ConstantGlobal> constant_globals(program.constants.size());
+    for (std::size_t i = 0; i < program.constants.size(); ++i) {
+        const auto& constant = program.constants[i];
+        const auto& value_layout = program.value_layouts.at(constant.type.type_index);
+        std::size_t data_align = value_layout.alignment;
+        if (constant.type.kind == language::ValueType::array) {
+            const auto elem = value_layout.element;
+            data_align = language::aggregate(elem)              ? program.value_layouts.at(elem.type_index).alignment
+                         : elem == language::ValueType::boolean ? 1
+                         : elem == language::ValueType::f64     ? 8
+                                                                : 4;
+        }
+        data_align = std::max<std::size_t>(data_align, alignof(void*));
+        llvm::Constant* data_init = nullptr;
+        if (constant.bytes.empty()) {
+            data_init = llvm::ConstantAggregateZero::get(llvm::ArrayType::get(i8, data_align));
+        } else {
+            data_init = llvm::ConstantDataArray::getRaw(
+                llvm::StringRef(reinterpret_cast<const char*>(constant.bytes.data()), constant.bytes.size()),
+                constant.bytes.size(), i8);
+        }
+        auto* data_gv =
+            new llvm::GlobalVariable(*module, data_init->getType(), true, llvm::GlobalValue::InternalLinkage, data_init,
+                                     "__source_const_data." + std::to_string(i));
+        data_gv->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+        data_gv->setAlignment(llvm::Align(data_align));
+
+        llvm::GlobalVariable* header_gv = nullptr;
+        if (constant.type.kind == language::ValueType::array) {
+            auto* header_init = llvm::ConstantStruct::get(
+                const_array_header_ty,
+                {data_gv, llvm::ConstantInt::get(i64, constant.element_count), llvm::ConstantInt::get(i64, 0)});
+            header_gv =
+                new llvm::GlobalVariable(*module, const_array_header_ty, true, llvm::GlobalValue::InternalLinkage,
+                                         header_init, "__source_const_array." + std::to_string(i));
+            header_gv->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+            header_gv->setAlignment(llvm::Align(alignof(void*)));
+        }
+        constant_globals[i] = {data_gv, header_gv, constant.element_count};
+    }
     layout = {business_root_slots, 0, nullptr, false};
     for (std::uint32_t i = 0; i < functions.size(); ++i) {
         if (!program.reachable[i])
             continue;
-        SourceLowering lowering(*context, *module, program, i, functions, parallel_functions, layout.strong_slots,
-                                layout.weak_slots, catalog, options, environment);
+        SourceLowering lowering(*context, *module, program, i, functions, parallel_functions, constant_globals,
+                                layout.strong_slots, layout.weak_slots, catalog, options, environment);
         if (auto error = lowering.generate())
             return error;
         const auto demand = lowering.layout();
@@ -3170,8 +3237,8 @@ generate_business(LLJIT& jit, llvm::TargetMachine& machine, const language::Prog
         layout.weak_slots = demand.weak_slots;
         if (parallel_functions[i]) {
             SourceLowering parallel_lowering(*context, *module, program, i, functions, parallel_functions,
-                                             layout.strong_slots, layout.weak_slots, catalog, options, environment,
-                                             true);
+                                             constant_globals, layout.strong_slots, layout.weak_slots, catalog, options,
+                                             environment, true);
             if (auto error = parallel_lowering.generate())
                 return error;
         }

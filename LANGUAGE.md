@@ -159,8 +159,8 @@ uint process(combat.DamageInfo& damage) {
 
 - 类型声明位于顶层，可与函数交错；结构体字段可前向引用同模块类型。名称为准确声明名，支持 `combat.Point` 形式；没有命名空间块或用户类型的相对短名查找。类型不能重名，不能覆盖已注册类型、内建数学短名或 `String/Array/core.*/math.*/__source_*`；同名类型与函数也拒绝。
 - `editor.` 前缀保留给编辑器。编辑器在文档 Runtime 中以此前缀登记自己的参数类型，源码的 struct、enum 和 class 都不能用这个前缀声明。宿主目录也不包含这些类型：在源码中引用它们，包括作字段类型、局部类型、枚举常量或类的基类，都按未登记类型报错。这是在 Program 拥有各自可见域之前的临时规则。
-- `[Flags] enum Name [ : int | uint ] { ... }` 默认底层为 int，末尾分号可省略；携带 `[Flags]` 时底层必须显式写 `: uint`。枚举项前可写 `[Label = "...", DESC = "..."]` 展示元数据；枚举项可显式指定十进制或十六进制整数（有符号底层支持负号，`: uint` 底层支持尾缀 `u`/`U`），否则为零或上一项加一；底层范围溢出、重复项名拒绝，重复值允许。可使用尾随逗号。
-- `struct Name { Type field; ... };` 字段支持 bool/float/double/uint/int、内建数学值、已注册或同模块枚举、同模块结构体，以及已注册的无 GC 引用记录、String 和 Array。原生元素类型的 `Array<T>` 解析现有注册数组；源码声明的 `struct`/`enum`（及其多层嵌套 `Array`）自动合成对应的描述型 `TypeKind::array`。字段顺序决定布局，偏移和对齐由 Runtime 计算；内联循环（含经 `Array` 回到自身的循环）、未知类型、重复字段和对象引用字段拒绝。没有字段初始化器、方法、继承或自定义构造析构。
+- `[Flags, DESC = "..."] enum Name [ : int | uint ] { ... }`（`Flags` 与 `DESC` 可单独或组合声明）默认底层为 int，末尾分号可省略；携带 `Flags` 时底层必须显式写 `: uint`。类型级 `DESC` 发布到 `TypeInfo::description`，枚举项前可写 `[Label = "...", DESC = "..."]` 展示元数据；枚举项可显式指定十进制或十六进制整数（有符号底层支持负号，`: uint` 底层支持尾缀 `u`/`U`），否则为零或上一项加一；底层范围溢出、重复项名拒绝，重复值允许。可使用尾随逗号。
+- `[DESC = "..."] struct Name { [DESC = "..."] Type field; ... };` 类型级与字段级 `DESC` 分别发布到 `TypeInfo::description` 与 `FieldInfo::description`。字段支持 bool/float/double/uint/int、内建数学值、已注册或同模块枚举、同模块结构体，以及已注册的无 GC 引用记录、String 和 Array。原生元素类型的 `Array<T>` 解析现有注册数组；源码声明的 `struct`/`enum`（及其多层嵌套 `Array`）自动合成对应的描述型 `TypeKind::array`。字段顺序决定布局，偏移和对齐由 Runtime 计算；内联循环（含经 `Array` 回到自身的循环）、未知类型、重复字段和对象引用字段拒绝。没有字段初始化器、方法、继承或自定义构造析构。
 - 结构体的拥有能力由字段生命周期能力递归组合；满足条件的局部可默认构造、深复制初始化和整值赋值。默认构造递归将标量置零、String/Array 置空，并调用原生记录的构造。字段随拥有者清理；部分构造失败时仅销毁已完成的字段。可写局部与非定长可写借用参数中的字段及元素遵守上述拥有值修改规则；`const` 引用参数保持深只读。满足 plain record 与拥有资格的源码结构体支持同步按值参数与结果；源码返回临时由返回值复制形成，不额外调用默认构造。没有初始化器的局部仍执行默认构造。
 - 类型声明经 `Program::request` 收集并取得未发布的 Runtime 布局，函数由 `prepare` 编译；成功 `try_publish` 后类型和代码一起可用。任何候选失败均不发布新类型。创建对象后仍可发布新类型，提交需要类型安全点（代码发布条件加 GC 空闲）。
 - 已发布的类型定义不可变；声明出现顺序可调整，后续版本可以追加新类型。删除、改名或改动已发布的字段/枚举定义须重建 Runtime。代码更新、旧租约和程序关闭不替换或注销类型身份。
@@ -169,7 +169,7 @@ uint process(combat.DamageInfo& damage) {
 
 ## 项目快照与原生派生类
 
-类声明前可写 `[DESC = "..."]`。文本沿用字段 `DESC` 的 UTF-8、换行和控制字符规则，直接发布到 `TypeInfo::description`。省略时说明为空。修改已发布类的说明遵循类型展示元数据的重建契约。
+类、`struct`、`enum` 与顶层全局函数声明前均可写 `[DESC = "..."]`。文本沿用字段 `DESC` 的 UTF-8、换行和控制字符规则：类型的说明发布到 `TypeInfo::description`（修改已发布类型的说明遵循类型展示元数据的重建契约）；顶层全局函数的说明连同限定名、所属模块、返回/参数类型与传递方式、`parallel_safe` 及可写引用 `mutates_structure` 经 `Program::functions()`（及 `Candidate::functions()`）对外提供只读自省，仅修改函数 `DESC` 不改变 ABI，支持原地兼容热发布。省略时说明为空。
 
 宿主向同一个 `Program` 提交 `SourceSnapshot{name, version, files}`。每个文件拥有项目相对路径、版本和完整正文；路径用 `/`，拒绝绝对路径、重复路径、空段及 `.`/`..` 段。文件身份区分大小写，文件系统扫描与路径归一化由宿主负责。快照允许空文件集合，最多 1024 个文件、1024 个类、32 MiB 正文。空集合发布无类型、无入口的模块；后续版本可以兼容地追加类型和入口。诊断包含原文件路径、版本、字节偏移和行列。
 
@@ -190,7 +190,7 @@ class game.Move : world.Component {
 
 - 基类必须是宿主已经注册的原生对象类型。类具有真实 Runtime 类型身份、继承关系和实例存储；字段可以是 bool/float/double/int/uint、float 或 double 的 vector2/3/4（短名或 `math.*` 规范名）、已注册或同快照声明的枚举，以及已注册的引擎 String（`String` 或其规范名 `core.String`）；四元数、矩阵、其他记录、数组和对象引用不能作类字段。原生基类仍由原生构造函数初始化。
 - 字段初始化器给出整值默认值，没有初始化器时取零值（枚举为底层值 0）。标量写不依赖其他声明的常量标量表达式，按现有数值和显式转换规则检查；向量写 `vector3()`、单标量广播 `vector3(c)` 或每个分量一个常量的 `vector3(c0, c1, c2)`，分量精确匹配向量精度，例如 double 向量的分量写 `0.0d`；普通枚举写 `geo.Axis::z`，`Flags` 枚举还可写由已声明位项构成的常量按位表达式（如 `ns.Mask::A | ns.Mask::B`）。每个浮点叶必须有限：`0.0f / 0.0f`、`1e30f * 1e30f` 这类折叠结果在该字段报错。原生方法若发布了尾部标量/枚举默认实参（`MethodInfo::parameter_defaults`），源码调用可省略对应的尾部实参并在编译期静态补齐。
-- String 字段默认构造为空，或用一个普通字符串字面量，例如 `String attribute = "pscale";`；转义沿既有 String 规则解码，UTF-8 在发布前校验。`String` 与规范名、无初始化器与 `""` 分别等价。它是同一 Runtime 中的真实拥有型字段，支持宿主反射读写、保存与重建，**不开放源码 `self.attribute` 的读取、写入或借用**，也不新增 class 构造函数或 Source 类间继承。宿主需要文本时先复制到自己的 String，不能让对象内部地址跨 invoke 存续。
+- String 字段默认构造为空，或用一个普通字符串字面量，例如 `String attribute = "pscale";`；转义沿既有 String 规则解码，UTF-8 在发布前校验。`String` 与规范名、无初始化器与 `""` 分别等价。它是同一 Runtime 中的真实拥有型字段，支持宿主反射读写、保存与重建，并可在同步值区间内经 `self.attribute` 只读借用（支持 `.size()`、`[i]`、复制给局部 `String` 或传给 `const String&`；禁止写入、结构修改、绑定 `String&` 或在 `parallel_for` 内直接读取），不新增 class 构造函数或 Source 类间继承。宿主需要文本时先复制到自己的 String，不能让对象内部地址跨 invoke 存续。
 - 字段前可写属性，名称与 AFIELD 相同：`[Min = 0.0, Max = 2.0, LockMin, HardMax = 10.0, Label = "Amount", Category = "Noise", DESC = "说明"] float amount = 0.5f;`。边界是字段叶类型的有限常量（向量按分量、int/uint 用整数），只能用于 int/uint/float/double 和向量字段；`LockMin/LockMax` 把同侧 UI 边界同时作硬边界，要求同侧 `Min/Max` 且不能再写 `HardMin/HardMax`。`Label`、`Category` 是不含控制字符的字符串字面量，`DESC` 允许 `\n`、`\t`。重复或未知属性、写在方法前的属性在编译期报错；大小顺序、UI 边界落在硬边界内、默认值满足硬边界由 Runtime 发布检查，错误同样指到该字段。规则见[字段范围与硬边界](docs/reflection.md#字段范围与硬边界)。
 - 字段还可写 `[RunOver]`（发布 `{"procedural.role", "run_over"}`）或通用 `[Meta("custom.key", "value")]`。Meta 可重复声明不同键，每项恰好两个字符串字面量；同键重复拒绝。载体和原生字段一致，格式、拥有关系及排序见[Runtime 字段扩展元数据](docs/runtime-model.md#字段扩展元数据)。语言和 Runtime 不解释业务键语义。
 - 类方法为同步函数，首次注册类时方法声明连同参数名与参数属性冻结发布到 `TypeInfo::described_methods`；后续热更后的当前可执行入口清单及最新参数名以 `Program::entries()` 为权威来源。生命周期入口签名固定为 `void begin()`、`void tick(float)`、`void post_physics_tick(float)`、`void late_tick(float)`、`void end()`，三个帧阶段方法都接收整帧 dt；缺省方法不导出。类方法的形参前可写一个 procedural 参数属性：`[Port]`，或 `[In]`、`[Out]`、`[InOut]`、`[Group]`（可带字面列名 `[In("id", Optional)]`、字段绑定 `[Out(From = "attribute")]`、显式层 `Layer = "point"`、辅助输入端口 `Port = "road"`，括号内外均支持逗号分隔选项；`Optional` 仅限 `In`，`Port` 选项仅限 `In` 与 `Group`，字面名与 `From` 互斥，`Port` 主角色无选项；非类方法禁止写参数属性）。其余同步方法使用既有值与借用规则。源码通过 `self` 访问当前类及继承成员；同类方法和全局助手按普通函数语法调用。全局函数与该类方法名不能冲突，暂不支持跨类方法调用或动态分派。
@@ -207,10 +207,13 @@ class game.Move : world.Component {
 
 ```ebnf
 program        = { type_declaration | module_constant | function }, end_of_input ; (* 单源码请求至少一个函数；项目快照允许仅声明 *)
-module_constant = "const", scalar_type, identifier, "=", expression, ";" ;
+module_constant = "const", ( scalar_type | math_type | aggregate_type ), qualified_name, "=", constant_init, ";" ;
+                 (* 类型限标量、枚举、内建数学值、并行安全平凡 struct 或元素为上述类型的只读 Array<T>；属性禁止作用于常量 *)
+constant_init  = expression | "{", [ constant_init, { ",", constant_init }, [ "," ] ], "}" ;
+desc_attribute = "[", "DESC", "=", string_literal, "]" ;
 type_declaration = struct_declaration | enum_declaration | class_declaration ;
-class_declaration = [ "[", "DESC", "=", string_literal, "]" ], "class", qualified_name, ":", qualified_name, "{",
-                    { class_field | function }, "}", [ ";" ] ; (* 仅项目快照；方法必须同步 *)
+class_declaration = [ desc_attribute ], "class", qualified_name, ":", qualified_name, "{",
+                    { class_field | function }, "}", [ ";" ] ; (* 仅项目快照；方法必须同步且不带函数级 DESC *)
 class_field    = [ "[", field_attribute, { ",", field_attribute }, "]" ],
                  ( scalar_type | math_type | "String" | qualified_name ), identifier, [ "=", expression ], ";" ;
                  (* 数学类型限 float/double 向量；其余具名类型限枚举及已注册 String，String 默认值限单个字面量 *)
@@ -218,13 +221,14 @@ field_attribute = ( "Min" | "Max" | "HardMin" | "HardMax" ), "=", expression | "
                 | "Transient" | "ReadOnly" | "RunOver"
                 | ( "Label" | "Category" | "DESC" ), "=", string_literal
                 | "Meta", "(", string_literal, ",", string_literal, ")" ;
-struct_declaration = "struct", qualified_name, "{", { field_declaration }, "}", ";" ;
-field_declaration = ( scalar_type | aggregate_type ), identifier, ";" ;
-enum_declaration = [ "[", "Flags", "]" ], "enum", qualified_name, [ ":", ( "int" | "uint" ) ], "{",
-                   [ enum_item, { ",", enum_item }, [ "," ] ], "}", [ ";" ] ;
-enum_item      = [ "[", enum_item_attr, { ",", enum_item_attr }, "]" ], identifier, [ "=", [ "-" ], decimal_integer ] ;
+struct_declaration = [ desc_attribute ], "struct", qualified_name, "{", { field_declaration }, "}", ";" ;
+field_declaration = [ desc_attribute ], ( scalar_type | aggregate_type ), identifier, ";" ;
+enum_declaration = [ "[", enum_type_attr, { ",", enum_type_attr }, "]" ], "enum", qualified_name,
+                   [ ":", ( "int" | "uint" ) ], "{", [ enum_item, { ",", enum_item }, [ "," ] ], "}", [ ";" ] ;
+enum_type_attr = "Flags" | "DESC", "=", string_literal ;
+enum_item      = [ "[", enum_item_attr, { ",", enum_item_attr }, "]" ], identifier, [ "=", [ "-" ], integer_literal ] ;
 enum_item_attr = ( "Label" | "DESC" ), "=", string_literal ;
-function       = [ "async" ], result_type, identifier, "(", [ parameters ], ")", block ;
+function       = [ desc_attribute ], [ "async" ], result_type, qualified_name, "(", [ parameters ], ")", block ;
 result_type    = "void" | scalar_type | math_type | plain_record_type ;
 scalar_type    = "bool" | "float" | "double" | "uint" | "int" | qualified_enum_name ;
 math_type      = qualified_name ; (* 内建数学规范名称或固定短名 *)
@@ -267,7 +271,7 @@ for_step       = assignment_clause | call_clause ;
 break_statement = "break", ";" ;
 continue_statement = "continue", ";" ;
 return_statement = "return", [ expression ], ";" ;
-fail_statement = "fail", "(", string_literal, ")", ";" ;
+fail_statement = "fail", "(", string_literal, [ ",", expression, [ ",", expression ] ], ")", ";" ;
 yield_statement = "yield", ";" ;
 expression     = conditional ;
 conditional    = logical_or, [ "?", expression, ":", expression ] ;
@@ -298,7 +302,7 @@ primary        = qualified_enum_name, "::", identifier | "true" | "false" | nume
 
 `const T name = expression;` 局部支持标量、枚举、数学值及具备拥有能力的记录/String/Array；必须初始化，初始化可以在运行期求值。只读性沿字段与元素传播，禁止赋值、传给可写引用或修改容器结构；该规则不改变复制和销毁责任。对象持有/观察引用的 const 局部暂不支持。
 
-顶层 `const T name = expression;` 只允许标量或枚举，初始化必须是编译期纯表达式：字面量、同模块常量、枚举项、括号、已支持的一元/二元运算及显式数值转换；不能调用函数、读取对象字段或创建对象/容器。允许前向引用，依赖环拒绝。常量求值遵守运行期运算、转换和短路语义：需执行的除零、溢出除余、非法移位或整数转换在编译期报告错误，被短路跳过的计算不执行；未执行部分仍须通过语法和类型检查。常量保持显式声明类型，不被 int 上下文重新定型。模块常量不能与类型、函数、参数或局部同名。
+顶层 `const T name = init;` 支持标量、枚举、内建数学值、满足 `parallel_value_type`（`plain_value`、`can_own` 且具备预构建默认字节镜像）的平凡 `struct`，以及元素满足 `parallel_value_type` 的只读数组 `Array<T>`（单数组上限 65536 项、4 MiB；材质着色器子集仅开放标量与 float 向量常量）。标量、枚举与数学常量写编译期纯表达式（字面量、同模块常量、枚举项、数学构造与纯代数/初等 `math.*` 内建、条件选择、常量结构体字段与常量数组 `.size()`/`[i]`）；平凡 `struct` 可写 `{}`（取默认字节）或按字段顺序给出全部字段的 `{ f0, f1, ... }`（支持尾随逗号与嵌套花括号），`Array<T>` 写 `{ e0, e1, ... }` 或引用另一同型常量数组。允许前向引用，依赖环拒绝。常量求值遵守运行期运算、转换、越界和短路语义：需执行的除零、溢出除余、非法移位、整数转换或常量数组越界在编译期报告错误，被短路跳过的计算不执行；未执行部分仍须通过语法和类型检查。平凡 `struct` 与 `Array<T>` 常量在编译期折叠进 JIT 模块内部 `.rdata` 只读全局存储（数组同步生成与 `atelier::Array<T>` / `DescribedArray` 同布局的 24 字节只读头），每次调用零堆分配、零析构清理，保持深只读（禁止赋值、结构修改或绑定可写引用），可直接作为 `const T&` / `const Array<T>&` 传给同模块函数与 `BorrowSafe` 原生方法，也可在 `parallel_safe` 函数和 `parallel_for` 体内免捕获、免别名重叠检查并发读取。常量保持显式声明类型，不被 int 上下文重新定型。模块常量不能与类型、函数、参数或局部同名。
 
 标量局部必须显式初始化；持有/观察局部可以省略初始化器，等价于该类型和持有形式的空引用。String/Array 局部省略初始化器时构造为空值；一般记录局部调用 Runtime 默认构造；数学值遵循[数学默认值](docs/math.md#默认值坐标与浮点规则)。复制初始化产生独立拥有存储。未初始化槽不能当成已初始化空值。
 

@@ -3,10 +3,13 @@
 #include "language/declarations.hpp"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <charconv>
 #include <cmath>
+#include <cstring>
 #include <numbers>
+#include <span>
 #include <type_traits>
 #include <utility>
 
@@ -111,7 +114,18 @@ public:
         std::vector<Body> bodies;
         std::vector<std::string> type_names;
         while (token_.kind != Token::Kind::end) {
-            if (token_.text == "[" || token_.text == "struct" || token_.text == "enum") {
+            bool is_type = token_.text == "struct" || token_.text == "enum";
+            std::string function_description;
+            if (token_.text == "[") {
+                ATELIER_TRY_BIND(target, peek_attributed_keyword(*this));
+                if (*target == "const")
+                    return reject(token_.position, "Attributes do not apply to module constants.");
+                if (*target == "struct" || *target == "enum")
+                    is_type = true;
+                else
+                    ATELIER_TRY_ASSIGN(function_description, parse_description_attribute(*this, "function"));
+            }
+            if (is_type) {
                 ATELIER_TRY_BIND(declaration, parse_type_declaration(*this));
                 if (type_names.size() == 1024)
                     return reject(declaration->position, "A source module supports at most 1024 type declarations.");
@@ -125,8 +139,13 @@ public:
             if (*constant) {
                 const auto position = token_.position;
                 ATELIER_TRY_BIND(type, parameter_type());
-                if (!scalar(*type))
-                    return reject(position, "Module constants require a scalar or enum type.");
+                const bool valid_constant_type = scalar(*type) || bool(math_type(*type)) ||
+                                                 (plain_record(*type) && parallel_value_type(*type)) ||
+                                                 (type->kind == ValueType::array && parallel_sequence_type(*type));
+                if (!valid_constant_type)
+                    return reject(
+                        position,
+                        "Module constants require a scalar, enum, built-in math, plain struct, or Array of plain values.");
                 const auto name_position = token_.position;
                 ATELIER_TRY_BIND(name, qualified_identifier());
                 if (math_reserved_name(*name))
@@ -137,20 +156,14 @@ public:
                     return reject(position, "A source module supports at most 1024 constants.");
                 ATELIER_TRY(expect("="));
                 constants_.push_back({std::move(*name), *type, name_position, lexer_, token_});
-                for (;;) {
-                    ATELIER_TRY_BIND(closed, accept(";"));
-                    if (*closed)
-                        break;
-                    if (token_.kind == Token::Kind::end || token_.text == "{" || token_.text == "}")
-                        return reject(token_.position, "Expected ';' to close a module constant.");
-                    ATELIER_TRY(consume());
-                }
+                ATELIER_TRY(skip_constant_initializer(*this));
                 continue;
             }
             if (module_.functions.size() >= 1024)
                 return reject(token_.position, "A source module supports at most 1024 functions.");
             function_ = {};
             function_.position = token_.position;
+            function_.description = std::move(function_description);
             visible_.clear();
             ATELIER_TRY(signature(allow_parameter_attributes));
             for (const auto& previous : module_.functions)
@@ -587,14 +600,16 @@ private:
                          (expr.type.kind == ValueType::array || expr.type.kind == ValueType::string))
                     function.parallel_safe = false;
                 else if ((expr.kind == Kind::index || expr.kind == Kind::length) &&
-                         (function.expressions[expr.left].kind != Kind::local ||
+                         ((function.expressions[expr.left].kind != Kind::local &&
+                           function.expressions[expr.left].kind != Kind::constant_data) ||
                           !parallel_sequence_type(function.expressions[expr.left].type)))
                     function.parallel_safe = false;
                 else if (expr.kind == Kind::source_call) {
                     for (const auto arg_id : expr.arguments) {
                         const auto& arg = function.expressions[arg_id];
                         if ((arg.type.kind == ValueType::array || arg.type.kind == ValueType::string) &&
-                            (arg.kind != Kind::local || arg.value >= function.parameters.size() ||
+                            (((arg.kind != Kind::local || arg.value >= function.parameters.size()) &&
+                              arg.kind != Kind::constant_data) ||
                              !parallel_sequence_type(arg.type))) {
                             function.parallel_safe = false;
                             break;
@@ -756,6 +771,7 @@ private:
                     using Kind = Expression::Kind;
                     switch (expr.kind) {
                     case Kind::literal:
+                    case Kind::constant_data:
                         return {};
                     case Kind::local: {
                         const auto type = function.locals[expr.value].type;
@@ -787,7 +803,9 @@ private:
                         return self(self, expr.right);
                     case Kind::length: {
                         const auto& seq = function.expressions[expr.left];
-                        if (seq.kind != Kind::local || seq.value >= ivar || !parallel_sequence_type(seq.type))
+                        const bool valid_seq =
+                            seq.kind == Kind::constant_data || (seq.kind == Kind::local && seq.value < ivar);
+                        if (!valid_seq || !parallel_sequence_type(seq.type))
                             return reject(expr.position,
                                           "parallel_for sequence size requires a top-level outer Array or String.");
                         return self(self, expr.left);
@@ -795,10 +813,12 @@ private:
                     case Kind::index: {
                         const auto& seq = function.expressions[expr.left];
                         const auto& idx = function.expressions[expr.right];
-                        if (seq.kind != Kind::local || seq.value >= ivar || !parallel_sequence_type(seq.type))
+                        const bool valid_seq =
+                            seq.kind == Kind::constant_data || (seq.kind == Kind::local && seq.value < ivar);
+                        if (!valid_seq || !parallel_sequence_type(seq.type))
                             return reject(expr.position,
                                           "parallel_for indexing requires a top-level outer Array or String.");
-                        if (idx.kind != Kind::local || idx.value != ivar)
+                        if (seq.kind == Kind::local && (idx.kind != Kind::local || idx.value != ivar))
                             mark_unique(arbitrary_sequences, seq.value);
                         ATELIER_TRY(self(self, expr.left));
                         return self(self, expr.right);
@@ -822,11 +842,14 @@ private:
                                 ATELIER_TRY(check_mutable_lvalue(arg_id, arg.position));
                             } else if (expr.argument_passing[a] == ParameterPassing::read_only &&
                                        (arg.type.kind == ValueType::array || arg.type.kind == ValueType::string)) {
-                                if (arg.kind != Kind::local || arg.value >= ivar || !parallel_sequence_type(arg.type))
+                                const bool valid_seq =
+                                    arg.kind == Kind::constant_data || (arg.kind == Kind::local && arg.value < ivar);
+                                if (!valid_seq || !parallel_sequence_type(arg.type))
                                     return reject(
                                         arg.position,
                                         "parallel_for helper sequence arguments require a top-level outer Array or String.");
-                                mark_unique(arbitrary_sequences, arg.value);
+                                if (arg.kind == Kind::local)
+                                    mark_unique(arbitrary_sequences, arg.value);
                             }
                             ATELIER_TRY(self(self, arg_id));
                         }
@@ -1105,7 +1128,12 @@ private:
                        return field.name == candidate_name && field.type.kind == ValueType::string;
                    });
         };
-        while (token_.text == "." && !find_property(name, native) && !string_field(name)) {
+        const auto aggregate_constant = [&](std::string_view candidate_name) {
+            return !native && std::ranges::any_of(constants_, [&](const auto& constant) {
+                return constant.name == candidate_name && aggregate(constant.type);
+            });
+        };
+        while (token_.text == "." && !find_property(name, native) && !string_field(name) && !aggregate_constant(name)) {
             ATELIER_TRY(consume());
             name += '.';
             ATELIER_TRY_BIND(part, identifier());
@@ -1576,31 +1604,102 @@ private:
         }
     }
 
-    std::expected<void, Diagnostic> validate_constant(NodeId id) const {
-        const auto& node = function_.expressions[id];
-        if (node.kind != Expression::Kind::literal && node.kind != Expression::Kind::unary &&
-            node.kind != Expression::Kind::binary && node.kind != Expression::Kind::scalar_cast &&
-            node.kind != Expression::Kind::conditional)
-            return reject(node.position, "Module constant initializers require compile-time pure scalar expressions.");
-        if (node.receiver != no_node) {
-            ATELIER_TRY(validate_constant(node.receiver));
+    static void write_scalar_bytes(ValueType type, std::uint64_t bits, std::byte* dst) noexcept {
+        if (type == ValueType::boolean) {
+            *dst = static_cast<std::byte>(bits != 0 ? 1u : 0u);
+        } else if (type == ValueType::f64) {
+            std::memcpy(dst, &bits, sizeof(double));
+        } else {
+            const auto value = static_cast<std::uint32_t>(bits);
+            std::memcpy(dst, &value, sizeof(value));
         }
-        if (node.left != no_node) {
-            ATELIER_TRY(validate_constant(node.left));
-        }
-        if (node.right != no_node) {
-            ATELIER_TRY(validate_constant(node.right));
-        }
-        return {};
     }
 
-    std::expected<std::uint64_t, Diagnostic> fold_constant(NodeId id) const {
+    static std::uint64_t read_scalar_bits(ValueType type, const std::byte* src) noexcept {
+        if (type == ValueType::boolean)
+            return *src != std::byte{0} ? 1u : 0u;
+        if (type == ValueType::f64) {
+            std::uint64_t bits{};
+            std::memcpy(&bits, src, sizeof(double));
+            return bits;
+        }
+        std::uint32_t bits{};
+        std::memcpy(&bits, src, sizeof(bits));
+        return bits;
+    }
+
+    std::expected<std::uint64_t, Diagnostic> fold_constant(NodeId id) {
+        Depth guard(depth_);
+        if (depth_ > 128)
+            return reject(function_.expressions[id].position, "Source nesting exceeds the compiler limit of 128.");
         const auto& node = function_.expressions[id];
         if (node.kind == Expression::Kind::literal)
             return node.bits;
         if (node.kind == Expression::Kind::conditional) {
             ATELIER_TRY_BIND(cond, fold_constant(node.receiver));
             return *cond ? fold_constant(node.left) : fold_constant(node.right);
+        }
+        if (node.kind == Expression::Kind::value_field) {
+            const auto owner_type = function_.expressions[node.left].type;
+            std::vector<std::byte> owner_bytes(value_size(owner_type));
+            ATELIER_TRY(fold_value_bytes(node.left, owner_bytes));
+            return read_scalar_bits(node.type, owner_bytes.data() + node.offset);
+        }
+        if (node.kind == Expression::Kind::length) {
+            const auto& seq = function_.expressions[node.left];
+            if (seq.kind != Expression::Kind::constant_data)
+                return reject(node.position, "Module constant initializers require compile-time constant expressions.");
+            return static_cast<std::uint32_t>(module_.constants[seq.value].element_count);
+        }
+        if (node.kind == Expression::Kind::index) {
+            const auto& seq = function_.expressions[node.left];
+            if (seq.kind != Expression::Kind::constant_data)
+                return reject(node.position, "Module constant initializers require compile-time constant expressions.");
+            ATELIER_TRY_BIND(idx_bits, fold_constant(node.right));
+            const auto idx_type = function_.expressions[node.right].type;
+            if (idx_type == ValueType::i32 && std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(*idx_bits)) < 0)
+                return reject(node.position, "Constant array index is out of bounds.");
+            const auto idx = static_cast<std::size_t>(static_cast<std::uint32_t>(*idx_bits));
+            const auto& constant = module_.constants[seq.value];
+            if (idx >= constant.element_count)
+                return reject(node.position, "Constant array index is out of bounds.");
+            const auto stride = value_size(node.type);
+            return read_scalar_bits(node.type, constant.bytes.data() + idx * stride);
+        }
+        if (node.kind == Expression::Kind::math_intrinsic) {
+            std::byte result_bytes[8]{};
+            ATELIER_TRY(fold_math_intrinsic(node, std::span<std::byte>{result_bytes, value_size(node.type)}));
+            return read_scalar_bits(node.type, result_bytes);
+        }
+        if (node.kind != Expression::Kind::unary && node.kind != Expression::Kind::binary &&
+            node.kind != Expression::Kind::scalar_cast)
+            return reject(node.position, "Module constant initializers require compile-time constant expressions.");
+        if (node.kind == Expression::Kind::binary && math_type(function_.expressions[node.left].type)) {
+            const auto mtype = math_type(function_.expressions[node.left].type);
+            std::array<std::byte, 128> lhs_bytes{};
+            std::array<std::byte, 128> rhs_bytes{};
+            ATELIER_TRY(fold_value_bytes(node.left, std::span<std::byte>{lhs_bytes.data(), mtype.size()}));
+            ATELIER_TRY(fold_value_bytes(node.right, std::span<std::byte>{rhs_bytes.data(), mtype.size()}));
+            bool all_equal = true;
+            bool any_unequal = false;
+            for (std::size_t lane = 0; lane < mtype.components(); ++lane) {
+                if (mtype.precision == math::Precision::f64) {
+                    double a{};
+                    double b{};
+                    std::memcpy(&a, lhs_bytes.data() + lane * 8, 8);
+                    std::memcpy(&b, rhs_bytes.data() + lane * 8, 8);
+                    all_equal &= (a == b);
+                    any_unequal |= !(a == b);
+                } else {
+                    float a{};
+                    float b{};
+                    std::memcpy(&a, lhs_bytes.data() + lane * 4, 4);
+                    std::memcpy(&b, rhs_bytes.data() + lane * 4, 4);
+                    all_equal &= (a == b);
+                    any_unequal |= !(a == b);
+                }
+            }
+            return node.operation == Operation::equal ? (all_equal ? 1u : 0u) : (any_unequal ? 1u : 0u);
         }
         ATELIER_TRY_BIND(left_result, fold_constant(node.left));
         const auto left = *left_result;
@@ -1659,6 +1758,540 @@ private:
                                node.position);
     }
 
+    template <class T>
+    static std::expected<void, Diagnostic> eval_math_lanes(MathOperation op, std::size_t lanes,
+                                                           std::span<const std::array<T, 16>> args,
+                                                           std::span<std::byte> out, SourcePosition pos) {
+        using Op = MathOperation;
+        std::array<T, 16> res{};
+        const auto write_out = [&](std::size_t count) { std::memcpy(out.data(), res.data(), count * sizeof(T)); };
+        if (op >= Op::square_root) {
+            for (std::size_t i = 0; i < lanes; ++i) {
+                const T a = args[0][i];
+                const T b = args.size() > 1 ? args[1][i] : T{};
+                const T c = args.size() > 2 ? args[2][i] : T{};
+                switch (op) {
+                case Op::square_root:
+                    res[i] = std::sqrt(a);
+                    break;
+                case Op::floor:
+                    res[i] = std::floor(a);
+                    break;
+                case Op::ceil:
+                    res[i] = std::ceil(a);
+                    break;
+                case Op::trunc:
+                    res[i] = std::trunc(a);
+                    break;
+                case Op::round:
+                    res[i] = std::rint(a);
+                    break;
+                case Op::fract: {
+                    const T diff = a - std::floor(a);
+                    const T max_under_one = std::nextafter(T{1}, T{0});
+                    res[i] = std::isnan(diff) ? diff : (diff > max_under_one ? max_under_one : diff);
+                    break;
+                }
+                case Op::abs:
+                    res[i] = std::abs(a);
+                    break;
+                case Op::sign:
+                    res[i] = std::isnan(a) ? a : (a > T{0} ? T{1} : (a < T{0} ? T{-1} : T{0}));
+                    break;
+                case Op::min:
+                    res[i] = std::isnan(a) ? a : (std::isnan(b) ? b : (a < b ? a : b));
+                    break;
+                case Op::max:
+                    res[i] = std::isnan(a) ? a : (std::isnan(b) ? b : (a > b ? a : b));
+                    break;
+                case Op::clamp: {
+                    const T hi = std::isnan(a) ? a : (std::isnan(c) ? c : (a < c ? a : c));
+                    res[i] = std::isnan(hi) ? hi : (std::isnan(b) ? b : (hi > b ? hi : b));
+                    break;
+                }
+                case Op::cwise_mul:
+                    res[i] = a * b;
+                    break;
+                case Op::cwise_div:
+                    res[i] = a / b;
+                    break;
+                case Op::radians:
+                    res[i] = a * (std::numbers::pi_v<T> / T{180});
+                    break;
+                case Op::degrees:
+                    res[i] = a * (T{180} / std::numbers::pi_v<T>);
+                    break;
+                case Op::lerp:
+                    res[i] = a * (T{1} - c) + b * c;
+                    break;
+                case Op::step:
+                    res[i] = (std::isnan(a) || std::isnan(b)) ? (T{0} / T{0}) : (b < a ? T{0} : T{1});
+                    break;
+                case Op::smoothstep: {
+                    const T raw = (c - a) / (b - a);
+                    const T t = std::isnan(raw) ? raw : (raw < T{0} ? T{0} : (raw > T{1} ? T{1} : raw));
+                    res[i] = t * t * (T{3} - T{2} * t);
+                    break;
+                }
+                case Op::sin:
+                    res[i] = std::sin(a);
+                    break;
+                case Op::cos:
+                    res[i] = std::cos(a);
+                    break;
+                case Op::atan2:
+                    res[i] = std::atan2(a, b);
+                    break;
+                case Op::exp:
+                    res[i] = std::exp(a);
+                    break;
+                case Op::log:
+                    res[i] = std::log(a);
+                    break;
+                case Op::pow:
+                    res[i] = std::pow(a, b);
+                    break;
+                default:
+                    return reject(pos, "This math operation is not supported in compile-time constant initializers.");
+                }
+            }
+            write_out(lanes);
+            return {};
+        }
+        switch (op) {
+        case Op::dot: {
+            T sum{};
+            for (std::size_t i = 0; i < lanes; ++i)
+                sum += args[0][i] * args[1][i];
+            res[0] = sum;
+            write_out(1);
+            return {};
+        }
+        case Op::cross:
+            res[0] = args[0][1] * args[1][2] - args[0][2] * args[1][1];
+            res[1] = args[0][2] * args[1][0] - args[0][0] * args[1][2];
+            res[2] = args[0][0] * args[1][1] - args[0][1] * args[1][0];
+            write_out(3);
+            return {};
+        case Op::length_squared: {
+            T sum{};
+            for (std::size_t i = 0; i < lanes; ++i)
+                sum += args[0][i] * args[0][i];
+            res[0] = sum;
+            write_out(1);
+            return {};
+        }
+        case Op::length: {
+            T sum{};
+            for (std::size_t i = 0; i < lanes; ++i)
+                sum += args[0][i] * args[0][i];
+            res[0] = std::sqrt(sum);
+            write_out(1);
+            return {};
+        }
+        case Op::distance_squared: {
+            T sum{};
+            for (std::size_t i = 0; i < lanes; ++i) {
+                const T d = args[1][i] - args[0][i];
+                sum += d * d;
+            }
+            res[0] = sum;
+            write_out(1);
+            return {};
+        }
+        case Op::distance: {
+            T sum{};
+            for (std::size_t i = 0; i < lanes; ++i) {
+                const T d = args[1][i] - args[0][i];
+                sum += d * d;
+            }
+            res[0] = std::sqrt(sum);
+            write_out(1);
+            return {};
+        }
+        case Op::normalize_or_zero: {
+            T sum{};
+            for (std::size_t i = 0; i < lanes; ++i)
+                sum += args[0][i] * args[0][i];
+            const T len = std::sqrt(sum);
+            if (std::isfinite(len) && len > T{0}) {
+                for (std::size_t i = 0; i < lanes; ++i)
+                    res[i] = args[0][i] / len;
+            } else if (!std::isfinite(sum)) {
+                for (std::size_t i = 0; i < lanes; ++i)
+                    res[i] = T{0} / T{0};
+            }
+            write_out(lanes);
+            return {};
+        }
+        case Op::conjugate:
+            res[0] = -args[0][0];
+            res[1] = -args[0][1];
+            res[2] = -args[0][2];
+            res[3] = args[0][3];
+            write_out(4);
+            return {};
+        default:
+            return reject(pos, "This math operation is not supported in compile-time constant initializers.");
+        }
+    }
+
+    std::expected<void, Diagnostic> fold_math_intrinsic(const Expression& node, std::span<std::byte> out) {
+        using Op = MathOperation;
+        if (node.math_operation == Op::as_uint || node.math_operation == Op::as_int) {
+            ATELIER_TRY_BIND(bits, fold_constant(node.arguments[0]));
+            write_scalar_bytes(node.type, static_cast<std::uint32_t>(*bits), out.data());
+            return {};
+        }
+        if ((node.math_operation == Op::abs || node.math_operation == Op::min || node.math_operation == Op::max ||
+             node.math_operation == Op::clamp) &&
+            (node.type == ValueType::i32 || node.type == ValueType::u32)) {
+            ATELIER_TRY_BIND(a_bits, fold_constant(node.arguments[0]));
+            if (node.math_operation == Op::abs) {
+                const auto a = std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(*a_bits));
+                if (a == std::numeric_limits<std::int32_t>::min())
+                    return reject(node.position, "Constant integer abs overflows INT_MIN.");
+                write_scalar_bytes(node.type, static_cast<std::uint32_t>(a < 0 ? -a : a), out.data());
+                return {};
+            }
+            ATELIER_TRY_BIND(b_bits, fold_constant(node.arguments[1]));
+            if (node.type == ValueType::i32) {
+                const auto a = std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(*a_bits));
+                const auto b = std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(*b_bits));
+                if (node.math_operation == Op::min) {
+                    write_scalar_bytes(node.type, static_cast<std::uint32_t>(std::min(a, b)), out.data());
+                    return {};
+                }
+                if (node.math_operation == Op::max) {
+                    write_scalar_bytes(node.type, static_cast<std::uint32_t>(std::max(a, b)), out.data());
+                    return {};
+                }
+                ATELIER_TRY_BIND(c_bits, fold_constant(node.arguments[2]));
+                const auto c = std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(*c_bits));
+                write_scalar_bytes(node.type, static_cast<std::uint32_t>(std::max(b, std::min(a, c))), out.data());
+                return {};
+            }
+            const auto a = static_cast<std::uint32_t>(*a_bits);
+            const auto b = static_cast<std::uint32_t>(*b_bits);
+            if (node.math_operation == Op::min) {
+                write_scalar_bytes(node.type, std::min(a, b), out.data());
+                return {};
+            }
+            if (node.math_operation == Op::max) {
+                write_scalar_bytes(node.type, std::max(a, b), out.data());
+                return {};
+            }
+            ATELIER_TRY_BIND(c_bits, fold_constant(node.arguments[2]));
+            const auto c = static_cast<std::uint32_t>(*c_bits);
+            write_scalar_bytes(node.type, std::max(b, std::min(a, c)), out.data());
+            return {};
+        }
+        if (node.math_operation == Op::is_finite) {
+            const auto arg_type = function_.expressions[node.arguments[0]].type;
+            const auto m = math_type(arg_type);
+            std::array<std::byte, 128> arg_bytes{};
+            const std::size_t sz = value_size(arg_type);
+            ATELIER_TRY(fold_value_bytes(node.arguments[0], std::span<std::byte>{arg_bytes.data(), sz}));
+            const std::size_t lanes = m ? m.components() : 1;
+            const bool f64 = m ? m.precision == math::Precision::f64 : arg_type == ValueType::f64;
+            bool ok = true;
+            for (std::size_t i = 0; i < lanes; ++i) {
+                if (f64) {
+                    double v{};
+                    std::memcpy(&v, arg_bytes.data() + i * 8, 8);
+                    ok &= std::isfinite(v);
+                } else {
+                    float v{};
+                    std::memcpy(&v, arg_bytes.data() + i * 4, 4);
+                    ok &= std::isfinite(v);
+                }
+            }
+            write_scalar_bytes(ValueType::boolean, ok ? 1u : 0u, out.data());
+            return {};
+        }
+        const auto first_type = function_.expressions[node.arguments[0]].type;
+        const auto first_math = math_type(first_type);
+        const auto res_math = math_type(node.type);
+        const std::size_t lanes = res_math ? res_math.components() : (first_math ? first_math.components() : 1);
+        const bool is_f64 = (res_math && res_math.precision == math::Precision::f64) ||
+                            (first_math && first_math.precision == math::Precision::f64) ||
+                            first_type == ValueType::f64 || node.type == ValueType::f64;
+        if (is_f64) {
+            std::array<std::array<double, 16>, 3> unpacked{};
+            for (std::size_t a = 0; a < node.arguments.size(); ++a) {
+                const auto atype = function_.expressions[node.arguments[a]].type;
+                const auto amath = math_type(atype);
+                std::array<std::byte, 128> raw{};
+                ATELIER_TRY(fold_value_bytes(node.arguments[a], std::span<std::byte>{raw.data(), value_size(atype)}));
+                if (amath) {
+                    std::memcpy(unpacked[a].data(), raw.data(), amath.components() * sizeof(double));
+                } else {
+                    double scalar_val{};
+                    std::memcpy(&scalar_val, raw.data(), sizeof(double));
+                    unpacked[a].fill(scalar_val);
+                }
+            }
+            return eval_math_lanes<double>(node.math_operation, lanes,
+                                           std::span{unpacked.data(), node.arguments.size()}, out, node.position);
+        }
+        std::array<std::array<float, 16>, 3> unpacked{};
+        for (std::size_t a = 0; a < node.arguments.size(); ++a) {
+            const auto atype = function_.expressions[node.arguments[a]].type;
+            const auto amath = math_type(atype);
+            std::array<std::byte, 128> raw{};
+            ATELIER_TRY(fold_value_bytes(node.arguments[a], std::span<std::byte>{raw.data(), value_size(atype)}));
+            if (amath) {
+                std::memcpy(unpacked[a].data(), raw.data(), amath.components() * sizeof(float));
+            } else {
+                float scalar_val{};
+                std::memcpy(&scalar_val, raw.data(), sizeof(float));
+                unpacked[a].fill(scalar_val);
+            }
+        }
+        return eval_math_lanes<float>(node.math_operation, lanes, std::span{unpacked.data(), node.arguments.size()},
+                                      out, node.position);
+    }
+
+    template <class T>
+    static void fold_math_binary_lanes(Operation op, math::Type left_math, math::Type right_math,
+                                       const std::byte* lhs_raw, const std::byte* rhs_raw, std::byte* out) noexcept {
+        const auto mtype = left_math ? left_math : right_math;
+        std::array<T, 16> lhs{};
+        std::array<T, 16> rhs{};
+        std::array<T, 16> res{};
+        if (left_math) {
+            std::memcpy(lhs.data(), lhs_raw, left_math.components() * sizeof(T));
+        } else {
+            T s{};
+            std::memcpy(&s, lhs_raw, sizeof(T));
+            lhs.fill(s);
+        }
+        if (right_math) {
+            std::memcpy(rhs.data(), rhs_raw, right_math.components() * sizeof(T));
+        } else {
+            T s{};
+            std::memcpy(&s, rhs_raw, sizeof(T));
+            rhs.fill(s);
+        }
+        if (op == Operation::multiply && left_math && right_math) {
+            if (left_math.shape == math::Shape::quaternion) {
+                res[0] = lhs[3] * rhs[0] + lhs[0] * rhs[3] + lhs[1] * rhs[2] - lhs[2] * rhs[1];
+                res[1] = lhs[3] * rhs[1] - lhs[0] * rhs[2] + lhs[1] * rhs[3] + lhs[2] * rhs[0];
+                res[2] = lhs[3] * rhs[2] + lhs[0] * rhs[1] - lhs[1] * rhs[0] + lhs[2] * rhs[3];
+                res[3] = lhs[3] * rhs[3] - lhs[0] * rhs[0] - lhs[1] * rhs[1] - lhs[2] * rhs[2];
+                std::memcpy(out, res.data(), 4 * sizeof(T));
+                return;
+            }
+            if (left_math.shape == math::Shape::matrix4) {
+                for (std::size_t r = 0; r < 4; ++r)
+                    for (std::size_t c = 0; c < 4; ++c) {
+                        T sum{};
+                        for (std::size_t k = 0; k < 4; ++k)
+                            sum += lhs[r * 4 + k] * rhs[k * 4 + c];
+                        res[r * 4 + c] = sum;
+                    }
+                std::memcpy(out, res.data(), 16 * sizeof(T));
+                return;
+            }
+        }
+        for (std::size_t i = 0; i < mtype.components(); ++i) {
+            switch (op) {
+            case Operation::add:
+                res[i] = lhs[i] + rhs[i];
+                break;
+            case Operation::subtract:
+                res[i] = lhs[i] - rhs[i];
+                break;
+            case Operation::multiply:
+                res[i] = lhs[i] * rhs[i];
+                break;
+            case Operation::divide:
+                res[i] = lhs[i] / rhs[i];
+                break;
+            default:
+                break;
+            }
+        }
+        std::memcpy(out, res.data(), mtype.components() * sizeof(T));
+    }
+
+    std::expected<void, Diagnostic> fold_value_bytes(NodeId id, std::span<std::byte> out) {
+        Depth guard(depth_);
+        if (depth_ > 128)
+            return reject(function_.expressions[id].position, "Source nesting exceeds the compiler limit of 128.");
+        const auto& node = function_.expressions[id];
+        if (scalar(node.type)) {
+            ATELIER_TRY_BIND(bits, fold_constant(id));
+            write_scalar_bytes(node.type, *bits, out.data());
+            return {};
+        }
+        if (node.kind == Expression::Kind::conditional) {
+            ATELIER_TRY_BIND(cond, fold_constant(node.receiver));
+            return fold_value_bytes(*cond ? node.left : node.right, out);
+        }
+        if (node.kind == Expression::Kind::constant_data) {
+            const auto& constant = module_.constants[node.value];
+            std::memcpy(out.data(), constant.bytes.data(), out.size());
+            return {};
+        }
+        if (node.kind == Expression::Kind::value_field) {
+            const auto owner_type = function_.expressions[node.left].type;
+            std::vector<std::byte> owner_bytes(value_size(owner_type));
+            ATELIER_TRY(fold_value_bytes(node.left, owner_bytes));
+            std::memcpy(out.data(), owner_bytes.data() + node.offset, out.size());
+            return {};
+        }
+        if (node.kind == Expression::Kind::index) {
+            const auto& seq = function_.expressions[node.left];
+            if (seq.kind != Expression::Kind::constant_data)
+                return reject(node.position, "Module constant initializers require compile-time constant expressions.");
+            ATELIER_TRY_BIND(idx_bits, fold_constant(node.right));
+            const auto idx_type = function_.expressions[node.right].type;
+            if (idx_type == ValueType::i32 && std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(*idx_bits)) < 0)
+                return reject(node.position, "Constant array index is out of bounds.");
+            const auto idx = static_cast<std::size_t>(static_cast<std::uint32_t>(*idx_bits));
+            const auto& constant = module_.constants[seq.value];
+            if (idx >= constant.element_count)
+                return reject(node.position, "Constant array index is out of bounds.");
+            std::memcpy(out.data(), constant.bytes.data() + idx * out.size(), out.size());
+            return {};
+        }
+        if (const auto mtype = math_type(node.type)) {
+            const bool f64 = mtype.precision == math::Precision::f64;
+            const std::size_t lane_bytes = mtype.scalar_size();
+            if (node.kind == Expression::Kind::math_construct) {
+                std::memset(out.data(), 0, out.size());
+                if (node.arguments.empty()) {
+                    if (mtype.shape == math::Shape::quaternion) {
+                        if (f64) {
+                            const double one = 1.0;
+                            std::memcpy(out.data() + 3 * 8, &one, 8);
+                        } else {
+                            const float one = 1.0f;
+                            std::memcpy(out.data() + 3 * 4, &one, 4);
+                        }
+                    }
+                    return {};
+                }
+                if (node.arguments.size() == 1) {
+                    const auto arg_type = function_.expressions[node.arguments[0]].type;
+                    if (const auto arg_math = math_type(arg_type)) {
+                        std::array<std::byte, 128> src{};
+                        ATELIER_TRY(fold_value_bytes(node.arguments[0], std::span{src.data(), arg_math.size()}));
+                        for (std::size_t i = 0; i < mtype.components(); ++i) {
+                            if (arg_math.precision == mtype.precision) {
+                                std::memcpy(out.data() + i * lane_bytes, src.data() + i * lane_bytes, lane_bytes);
+                            } else if (f64) {
+                                float v{};
+                                std::memcpy(&v, src.data() + i * 4, 4);
+                                const double w = static_cast<double>(v);
+                                std::memcpy(out.data() + i * 8, &w, 8);
+                            } else {
+                                double v{};
+                                std::memcpy(&v, src.data() + i * 8, 8);
+                                const float w = static_cast<float>(v);
+                                std::memcpy(out.data() + i * 4, &w, 4);
+                            }
+                        }
+                        return {};
+                    }
+                    ATELIER_TRY_BIND(bits, fold_constant(node.arguments[0]));
+                    if (mtype.vector()) {
+                        for (std::size_t i = 0; i < mtype.components(); ++i)
+                            write_scalar_bytes(math_scalar(mtype), *bits, out.data() + i * lane_bytes);
+                    } else {
+                        for (std::size_t i = 0; i < 16; i += 5)
+                            write_scalar_bytes(math_scalar(mtype), *bits, out.data() + i * lane_bytes);
+                    }
+                    return {};
+                }
+                for (std::size_t i = 0; i < node.arguments.size(); ++i) {
+                    ATELIER_TRY_BIND(bits, fold_constant(node.arguments[i]));
+                    write_scalar_bytes(math_scalar(mtype), *bits, out.data() + i * lane_bytes);
+                }
+                return {};
+            }
+            if (node.kind == Expression::Kind::unary) {
+                ATELIER_TRY(fold_value_bytes(node.left, out));
+                if (node.operation == Operation::negate) {
+                    for (std::size_t i = 0; i < mtype.components(); ++i) {
+                        if (f64) {
+                            double v{};
+                            std::memcpy(&v, out.data() + i * 8, 8);
+                            v = -v;
+                            std::memcpy(out.data() + i * 8, &v, 8);
+                        } else {
+                            float v{};
+                            std::memcpy(&v, out.data() + i * 4, 4);
+                            v = -v;
+                            std::memcpy(out.data() + i * 4, &v, 4);
+                        }
+                    }
+                }
+                return {};
+            }
+            if (node.kind == Expression::Kind::binary) {
+                const auto ltype = function_.expressions[node.left].type;
+                const auto rtype = function_.expressions[node.right].type;
+                std::array<std::byte, 128> lhs{};
+                std::array<std::byte, 128> rhs{};
+                ATELIER_TRY(fold_value_bytes(node.left, std::span{lhs.data(), value_size(ltype)}));
+                ATELIER_TRY(fold_value_bytes(node.right, std::span{rhs.data(), value_size(rtype)}));
+                if (f64)
+                    fold_math_binary_lanes<double>(node.operation, math_type(ltype), math_type(rtype), lhs.data(),
+                                                   rhs.data(), out.data());
+                else
+                    fold_math_binary_lanes<float>(node.operation, math_type(ltype), math_type(rtype), lhs.data(),
+                                                  rhs.data(), out.data());
+                return {};
+            }
+            if (node.kind == Expression::Kind::math_intrinsic)
+                return fold_math_intrinsic(node, out);
+        }
+        return reject(node.position, "Module constant initializers require compile-time constant expressions.");
+    }
+
+    std::expected<void, Diagnostic> parse_constant_bytes(ValueType target_type, std::span<std::byte> out) {
+        Depth guard(depth_);
+        if (depth_ > 128)
+            return reject(token_.position, "Source nesting exceeds the compiler limit of 128.");
+        if (token_.text == "{") {
+            const auto brace_pos = token_.position;
+            if (!plain_record(target_type) || math_type(target_type) || !parallel_value_type(target_type))
+                return reject(brace_pos, "Brace initializers require a plain struct or constant Array type.");
+            ATELIER_TRY(consume());
+            const auto& layout = environment_.values[target_type.type_index];
+            if (!layout.initial_value.empty())
+                std::memcpy(out.data(), layout.initial_value.data(), layout.size);
+            else
+                std::memset(out.data(), 0, layout.size);
+            ATELIER_TRY_BIND(empty, accept("}"));
+            if (*empty)
+                return {};
+            std::size_t field_index = 0;
+            for (;;) {
+                if (field_index >= layout.fields.size())
+                    return reject(token_.position, "Too many initializers for struct '" + layout.name + "'.");
+                const auto& field = layout.fields[field_index];
+                ATELIER_TRY(parse_constant_bytes(field.type, out.subspan(field.offset, value_size(field.type))));
+                ++field_index;
+                ATELIER_TRY_BIND(comma, accept(","));
+                if (!*comma)
+                    break;
+                if (token_.text == "}")
+                    break;
+            }
+            if (field_index != layout.fields.size())
+                return reject(token_.position, "Struct constant initializer for '" + layout.name +
+                                                   "' requires either '{}' or all fields in order.");
+            ATELIER_TRY(expect("}"));
+            return {};
+        }
+        ATELIER_TRY_BIND(parsed, expression());
+        ATELIER_TRY_BIND(initializer, converted(*parsed, target_type));
+        return fold_value_bytes(*initializer, out);
+    }
+
     std::expected<void, Diagnostic> resolve_constant(std::size_t index) {
         auto& value = constants_[index];
         if (value.state == Constant::State::complete)
@@ -1671,23 +2304,149 @@ private:
         auto saved_function = std::move(function_);
         auto saved_heights = std::move(expression_heights_);
         auto saved_visible = std::move(visible_);
+        const auto restore = [&] {
+            lexer_ = saved_lexer;
+            token_ = saved_token;
+            function_ = std::move(saved_function);
+            expression_heights_ = std::move(saved_heights);
+            visible_ = std::move(saved_visible);
+        };
         function_ = {};
         expression_heights_.clear();
         visible_.clear();
         lexer_ = value.lexer;
         token_ = value.token;
-        ATELIER_TRY_BIND(parsed, expression());
-        ATELIER_TRY_BIND(initializer, converted(*parsed, value.type));
-        ATELIER_TRY(expect(";"));
-        ATELIER_TRY(validate_constant(*initializer));
-        ATELIER_TRY_BIND(bits, fold_constant(*initializer));
-        value.bits = *bits;
+
+        if (value.type.kind == ValueType::array) {
+            const auto elem_type = environment_.values[value.type.type_index].element;
+            const std::size_t stride = value_size(elem_type);
+            ConstantData data{value.type, 0, {}};
+            ATELIER_TRY_BIND(open_brace, accept("{"));
+            if (*open_brace) {
+                if (token_.text != "}") {
+                    for (;;) {
+                        if (data.element_count >= 65536 || data.bytes.size() + stride > 4 * 1024 * 1024) {
+                            restore();
+                            return reject(token_.position,
+                                          "Constant array exceeds the 65536-element or 4 MiB compile-time limit.");
+                        }
+                        const std::size_t offset = data.bytes.size();
+                        data.bytes.resize(offset + stride);
+                        auto elem_status =
+                            parse_constant_bytes(elem_type, std::span{data.bytes.data() + offset, stride});
+                        if (!elem_status) {
+                            restore();
+                            return elem_status;
+                        }
+                        ++data.element_count;
+                        ATELIER_TRY_BIND(comma, accept(","));
+                        if (!*comma || token_.text == "}")
+                            break;
+                    }
+                }
+                auto close_status = expect("}");
+                if (!close_status) {
+                    restore();
+                    return std::unexpected(std::move(close_status).error());
+                }
+            } else {
+                auto parsed = expression();
+                if (!parsed) {
+                    restore();
+                    return std::unexpected(std::move(parsed).error());
+                }
+                auto init = converted(*parsed, value.type);
+                if (!init) {
+                    restore();
+                    return std::unexpected(std::move(init).error());
+                }
+                const auto& node = function_.expressions[*init];
+                if (node.kind != Expression::Kind::constant_data) {
+                    restore();
+                    return reject(node.position,
+                                  "Constant Array requires a '{ ... }' initializer or another constant Array.");
+                }
+                data = module_.constants[node.value];
+            }
+            auto semi = expect(";");
+            if (!semi) {
+                restore();
+                return std::unexpected(std::move(semi).error());
+            }
+            value.data_index = static_cast<std::uint32_t>(module_.constants.size());
+            module_.constants.push_back(std::move(data));
+            value.state = Constant::State::complete;
+            restore();
+            return {};
+        }
+
+        if (scalar(value.type)) {
+            if (token_.text == "{") {
+                const auto pos = token_.position;
+                restore();
+                return reject(pos, "Brace initializers require a plain struct or constant Array type.");
+            }
+            auto parsed = expression();
+            if (!parsed) {
+                restore();
+                return std::unexpected(std::move(parsed).error());
+            }
+            auto initializer = converted(*parsed, value.type);
+            if (!initializer) {
+                restore();
+                return std::unexpected(std::move(initializer).error());
+            }
+            auto semi = expect(";");
+            if (!semi) {
+                restore();
+                return std::unexpected(std::move(semi).error());
+            }
+            auto bits = fold_constant(*initializer);
+            if (!bits) {
+                restore();
+                return std::unexpected(std::move(bits).error());
+            }
+            value.bits = *bits;
+            value.state = Constant::State::complete;
+            restore();
+            return {};
+        }
+
+        if (const auto mtype = math_type(value.type)) {
+            std::array<std::byte, 128> raw{};
+            auto status = parse_constant_bytes(value.type, std::span{raw.data(), mtype.size()});
+            if (!status) {
+                restore();
+                return status;
+            }
+            auto semi = expect(";");
+            if (!semi) {
+                restore();
+                return std::unexpected(std::move(semi).error());
+            }
+            value.math_lanes.resize(mtype.components());
+            for (std::size_t i = 0; i < mtype.components(); ++i)
+                value.math_lanes[i] = read_scalar_bits(math_scalar(mtype), raw.data() + i * mtype.scalar_size());
+            value.state = Constant::State::complete;
+            restore();
+            return {};
+        }
+
+        ConstantData data{value.type, 1, std::vector<std::byte>(value_size(value.type))};
+        auto status = parse_constant_bytes(value.type, data.bytes);
+        if (!status) {
+            restore();
+            return status;
+        }
+        auto semi = expect(";");
+        if (!semi) {
+            restore();
+            return std::unexpected(std::move(semi).error());
+        }
+        value.data_index = static_cast<std::uint32_t>(module_.constants.size());
+        module_.constants.push_back(std::move(data));
         value.state = Constant::State::complete;
-        lexer_ = saved_lexer;
-        token_ = saved_token;
-        function_ = std::move(saved_function);
-        expression_heights_ = std::move(saved_heights);
-        visible_ = std::move(saved_visible);
+        restore();
         return {};
     }
 
@@ -2845,9 +3604,22 @@ private:
             if (constants_[i].name != name)
                 continue;
             ATELIER_TRY(resolve_constant(i));
-            ATELIER_TRY_BIND(node, literal(constants_[i].type, position, constants_[i].bits));
-            function_.expressions[*node].typed_constant = true;
-            return node;
+            const auto& constant = constants_[i];
+            if (scalar(constant.type)) {
+                ATELIER_TRY_BIND(node, literal(constant.type, position, constant.bits, true));
+                return node;
+            }
+            if (const auto mtype = math_type(constant.type)) {
+                Expression result{Expression::Kind::math_construct, constant.type, position};
+                result.arguments.reserve(constant.math_lanes.size());
+                for (const auto lane_bits : constant.math_lanes) {
+                    ATELIER_TRY_BIND(lane, literal(math_scalar(mtype), position, lane_bits, true));
+                    result.arguments.push_back(*lane);
+                }
+                return add(std::move(result));
+            }
+            return add(Expression{Expression::Kind::constant_data, constant.type, position, no_node, no_node,
+                                  constant.data_index});
         }
         return reject(position, "Unknown identifier '" + std::string(name) + "'.");
     }
@@ -2881,6 +3653,10 @@ private:
         enum class State { fresh, active, complete } state{};
 
         std::uint64_t bits{};
+
+        std::vector<std::uint64_t> math_lanes{};
+
+        std::uint32_t data_index{UINT32_MAX};
     };
 
     std::vector<Constant> constants_;
@@ -2933,6 +3709,7 @@ std::expected<void, Diagnostic> export_functions(Program& program, std::span<con
         wrapper.uses_scoped_values = found->uses_scoped_values;
         wrapper.preserves_borrows = found->preserves_borrows;
         wrapper.parallel_safe = found->parallel_safe;
+        wrapper.description = found->description;
         wrapper.requires_receiver = receiver || found->requires_receiver;
         Expression call{Expression::Kind::source_call, wrapper.result, wrapper.position};
         call.value = target;

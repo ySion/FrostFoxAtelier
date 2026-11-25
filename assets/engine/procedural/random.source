@@ -3,6 +3,7 @@
 // modules/engine/procedural/include/procedural/random.hpp, so Source and C++ nodes draw the same values: lowbias32 by
 // Chris Wellons (public domain), combined as hash(a ^ hash(b)).
 
+[DESC = "确定性 32 位整数哈希（lowbias32），与 C++ 程序化节点共享一致的随机序列契约。"]
 uint procedural.hash(uint value) {
     uint x = value;
     x = x ^ (x >> 16u);
@@ -13,16 +14,19 @@ uint procedural.hash(uint value) {
     return x;
 }
 
+[DESC = "将两个 32 位无符号整数（如 context.seed 与元素索引）按 hash(a ^ hash(b)) 确定性混合。"]
 uint procedural.hash2(uint a, uint b) {
     return procedural.hash(a ^ procedural.hash(b));
 }
 
 // Uniform in [0, 1) from the top 24 bits, exact in float.
+[DESC = "提取 32 位哈希值高 24 位映射为 [0, 1) 内的均匀 float 浮点数。"]
 float procedural.unit(uint x) {
     return float(x >> 8u) * 0.000000059604644775390625f;
 }
 
 // Uniform in [-1, 1) per component, from three successive hashes of x.
+[DESC = "对种子 x 连续哈希三次，返回各分量在 [-1, 1) 内均匀分布的三维随机向量。"]
 vector3 procedural.random_vector(uint x) {
     const uint a = procedural.hash(x);
     const uint b = procedural.hash(a);

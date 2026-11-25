@@ -206,7 +206,19 @@ void verify_frontend_and_pod_evaluation() {
     reject_snapshot("[UnknownAttr] enum BadEnum { a }", "Unknown enum attribute");
     reject_snapshot("[DESC = 42] class p.Bad : test.PairHost {}", "DESC requires a string literal.");
     reject_snapshot(R"([DESC = "bad\0text"] class p.Bad : test.PairHost {})", "DESC must not contain control");
-    reject_snapshot(R"([DESC = "bad target"] struct Bad { int x; };)", "applies to class declarations only");
+    reject_snapshot(R"([DESC = "bad target"] const int BAD = 1;)", "Attributes do not apply to module constants");
+    reject_snapshot(R"(const String BAD_STR = "nope"; int f() { return 0; })",
+                    "Module constants require a scalar, enum, built-in math, plain struct, or Array of plain values");
+    reject_snapshot("const Array<int> TAB = { 1, 2 }; void bad() { TAB[0] = 3; }",
+                    "Assignment requires a writable local or field");
+    reject_snapshot("const Array<int> TAB = { 1, 2 }; void bad() { TAB.add(3); }",
+                    "Structural mutation requires a mutable owned or borrowed sequence");
+    reject_snapshot("const Array<int> TAB = { 1, 2 }; void take_mut(Array<int>& a) {} void bad() { take_mut(TAB); }",
+                    "Writable reference requires a mutable lvalue");
+    reject_snapshot("struct S { int x; }; const S CS = { 1 }; void bad() { CS.x = 2; }",
+                    "Assignment requires a writable local or field");
+    reject_snapshot("const Array<int> TAB = { 10, 20 }; const int OOB = TAB[2]; int f() { return OOB; }",
+                    "Constant array index is out of bounds");
     reject_snapshot("bool bad_fin() { return math.is_finite(1); }", "math.is_finite requires");
     reject_snapshot("uint bad_bits() { return math.as_uint(1.0d); }", "math.as_uint requires");
     reject_snapshot("int bad_ibits() { return math.as_int(vector3()); }", "math.as_int requires");
@@ -1351,6 +1363,15 @@ int hot.run() {
         reject_single("void f() { fail(\"bad\", 1.5f); }", "fail element index requires uint or int");
         reject_mod("[Flags] enum s.M : uint { A = 1 } void s.f() { fail(\"bad\", s.M::A, 0u); }",
                    "fail element layer requires a uint-backed non-flags enum");
+        reject_single("const Array<int> TAB = { 1, 2 }; void f() { TAB.add(3); }",
+                      "Structural mutation requires a mutable");
+        reject_single("const Array<int> TAB = { 1, 2 }; void f() { TAB[0] = 3; }", "Assignment requires a writable");
+        reject_single("const vector3 V = vector3(1.0f); void f() { V.x = 2.0f; }", "Assignment requires a writable");
+        reject_single("void mut(Array<int>& a) {} const Array<int> TAB = { 1 }; void f() { mut(TAB); }",
+                      "Writable reference requires a mutable lvalue");
+        reject_mod("[DESC = \"bad\"] const int s.X = 1; void s.f() {}", "Attributes do not apply to module constants");
+        reject_single("const int X = { 1 }; void f() {}",
+                      "Brace initializers require a plain struct or constant Array");
     }
 
     // 4. Structured fail("msg", [layer,] index), sentinel omission, DirectScope, Coroutine, parallel_for, and NativeFailure.
@@ -1454,6 +1475,182 @@ class diag.Runner : test.PairHost {
                     nat_failed.error().source.has_value() &&
                     nat_failed.error().element == ErrorElement{"interval", 17u},
                 "Native BorrowSafe failure did not preserve ErrorElement across NativeFailure.");
+    }
+
+    // 9. Batch 4: .rdata zero-allocation constant tables (math, plain struct, Array<T>),
+    //    [DESC] on struct/enum/field/function, Program::functions(), and DESC-only hot reload:
+    {
+        constexpr std::string_view batch4_src_v1 = R"(
+[DESC = "Station sample record."]
+struct tab.Station {
+    [DESC = "Height in metres."]
+    float y;
+    [DESC = "Radius in metres."]
+    float radius;
+    [DESC = "Section tag."]
+    uint tag;
+};
+
+[Flags, DESC = "Bitmask flags with type-level DESC."]
+enum tab.Mask : uint {
+    None = 0u,
+    Cap = 1u,
+    Bevel = 2u
+};
+
+const vector3 tab.UP = vector3(0.0f, 1.0f, 0.0f);
+const quaternion tab.ID_ROT = quaternion();
+const tab.Station tab.DEFAULT_STATION = { 0.25f, 0.12f, 7u, };
+const Array<vector2> tab.PROFILE = {
+    vector2(0.10f, 0.13f),
+    vector2(0.20f, 0.15f),
+    vector2(0.40f, 0.11f),
+    vector2(tab.DEFAULT_STATION.y * 2.0f, tab.DEFAULT_STATION.radius + 0.02f),
+};
+const Array<tab.Station> tab.STATIONS = {
+    { 0.1f, 0.2f, 1u },
+    tab.DEFAULT_STATION,
+    { 0.8f, 0.3f, 9u, },
+};
+const Array<int> tab.EMPTY = {};
+const uint tab.PROFILE_LEN = tab.PROFILE.size();
+
+[DESC = "Initial docstring v1."]
+float tab.read_profile_radius(uint idx) {
+    return tab.PROFILE[idx].y + tab.UP.y * 0.0f + tab.ID_ROT.w * 0.0f + float(tab.EMPTY.size());
+}
+
+[DESC = "Parallel helper reading constant tables."]
+float tab.eval_station(const Array<vector2>& prof, uint i) {
+    const uint k = i % prof.size();
+    const tab.Station st = tab.STATIONS[i % tab.STATIONS.size()];
+    return prof[k].x + prof[k].y + st.radius + float(st.tag);
+}
+
+void tab.mutate_vec(Array<float>& out, float v) {
+    out.add(v);
+}
+
+[DESC = "Parallel consumer over .rdata constant tables."]
+double tab.parallel_sum(uint n) {
+    Array<float> acc;
+    acc.resize(n);
+    parallel_for (uint i : n) {
+        acc[i] = tab.eval_station(tab.PROFILE, i) + tab.PROFILE[i % tab.PROFILE_LEN].x;
+    }
+    double total = 0.0d;
+    for (uint i = 0u; i < n; i += 1u) {
+        total += double(acc[i]);
+    }
+    return total;
+}
+)";
+        Runtime b4_rt;
+        register_erg_host(b4_rt);
+        take(b4_rt.register_types(
+            std::vector<TypeDefinition>{array_definition<float>(b4_rt, "test.FloatArray"),
+                                        array_definition<math::Vector2>(b4_rt, "test.Vec2Array")}));
+        auto b4_prog = take(Program::create(b4_rt));
+        source::CompileOptions opts{};
+        opts.artifacts = true;
+        source::SourceSnapshot snap1{"Batch4Const", 1, {{"Source/Tab.source", 1, std::string(batch4_src_v1)}}};
+        auto cand1 = take(Program::prepare(take(b4_prog->request(snap1, opts))));
+        require(cand1.functions().size() == 4, "Candidate::functions() did not report the 4 global functions.");
+        take(b4_prog->try_publish(cand1));
+
+        // Verify struct & enum & struct field DESC in Runtime:
+        const auto st_type = take(b4_rt.find_type("tab.Station"));
+        const auto* st_info = take(b4_rt.describe(st_type));
+        require(st_info->description == "Station sample record." && st_info->fields.size() == 3 &&
+                    st_info->fields[0].description == "Height in metres." &&
+                    st_info->fields[1].description == "Radius in metres." &&
+                    st_info->fields[2].description == "Section tag.",
+                "Struct and struct field [DESC] did not publish to Runtime TypeInfo.");
+        const auto mask_type = take(b4_rt.find_type("tab.Mask"));
+        const auto* mask_info = take(b4_rt.describe(mask_type));
+        require(mask_info->description == "Bitmask flags with type-level DESC." && mask_info->enumeration &&
+                    mask_info->enumeration->flags,
+                "[Flags, DESC] enum did not publish both flags and description.");
+
+        // Verify zero-allocation .rdata IR and zero runtime value/sequence calls on a pure constant Array reader:
+        {
+            auto pure_const_prog = take(Program::create(b4_rt));
+            constexpr std::string_view pure_const_src = R"(
+const Array<vector2> PureProf = { vector2(0.10f, 0.13f), vector2(0.20f, 0.15f) };
+float read_prof_y(uint idx) {
+    return PureProf[idx].y;
+}
+)";
+            auto pure_req = take(pure_const_prog->request("pure_const.source", pure_const_src, "read_prof_y",
+                                                          {.diagnostics = true, .artifacts = true}));
+            auto pure_cand = take(Program::prepare(pure_req));
+            take(pure_const_prog->try_publish(pure_cand));
+            const auto pure_ir = take(take(pure_const_prog->pin()).artifacts()).optimized_ir;
+            require(pure_ir.contains("@__source_const_data.") && !pure_ir.contains("@business_construct_value") &&
+                        !pure_ir.contains("@business_destroy_value") &&
+                        !pure_ir.contains("@business_mutate_sequence") && !pure_ir.contains("@business_sequence_view"),
+                    "Pure constant Array reader emitted runtime value/sequence services instead of .rdata table.");
+            source::Diagnostics pure_diag;
+            const std::array pure_args{Scalar{1u}};
+            const auto pure_val = take(pure_const_prog->entry().invoke(ObjectId{}, pure_args, &pure_diag));
+            const auto pure_snap = pure_diag.snapshot();
+            require(pure_val && std::abs(std::get<float>(*pure_val) - 0.15f) < 1e-6f &&
+                        pure_snap.peak_owned_values == 0 &&
+                        pure_snap.calls[source::DiagnosticCall::value_construct] == 0 &&
+                        pure_snap.calls[source::DiagnosticCall::sequence_mutation] == 0 &&
+                        pure_snap.calls[source::DiagnosticCall::sequence_view] == 0,
+                    "Pure constant Array reader performed runtime value allocation or sequence_view calls.");
+        }
+        const auto lease = take(b4_prog->pin("tab.read_profile_radius"));
+        const auto ir = take(lease.artifacts()).optimized_ir;
+        require(ir.contains("@__source_const_data."),
+                "Module constant tables did not emit @__source_const_data globals.");
+
+        const auto read_entry = take(b4_prog->entry("tab.read_profile_radius"));
+        const auto typed_read = take(read_entry.bind<float, std::uint32_t>());
+        require(std::abs(take(typed_read.invoke(ObjectId{}, 0u)) - 0.13f) < 1e-6f &&
+                    std::abs(take(typed_read.invoke(ObjectId{}, 3u)) - 0.14f) < 1e-6f,
+                "Constant Array folded values did not match expected IEEE floats.");
+        const auto oob = typed_read.invoke(ObjectId{}, 4u);
+        require(!oob && oob.error().message.contains("out of range"),
+                "Out-of-bounds runtime read on constant Array did not fail with bounds error.");
+
+        const auto par_entry = take(b4_prog->entry("tab.parallel_sum"));
+        const auto typed_par = take(par_entry.bind<double, std::uint32_t>());
+        const double sum_small = take(typed_par.invoke(ObjectId{}, 12u));
+        const double sum_large = take(typed_par.invoke(ObjectId{}, 3000u));
+        require(std::abs(sum_small - 79.27) < 1e-4 && std::abs(sum_large - sum_small * 250.0) < 1e-3,
+                "parallel_for over .rdata constant tables produced unexpected sum.");
+
+        // Verify Program::functions() metadata & DESC-only hot reload compatibility:
+        const auto fns_v1 = b4_prog->functions();
+        const auto find_fn = [](std::span<const source::FunctionInfo> list, std::string_view name) {
+            const auto it = std::ranges::find(list, name, &source::FunctionInfo::name);
+            return it == list.end() ? nullptr : &*it;
+        };
+        const auto* f_read_v1 = find_fn(fns_v1, "tab.read_profile_radius");
+        const auto* f_eval = find_fn(fns_v1, "tab.eval_station");
+        const auto* f_mut = find_fn(fns_v1, "tab.mutate_vec");
+        const auto* f_par = find_fn(fns_v1, "tab.parallel_sum");
+        require(f_read_v1 && f_read_v1->description == "Initial docstring v1." && f_read_v1->parallel_safe && f_eval &&
+                    f_eval->parallel_safe && f_eval->parameters.size() == 2 &&
+                    f_eval->parameters[0].type == "Array<vector2>" &&
+                    f_eval->parameters[0].passing == ParameterPassing::read_only && f_mut && !f_mut->parallel_safe &&
+                    f_mut->parameters.size() == 2 && f_mut->parameters[0].mutates_structure && f_par &&
+                    !f_par->parallel_safe,
+                "Program::functions() metadata mismatch.");
+
+        std::string batch4_src_v2(batch4_src_v1);
+        const auto doc_pos = batch4_src_v2.find("Initial docstring v1.");
+        require(doc_pos != std::string::npos, "Missing v1 docstring.");
+        batch4_src_v2.replace(doc_pos, std::string_view{"Initial docstring v1."}.size(), "Updated docstring v2.");
+        source::SourceSnapshot snap2{"Batch4Const", 2, {{"Source/Tab.source", 2, std::move(batch4_src_v2)}}};
+        auto cand2 = take(Program::prepare(take(b4_prog->request(snap2, opts))));
+        take(b4_prog->try_publish(cand2));
+        const auto* f_read_v2 = find_fn(b4_prog->functions(), "tab.read_profile_radius");
+        require(f_read_v2 && f_read_v2->description == "Updated docstring v2." &&
+                    std::abs(take(typed_read.invoke(ObjectId{}, 1u)) - 0.15f) < 1e-6f,
+                "Function DESC-only edit broke hot-reload compatibility or did not update Program::functions().");
     }
 }
 }

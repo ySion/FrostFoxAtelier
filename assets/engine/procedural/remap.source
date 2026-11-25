@@ -5,6 +5,7 @@ double procedural.efit_wide(float value, double in_min, double in_span, double o
 
 // Unclamped normalized position of `value` in [in_min, in_max] (supports reversed bounds).
 // Returns NaN if any argument is non-finite, and 0.0f when finite bounds coincide (in_min == in_max).
+[DESC = "计算 value 在 [in_min, in_max] 内的未夹值归一化比例（支持反向区间；in_min == in_max 时返回 0.0f；非有限参数返回 NaN）。"]
 float procedural.unlerp(float value, float in_min, float in_max) {
     if (!(math.is_finite(value) && math.is_finite(in_min) && math.is_finite(in_max))) {
         return 0.0f / 0.0f;
@@ -17,6 +18,7 @@ float procedural.unlerp(float value, float in_min, float in_max) {
 
 // Clamped affine remap (Houdini `fit`): clamps the normalized parameter to [0, 1] before
 // interpolating [out_min, out_max] (supports reversed bounds; exact endpoints; NaN on non-finite args).
+[DESC = "带夹值区间重映射（同 Houdini fit）：先将 [in_min, in_max] 的归一化参数夹取到 [0, 1]，再插值到 [out_min, out_max]（支持反向区间；in_min == in_max 返回 out_min；非有限参数返回 NaN）。"]
 float procedural.fit(float value, float in_min, float in_max, float out_min, float out_max) {
     if (!(math.is_finite(value) && math.is_finite(in_min) && math.is_finite(in_max) &&
           math.is_finite(out_min) && math.is_finite(out_max))) {
@@ -31,6 +33,7 @@ float procedural.fit(float value, float in_min, float in_max, float out_min, flo
 }
 
 // Clamped [0, 1] -> [out_min, out_max] remap (NaN on non-finite args; exact endpoints).
+[DESC = "将 [0, 1] 夹取后线性映射到 [out_min, out_max]（两端精确对齐；非有限参数返回 NaN）。"]
 float procedural.fit01(float value, float out_min, float out_max) {
     if (!(math.is_finite(value) && math.is_finite(out_min) && math.is_finite(out_max))) {
         return 0.0f / 0.0f;
@@ -41,6 +44,7 @@ float procedural.fit01(float value, float out_min, float out_max) {
 
 // Unclamped affine remap (Houdini `efit`): extrapolates outside [in_min, in_max] using double
 // intermediates; returns out_min when finite bounds coincide, and NaN on non-finite args.
+[DESC = "不夹值仿射重映射（同 Houdini efit，对应 procedural.Remap 节点行为）：区间外继续线性外推；in_min == in_max 返回 out_min；非有限参数返回 NaN。"]
 float procedural.efit(float value, float in_min, float in_max, float out_min, float out_max) {
     if (!(math.is_finite(value) && math.is_finite(in_min) && math.is_finite(in_max) &&
           math.is_finite(out_min) && math.is_finite(out_max))) {

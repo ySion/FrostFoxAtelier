@@ -33,6 +33,30 @@ struct EntryInfo {
     std::vector<MetadataList> parameter_metadata{};
 };
 
+struct FunctionParameterInfo {
+    std::string name;
+
+    std::string type;
+
+    ParameterPassing passing{ParameterPassing::value};
+
+    bool mutates_structure{};
+};
+
+struct FunctionInfo {
+    std::string name;
+
+    std::string engine_module;
+
+    std::string return_type;
+
+    std::vector<FunctionParameterInfo> parameters;
+
+    bool parallel_safe{};
+
+    std::string description;
+};
+
 // FNV-1a 64; never 0.
 [[nodiscard]] std::uint64_t content_hash(std::string_view, std::uint64_t seed = 14695981039346656037ULL) noexcept;
 

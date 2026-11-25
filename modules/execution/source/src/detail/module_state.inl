@@ -40,5 +40,7 @@ struct Program::ModuleVersion {
 
     std::vector<EntryInfo> entries;
 
+    std::vector<FunctionInfo> functions;
+
     std::vector<std::shared_ptr<const Version>> versions;
 };

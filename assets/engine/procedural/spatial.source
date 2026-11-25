@@ -1,20 +1,33 @@
 // Parallel-safe read-only spatial queries over `[Port] const procedural.Spatial&` inputs.
 // Worker threads traverse pre-projected 32-byte BVH buffers without touching Runtime.
 
+[DESC = "表面空间查询（射线投射或最近点）命中结果。未命中时 hit 为 false，normal 默认为 +Y。"]
 struct procedural.SurfaceHit {
+    [DESC = "在 max_distance 范围内命中表面三角形时为 true。"]
     bool hit;
+    [DESC = "命中距离（米）；未命中时为 0。"]
     float distance;
+    [DESC = "命中的图局部空间三维坐标（米）。"]
     vector3 position;
+    [DESC = "命中三角形的单位面法线；未命中时为 (0, 1, 0)。"]
     vector3 normal;
+    [DESC = "命中的源多边形 primitive 索引。"]
     uint primitive;
 };
 
+[DESC = "折线空间最近点查询结果。未命中时 hit 为 false，tangent 默认为 +Z。"]
 struct procedural.CurveSample {
+    [DESC = "在 max_distance 范围内找到折线线段时为 true。"]
     bool hit;
+    [DESC = "查询点到最近折线点的欧氏距离（米）。"]
     float distance;
+    [DESC = "命中位置在所属折线上的归一化弧长参数 [0, 1]。"]
     float u;
+    [DESC = "折线上的最近点三维坐标（米）。"]
     vector3 position;
+    [DESC = "命中线段的有向单位切向；未命中时为 (0, 0, 1)。"]
     vector3 tangent;
+    [DESC = "命中的折线 primitive 索引。"]
     uint primitive;
 };
 
@@ -168,6 +181,7 @@ vector3d procedural.closest_point_on_triangle(vector3d p, vector3d a, vector3d b
     return a + ab * (vb * denom) + ac * (vc * denom);
 }
 
+[DESC = "在只读 procedural.Spatial 加速结构上沿 direction（内部自动归一化）投射双面射线，查找 [0, max_distance] 米内最近的表面交点；可安全用于 parallel_for。"]
 procedural.SurfaceHit procedural.raycast_surface(const procedural.Spatial& spatial,
                                                  vector3 origin,
                                                  vector3 direction,
@@ -242,6 +256,7 @@ procedural.SurfaceHit procedural.raycast_surface(const procedural.Spatial& spati
     return result;
 }
 
+[DESC = "在只读 procedural.Spatial 加速结构上查询距离 point 不超过 max_distance 米的最近表面点与面法线；可安全用于 parallel_for。"]
 procedural.SurfaceHit procedural.closest_surface_point(const procedural.Spatial& spatial,
                                                        vector3 point,
                                                        float max_distance) {
@@ -299,6 +314,7 @@ procedural.SurfaceHit procedural.closest_surface_point(const procedural.Spatial&
     return result;
 }
 
+[DESC = "在只读 procedural.Spatial 加速结构上查询距离 point 不超过 max_distance 米的最近折线点、归一化弧长 u 与切向；可安全用于 parallel_for。"]
 procedural.CurveSample procedural.closest_polyline(const procedural.Spatial& spatial,
                                                    vector3 point,
                                                    float max_distance) {

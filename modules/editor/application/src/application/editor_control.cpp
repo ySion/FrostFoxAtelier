@@ -8,6 +8,7 @@
 #include "assets/material_format.hpp"
 #include "procedural/bvh.hpp"
 #include "procedural/operations.hpp"
+#include "source/program.hpp"
 #include "platform/error.hpp"
 #include "platform/utf.hpp"
 #include "platform/windows_path.hpp"
@@ -31,6 +32,7 @@ constexpr std::array<std::string_view, 3> removed_view_options{"direct_reference
                                                                "direct_shadow_cache"};
 
 constexpr unsigned inspect_page_items = 256;
+
 constexpr std::size_t graph_ray_limit = 32;
 
 constexpr std::size_t inspect_page_bytes = control::maximum_message / 4;
@@ -425,7 +427,7 @@ const std::vector<Operation>& operations() {
          {"object", "path"}},
         {"material.save", "Save a shared material asset", true, {{"asset", str}}, {"asset"}},
         {"graph.inspect",
-         "Use view=catalog to discover SOPs without an open graph. Add type for fields, port_descriptions (wiring requirements by input/output name) and named attribute contracts. topology and node inspect authoring state. A node's controlled_fields maps promoted field paths to graph parameter names. With view=node, bindings=true cooks the target and explains its columns. With explicit node, raycast measures a named polygon output in graph-local metres. full cooks geometry",
+         "Use view=catalog to discover SOPs or view=library to inspect Source functions, procedural.Node methods and value types without an open graph. Add type (catalog) for fields, port_descriptions and named attribute contracts, or prefix/symbol (library) to filter symbols. topology and node inspect authoring state. A node's controlled_fields maps promoted field paths to graph parameter names. With view=node, bindings=true cooks the target and explains its columns. With explicit node, raycast measures a named polygon output in graph-local metres. full cooks geometry",
          false,
          {{"asset", str},
           {"node", str},
@@ -433,6 +435,8 @@ const std::vector<Operation>& operations() {
           {"bindings", Argument::boolean},
           {"raycast", Argument::graph_raycast},
           {"type", str},
+          {"prefix", str},
+          {"symbol", str},
           {"timings", Argument::boolean},
           {"samples", Argument::integer},
           {"spatial", Argument::boolean},
@@ -666,7 +670,7 @@ json::Result<void> append_operation(json::Builder& result, json::Value entries, 
         } else {
             ATELIER_TRY_BIND(choices, result.array(field, "enum"));
             static constexpr std::string_view details[]{"full", "summary", "assets", "objects", "object"};
-            static constexpr std::string_view views[]{"catalog", "topology", "node", "full"};
+            static constexpr std::string_view views[]{"catalog", "library", "topology", "node", "full"};
             static constexpr std::string_view graph_scope[]{"graph"};
             static constexpr std::string_view trace_scope[]{"scene_lit_post"};
             std::span<const std::string_view> names = trace_scope;
@@ -1626,12 +1630,19 @@ struct EditorControl::Impl {
 
     struct InspectionPage {
         Directory directory;
+
         std::string_view instance;
+
         std::uint64_t generation;
+
         std::uint64_t revision;
+
         unsigned limit;
+
         std::optional<json::Value> cursor;
+
         json::Builder result{};
+
         std::size_t remaining = inspect_page_bytes;
 
         std::string_view revision_key() const {
@@ -2844,7 +2855,10 @@ struct EditorControl::Impl {
         if (!rays->size() || rays->size() > graph_ray_limit)
             return std::unexpected(rays->error(json::Fault::range, "Raycast requires 1 to 32 rays"));
         struct Ray {
-            math::Vector3 origin, direction;
+            math::Vector3 origin;
+
+            math::Vector3 direction;
+
             float distance;
         };
         std::vector<Ray> queries;
@@ -2979,6 +2993,227 @@ struct EditorControl::Impl {
         return result.finish();
     }
 
+    static std::string_view passing_mode_name(ParameterPassing passing) noexcept {
+        switch (passing) {
+        case ParameterPassing::read_only:
+            return "const_ref";
+        case ParameterPassing::reference:
+            return "mut_ref";
+        default:
+            return "value";
+        }
+    }
+
+    static std::string format_param_clause(std::string_view type, ParameterPassing passing, std::string_view name) {
+        std::string clause;
+        if (passing == ParameterPassing::read_only)
+            clause = "const " + std::string(type) + "&";
+        else if (passing == ParameterPassing::reference)
+            clause = std::string(type) + "&";
+        else
+            clause = std::string(type);
+        if (!name.empty()) {
+            clause += " ";
+            clause += name;
+        }
+        return clause;
+    }
+
+    Result<std::string> format_runtime_source_type(Runtime& runtime, TypeId id) const {
+        if (const auto b = runtime.native_type<bool>(); b && id == *b)
+            return std::string("bool");
+        if (const auto i = runtime.native_type<std::int32_t>(); i && id == *i)
+            return std::string("int");
+        if (const auto u = runtime.native_type<std::uint32_t>(); u && id == *u)
+            return std::string("uint");
+        if (const auto f = runtime.native_type<float>(); f && id == *f)
+            return std::string("float");
+        if (const auto d = runtime.native_type<double>(); d && id == *d)
+            return std::string("double");
+        if (const auto s = runtime.native_type<String>(); s && id == *s)
+            return std::string("String");
+        ATELIER_TRY_BIND(described, runtime.describe(id));
+        const TypeInfo& info = **described;
+        if (info.math)
+            return std::string(math::short_name(info.math));
+        if (info.kind == TypeKind::array && info.element) {
+            if (!info.sequence_mutate && !info.name.starts_with("__source_array."))
+                return info.name;
+            ATELIER_TRY_BIND(elem, format_runtime_source_type(runtime, *info.element));
+            return "Array<" + *elem + ">";
+        }
+        return info.name;
+    }
+
+    std::expected<json::Document, Failure> graph_library(json::Value args) {
+        ATELIER_TRY(args.allowed_members({"view", "prefix", "symbol"}));
+        std::string prefix;
+        if (const auto p = *args.find("prefix")) {
+            ATELIER_TRY_ASSIGN(prefix, text(*p, 256));
+        }
+        std::string symbol;
+        if (const auto s = *args.find("symbol")) {
+            ATELIER_TRY_ASSIGN(symbol, text(*s, 256));
+        }
+        auto& doc = *app.document_;
+        ATELIER_TRY_BIND(program_res, operation(doc.procedural_source_program()));
+        const source::Program* program = *program_res;
+        auto& runtime = doc.world().runtime();
+
+        json::Builder result;
+        const auto root = result.root();
+        ATELIER_TRY_BIND(functions_arr, result.array(root, "functions"));
+        if (program) {
+            std::vector<const source::FunctionInfo*> matched_fns;
+            for (const auto& fn : program->functions()) {
+                if (!symbol.empty()) {
+                    if (fn.name != symbol)
+                        continue;
+                } else if (!fn.engine_module.empty() && fn.description.empty()) {
+                    continue;
+                }
+                if (!prefix.empty() && !fn.name.starts_with(prefix))
+                    continue;
+                matched_fns.push_back(&fn);
+            }
+            std::ranges::sort(matched_fns, {}, &source::FunctionInfo::name);
+            for (const auto* fn : matched_fns) {
+                const auto item = result.append_object(*functions_arr);
+                ATELIER_TRY(result.set(item, "name", fn->name));
+                ATELIER_TRY(result.set(item, "module", fn->engine_module.empty() ? "project" : fn->engine_module));
+                ATELIER_TRY(result.set(item, "return_type", fn->return_type));
+                std::string sig = fn->return_type + " " + fn->name + "(";
+                ATELIER_TRY_BIND(params_arr, result.array(item, "parameters"));
+                for (std::size_t p = 0; p < fn->parameters.size(); ++p) {
+                    const auto& param = fn->parameters[p];
+                    if (p > 0)
+                        sig += ", ";
+                    sig += format_param_clause(param.type, param.passing, param.name);
+                    const auto p_obj = result.append_object(*params_arr);
+                    ATELIER_TRY(result.set(p_obj, "name", param.name));
+                    ATELIER_TRY(result.set(p_obj, "type", param.type));
+                    result.set_validated(p_obj, "passing", passing_mode_name(param.passing));
+                    if (param.passing == ParameterPassing::reference && param.mutates_structure)
+                        ATELIER_TRY(result.set(p_obj, "mutates_structure", true));
+                }
+                sig += ")";
+                ATELIER_TRY(result.set(item, "signature", sig));
+                ATELIER_TRY(result.set(item, "parallel_safe", fn->parallel_safe));
+                ATELIER_TRY(result.set(item, "description", fn->description));
+            }
+        }
+
+        ATELIER_TRY_BIND(methods_arr, result.array(root, "node_methods"));
+        ATELIER_TRY_BIND(node_base, operation(runtime.native_type<procedural::Node>()));
+        ATELIER_TRY_BIND(node_info, operation(runtime.describe(*node_base)));
+        for (const auto& method : (*node_info)->methods) {
+            if (!method.preserves_borrows)
+                continue;
+            const std::string self_qualified = "self." + method.name;
+            const std::string type_qualified = "procedural.Node." + method.name;
+            if (!symbol.empty() && method.name != symbol && self_qualified != symbol && type_qualified != symbol)
+                continue;
+            if (!prefix.empty() && !method.name.starts_with(prefix) && !self_qualified.starts_with(prefix) &&
+                !type_qualified.starts_with(prefix))
+                continue;
+            std::string ret_type = "void";
+            if (method.signature.result) {
+                ATELIER_TRY_ASSIGN(ret_type,
+                                   operation(format_runtime_source_type(runtime, method.signature.result->type)));
+            }
+            const auto item = result.append_object(*methods_arr);
+            ATELIER_TRY(result.set(item, "name", method.name));
+            ATELIER_TRY(result.set(item, "return_type", ret_type));
+            std::string sig = ret_type + " self." + method.name + "(";
+            ATELIER_TRY_BIND(params_arr, result.array(item, "parameters"));
+            for (std::size_t p = 0; p < method.signature.parameters.size(); ++p) {
+                const auto& param = method.signature.parameters[p];
+                ATELIER_TRY_BIND(ptype, operation(format_runtime_source_type(runtime, param.type)));
+                const std::string_view pname = p < method.parameter_names.size()
+                                                   ? std::string_view{method.parameter_names[p]}
+                                                   : std::string_view{};
+                if (p > 0)
+                    sig += ", ";
+                sig += format_param_clause(*ptype, param.passing, pname);
+                const auto p_obj = result.append_object(*params_arr);
+                ATELIER_TRY(result.set(p_obj, "name", pname));
+                ATELIER_TRY(result.set(p_obj, "type", *ptype));
+                result.set_validated(p_obj, "passing", passing_mode_name(param.passing));
+                if (p < method.parameter_defaults.size() && method.parameter_defaults[p]) {
+                    ATELIER_TRY_BIND(def_type, operation(runtime.describe(param.type)));
+                    ATELIER_TRY_BIND(def_json, scalar_json(*method.parameter_defaults[p], **def_type));
+                    result.set_validated(p_obj, "default", def_json->root());
+                }
+            }
+            sig += ")";
+            ATELIER_TRY(result.set(item, "signature", sig));
+            ATELIER_TRY(result.set(item, "parallel_safe", false));
+            ATELIER_TRY(result.set(item, "description", method.description));
+        }
+
+        ATELIER_TRY_BIND(types_arr, result.array(root, "value_types"));
+        std::vector<const TypeInfo*> matched_types;
+        for (const auto type_id : runtime.types()) {
+            ATELIER_TRY_BIND(described, operation(runtime.describe(type_id)));
+            const TypeInfo& info = **described;
+            if (info.kind != TypeKind::record && info.kind != TypeKind::enumeration)
+                continue;
+            if (info.math || info.name.starts_with("editor.") || info.name.starts_with("__source_array.") ||
+                info.name.starts_with("core."))
+                continue;
+            if (info.native_storage && !info.name.starts_with("procedural."))
+                continue;
+            if (symbol.empty() && !info.native_storage && info.name.starts_with("procedural.") &&
+                info.description.empty())
+                continue;
+            if (!symbol.empty() && info.name != symbol)
+                continue;
+            if (!prefix.empty() && !info.name.starts_with(prefix))
+                continue;
+            matched_types.push_back(&info);
+        }
+        std::ranges::sort(matched_types, {}, &TypeInfo::name);
+        for (const auto* info : matched_types) {
+            const auto item = result.append_object(*types_arr);
+            ATELIER_TRY(result.set(item, "name", info->name));
+            result.set_validated(item, "kind", info->kind == TypeKind::enumeration ? "enum" : "struct");
+            ATELIER_TRY(result.set(item, "description", info->description));
+            if (info->enumeration) {
+                const auto& enum_info = *info->enumeration;
+                const auto i32_type = runtime.native_type<std::int32_t>();
+                const bool signed_enum = i32_type && enum_info.underlying == *i32_type;
+                if (enum_info.flags)
+                    ATELIER_TRY(result.set(item, "flags", true));
+                ATELIER_TRY_BIND(enums_arr, result.array(item, "enumerators"));
+                for (std::size_t i = 0; i < enum_info.values.size(); ++i) {
+                    const auto e_obj = result.append_object(*enums_arr);
+                    ATELIER_TRY(result.set(e_obj, "name", enum_info.values[i].first));
+                    if (signed_enum) {
+                        ATELIER_TRY(result.set(
+                            e_obj, "value",
+                            static_cast<std::int64_t>(std::bit_cast<std::int32_t>(enum_info.values[i].second))));
+                    } else {
+                        ATELIER_TRY(result.set(e_obj, "value", static_cast<std::uint64_t>(enum_info.values[i].second)));
+                    }
+                    if (i < enum_info.metadata.size()) {
+                        ATELIER_TRY(result.set(e_obj, "label", enum_info.metadata[i].label));
+                        ATELIER_TRY(result.set(e_obj, "description", enum_info.metadata[i].description));
+                    }
+                }
+            } else {
+                ATELIER_TRY_BIND(fields_arr, result.array(item, "fields"));
+                for (const auto& field : info->fields) {
+                    ATELIER_TRY_BIND(ftype, operation(format_runtime_source_type(runtime, field.value.type)));
+                    const auto f_obj = result.append_object(*fields_arr);
+                    ATELIER_TRY(result.set(f_obj, "name", field.name));
+                    ATELIER_TRY(result.set(f_obj, "type", *ftype));
+                    ATELIER_TRY(result.set(f_obj, "description", field.description));
+                }
+            }
+        }
+        return result.finish();
+    }
+
     std::expected<json::Document, Failure> graph_request(std::string_view op, json::Value args) {
         auto& doc = *app.document_;
         if (op == "graph.create_scratch") {
@@ -3005,6 +3240,10 @@ struct EditorControl::Impl {
                 return graph_catalog(args);
             if (*args.find("type"))
                 return std::unexpected(Failure("invalid_request", "type requires view=catalog"));
+            if (args.string({"view"}) == "library")
+                return graph_library(args);
+            if (*args.find("prefix") || *args.find("symbol"))
+                return std::unexpected(Failure("invalid_request", "prefix and symbol require view=library"));
         }
         ATELIER_TRY_BIND(asset_arg, args.find("asset"));
         std::string key = app.workspace_.active_graph;

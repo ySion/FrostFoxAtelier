@@ -416,6 +416,137 @@ bool same_field(const FieldDefinition& a, const FieldDefinition& b) {
            a.description == b.description && a.metadata == b.metadata && a.default_text == b.default_text &&
            a.transient == b.transient && a.read_only == b.read_only;
 }
+
+language::ValueType binding_value_type(BusinessType kind) noexcept {
+    switch (kind.kind) {
+    case ValueKind::f32:
+        return language::ValueType::f32;
+    case ValueKind::f64:
+        return language::ValueType::f64;
+    case ValueKind::u32:
+        return language::ValueType::u32;
+    case ValueKind::i32:
+        return language::ValueType::i32;
+    case ValueKind::boolean:
+        return language::ValueType::boolean;
+    case ValueKind::enumeration:
+        return {language::ValueType::enumeration, kind.type_index};
+    case ValueKind::record:
+        return {language::ValueType::record, kind.type_index};
+    case ValueKind::array:
+        return {language::ValueType::array, kind.type_index};
+    case ValueKind::string:
+        return {language::ValueType::string, kind.type_index};
+    default:
+        return language::ValueType::void_value;
+    }
+}
+
+std::string format_source_value_type(const Binding& binding, language::ValueType type) {
+    switch (type.kind) {
+    case language::ValueType::void_value:
+        return "void";
+    case language::ValueType::boolean:
+        return "bool";
+    case language::ValueType::i32:
+        return "int";
+    case language::ValueType::u32:
+        return "uint";
+    case language::ValueType::f32:
+        return "float";
+    case language::ValueType::f64:
+        return "double";
+    case language::ValueType::string:
+        return "String";
+    case language::ValueType::enumeration:
+        return binding.enumerations[type.type_index].name;
+    case language::ValueType::record: {
+        const auto& value = binding.values[type.type_index];
+        if (value.math)
+            return std::string(math::short_name(value.math));
+        return value.name;
+    }
+    case language::ValueType::array: {
+        const auto& value = binding.values[type.type_index];
+        if (!value.can_mutate && !language::synthesized_array_name(value.name))
+            return value.name;
+        return "Array<" + format_source_value_type(binding, binding_value_type(value.element)) + ">";
+    }
+    default:
+        return "void";
+    }
+}
+
+Result<std::vector<FunctionInfo>> inspect_unit_functions(const SourceSnapshot& snapshot,
+                                                         const language::SourceModule& source_module,
+                                                         const language::MappedSource& text,
+                                                         std::string_view source_name, const Binding& binding,
+                                                         std::string_view unit_engine) {
+    std::vector<std::vector<language::EnumItem>> enum_items;
+    std::vector<language::EnumBinding> enumerations;
+    enum_items.reserve(binding.enumerations.size());
+    enumerations.reserve(binding.enumerations.size());
+    for (const auto& enumeration : binding.enumerations) {
+        auto& items = enum_items.emplace_back();
+        items.reserve(enumeration.values.size());
+        for (const auto& [name, bits] : enumeration.values)
+            items.push_back({name, bits});
+        enumerations.push_back(
+            {enumeration.name, binding_value_type({enumeration.underlying, 0}), items, enumeration.flags});
+    }
+    std::vector<language::ValueLayout> values;
+    values.reserve(binding.values.size());
+    for (std::uint32_t i = 0; i < binding.values.size(); ++i) {
+        const auto& value = binding.values[i];
+        const auto vtype = binding_value_type({value.kind, i});
+        language::ValueLayout layout{value.name,
+                                     vtype.kind,
+                                     value.size,
+                                     value.alignment,
+                                     value.kind == ValueKind::array ? binding_value_type(value.element)
+                                                                    : language::ValueType::void_value,
+                                     {},
+                                     value.sequence_view,
+                                     value.can_own,
+                                     value.can_mutate,
+                                     value.math,
+                                     value.plain_value,
+                                     value.zero_default,
+                                     value.initial_value};
+        layout.fields.reserve(value.fields.size());
+        for (const auto& field : value.fields)
+            layout.fields.push_back({field.name, binding_value_type(field.type), field.offset});
+        values.push_back(std::move(layout));
+    }
+    const language::Environment env{{}, {}, {}, enumerations, values};
+    auto parsed = language::compile_source(source_name, text.text, env, {}, true);
+    if (!parsed)
+        return std::unexpected(mapped_error(snapshot, text, parsed.error().position, parsed.error().message));
+
+    std::vector<FunctionInfo> result;
+    for (const auto& fn : parsed->functions) {
+        const auto decl = std::ranges::find_if(source_module.declarations, [&](const language::TopLevel& item) {
+            return item.kind == language::TopLevel::Kind::function && item.name == fn.function_name &&
+                   item.engine == unit_engine;
+        });
+        if (decl == source_module.declarations.end())
+            continue;
+        FunctionInfo info;
+        info.name = fn.function_name;
+        info.engine_module = std::string(unit_engine);
+        info.return_type = format_source_value_type(binding, fn.result);
+        info.parallel_safe = fn.parallel_safe;
+        info.description = fn.description;
+        info.parameters.reserve(fn.parameters.size());
+        for (std::size_t p = 0; p < fn.parameters.size(); ++p) {
+            const auto& param = fn.parameters[p];
+            info.parameters.push_back({fn.locals[p].name, format_source_value_type(binding, param.type), param.passing,
+                                       param.mutates_structure});
+        }
+        result.push_back(std::move(info));
+    }
+    return result;
+}
 }
 
 std::shared_ptr<const SourceSnapshot> Program::SourceRequest::snapshot() const {
@@ -428,6 +559,10 @@ std::span<const ClassInfo> Program::classes() const noexcept {
 
 std::span<const EntryInfo> Program::entries() const noexcept {
     return state_->module ? std::span<const EntryInfo>{state_->module->entries} : std::span<const EntryInfo>{};
+}
+
+std::span<const FunctionInfo> Program::functions() const noexcept {
+    return state_->module ? std::span<const FunctionInfo>{state_->module->functions} : std::span<const FunctionInfo>{};
 }
 
 std::uint64_t Program::revision() const noexcept {
@@ -821,10 +956,27 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
         };
         std::vector<std::shared_ptr<BusinessCode>> codes;
         codes.reserve(unit.names.size());
+        const std::string_view unit_engine = !unit.receiver && unit.owner.starts_with("engine/")
+                                                 ? std::string_view{unit.owner}.substr(7)
+                                                 : std::string_view{};
         if (kept) {
             for (const auto& method : unit.names)
                 codes.push_back(kept->versions[kept_index(entry_name(method))]->code);
+            if (!unit.receiver) {
+                for (const auto& fn : kept->functions)
+                    if (fn.engine_module == unit_engine)
+                        module->functions.push_back(fn);
+            }
         } else {
+            if (!unit.receiver) {
+                ATELIER_TRY_BIND(unit_functions,
+                                 inspect_unit_functions(*request->module_->snapshot, request->module_->source, text,
+                                                        request->source_name, unit.contract->binding, unit_engine));
+                for (auto& fn : *unit_functions)
+                    module->functions.push_back(std::move(fn));
+                if (unit.names.empty())
+                    continue;
+            }
             const EnvironmentView storage(unit.contract->binding);
             const auto environment = storage.view(unit.contract->type_name.c_str());
             std::vector<const char*> names;

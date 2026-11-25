@@ -234,7 +234,9 @@ Sweep 在每个骨架点读取 `scale_attribute` 指定的 point float，乘到�
 | noise.source | `procedural.Noise`：`[RunOver] layer`（默认 `point`）、`source_attribute="P"`、`attribute="noise"`、`group=""`、`seed=0`、`frequency=1`、`offset=(0,0,0)`；3D value noise，`lattice_bits` 通过零开销 `math.as_uint` 编码二补码格坐标 |
 | remap.source | 全局函数 `procedural.unlerp`（重合输入界返回 `0`）、`fit` / `fit01`（先夹取归一化比例到 `[0,1]` 再插值，精确保留端点）、`efit`（不夹值外推；四个函数均用 double 中间差商并对任一非有限参数返回 NaN），以及节点 `procedural.Remap`（`[RunOver] layer`、`source_attribute="noise"`、`attribute="pscale"`、`group=""` 及四端点；复用同一宽精度映射，输入两端相等或结果越出有限 float 时整节点失败） |
 | [rail_panel.source](../../../assets/engine/procedural/rail_panel.source) | `procedural.RailPanel` 将两条同向、等站数的边线（单条开放折线按其图元顶点顺序取站，纯点集按点序取站）逐站配对。沿 +X 前进时，较小 Z 接 `rail_a`、较大 Z 接 `rail_b`。两轨可有不同弧长。输出 `panel` 为封闭三角网格，带顶点层 `N`；`thickness` 默认 0.09 米，沿图局部负 Y 量取。 |
-| spatial.source | 结构体 `procedural.SurfaceHit`、`procedural.CurveSample` 及 `parallel_safe` 空间查询函数 `procedural.raycast_surface`、`closest_surface_point`、`closest_polyline`（遍历 `[Port] const procedural.Spatial&` 的 64 层近端优先 BVH，使用双精度计算相交条件、距离和剪枝界限） |
+| spatial.source | 结构体 `procedural.SurfaceHit`、`procedural.CurveSample`（均带结构体与字段 `[DESC]`）及 `parallel_safe` 空间查询函数 `procedural.raycast_surface`、`closest_surface_point`、`closest_polyline`（遍历 `[Port] const procedural.Spatial&` 的 64 层近端优先 BVH，使用双精度计算相交条件、距离和剪枝界限） |
+
+所有公开的 `procedural.*` `.source` 辅助函数与值类型均附带 `[DESC = "..."]` 说明，经 `Program::functions()` 与 Editor Control 的 `graph.inspect {"view":"library"}` 直接对外暴露签名、参数传递方式、`parallel_safe` 与轴/区间约定；车削母线或固定多边形截面等静态轮廓表可声明为模块级 `const Array<T>` 只读常量表（`.rdata` 零堆分配）。
 
 ### Noise / Remap 数值契约
 

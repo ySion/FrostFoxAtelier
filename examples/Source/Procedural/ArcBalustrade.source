@@ -120,10 +120,52 @@ class game.BalustradeCourses : procedural.Node {
     }
 };
 
-void game.turning_station(game.StonePaths& line, Array<float>& radii, float y, float radius) {
-    game.stone_point(line, vector3(0.0f, y, 0.0f));
-    radii.add(radius);
-}
+const Array<vector2> game.SPINDLE_STATIONS = {
+    vector2(0.100f, 0.130f),
+    vector2(0.114f, 0.147f),
+    vector2(0.132f, 0.150f),
+    vector2(0.148f, 0.138f),
+    vector2(0.161f, 0.105f),
+    vector2(0.183f, 0.094f),
+    vector2(0.208f, 0.087f),
+    vector2(0.230f, 0.092f),
+    vector2(0.254f, 0.106f),
+    vector2(0.289f, 0.128f),
+    vector2(0.326f, 0.145f),
+    vector2(0.365f, 0.155f),
+    vector2(0.406f, 0.160f),
+    vector2(0.444f, 0.157f),
+    vector2(0.492f, 0.147f),
+    vector2(0.542f, 0.132f),
+    vector2(0.592f, 0.112f),
+    vector2(0.641f, 0.095f),
+    vector2(0.687f, 0.081f),
+    vector2(0.721f, 0.076f),
+    vector2(0.740f, 0.081f),
+    vector2(0.752f, 0.104f),
+    vector2(0.763f, 0.119f),
+    vector2(0.779f, 0.122f),
+    vector2(0.790f, 0.115f),
+    vector2(0.802f, 0.094f),
+    vector2(0.822f, 0.099f),
+    vector2(0.840f, 0.128f),
+};
+
+const Array<vector3> game.CROWN_POINTS = {
+    vector3(-0.207f, -0.090f, 0.0f),
+    vector3( 0.207f, -0.090f, 0.0f),
+    vector3( 0.256f, -0.045f, 0.0f),
+    vector3( 0.260f,  0.037f, 0.0f),
+    vector3( 0.238f,  0.072f, 0.0f),
+    vector3( 0.170f,  0.090f, 0.0f),
+    vector3(-0.170f,  0.090f, 0.0f),
+    vector3(-0.238f,  0.072f, 0.0f),
+    vector3(-0.260f,  0.037f, 0.0f),
+    vector3(-0.256f, -0.045f, 0.0f),
+};
+
+const Array<uint> game.CROWN_CORNERS = { 0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u };
+const Array<uint> game.CROWN_OFFSETS = { 0u, 10u };
 
 void game.eased_section(game.StonePaths& section, float width, float height, float lower, float upper) {
     const float w = width * 0.5f;
@@ -147,37 +189,19 @@ class game.BalustradeProfiles : procedural.Node {
         [Port, DESC = "墙石的 XY 倒棱截面，宽 0.54 米，高 0.248 米。接 custom Sweep.cross_section。"] procedural.Geometry& ashlar,
         [Port, DESC = "基座压顶石的 XY 截面，宽 0.66 米，高 0.18 米。"] procedural.Geometry& coping,
         [Port, DESC = "连续扶手的 XY 截面，底窄顶冠略收，宽 0.52 米，高 0.18 米。"] procedural.Geometry& handrail) {
+        const uint station_count = game.SPINDLE_STATIONS.size();
         game.StonePaths turning;
         Array<float> radius;
+        turning.p.reserve(station_count);
+        turning.corners.reserve(station_count);
+        turning.offsets.reserve(2u);
+        radius.reserve(station_count);
         turning.offsets.add(0u);
-        game.turning_station(turning, radius, 0.100f, 0.130f);
-        game.turning_station(turning, radius, 0.114f, 0.147f);
-        game.turning_station(turning, radius, 0.132f, 0.150f);
-        game.turning_station(turning, radius, 0.148f, 0.138f);
-        game.turning_station(turning, radius, 0.161f, 0.105f);
-        game.turning_station(turning, radius, 0.183f, 0.094f);
-        game.turning_station(turning, radius, 0.208f, 0.087f);
-        game.turning_station(turning, radius, 0.230f, 0.092f);
-        game.turning_station(turning, radius, 0.254f, 0.106f);
-        game.turning_station(turning, radius, 0.289f, 0.128f);
-        game.turning_station(turning, radius, 0.326f, 0.145f);
-        game.turning_station(turning, radius, 0.365f, 0.155f);
-        game.turning_station(turning, radius, 0.406f, 0.160f);
-        game.turning_station(turning, radius, 0.444f, 0.157f);
-        game.turning_station(turning, radius, 0.492f, 0.147f);
-        game.turning_station(turning, radius, 0.542f, 0.132f);
-        game.turning_station(turning, radius, 0.592f, 0.112f);
-        game.turning_station(turning, radius, 0.641f, 0.095f);
-        game.turning_station(turning, radius, 0.687f, 0.081f);
-        game.turning_station(turning, radius, 0.721f, 0.076f);
-        game.turning_station(turning, radius, 0.740f, 0.081f);
-        game.turning_station(turning, radius, 0.752f, 0.104f);
-        game.turning_station(turning, radius, 0.763f, 0.119f);
-        game.turning_station(turning, radius, 0.779f, 0.122f);
-        game.turning_station(turning, radius, 0.790f, 0.115f);
-        game.turning_station(turning, radius, 0.802f, 0.094f);
-        game.turning_station(turning, radius, 0.822f, 0.099f);
-        game.turning_station(turning, radius, 0.840f, 0.128f);
+        for (uint i = 0u; i < station_count; i += 1u) {
+            const vector2 station = game.SPINDLE_STATIONS[i];
+            game.stone_point(turning, vector3(0.0f, station.x, 0.0f));
+            radius.add(station.y);
+        }
         game.stone_break(turning);
         self.emit_polylines(turning.p, turning.corners, turning.offsets, 0);
         self.set_float("shaft_scale", procedural.Layer::point, radius, 0);
@@ -189,19 +213,6 @@ class game.BalustradeProfiles : procedural.Node {
         self.emit_polygons(block_section.p, block_section.corners, block_section.offsets, 1);
         self.emit_polygons(sill_section.p, sill_section.corners, sill_section.offsets, 2);
 
-        game.StonePaths crown;
-        crown.offsets.add(0u);
-        game.stone_point(crown, vector3(-0.207f, -0.090f, 0.0f));
-        game.stone_point(crown, vector3(0.207f, -0.090f, 0.0f));
-        game.stone_point(crown, vector3(0.256f, -0.045f, 0.0f));
-        game.stone_point(crown, vector3(0.260f, 0.037f, 0.0f));
-        game.stone_point(crown, vector3(0.238f, 0.072f, 0.0f));
-        game.stone_point(crown, vector3(0.170f, 0.090f, 0.0f));
-        game.stone_point(crown, vector3(-0.170f, 0.090f, 0.0f));
-        game.stone_point(crown, vector3(-0.238f, 0.072f, 0.0f));
-        game.stone_point(crown, vector3(-0.260f, 0.037f, 0.0f));
-        game.stone_point(crown, vector3(-0.256f, -0.045f, 0.0f));
-        game.stone_break(crown);
-        self.emit_polygons(crown.p, crown.corners, crown.offsets, 3);
+        self.emit_polygons(game.CROWN_POINTS, game.CROWN_CORNERS, game.CROWN_OFFSETS, 3);
     }
 };

@@ -42,16 +42,21 @@ struct TypeDeclaration {
 
     bool flags{};
 
+    std::string description;
+
     std::vector<std::pair<std::string, std::uint32_t>> enumerators;
 
     std::vector<EnumeratorAttribute> enumerator_attributes;
 
     std::vector<std::pair<std::string, TypeName>> fields;
 
+    std::vector<std::string> field_descriptions;
+
     bool same_definition(const TypeDeclaration& other) const noexcept {
-        return name == other.name && enumeration == other.enumeration && signed_enum == other.signed_enum &&
-               flags == other.flags && enumerators == other.enumerators &&
-               enumerator_attributes == other.enumerator_attributes && fields == other.fields;
+        return name == other.name && description == other.description && enumeration == other.enumeration &&
+               signed_enum == other.signed_enum && flags == other.flags && enumerators == other.enumerators &&
+               enumerator_attributes == other.enumerator_attributes && fields == other.fields &&
+               field_descriptions == other.field_descriptions;
     }
 };
 
@@ -83,6 +88,12 @@ class Tokens;
 struct Token;
 
 std::expected<std::string, Diagnostic> parse_presentation_text(Tokens&, const Token& option);
+
+std::expected<std::string_view, Diagnostic> peek_attributed_keyword(const Tokens&);
+
+std::expected<std::string, Diagnostic> parse_description_attribute(Tokens&, std::string_view target_kind);
+
+std::expected<void, Diagnostic> skip_constant_initializer(Tokens&);
 
 std::expected<TypeName, Diagnostic> parse_type_name(Tokens&);
 

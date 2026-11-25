@@ -701,9 +701,13 @@ struct Session::OpenGraph {
     std::string saved_text;
 
     using Step = std::variant<GraphChange, std::vector<GraphChange>>;
+
     std::vector<Step> history;
+
     std::vector<GraphChange>* pending{};
+
     Result<void> replay(Session& session, GraphChange& change, bool redo);
+
     Result<void> replay(Session& session, std::span<GraphChange> changes, bool redo);
 
     std::size_t cursor{};
@@ -1732,6 +1736,8 @@ AssetPortResolver Session::make_asset_port_resolver(Project* project) const {
 }
 
 Result<const source::Program*> Session::ensure_procedural_program() {
+    if (project_code_ && project_code_->program() && project_code_->program()->revision() > 0)
+        return project_code_->program();
     if (project_code_)
         return project_code_->program();
     if (engine_program_)
@@ -1753,6 +1759,12 @@ Result<const source::Program*> Session::ensure_procedural_program() {
     ATELIER_TRY((*program)->try_publish(*candidate));
     engine_program_ = std::shared_ptr<source::Program>(std::move(*program));
     return engine_program_.get();
+}
+
+Result<const source::Program*> Session::procedural_source_program() {
+    if (world_.closed())
+        return graph_error("Procedural library inspection requires an open Session.", ErrorCode::invalid_definition);
+    return ensure_procedural_program();
 }
 
 Result<void> Session::remember_graph_scalar_edit(ObjectRoot target, std::vector<world::FieldPath> paths,
@@ -5487,10 +5499,15 @@ Session::graph_extract_asset(Project& project, std::string_view key, std::span<c
 
     struct SavedBoundary {
         const GraphNode* target;
+
         const GraphNode* source;
+
         std::uint32_t output;
+
         std::string endpoint;
+
         std::string port;
+
         std::optional<std::size_t> slot;
     };
     std::vector<SavedBoundary> saved_boundaries;

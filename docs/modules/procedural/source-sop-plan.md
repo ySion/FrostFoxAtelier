@@ -1,6 +1,6 @@
 # Source SOP 语言、拓扑接口与自省演进计划
 
-状态：方案已考据定稿，分批待实施。当前已实现的语法、数学内建、几何操作与 Control 指令仍分别以 [LANGUAGE.md](../../../LANGUAGE.md)、[数学规范](../../math.md)、[程序化模块](README.md) 和 [Editor Control](../editor/control.md) 为唯一权威；本页不代表以下待推进项已经上线，每批落地后须将正式行为迁入对应权威文档并更新本页状态。
+状态：前四批（Batch 1–Batch 4）均已落地并通过双配置验收；候选子项 `S-SOP-1b` 按需推进。正式行为分别以 [LANGUAGE.md](../../../LANGUAGE.md)、[数学规范](../../math.md)、[程序化模块](README.md) 和 [Editor Control](../editor/control.md) 为唯一权威。
 
 ## 背景与目标
 
@@ -22,7 +22,7 @@
 | **Batch 1（S-SOP-1）** | 向量广播与显式精度转换、`cwise_mul/div`、整数 `min/max/clamp` 与有符号 `abs`、IEEE `round`、`length_squared/distance/distance_squared`、`radians/degrees/PI/TAU`、`0x`/`u` 整数字面量；`orient.source` 建筑标架/轴角/欧拉角与 `remap.source` `unlerp/fit/fit01/efit` | 简化 `jitter.source`、`spatial.source`、`FortifiedOutpost.source`、`TerraceIsland.source`、`ArcBalustrade.source`、`ModularRuinBuilding.source`；覆盖 `jit_acceptance`、`material_program_resources_acceptance`、`procedural_acceptance` | 已实现 |
 | **Batch 2（S-SOP-2）** | `procedural.Node` 只读图元拓扑与折线总长 `BorrowSafe` 接口（`count_elements`、`primitive_span`、`read_primitive_points`、`polyline_length`）；同步值区间只读借用 `self.<String 字段>` | `RailPanel` 兼容共享端点且反向的双折线；`ArcBalustrade` 移除冗余 `guide_end` 端口与 `SampleCurve` 节点；L3 节点支持面板配置输出属性名 | 已实现 |
 | **Batch 3（S-SOP-3）** | `fail("...", [layer,] index)` 结构化元素诊断、16 B 冷路径 `BusinessFailure` 与 `parallel_for` 首错原子捕获、原生 `BorrowSafe` 元素错误透传、`Evaluator`/`graph.inspect` 结构化 `diagnostic`；宿主接受退出时记录触发入口与在途任务 ID | `ArcBalustrade` 第 17 个截段区间反转时 Control 直接定位该元素与源码行列；编辑器退出日志完整可追溯 | 已实现 |
-| **Batch 4（S-SOP-4）** | 模块级 `.rdata` 零分配只读常量数组/结构体表；全局函数与 `struct`/`enum` `[DESC]` 元数据、`Program::functions()` 导出与 `graph.inspect {"view":"library"}` | `ArcBalustrade` 28 站车削母线与石工截面改为零分配常量表；Control 可直接查询 `orient`/`remap`/`spatial` 等公共函数签名、优先轴与 `parallel_safe` | 待实施 |
+| **Batch 4（S-SOP-4）** | 模块级 `.rdata` 零分配只读常量数组/结构体表；全局函数与 `struct`/`enum` `[DESC]` 元数据、`Program::functions()` 导出与 `graph.inspect {"view":"library"}` | `ArcBalustrade` 28 站车削母线与石工截面改为零分配常量表；Control 可直接查询 `orient`/`remap`/`spatial` 等公共函数签名、优先轴与 `parallel_safe` | 已实现 |
 | **按需子项（S-SOP-1b）** | 内联 FMA 多项式 `math.tan`、`math.asin`、`math.acos`（含 `float`/`double` 归约与 `material_footprint` 导数保护） | 独立数值精度扫描与材质局部足迹验证，不阻塞前四批推进 | 候选按需 |
 
 ---

@@ -3,6 +3,7 @@
 
 // The rotation whose matrix rows are the orthonormal axes x, y and z (Shepperd's method: the
 // largest of w, x, y, z is taken from the diagonal, the others from sums and differences).
+[DESC = "由三条已单位化正交局部轴（+X、+Y、+Z 行向量）构造四元数朝向。"]
 quaternion procedural.frame_rotation(vector3 x, vector3 y, vector3 z) {
     const float trace = x.x + y.y + z.z;
     if (trace > 0.0f) {
@@ -22,6 +23,7 @@ quaternion procedural.frame_rotation(vector3 x, vector3 y, vector3 z) {
 }
 
 // The shortest rotation taking +Z to the unit vector z; half a turn about X when z is -Z.
+[DESC = "将局部 +Z 最短弧旋转到单位向量 z；z 为 -Z 时绕 +X 旋转 180 度。"]
 quaternion procedural.shortest_arc(vector3 z) {
     const float w = 1.0f + z.z;
     if (w < 0.0000001f) {
@@ -34,6 +36,7 @@ quaternion procedural.shortest_arc(vector3 z) {
 // Non-finite inputs return NaN; a finite zero vector returns the identity rotation;
 // opposite vectors rotate 180 degrees around a deterministic orthogonal axis (matching
 // shortest_arc when `from` is +Z and `to` is -Z, and preserving +Z when flipping +Y to -Y).
+[DESC = "计算从向量 from 到向量 to 的最短弧单位四元数（内部自动归一化；任一为零向量返回单位四元数；反向时绕确定性正交轴旋转 180 度；非有限输入返回 NaN）。"]
 quaternion procedural.rotation_between(vector3 from, vector3 to) {
     if (!math.is_finite(from) || !math.is_finite(to)) {
         const float invalid = math.length((from - from) + (to - to));
@@ -57,6 +60,7 @@ quaternion procedural.rotation_between(vector3 from, vector3 to) {
 // The orientation Copy to Points derives from a normal and an up vector: +Z along the normal and
 // +Y toward up, or the shortest rotation from +Z to the normal when up is zero, parallel to it or
 // not finite. A zero normal leaves the identity; a non-finite one gives a non-finite result.
+[DESC = "CopyToPoints 同款法线标架：局部 +Z 严格对齐 normal，局部 +Y 尽量朝向 up；up 为零或与 normal 共线时退化为 +Z 到 normal 的最短弧，零 normal 返回单位四元数。"]
 quaternion procedural.align_to_normal(vector3 normal, vector3 up) {
     const vector3 z = math.normalize_or_zero(normal);
     if (z == vector3()) {
@@ -74,6 +78,7 @@ quaternion procedural.align_to_normal(vector3 normal, vector3 up) {
 // projection of `forward` onto the plane perpendicular to `up` (+X = +Y x +Z). When `forward`
 // is zero, collinear with `up`, or non-finite, tilts +Y to `up` via shortest arc (returning
 // exact identity when `up` is +Y). A zero finite `up` returns identity; non-finite `up` returns NaN.
+[DESC = "竖直建筑与植被标架：局部 +Y 严格对齐 up，局部 +Z 对齐 forward 在垂直于 up 平面上的投影（+X = +Y x +Z）；forward 共线或为零时退化为 +Y 到 up 的最短弧，零 up 返回单位四元数。"]
 quaternion procedural.align_to_up(vector3 up, vector3 forward) {
     const vector3 y = math.normalize_or_zero(up);
     if (y == vector3()) {
@@ -90,6 +95,7 @@ quaternion procedural.align_to_up(vector3 up, vector3 forward) {
 
 // Quaternion from a caller-normalized unit axis and right-handed angle in radians
 // (direct counterpart of C++ atelier::math::from_axis_angle).
+[DESC = "由调用方已单位化的旋转轴 unit_axis 与弧度角 radians（右手定则）构造四元数。"]
 quaternion procedural.unit_axis_angle(vector3 unit_axis, float radians) {
     const float half = radians * 0.5f;
     const vector3 xyz = unit_axis * math.sin(half);
@@ -98,6 +104,7 @@ quaternion procedural.unit_axis_angle(vector3 unit_axis, float radians) {
 
 // Extrinsic X -> Y -> Z Euler rotation in degrees (q_z * q_y * q_x), matching
 // procedural.Transform.rotate and C++ procedural::euler_to_quaternion.
+[DESC = "按外旋 X -> Y -> Z 顺序（q_z * q_y * q_x）将角度制欧拉角 degrees 转为四元数，与 procedural.Transform.rotate 一致。"]
 quaternion procedural.euler_degrees(vector3 degrees) {
     const vector3d half = math.radians(vector3d(degrees)) * 0.5d;
     const vector3d s = math.sin(half);

@@ -13,6 +13,10 @@ namespace atelier::procedural {
 class Bvh;
 }
 
+namespace atelier::source {
+class Program;
+}
+
 namespace atelier::editor {
 class Project;
 
@@ -496,6 +500,8 @@ public:
     Result<std::vector<GraphNodeCatalogEntry>> procedural_node_types(Project* project = nullptr,
                                                                      std::string_view exclude_graph_key = {});
 
+    Result<const source::Program*> procedural_source_program();
+
     Result<ObjectId> open_graph(Project&, std::string_view key);
 
     Result<ObjectId> create_scratch_graph(std::string_view key = "scratch/procedural");
@@ -633,7 +639,8 @@ public:
 
     Result<void> graph_set_properties(std::string_view key, std::string_view node_name, json::Value properties);
 
-    Result<std::vector<GraphPromotedParameterView>> graph_promoted_parameters(std::string_view key, Project* project = nullptr) const;
+    Result<std::vector<GraphPromotedParameterView>> graph_promoted_parameters(std::string_view key,
+                                                                              Project* project = nullptr) const;
 
     Result<std::vector<GraphPromotedParameterView>>
     graph_asset_node_parameters(std::string_view key, std::string_view node_name, Project* project = nullptr) const;

@@ -163,6 +163,7 @@ Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language:
                           "Source type declaration conflicts with a builtin math name: " + declaration.name});
         TypeDefinition definition;
         definition.name = declaration.name;
+        definition.description = declaration.description;
         definition.kind = declaration.enumeration ? TypeKind::enumeration : TypeKind::record;
         if (declaration.enumeration) {
             std::vector<EnumeratorMetadata> enum_metadata;
@@ -173,7 +174,8 @@ Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language:
                 TypeDefinition::Enumeration{declaration.signed_enum ? binding.i32 : binding.u32,
                                             declaration.enumerators, declaration.flags, std::move(enum_metadata)};
         } else {
-            for (const auto& [name, type] : declaration.fields) {
+            for (std::size_t field_idx = 0; field_idx < declaration.fields.size(); ++field_idx) {
+                const auto& [name, type] = declaration.fields[field_idx];
                 TypeReference reference;
                 if (is_described_element(type.name)) {
                     if (type.array_depth == 0) {
@@ -223,7 +225,10 @@ Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language:
                     }
                     reference = resolved;
                 }
-                definition.fields.push_back({name, {std::move(reference)}});
+                FieldDefinition field_def{name, {std::move(reference)}};
+                if (field_idx < declaration.field_descriptions.size())
+                    field_def.description = declaration.field_descriptions[field_idx];
+                definition.fields.push_back(std::move(field_def));
             }
         }
         definitions.push_back(std::move(definition));
@@ -951,6 +956,11 @@ std::span<const ClassInfo> Program::Candidate::classes() const noexcept {
 std::span<const EntryInfo> Program::Candidate::entries() const noexcept {
     return prepared_ && prepared_->module ? std::span<const EntryInfo>{prepared_->module->entries}
                                           : std::span<const EntryInfo>{};
+}
+
+std::span<const FunctionInfo> Program::Candidate::functions() const noexcept {
+    return prepared_ && prepared_->module ? std::span<const FunctionInfo>{prepared_->module->functions}
+                                          : std::span<const FunctionInfo>{};
 }
 
 Program::Lease::Lease(std::shared_ptr<const Version> version) : version_(std::move(version)) {}

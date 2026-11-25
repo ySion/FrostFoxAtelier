@@ -340,20 +340,22 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
             auto& tokens = *created;
             while (tokens.token_.kind != Token::Kind::end) {
                 const auto begin = tokens.token_.position;
+                bool is_type = tokens.token_.text == "enum" || tokens.token_.text == "struct";
                 std::string class_description;
+                std::string function_description;
                 if (tokens.token_.text == "[") {
-                    auto attributes = tokens;
-                    ATELIER_TRY(attributes.consume());
-                    if (attributes.token_.text == "DESC") {
-                        ATELIER_TRY_BIND(option, attributes.consume());
-                        ATELIER_TRY_ASSIGN(class_description, parse_presentation_text(attributes, *option));
-                        ATELIER_TRY(attributes.expect("]"));
-                        if (attributes.token_.text != "class")
-                            return reject(begin, "A type-level DESC applies to class declarations only.");
-                        tokens = attributes;
+                    ATELIER_TRY_BIND(target, peek_attributed_keyword(tokens));
+                    if (*target == "const")
+                        return reject(begin, "Attributes do not apply to module constants.");
+                    if (*target == "enum" || *target == "struct") {
+                        is_type = true;
+                    } else if (*target == "class") {
+                        ATELIER_TRY_ASSIGN(class_description, parse_description_attribute(tokens, "class"));
+                    } else {
+                        ATELIER_TRY_ASSIGN(function_description, parse_description_attribute(tokens, "function"));
                     }
                 }
-                if (tokens.token_.text == "[" || tokens.token_.text == "enum" || tokens.token_.text == "struct") {
+                if (is_type) {
                     ATELIER_TRY_BIND(parsed_type, parse_type_declaration(tokens));
                     ATELIER_TRY(declare(parsed_type->name, parsed_type->position));
                     TopLevel declaration{TopLevel::Kind::type,
@@ -363,7 +365,8 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                                          parsed_type->position,
                                          {},
                                          {},
-                                         {}};
+                                         {},
+                                         parsed_type->description};
                     declaration.source.append(unit, file, begin.offset, tokens.token_.position.offset);
                     result.declarations.push_back(std::move(declaration));
                     continue;
@@ -378,18 +381,14 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                         ATELIER_TRY_BIND(name, tokens.qualified_identifier());
                         declaration.name = std::move(*name);
                         ATELIER_TRY(declare(declaration.name, declaration.position));
-                        while (tokens.token_.text != ";") {
-                            if (tokens.token_.kind == Token::Kind::end || tokens.token_.text == "{" ||
-                                tokens.token_.text == "}")
-                                return reject(tokens.token_.position, "Expected ';' to close a module constant.");
-                            ATELIER_TRY(tokens.consume());
-                        }
-                        ATELIER_TRY(tokens.expect(";"));
+                        ATELIER_TRY(tokens.expect("="));
+                        ATELIER_TRY(skip_constant_initializer(tokens));
                         declaration.source.append(unit, file, begin.offset, tokens.token_.position.offset);
                         result.declarations.push_back(std::move(declaration));
                         continue;
                     }
-                    TopLevel declaration{TopLevel::Kind::function, {}, std::string(own), file, {}, {}, {}, {}};
+                    TopLevel declaration{TopLevel::Kind::function, {}, std::string(own), file, {}, {}, {}, {},
+                                         function_description};
                     ATELIER_TRY_BIND(async, tokens.accept("async"));
                     if (*async)
                         return reject(begin, "Project exports must be synchronous.");
@@ -400,7 +399,7 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                     ATELIER_TRY_BIND(name, tokens.qualified_identifier());
                     declaration.name = std::move(*name);
                     ATELIER_TRY(declare(declaration.name, declaration.position));
-                    FunctionDeclaration exported{declaration.name, {}, {}};
+                    FunctionDeclaration exported{declaration.name, {}, {}, std::move(function_description)};
                     ATELIER_TRY_BIND(signature, function_signature(tokens, *type, &exported.parameters, &declaration));
                     exported.signature = std::move(*signature);
                     // Engine functions serve Source calls only; project functions are the global entries.

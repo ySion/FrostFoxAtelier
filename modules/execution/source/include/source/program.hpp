@@ -303,6 +303,8 @@ public:
         std::span<const ClassInfo> classes() const noexcept;
 
         std::span<const EntryInfo> entries() const noexcept;
+
+        std::span<const FunctionInfo> functions() const noexcept;
     };
 
     class Lease {
@@ -474,6 +476,8 @@ public:
     std::span<const ClassInfo> classes() const noexcept;
 
     std::span<const EntryInfo> entries() const noexcept;
+
+    std::span<const FunctionInfo> functions() const noexcept;
 
     // Counts successful publications; 0 before the first.
     std::uint64_t revision() const noexcept;
