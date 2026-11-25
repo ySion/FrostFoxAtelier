@@ -566,6 +566,12 @@ Result<void> verify_host_failures(const std::filesystem::path& executable, const
 
 Result<void> verify_smoke_logs(SmokeLog& parent, SmokeLog& child) {
     ATELIER_TRY(parent.finish());
+    ATELIER_TRY_BIND(closing_result, parent.one("application.closing"));
+    const auto& closing = **closing_result;
+    ATELIER_TRY_BIND(quit_source_field, smoke_field<std::string>(closing, "quit_source"));
+    ATELIER_TRY_BIND(play_running_field, smoke_field<bool>(closing, "play_running"));
+    ATELIER_TRY(parent.check(*quit_source_field == "wm_close" && *play_running_field,
+                             "application.closing did not record wm_close with play_running=true"));
     ATELIER_TRY_BIND(ended_result, parent.one("play.process_ended"));
     const auto& ended = **ended_result;
     ATELIER_TRY_BIND(forced_field, smoke_field<bool>(ended, "forced"));
@@ -1608,15 +1614,17 @@ Result<void> verify_graph_write_examples(ControlCli& cli, json::Value examples) 
         return fixture_failure("Node view did not identify its controlling graph parameter");
     ATELIER_TRY_BIND(rejected, cli.call("graph.apply", 1, json::Document::literal<R"({
         "nodes":{"roof":{"properties":{"size":{"x":9}}}}})">()));
-    if (rejected->root().string({"error","code"}) != "operation_failed" ||
-        rejected->root().string({"error","message"}).value_or("").find("parameter='clear_width'") == std::string_view::npos)
+    if (rejected->root().string({"error", "code"}) != "operation_failed" ||
+        rejected->root().string({"error", "message"}).value_or("").find("parameter='clear_width'") ==
+            std::string_view::npos)
         return fixture_failure("Direct write to a promoted field lost the parameter name or repair hint");
     ATELIER_TRY(invoke("set_promoted_parameter"));
     ATELIER_TRY_BIND(updated, cli.call("graph.inspect", 0, roof));
-    ATELIER_TRY_BIND(peer, cli.call("graph.inspect", 0, json::Document::literal<R"({"view":"node","node":"place"})">()));
-    if (updated->root().number({"result","properties","size","x"}) != 5 ||
-        peer->root().number({"result","properties","translate","x"}) != 5 ||
-        peer->root().string({"result","controlled_fields","translate.x"}) != "clear_width")
+    ATELIER_TRY_BIND(peer,
+                     cli.call("graph.inspect", 0, json::Document::literal<R"({"view":"node","node":"place"})">()));
+    if (updated->root().number({"result", "properties", "size", "x"}) != 5 ||
+        peer->root().number({"result", "properties", "translate", "x"}) != 5 ||
+        peer->root().string({"result", "controlled_fields", "translate.x"}) != "clear_width")
         return fixture_failure("Published graph parameter example did not update both bound nodes");
     ATELIER_TRY(cli.call("op.call", 0, json::Document::literal<R"({"id":"graph.exit"})">()));
     return {};
@@ -2060,15 +2068,23 @@ Result<void> verify_rail_panel_cli(ControlCli& cli) {
     if (hits->size() != 2 || hits->at(0)->number({"distance"}) != 1.25 || hits->at(1)->number({"distance"}) != 1.5)
         return fixture_failure("RailPanel rails selected by port help did not produce the expected top and underside");
     ATELIER_TRY(wire("far.output", "near.output"));
+    ATELIER_TRY_BIND(
+        inspected_fail,
+        cli.call("graph.inspect", 0, json::Document::literal<R"({"node":"board","samples":0,"spatial":false})">()));
+    const auto fail_res = *inspected_fail->root().at("result");
+    if (fail_res.string({"diagnostic", "node"}) != "board" ||
+        fail_res.string({"diagnostic", "element", "layer"}) != "element" ||
+        fail_res.u32({"diagnostic", "element", "index"}) != 0u ||
+        !fail_res.string({"diagnostic", "source", "path"}).value_or("").contains("rail_panel.source"))
+        return fixture_failure("graph.inspect did not attach structured diagnostic with element and source location");
     return require_control_error(
         cli.call("graph.inspect", 1, measure), "operation_failed",
         "procedural.RailPanel: RailPanel rails cross, repeat a station or face down; check rail order.");
 }
 
 Result<void> verify_bevel_cli(ControlCli& cli) {
-    ATELIER_TRY_BIND(
-        schema, cli.call("graph.inspect", 0,
-                         json::Document::literal<R"({"view":"catalog","type":"procedural.Bevel"})">()));
+    ATELIER_TRY_BIND(schema, cli.call("graph.inspect", 0,
+                                      json::Document::literal<R"({"view":"catalog","type":"procedural.Bevel"})">()));
     const auto type = *schema->root().at("result");
     const auto input = type.string({"port_descriptions", "inputs", "surface"}).value_or("");
     if (!input.contains("闭合") || !input.contains("凸") ||
@@ -2115,8 +2131,8 @@ Result<void> verify_bevel_cli(ControlCli& cli) {
         std::abs(flat_hits.at(1)->number({"distance"}).value_or(-1.) - .78) > 1e-5)
         return fixture_failure("Stone cap did not cut its edge and corner at the default 0.1 m radius");
 
-    ATELIER_TRY(cli.call("graph.apply", 0,
-                         json::Document::literal<R"({"nodes":{"cap":{"properties":{"segments":3}}}})">()));
+    ATELIER_TRY(
+        cli.call("graph.apply", 0, json::Document::literal<R"({"nodes":{"cap":{"properties":{"segments":3}}}})">()));
     ATELIER_TRY_BIND(rounded, cli.call("graph.inspect", 0, rays));
     const auto rounded_hits = *rounded->root().at("result")->at("raycast")->at("hits");
     // The middle chord joins the 30° and 60° samples of the 90° profile.
@@ -2124,8 +2140,8 @@ Result<void> verify_bevel_cli(ControlCli& cli) {
     if (std::abs(rounded_hits.at(0)->number({"distance"}).value_or(-1.) - edge_distance(at_x)) > 1e-5)
         return fixture_failure("Stone cap multi-segment profile did not follow the sampled circular arc");
 
-    ATELIER_TRY(cli.call("graph.apply", 0,
-                         json::Document::literal<R"({"nodes":{"cap":{"properties":{"radius":0.4}}}})">()));
+    ATELIER_TRY(
+        cli.call("graph.apply", 0, json::Document::literal<R"({"nodes":{"cap":{"properties":{"radius":0.4}}}})">()));
     ATELIER_TRY_BIND(failed, cli.call("graph.inspect", 1, rays));
     const auto first_error = failed->root().string({"error", "message"}).value_or("");
     if (failed->root().string({"error", "code"}) != "operation_failed" ||
@@ -2219,14 +2235,14 @@ Result<void> verify_graph_patch_cli(ControlCli& cli) {
     ATELIER_TRY_BIND(after_bad, cli.call("graph.inspect", 0, topology));
     const auto check_seed = json::Document::literal<R"({"samples":0,"spatial":false})">();
     ATELIER_TRY_BIND(after_failure, cli.call("graph.inspect", 0, check_seed));
-    if (after_failure->root().u64({"result","seed"}) != 17)
+    if (after_failure->root().u64({"result", "seed"}) != 17)
         return fixture_failure("A rejected mixed patch or undo left a partial graph-root edit");
     if (*after_bad->root().at("result") != prior)
         return fixture_failure("Failed patch changed the graph or consumed existing redo history");
     ATELIER_TRY(cli.call("op.call", 0, json::Document::literal<R"({"id":"edit.redo"})">()));
     ATELIER_TRY_BIND(redone, cli.call("graph.inspect", 0, topology));
     ATELIER_TRY_BIND(after_redo, cli.call("graph.inspect", 0, check_seed));
-    if (after_redo->root().u64({"result","seed"}) != 91)
+    if (after_redo->root().u64({"result", "seed"}) != 91)
         return fixture_failure("Redo failed to restore graph seed with the SOP edits");
     if (*redone->root().at("result") != structure)
         return fixture_failure("Redo lost graph identities, display, or ordered inputs");
@@ -2256,8 +2272,7 @@ Result<void> verify_graph_patch_cli(ControlCli& cli) {
     const auto restored_edit = *untrimmed->root().at("result");
     if (*restored_edit.at("nodes") != *structure.at("nodes") ||
         *restored_edit.at("connections") != *structure.at("connections") ||
-        *restored_edit.at("display") != *structure.at("display") ||
-        restored_edit.boolean({"can_redo"}) != true)
+        *restored_edit.at("display") != *structure.at("display") || restored_edit.boolean({"can_redo"}) != true)
         return fixture_failure("Undo of removal failed to restore the ordered wires");
     ATELIER_TRY(cli.call("op.call", 0, json::Document::literal<R"({"id":"graph.exit"})">()));
     return {};

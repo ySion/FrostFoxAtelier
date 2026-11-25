@@ -96,7 +96,7 @@ class Program final {
 
         enum class Mode : std::uint8_t { none, stateless, full };
 
-        alignas(16) std::byte storage_[1536];
+        alignas(16) std::byte storage_[1664];
 
         Mode mode_{Mode::none};
 

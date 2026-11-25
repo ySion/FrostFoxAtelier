@@ -412,7 +412,7 @@ private:
 
     Result<void> set_view_settings(const renderer::ViewSettings&) override;
 
-    void quit() override { PostMessageW(window(), WM_CLOSE, 0, 0); }
+    void quit() override { window_.request_operator_close(); }
 
     void about() override;
 

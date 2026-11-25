@@ -22,8 +22,8 @@
 #include "application/recovery.hpp"
 #include "application/presentation.hpp"
 #include "application/procedural_preview.hpp"
-#include "application/recovery.hpp"
 #include "application/scene_snapshot.hpp"
+#include "application/window.hpp"
 #include "json/json.hpp"
 #include "logging/logging.hpp"
 #include "renderer/scene_visibility.hpp"
@@ -956,10 +956,11 @@ class game.DiagnosticSop : procedural.Node {
             "Tab search did not find the Source node by its reflected purpose.");
     const auto tab_controls = take(workspace.describe(doc, {1400, 900}, frame.get(), &project, &ui_session));
     const auto& purpose = purpose_matches.front().description;
-    require(std::ranges::any_of(tab_controls, [&](const auto& ctrl) {
-                return ctrl.text == L"TerraceWave" && ctrl.tooltip &&
-                       ctrl.tooltip->description == platform::utf8_to_utf16_validated(purpose);
-            }),
+    require(std::ranges::any_of(tab_controls,
+                                [&](const auto& ctrl) {
+                                    return ctrl.text == L"TerraceWave" && ctrl.tooltip &&
+                                           ctrl.tooltip->description == platform::utf8_to_utf16_validated(purpose);
+                                }),
             "The Tab result tooltip did not show the Source catalog description.");
     take_ui(ui_session.set_controls(tab_controls));
     const auto tab_frame = take_ui(ui_session.prepare());
@@ -2211,6 +2212,32 @@ Result<void> run_document(int argc, char** argv, std::string_view& stage) {
     ATELIER_TRY(verify_procedural_editor());
     stage = "scene recovery";
     ATELIER_TRY(verify_scene_recovery());
+    stage = "window quit sources";
+    {
+        application::Window win;
+        ATELIER_TRY(win.initialize());
+        require(!win.closing() && application::Window::quit_source_name(win.quit_source()) == "none",
+                "Fresh Window reported non-empty quit_source.");
+        SendMessageW(win.handle(), WM_SYSCOMMAND, SC_CLOSE, 0);
+        require(win.closing() && application::Window::quit_source_name(win.quit_source()) == "wm_syscommand_close",
+                "SC_CLOSE did not record wm_syscommand_close.");
+        win.cancel_close();
+        require(!win.closing() && application::Window::quit_source_name(win.quit_source()) == "none",
+                "cancel_close() did not reset quit_source.");
+        win.request_operator_close();
+        win.poll([](application::NativeEvent&&) {});
+        require(win.closing() && application::Window::quit_source_name(win.quit_source()) == "operator:app.quit",
+                "request_operator_close() did not record operator:app.quit.");
+        win.cancel_close();
+        SendMessageW(win.handle(), WM_CLOSE, 0, 0);
+        require(win.closing() && application::Window::quit_source_name(win.quit_source()) == "wm_close",
+                "External WM_CLOSE did not record wm_close.");
+        win.cancel_close();
+        PostQuitMessage(0);
+        win.poll([](application::NativeEvent&&) {});
+        require(win.closing() && application::Window::quit_source_name(win.quit_source()) == "wm_quit",
+                "WM_QUIT did not record wm_quit.");
+    }
     std::puts(
         "Editor document acceptance: PASS (creation undo/redo, glTF transform, mesh reimport, graph format, SOP editor + 2D Network canvas)");
     return {};

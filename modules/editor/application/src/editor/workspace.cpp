@@ -2175,7 +2175,8 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     geom = eval->inspected_output;
                     generation = eval->generation;
                     if (eval->inspected_error)
-                        error_text = application::diagnostic_text(eval->inspected_error->message);
+                        error_text = application::diagnostic_text(eval->inspected_error->message +
+                                                                  format_error_coordinates(*eval->inspected_error));
                 } else {
                     target_label = eval->display_name.empty()
                                        ? L"(no display)"
@@ -2183,7 +2184,8 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     geom = eval->preview_output.get();
                     generation = eval->generation;
                     if (eval->display_error)
-                        error_text = application::diagnostic_text(eval->display_error->message);
+                        error_text = application::diagnostic_text(eval->display_error->message +
+                                                                  format_error_coordinates(*eval->display_error));
                 }
             } else if (const ObjectId gen_comp = active_procedural_generator(session).value_or(ObjectId{});
                        gen_comp != ObjectId{}) {
@@ -2269,7 +2271,9 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     cook_summary =
                         std::format(L"Cook Error · '{}'", platform::utf8_to_utf16_validated(eval->display_name));
                     cook_summary_style = L"network-cook-error";
-                    net_status = L"Cook error: " + application::diagnostic_text(eval->display_error->message);
+                    net_status =
+                        L"Cook error: " + application::diagnostic_text(eval->display_error->message +
+                                                                       format_error_coordinates(*eval->display_error));
                 } else if (const auto* shown = eval->preview_output.get()) {
                     const std::size_t pts = shown->count(procedural::Layer::point);
                     const std::size_t prims = shown->count(procedural::Layer::primitive);

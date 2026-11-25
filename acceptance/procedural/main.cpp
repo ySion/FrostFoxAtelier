@@ -2602,6 +2602,117 @@ class test.TopologyProbe : procedural.Node {
             "RailPanel output topology counts mismatched expected 3-station closed panel.");
 }
 
+void source_sop_batch3_contracts() {
+    Runtime runtime;
+    take(register_types(runtime));
+    Meshes resources;
+
+    auto files = take(source::engine_sources(source::default_engine_root()));
+    files.push_back({"Source/Procedural/Batch3Diag.source", 1, R"(
+class test.RunOverFailSop : procedural.Node {
+    [RunOver]
+    procedural.Layer layer = procedural.Layer::primitive;
+
+    uint bad_index = 1u;
+
+    void process([Out("val")] Array<float>& val) {
+        for (uint i = 0u; i < val.size(); i += 1u) {
+            if (i == self.bad_index) {
+                fail("RunOver element rejected.", i);
+            }
+            val[i] = float(i);
+        }
+    }
+}
+
+class test.BadSliceSop : procedural.Node {
+    void process([Port] const procedural.Geometry& curve, [Port] procedural.Geometry& out) {
+        Array<vector2> intervals;
+        intervals.add(vector2(0.0f, 1.0f));
+        intervals.add(vector2(1.0f, 2.0f));
+        intervals.add(vector2(3.0f, 2.0f));
+        Array<vector3> pts;
+        Array<uint> offs;
+        self.read_curve_slices(curve, 0u, intervals, pts, offs);
+        self.emit_polylines(pts, offs, offs, 0u);
+    }
+}
+)"});
+
+    auto program = take(source::Program::create(runtime));
+    auto candidate = take(source::Program::prepare(take(program->request({"Batch3Procedural", 1, std::move(files)}))));
+    take(program->try_publish(candidate));
+
+    const auto graph_type = take(runtime.native_type<procedural::Graph>());
+    const auto grid_type = take(runtime.native_type<procedural::Grid>());
+    const auto line_type = take(runtime.native_type<procedural::Line>());
+    const auto poly_type = take(runtime.native_type<procedural::Polyline>());
+    const auto xform_type = take(runtime.native_type<procedural::Transform>());
+    const auto g_out_type = take(runtime.native_type<procedural::GraphOutput>());
+    const auto asset_node_type = take(runtime.native_type<procedural::AssetNode>());
+    const auto ro_type = take(runtime.find_type("test.RunOverFailSop"));
+    const auto slice_type = take(runtime.find_type("test.BadSliceSop"));
+
+    // 1. 2-arg fail("...", i) fills [RunOver] layer ("primitive") and propagates source + element + root_node
+    //    across downstream blocked nodes AND across AssetNode subgraph boundaries!
+    auto subgraph = take(runtime.create(graph_type));
+    auto grid = take(procedural::add_node(runtime, subgraph.id(), grid_type));
+    auto ro_fail = take(procedural::add_node(runtime, subgraph.id(), ro_type));
+    auto downstream = take(procedural::add_node(runtime, subgraph.id(), xform_type));
+    auto sub_out = take(procedural::add_node(runtime, subgraph.id(), g_out_type));
+    take(procedural::connect(runtime, subgraph.id(), grid.id(), 0u, ro_fail.id(), 0u));
+    take(procedural::connect(runtime, subgraph.id(), ro_fail.id(), 0u, downstream.id(), 0u));
+    take(procedural::connect(runtime, subgraph.id(), downstream.id(), 0u, sub_out.id(), 0u));
+    take(procedural::set_display(runtime, subgraph.id(), downstream.id()));
+
+    procedural::Evaluator sub_eval(runtime, subgraph, resources, program.get());
+    take(sub_eval.evaluate());
+    const auto* ro_st = sub_eval.status(ro_fail.id());
+    const auto* dn_st = sub_eval.status(downstream.id());
+    const auto disp_err = sub_eval.display_error();
+    require(ro_st && ro_st->error && ro_st->root_node == ro_fail.id() &&
+                ro_st->error->element == ErrorElement{"primitive", 1u} && ro_st->error->source.has_value() &&
+                ro_st->error->source->path == "Source/Procedural/Batch3Diag.source",
+            "RunOver 2-arg fail did not populate primitive element 1 and SourceLocation.");
+    require(dn_st && dn_st->error && dn_st->root_node == ro_fail.id() &&
+                dn_st->error->element == ErrorElement{"primitive", 1u} && dn_st->error->source.has_value(),
+            "Downstream blocked node did not retain upstream root_node, element, and SourceLocation.");
+    require(disp_err && disp_err->element == ErrorElement{"primitive", 1u} && disp_err->source.has_value(),
+            "Evaluator::display_error() dropped root-cause element or SourceLocation.");
+
+    // Wrap subgraph inside an AssetNode and verify parent graph preserves the inner root-cause element & source:
+    auto outer_graph = take(runtime.create(graph_type));
+    auto anode = take(procedural::add_node(runtime, outer_graph.id(), asset_node_type));
+    take(procedural::set_asset_subgraph(
+        runtime, anode.id(),
+        {"content/sub_fail", procedural::Ports{{}, {}, {"output"}}, subgraph, {}, {sub_out.id()}, {}, 1u}));
+    take(procedural::set_display(runtime, outer_graph.id(), anode.id()));
+    procedural::Evaluator outer_eval(runtime, outer_graph, resources, program.get());
+    take(outer_eval.evaluate());
+    const auto outer_err = outer_eval.display_error();
+    require(outer_err && outer_err->element == ErrorElement{"primitive", 1u} && outer_err->source.has_value() &&
+                outer_err->source->path == "Source/Procedural/Batch3Diag.source",
+            "AssetNode parent Evaluator dropped inner subgraph ErrorElement or SourceLocation.");
+
+    // 2. read_curve_slices interval validation failure reports ErrorElement{"interval", 2}:
+    auto slice_graph = take(runtime.create(graph_type));
+    auto ln = take(procedural::add_node(runtime, slice_graph.id(), line_type));
+    auto pl = take(procedural::add_node(runtime, slice_graph.id(), poly_type));
+    auto bad_slice = take(procedural::add_node(runtime, slice_graph.id(), slice_type));
+    const auto end_field = take(runtime.find_field(line_type, "end"));
+    const Vector3 end_pos{5.f, 0.f, 0.f};
+    take(runtime.write(ln.id(), end_field, ValueInput{take(runtime.native_type<Vector3>()), &end_pos}));
+    take(procedural::connect(runtime, slice_graph.id(), ln.id(), 0u, pl.id(), 0u));
+    take(procedural::connect(runtime, slice_graph.id(), pl.id(), 0u, bad_slice.id(), 0u));
+    take(procedural::set_display(runtime, slice_graph.id(), bad_slice.id()));
+
+    procedural::Evaluator slice_eval(runtime, slice_graph, resources, program.get());
+    take(slice_eval.evaluate());
+    const auto slice_err = slice_eval.display_error();
+    require(slice_err && slice_err->element == ErrorElement{"interval", 2u} && slice_err->source.has_value(),
+            "read_curve_slices did not report failing interval index 2 through NativeFailure.");
+}
+
 }
 
 int main(int argc, char** argv) {
@@ -2630,6 +2741,7 @@ int main(int argc, char** argv) {
     parametric_primitives_and_alignment_contracts();
     source_sop_batch1_contracts();
     source_sop_batch2_contracts();
+    source_sop_batch3_contracts();
     std::puts("procedural acceptance passed");
     return 0;
 }

@@ -245,6 +245,10 @@ struct Invocation {
 
     char error[512];
 
+    std::uint32_t error_element{no_failure_element};
+
+    char error_layer[32]{};
+
     std::optional<std::string_view> external_error{};
 
     Invocation(Runtime&, const Binding&, BusinessFrameLayout, BusinessTrace* = nullptr, DebugSessionState* = nullptr,
@@ -254,7 +258,7 @@ struct Invocation {
 
     void record_resources(bool cleared) const noexcept;
 
-    void fail(ErrorCode, const char*) noexcept;
+    void fail(ErrorCode, const char*, std::uint32_t element = no_failure_element, std::string_view layer = {}) noexcept;
 
     void fail_view(ErrorCode, std::string_view) noexcept;
 
@@ -270,7 +274,9 @@ std::uint32_t bridge(Invocation& invocation, Operation&& operation) noexcept {
     auto result = operation();
     if (result)
         return 0;
-    invocation.fail(result.error().code, result.error().message.c_str());
+    const auto& elem = result.error().element;
+    invocation.fail(result.error().code, result.error().message.c_str(), elem ? elem->index : no_failure_element,
+                    elem ? std::string_view{elem->layer} : std::string_view{});
     return 1;
 }
 
@@ -293,6 +299,8 @@ void clear_slot(void*, std::uint32_t) noexcept;
 extern const BusinessServices services;
 
 bool same_environment(const Binding&, const BusinessEnvironment&);
+
+std::optional<ErrorElement> resolve_failure_element(const Binding&, const BusinessFailure&);
 
 bool try_bind_receiver(Invocation&, bool requires_receiver, ObjectId) noexcept;
 

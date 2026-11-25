@@ -219,7 +219,10 @@ Result<Geometry> sample_curves(const Geometry& input, float distance, bool from_
         const auto arc = curves[p];
         const double d = from_end ? arc.length() - arc.distance(distance) : arc.distance(distance);
         if (!(d >= 0. && d <= arc.length()))
-            return failure("Curve sample distance exceeds the length of primitive " + std::to_string(p) + ".");
+            return std::unexpected(
+                Error{ErrorCode::argument_mismatch,
+                      "Curve sample distance exceeds the length of primitive " + std::to_string(p) + ".", std::nullopt,
+                      ErrorElement{"primitive", p}});
         const auto i = arc.edge_at(d);
         ATELIER_TRY(output.emit(arc, arc.station(i, d), d, arc.tangent(i)));
         output.finish_primitive();
@@ -236,7 +239,11 @@ Result<Geometry> slice_curves(const Geometry& input, float start, float end, boo
     std::uint64_t points{}, vertices{};
     for (std::uint32_t p = 0; p < input.count(Layer::primitive); ++p) {
         const auto arc = curves[p];
-        ATELIER_TRY_BIND(slice, slice_interval(arc, start, end, end_from_tip));
+        auto slice = slice_interval(arc, start, end, end_from_tip);
+        if (!slice) {
+            slice.error().element = ErrorElement{"primitive", p};
+            return std::unexpected(std::move(slice.error()));
+        }
         vertices += slice->count();
         if (vertices > element_limit)
             return failure("Curve slices exceed the Geometry vertex limit.");
@@ -273,8 +280,13 @@ Result<void> read_curve_slices(const Geometry& curves, std::uint32_t primitive, 
     const PolylineArc arc{curves, curves.primitive(primitive), edges};
     std::vector<Slice> slices;
     std::uint64_t count{};
-    for (const auto& interval : intervals) {
-        ATELIER_TRY_BIND(slice, slice_interval(arc, interval.x, interval.y, false));
+    for (std::uint32_t i = 0; i < intervals.size(); ++i) {
+        const auto& interval = intervals[i];
+        auto slice = slice_interval(arc, interval.x, interval.y, false);
+        if (!slice) {
+            slice.error().element = ErrorElement{"interval", i};
+            return std::unexpected(std::move(slice.error()));
+        }
         count += slice->count();
         if (count > element_limit)
             return failure("Curve slices exceed the Geometry vertex limit.");

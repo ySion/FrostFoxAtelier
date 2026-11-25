@@ -68,9 +68,46 @@ public:
     // The callback is borrowed only until poll returns, never retained.
     void poll(FunctionRef<void(NativeEvent&&)>);
 
+    enum class QuitSource : std::uint8_t {
+        none,
+        wm_syscommand_close,
+        wm_close,
+        wm_quit,
+        operator_app_quit,
+    };
+
+    static constexpr std::string_view quit_source_name(QuitSource source) noexcept {
+        switch (source) {
+        case QuitSource::none:
+            return "none";
+        case QuitSource::wm_syscommand_close:
+            return "wm_syscommand_close";
+        case QuitSource::wm_close:
+            return "wm_close";
+        case QuitSource::wm_quit:
+            return "wm_quit";
+        case QuitSource::operator_app_quit:
+            return "operator:app.quit";
+        }
+        return "none";
+    }
+
     bool closing() const noexcept { return closing_; }
 
-    void cancel_close() noexcept { closing_ = false; }
+    QuitSource quit_source() const noexcept { return quit_source_; }
+
+    void request_operator_close() noexcept {
+        pending_operator_close_ = true;
+        if (handle_)
+            PostMessageW(handle_, WM_CLOSE, 0, 0);
+    }
+
+    void cancel_close() noexcept {
+        closing_ = false;
+        quit_source_ = QuitSource::none;
+        pending_syscommand_close_ = false;
+        pending_operator_close_ = false;
+    }
 
     float dpi_scale() const noexcept;
 
@@ -107,6 +144,12 @@ private:
     std::vector<ToolCursor> tool_cursors_; // Owned, keyed by semantic intent and display DPI.
 
     bool closing_{};
+
+    QuitSource quit_source_{QuitSource::none};
+
+    bool pending_syscommand_close_{};
+
+    bool pending_operator_close_{};
 
     bool releasing_capture_{};
 

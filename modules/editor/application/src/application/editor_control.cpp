@@ -635,13 +635,17 @@ json::Result<void> append_operation(json::Builder& result, json::Value entries, 
     ATELIER_TRY(result.set(item, "requires_state_token", op.changes));
     if (op.name == "graph.apply") {
         const auto examples = result.object_validated(item, "examples");
-        result.set_validated(examples, "edit_nodes", json::Document::literal<R"({
+        result.set_validated(examples, "edit_nodes",
+                             json::Document::literal<R"({
             "op":"graph.apply","state_token":"<latest state_token>","args":{"nodes":{
                 "roof":{"type":"procedural.Wedge","properties":{"size":{"x":4,"y":2,"z":4}}},
-                "place":{"type":"procedural.Transform","inputs":{"input":"roof.output"}}}}})">().root());
-        result.set_validated(examples, "set_promoted_parameter", json::Document::literal<R"({
+                "place":{"type":"procedural.Transform","inputs":{"input":"roof.output"}}}}})">()
+                                 .root());
+        result.set_validated(examples, "set_promoted_parameter",
+                             json::Document::literal<R"({
             "op":"op.call","state_token":"<latest state_token>",
-            "args":{"id":"graph.set_parameter","args":{"parameter":"clear_width","value_json":"5.0"}}})">().root());
+            "args":{"id":"graph.set_parameter","args":{"parameter":"clear_width","value_json":"5.0"}}})">()
+                                 .root());
     }
     const auto args = result.object_validated(item, "args");
     result.set_validated(args, "type", "object");
@@ -820,6 +824,8 @@ struct EditorControl::Impl {
 
     struct Job {
         std::string id;
+
+        std::string kind;
 
         std::string token;
 
@@ -2056,6 +2062,27 @@ struct EditorControl::Impl {
         return result.finish();
     }
 
+    static json::Result<void> write_graph_diagnostic(json::Builder& result, json::Value parent, std::string_view key,
+                                                     const std::optional<Error>& error, std::string_view node_name) {
+        if (!error)
+            return result.set_null(parent, key);
+        const auto diag = result.object_validated(parent, key);
+        ATELIER_TRY(result.set(diag, "message", error->message));
+        ATELIER_TRY(result.set(diag, "node", node_name));
+        if (error->source) {
+            const auto src = result.object_validated(diag, "source");
+            ATELIER_TRY(result.set(src, "path", error->source->path));
+            ATELIER_TRY(result.set(src, "line", error->source->line));
+            ATELIER_TRY(result.set(src, "column", error->source->column));
+        }
+        if (error->element) {
+            const auto elem = result.object_validated(diag, "element");
+            ATELIER_TRY(result.set(elem, "layer", error->element->layer));
+            ATELIER_TRY(result.set(elem, "index", error->element->index));
+        }
+        return {};
+    }
+
     std::expected<json::Document, Failure> graph_inspect_json(const editor::GraphInspectView& view,
                                                               std::string_view inspected_name,
                                                               std::span<const editor::GraphNodeCatalogEntry> catalog,
@@ -2082,6 +2109,18 @@ struct EditorControl::Impl {
                 ATELIER_TRY(result.set(root, "inspected_error", view.inspected_error->message));
             else
                 ATELIER_TRY(result.set_null(root, "inspected_error"));
+            if (!inspected_name.empty() && view.inspected_error) {
+                const std::string_view node_ref =
+                    view.inspected_error_node.empty() ? inspected_name : std::string_view{view.inspected_error_node};
+                ATELIER_TRY(write_graph_diagnostic(result, root, "diagnostic", view.inspected_error, node_ref));
+            } else if (view.display_error) {
+                const std::string_view node_ref = view.display_error_node.empty()
+                                                      ? std::string_view{view.display}
+                                                      : std::string_view{view.display_error_node};
+                ATELIER_TRY(write_graph_diagnostic(result, root, "diagnostic", view.display_error, node_ref));
+            } else {
+                ATELIER_TRY(result.set_null(root, "diagnostic"));
+            }
             ATELIER_TRY_BIND(parameters, result.array(root, "parameters"));
             for (const auto& param : view.parameters) {
                 const auto item = result.append_object(*parameters);
@@ -2155,6 +2194,9 @@ struct EditorControl::Impl {
                     ATELIER_TRY(result.set(st, "error", node.status->error->message));
                 else
                     ATELIER_TRY(result.set_null(st, "error"));
+                const std::string_view diag_node =
+                    node.root_error_node.empty() ? std::string_view{node.name} : std::string_view{node.root_error_node};
+                ATELIER_TRY(write_graph_diagnostic(result, st, "diagnostic", node.status->error, diag_node));
             } else {
                 ATELIER_TRY(result.set_null(item, "status"));
             }
@@ -2338,6 +2380,7 @@ struct EditorControl::Impl {
             }
         }
         ATELIER_TRY_BIND(created, new_job(id, peer));
+        (*created)->kind = "repro.export";
         json::Builder manifest(std::move((*created)->manifest));
         const auto root = manifest.root();
         manifest.set_validated(root, "kind", "repro");
@@ -2397,6 +2440,7 @@ struct EditorControl::Impl {
         auto trace = std::make_unique<rhi::CommandTrace>();
         ATELIER_TRY_BIND(created, new_job(id, peer));
         auto& job = **created;
+        job.kind = "render.trace";
         job.trace = std::move(trace);
         job.tracing = true;
         job.deadline = job.started + std::chrono::milliseconds(timeout);
@@ -2481,6 +2525,7 @@ struct EditorControl::Impl {
         }
         ATELIER_TRY_BIND(created, new_job(id, peer));
         auto& job = **created;
+        job.kind = prepare ? "render.prepare" : compare ? "render.compare" : "render.capture";
         job.cases = std::move(cases);
         job.points = std::move(points);
         job.rendering = true;
@@ -3041,7 +3086,8 @@ struct EditorControl::Impl {
                 return result.finish();
             }
             if (*value != "full")
-                return std::unexpected(Failure("invalid_request", "Graph view must be catalog, topology, node or full"));
+                return std::unexpected(
+                    Failure("invalid_request", "Graph view must be catalog, topology, node or full"));
         }
         ObjectId inspected_id{};
         if (!node_name.empty()) {
@@ -3382,6 +3428,17 @@ EditorControl::EditorControl(std::unique_ptr<Impl> impl) noexcept : impl_(std::m
 EditorControl::EditorControl(EditorControl&&) noexcept = default;
 
 EditorControl::~EditorControl() = default;
+
+std::optional<EditorControl::ActiveJobInfo> EditorControl::active_job() const {
+    const auto* job = impl_->active();
+    if (!job)
+        return std::nullopt;
+    const std::string_view phase = job->preparing   ? "preparing"
+                                   : job->rendering ? "rendering"
+                                   : job->tracing   ? "observing"
+                                                    : "writing";
+    return ActiveJobInfo{job->id, job->kind, std::string(phase)};
+}
 
 bool EditorControl::poll() {
     bool serviced = impl_->active() != nullptr;

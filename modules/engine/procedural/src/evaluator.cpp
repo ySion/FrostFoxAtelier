@@ -752,6 +752,7 @@ struct Evaluator::Impl {
                                        active_node,
                                        entry.outputs,
                                        plan.uses_primary_stream};
+            Result<void> invoked;
             if (plan.native) {
                 if (pool->impl_->budget && state.type == boolean_type) {
                     for (const auto& input : state.inputs) {
@@ -759,9 +760,19 @@ struct Evaluator::Impl {
                         collect.inputs[input.input] = {source, &source->outputs[input.output]};
                     }
                 }
-                ATELIER_TRY(runtime.call(id, plan.method, arguments));
+                invoked = runtime.call(id, plan.method, arguments);
             } else {
-                ATELIER_TRY(source_kernel->entry.invoke(id, arguments));
+                auto ran_source = source_kernel->entry.invoke(id, arguments);
+                if (!ran_source)
+                    invoked = std::unexpected(std::move(ran_source.error()));
+            }
+            if (!invoked) {
+                if (invoked.error().element && invoked.error().element->layer.empty()) {
+                    invoked.error().element->layer = plan.run_over_field != FieldId{}
+                                                         ? std::string(layer_name(dynamic_layer))
+                                                         : std::string("element");
+                }
+                return invoked;
             }
         }
         if (plan.uses_primary_stream) {
@@ -776,9 +787,11 @@ struct Evaluator::Impl {
             }
         }
         if (wrote_positions) {
-            for (const auto& position : entry.outputs[0].positions())
-                if (!math::is_finite(position))
-                    return error(ErrorCode::invocation_failed, "Point positions must be finite.");
+            const auto positions = entry.outputs[0].positions();
+            for (std::uint32_t pt = 0; pt < positions.size(); ++pt)
+                if (!math::is_finite(positions[pt]))
+                    return std::unexpected(Error{ErrorCode::invocation_failed, "Point positions must be finite.",
+                                                 std::nullopt, ErrorElement{"point", pt}});
         }
         return {};
     }
@@ -832,7 +845,9 @@ struct Evaluator::Impl {
     void update(ObjectId id, State& state, bool record_timings) {
         if (state.fault) {
             state.status.error = state.fault;
-            state.root_error = Error{state.fault->code, node_label(state.type) + ": " + state.fault->message};
+            state.status.root_node = id;
+            state.root_error = Error{state.fault->code, node_label(state.type) + ": " + state.fault->message,
+                                     state.fault->source, state.fault->element};
             return;
         }
         if (!state.bypassed && state.frozen && state.frozen_entry) {
@@ -841,6 +856,7 @@ struct Evaluator::Impl {
             state.entry = state.frozen_entry;
             pool->impl_->touch(*state.entry);
             state.status.error.reset();
+            state.status.root_node = {};
             state.root_error.reset();
             return;
         }
@@ -877,8 +893,12 @@ struct Evaluator::Impl {
                                                    ? std::string_view{upstream.status.error->message}
                                                    : "upstream failed";
                 state.root_error = upstream.root_error ? upstream.root_error : upstream.status.error;
+                state.status.root_node =
+                    upstream.status.root_node != ObjectId{} ? upstream.status.root_node : connection.from;
                 state.status.error = Error{ErrorCode::invocation_failed,
-                                           "Input '" + port_name + "' failed (" + std::string{cause} + ")."};
+                                           "Input '" + port_name + "' failed (" + std::string{cause} + ").",
+                                           state.root_error ? state.root_error->source : std::nullopt,
+                                           state.root_error ? state.root_error->element : std::nullopt};
                 return;
             }
             append(key, connection.input);
@@ -895,12 +915,15 @@ struct Evaluator::Impl {
             if (!state.bypassed && state.frozen && !state.frozen_entry)
                 state.frozen_entry = state.entry;
             state.status.error.reset();
+            state.status.root_node = {};
             state.root_error.reset();
             return;
         }
         if (key == state.failed && revision == state.failed_revision) {
             state.status.error = state.failure;
-            state.root_error = Error{state.failure.code, node_label(state.type) + ": " + state.failure.message};
+            state.status.root_node = id;
+            state.root_error = Error{state.failure.code, node_label(state.type) + ": " + state.failure.message,
+                                     state.failure.source, state.failure.element};
             return;
         }
         if (auto* found = pool->impl_->cache.find(key); found &&
@@ -912,6 +935,7 @@ struct Evaluator::Impl {
             if (!state.bypassed && state.frozen && !state.frozen_entry)
                 state.frozen_entry = state.entry;
             state.status.error.reset();
+            state.status.root_node = {};
             state.root_error.reset();
             return;
         }
@@ -922,7 +946,9 @@ struct Evaluator::Impl {
             state.failed_revision = revision;
             state.failure = evaluated.error();
             state.status.error = evaluated.error();
-            state.root_error = Error{state.failure.code, node_label(state.type) + ": " + state.failure.message};
+            state.status.root_node = id;
+            state.root_error = Error{state.failure.code, node_label(state.type) + ": " + state.failure.message,
+                                     state.failure.source, state.failure.element};
             return;
         }
         state.entry = std::move(*evaluated);
@@ -930,6 +956,7 @@ struct Evaluator::Impl {
             state.frozen_entry = state.entry;
         state.failed.clear();
         state.status.error.reset();
+        state.status.root_node = {};
         state.root_error.reset();
     }
 

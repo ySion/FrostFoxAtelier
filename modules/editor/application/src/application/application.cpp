@@ -2871,8 +2871,11 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
                     if (eval->template_output && eval->template_node != eval->display_node)
                         sop_template_geom = eval->template_output;
                     if (eval->display_error)
-                        workspace_.render_notice = L"SOP cook error: " + diagnostic_text(eval->display_error->message) +
-                                                   (eval->preview_output ? L" (showing last valid output)" : L"");
+                        workspace_.render_notice =
+                            L"SOP cook error: " +
+                            diagnostic_text(eval->display_error->message +
+                                            editor::format_error_coordinates(*eval->display_error)) +
+                            (eval->preview_output ? L" (showing last valid output)" : L"");
                 }
                 material_preparation = procedural_preview_.prepare(renderer_);
             } else {
@@ -3122,6 +3125,28 @@ Result<void> Application::close() {
     };
     finish_camera_fly(false);
     closed_ = true;
+    if (document_) {
+        if (auto root = platform::utf16_to_utf8(document_root_.generic_wstring())) {
+            const std::string_view quit_source =
+                window_.closing() ? Window::quit_source_name(window_.quit_source()) : std::string_view{"direct_close"};
+            logging::Entry entry{.severity = logging::Severity::info,
+                                 .category = "application",
+                                 .event_code = "application.closing",
+                                 .message = "Editor closing."};
+            entry.fields = {{"document", document_->presentation().identity()},
+                            {"project_root", std::move(*root)},
+                            {"quit_source", std::string(quit_source)},
+                            {"play_running", play_.running()}};
+            if (control_) {
+                if (auto job = control_->active_job()) {
+                    entry.fields.push_back({"active_control_job_id", std::move(job->id)});
+                    entry.fields.push_back({"active_control_job_kind", std::move(job->kind)});
+                    entry.fields.push_back({"active_control_job_phase", std::move(job->phase)});
+                }
+            }
+            static_cast<void>(workspace_.output.submit_owned(std::move(entry)));
+        }
+    }
     control_.reset();
     play_.close();
     consume_play_output();

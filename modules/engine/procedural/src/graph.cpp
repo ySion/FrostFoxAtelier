@@ -158,6 +158,7 @@ Result<void> validate_emitted_polygons(const Geometry& geometry) {
         if (auto valid = detail::validate_polygon(geometry, geometry.primitive(p)); !valid) {
             valid.error().code = ErrorCode::invocation_failed;
             valid.error().message = "Primitive " + std::to_string(p) + ": " + valid.error().message;
+            valid.error().element = ErrorElement{"primitive", p};
             return std::unexpected(std::move(valid.error()));
         }
     }
@@ -181,8 +182,9 @@ Result<std::uint32_t> Node::count_elements(const Geometry& geometry, Layer layer
 
 Result<PrimitiveSpan> Node::primitive_span(const Geometry& geometry, std::uint32_t primitive) const noexcept {
     if (primitive >= geometry.count(Layer::primitive))
-        return error(ErrorCode::invocation_failed,
-                     "Primitive index " + std::to_string(primitive) + " is out of bounds.");
+        return std::unexpected(Error{ErrorCode::invocation_failed,
+                                     "Primitive index " + std::to_string(primitive) + " is out of bounds.",
+                                     std::nullopt, ErrorElement{"primitive", primitive}});
     const auto range = geometry.primitive(primitive);
     return PrimitiveSpan{range.first, range.count,
                          range.kind == PrimitiveKind::polyline ? PrimitiveType::polyline : PrimitiveType::polygon};
@@ -191,8 +193,9 @@ Result<PrimitiveSpan> Node::primitive_span(const Geometry& geometry, std::uint32
 Result<void> Node::read_primitive_points(const Geometry& geometry, std::uint32_t primitive,
                                          Array<std::uint32_t>& points) const noexcept {
     if (primitive >= geometry.count(Layer::primitive))
-        return error(ErrorCode::invocation_failed,
-                     "Primitive index " + std::to_string(primitive) + " is out of bounds.");
+        return std::unexpected(Error{ErrorCode::invocation_failed,
+                                     "Primitive index " + std::to_string(primitive) + " is out of bounds.",
+                                     std::nullopt, ErrorElement{"primitive", primitive}});
     const auto range = geometry.primitive(primitive);
     const auto span = geometry.vertex_points().subspan(range.first, range.count);
     points.resize(span.size());

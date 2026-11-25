@@ -481,7 +481,7 @@ public:
         for (const auto& stmt : function_.statements)
             has_parallel_loops |= stmt.kind == language::Statement::Kind::parallel_loop;
         if (has_source_calls_ || (has_parallel_loops && !options_.debugging)) {
-            source_failure_ = ir_.CreateAlloca(llvm::ArrayType::get(ir_.getInt32Ty(), 2), nullptr, "callee.failure");
+            source_failure_ = ir_.CreateAlloca(llvm::ArrayType::get(ir_.getInt32Ty(), 4), nullptr, "callee.failure");
             source_failure_->setAlignment(llvm::Align(alignof(BusinessFailure)));
             if (has_source_calls_) {
                 source_result_ = ir_.CreateAlloca(llvm::ArrayType::get(ir_.getInt8Ty(), 128), nullptr, "callee.result");
@@ -778,18 +778,25 @@ private:
 
     // Each failure site gets its own block that records where it failed, so the
     // location never travels with the success path. A null reason forwards the
-    // callee's reason and innermost site.
-    llvm::BasicBlock* failure_edge(llvm::Value* status, llvm::Value* reason, bool report_native = false) {
+    // callee's reason, innermost site, and optional element coordinates.
+    llvm::BasicBlock* failure_edge(llvm::Value* status, llvm::Value* reason, bool report_native = false,
+                                   llvm::Value* layer = nullptr, llvm::Value* element = nullptr) {
         auto* origin = ir_.GetInsertBlock();
         auto* site = block("failure.site");
         ir_.SetInsertPoint(site);
         has_native_failure_edges_ |= report_native;
         llvm::Value* location = ir_.getInt32(this->location());
+        llvm::Value* layer_value = layer ? layer : ir_.getInt32(no_failure_element);
+        llvm::Value* element_value = element ? element : ir_.getInt32(no_failure_element);
         if (!reason) {
             reason = ir_.CreateLoad(ir_.getInt32Ty(), source_failure_);
             location = ir_.CreateLoad(ir_.getInt32Ty(), failure_location_address(source_failure_));
+            layer_value = ir_.CreateLoad(ir_.getInt32Ty(), failure_layer_address(source_failure_));
+            element_value = ir_.CreateLoad(ir_.getInt32Ty(), failure_element_address(source_failure_));
         }
         ir_.CreateStore(location, failure_location_address(failure_output_));
+        ir_.CreateStore(layer_value, failure_layer_address(failure_output_));
+        ir_.CreateStore(element_value, failure_element_address(failure_output_));
         // SimplifyCFG would otherwise sink these stores into a location PHI
         // materialized on the success path; a nomerge call cannot be sunk and emits no code.
         llvm::cast<llvm::CallInst>(ir_.CreateIntrinsic(llvm::Intrinsic::sideeffect, {}))
@@ -804,6 +811,14 @@ private:
 
     llvm::Value* failure_location_address(llvm::Value* failure) {
         return ir_.CreateConstInBoundsGEP1_32(ir_.getInt8Ty(), failure, offsetof(BusinessFailure, location));
+    }
+
+    llvm::Value* failure_layer_address(llvm::Value* failure) {
+        return ir_.CreateConstInBoundsGEP1_32(ir_.getInt8Ty(), failure, offsetof(BusinessFailure, layer));
+    }
+
+    llvm::Value* failure_element_address(llvm::Value* failure) {
+        return ir_.CreateConstInBoundsGEP1_32(ir_.getInt8Ty(), failure, offsetof(BusinessFailure, element));
     }
 
     void trace_failure() {
@@ -2214,10 +2229,31 @@ private:
             return;
         }
         case Kind::fail: {
+            llvm::Value* layer_value = nullptr;
+            llvm::Value* element_value = nullptr;
+            if (node.expression != language::no_node) {
+                llvm::Value* raw_layer = node.body != language::no_node ? expression(node.body) : nullptr;
+                llvm::Value* raw_index = expression(node.expression);
+                const auto idx_type = function_.expressions[node.expression].type;
+                llvm::Value* valid_idx = idx_type == language::ValueType::i32
+                                             ? ir_.CreateICmpSGE(raw_index, ir_.getInt32(0))
+                                             : ir_.CreateICmpNE(raw_index, ir_.getInt32(no_failure_element));
+                element_value = ir_.CreateSelect(valid_idx, raw_index, ir_.getInt32(no_failure_element));
+                if (raw_layer) {
+                    const auto enum_idx = function_.expressions[node.body].type.type_index;
+                    const auto& enum_info = environment_.enumerations[enum_idx];
+                    llvm::Value* packed = ir_.getInt32(no_failure_element);
+                    for (std::uint32_t k = 0; k < enum_info.value_count; ++k) {
+                        auto* matches = ir_.CreateICmpEQ(raw_layer, ir_.getInt32(enum_info.values[k].bits));
+                        packed = ir_.CreateSelect(matches, ir_.getInt32((enum_idx << 16) | k), packed);
+                    }
+                    layer_value = ir_.CreateSelect(valid_idx, packed, ir_.getInt32(no_failure_element));
+                }
+            }
             clear_temporaries();
             const auto code =
                 static_cast<std::uint32_t>(EntryFailure::user_base) + static_cast<std::uint32_t>(node.target);
-            ir_.CreateBr(failure_edge(ir_.getInt32(1), ir_.getInt32(code)));
+            ir_.CreateBr(failure_edge(ir_.getInt32(1), ir_.getInt32(code), false, layer_value, element_value));
             return;
         }
         case Kind::parallel_loop:
@@ -2403,6 +2439,10 @@ private:
                 self(self, stmt.body);
                 self(self, stmt.step);
                 return;
+            case Kind::fail:
+                scan_expr(scan_expr, stmt.body);
+                scan_expr(scan_expr, stmt.expression);
+                return;
             default:
                 return;
             }
@@ -2454,7 +2494,7 @@ private:
         chunk.ir_.CreateAssumption(chunk.ir_.CreateICmpULE(begin_arg, end_arg));
         if (capture.body_has_source_calls) {
             chunk.source_failure_ =
-                chunk.ir_.CreateAlloca(llvm::ArrayType::get(chunk.ir_.getInt32Ty(), 2), nullptr, "callee.failure");
+                chunk.ir_.CreateAlloca(llvm::ArrayType::get(chunk.ir_.getInt32Ty(), 4), nullptr, "callee.failure");
             chunk.source_failure_->setAlignment(llvm::Align(alignof(BusinessFailure)));
             chunk.source_result_ =
                 chunk.ir_.CreateAlloca(llvm::ArrayType::get(chunk.ir_.getInt8Ty(), 128), nullptr, "callee.result");
@@ -4053,8 +4093,8 @@ std::uint32_t atelier_invoke_business(atelier::source::detail::BusinessCode* cod
                                       const atelier::source::detail::BusinessValue* arguments,
                                       std::uint32_t argument_count, atelier::source::detail::BusinessValue* result,
                                       char* error, std::uint32_t error_capacity,
-                                      atelier::source::detail::BusinessTrace* trace,
-                                      std::uint32_t* failure_location) noexcept {
+                                      atelier::source::detail::BusinessTrace* trace, std::uint32_t* failure_location,
+                                      atelier::source::detail::BusinessFailure* failure_detail) noexcept {
     if (!error || error_capacity == 0)
         return 1;
     error[0] = '\0';
@@ -4134,6 +4174,8 @@ std::uint32_t atelier_invoke_business(atelier::source::detail::BusinessCode* cod
         std::snprintf(error, error_capacity, "%.*s", static_cast<int>(message->size()), message->data());
     if (status != 0 && failure_location)
         *failure_location = failure.location;
+    if (status != 0 && failure_detail)
+        *failure_detail = failure;
     if (status == 0 && result) {
         if (value_result) {
             std::memcpy(const_cast<void*>(result->data), staged_value, value_result->size);
@@ -4200,12 +4242,15 @@ std::uint32_t atelier_create_business_coroutine(atelier::source::detail::Busines
 std::uint32_t atelier_resume_business_coroutine(atelier::source::detail::BusinessCoroutine* coroutine, bool* suspended,
                                                 atelier::source::detail::BusinessValue* result, char* error,
                                                 std::uint32_t error_capacity, std::uint32_t* failure_location,
-                                                atelier::source::detail::EntryFailure* failure_reason) noexcept {
+                                                atelier::source::detail::EntryFailure* failure_reason,
+                                                atelier::source::detail::BusinessFailure* failure_detail) noexcept {
     if (!error || error_capacity == 0)
         return 1;
     error[0] = '\0';
     if (failure_reason)
         *failure_reason = atelier::source::detail::EntryFailure::none;
+    if (failure_detail)
+        *failure_detail = {};
     if (!coroutine || !suspended || !result) {
         std::snprintf(error, error_capacity, "%s", "Coroutine resume requires an instance and output storage.");
         return 1;
@@ -4227,6 +4272,8 @@ std::uint32_t atelier_resume_business_coroutine(atelier::source::detail::Busines
             *failure_location = active->failure.location;
         if (failure_reason)
             *failure_reason = active->failure.reason;
+        if (failure_detail)
+            *failure_detail = active->failure;
         return active->status;
     }
     *suspended = active->completed == 0;

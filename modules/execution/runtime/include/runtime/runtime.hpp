@@ -71,12 +71,22 @@ struct SourceLocation {
     std::string disk_path{};
 };
 
+struct ErrorElement {
+    std::string layer;
+
+    std::uint32_t index{};
+
+    bool operator==(const ErrorElement&) const = default;
+};
+
 struct Error {
     ErrorCode code;
 
     std::string message;
 
     std::optional<SourceLocation> source{};
+
+    std::optional<ErrorElement> element{};
 };
 
 template <class T>

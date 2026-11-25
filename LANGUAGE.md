@@ -312,7 +312,7 @@ primary        = qualified_enum_name, "::", identifier | "true" | "false" | nume
 
 `for (init; condition; step) { ... }` 的三个子句均可省略，省略条件等价于 true。init 可为一条声明、赋值或调用，只执行一次；声明的变量仅在该循环的条件、迭代和体内可见，循环退出时清理。condition 必须是 bool；step 为一条赋值或调用，不允许声明或逗号列表。正常迭代和 continue 都先清理退出的体内作用域，再执行 step，之后回到条件检查。break 清理退出的作用域并直接退出循环，跳过 step。break/continue 只作用于最近的 while/for，在循环外拒绝。
 
-`fail("message");` 接收一个编译期 UTF-8 字符串字面量（保留完整字节长度及转义 `\0` 字节），立即沿生成失败退出路径清理当前已构造资源，并向同步或 `async` 宿主报告 `invocation_failed`、该字面量消息及精确源码行列（不构造 Runtime `String` 临时对象，也不要求 `self` 接收者）。它与 `return` 同属控制流终结语句：非 void 函数的顺序块或完整 `if/else` 分支以 `fail` 结尾可证明不落尾。
+`fail("message");`、`fail("message", index);` 与 `fail("message", layer, index);` 接收一个编译期 UTF-8 字符串字面量（保留完整字节长度及转义 `\0` 字节），立即沿生成失败退出路径清理当前已构造资源，并向同步或 `async` 宿主报告 `invocation_failed`、该字面量消息、精确源码行列及可选元素坐标 `Error::element`（不构造 Runtime `String` 临时对象，也不要求 `self` 接收者）。可选 `index` 接受 `uint` 或 `int`；可选 `layer` 接受底层类型为 `uint` 的非 flags 枚举表达式（运行期仅在冷失败边还原枚举项名；双参省去 `layer` 时层名留空，SOP `Evaluator` 按节点 `[RunOver]` 层补齐，无 `[RunOver]` 时记为 `"element"`）。若运行期 `int` 型 `index < 0` 或 `uint(index) == 0xffffffffu`（保留哨兵），仅省略无效 `element`，绝不掩盖作者的 `fail` 消息。它与 `return` 同属控制流终结语句：非 void 函数的顺序块或完整 `if/else` 分支以 `fail` 结尾可证明不落尾。
 
 `parallel_for ([const] uint i : count) { ... }` 在同步函数中按元素独立契约并行遍历 `[0, count)`：
 
@@ -320,7 +320,7 @@ primary        = qualified_enum_name, "::", identifier | "true" | "false" | nume
 - 体内支持块、标量/枚举/内建数学值/具备预构建默认字节镜像（全零或含 `quaternion`/`matrix4` 等原型的描述型记录）的 `plain_record` 栈局部声明、`if/else`、内层串行 `while`/`for`、`continue;`（跳到当前并行循环的下一元素 `i + 1`；内层串行循环中的 `break/continue` 作用于内层循环）以及 `fail("...");`。禁止跨出 `parallel_for` 的 `break`、`return`、`yield`，禁止嵌套 `parallel_for`，在 `async` 函数中拒绝。
 - 外层局部与标量/记录参数在体内严格只读；允许读取 `self` 的标量、枚举与数学字段（串行分派前统一读取快照进捕获结构，worker 线程绝不访问 `Runtime` 或 `NativeContext`）。禁止在体内执行原生成员调用、对象引用操作、访问或转传记录内的 `Array`/`String` 字段、字符串字面量表达式（`fail` 字面量除外）或序列结构修改。允许调用 `math.*` 内建及传递满足上述纯值/只读序列并行安全闭包的同模块同步函数，并行调用链直接复用分派前取得的序列 `(data, size)` 视图。
 - 允许捕获外层顶层 `Array<T>`（`T` 限标量、`bool`、枚举、内建数学值或具备预构建默认字节镜像的 `plain_record`，包含源码声明 `struct`/`enum` 自动合成的 `Array<T>`）与只读 `String`。凡在体内发生写入（`arr[i] = ...`、`arr[i].field = ...` 或元素作可写引用传参）的外层 `Array`，体内对该数组的全部读、写索引表达式都必须是循环变量 `i` 本身；未写入的外层序列可按任意索引表达式读取。分派前在串行线程一次性投影全部捕获序列并校验字节区间：被写 `Array` 与任意外层引用参数或非 `i` 索引序列不得重叠，与仅按 `i` 访问的数组允许原地读写，条件是元素类型、缓冲起点和元素数量都相同，容器注册名可以不同，违者报告 `parallel_alias` 执行错误。
-- 并行块内触发算术/越界错误或 `fail("...")` 时，原子记录一个真实失败迭代的原因与源码位置、取消未开始块并等待所有活动 worker `join` 后回到 Runtime 线程统一清理外层资源；不回滚已完成迭代对可写借用的修改。启用 `CompileOptions::diagnostics` 时按分块独立累计 `source_call` 等调用计数并在 `join` 后归并。启用 `CompileOptions::debugging` 编译时，`parallel_for` 在 Runtime 线程降级为等价串行循环（仍执行相同的分派前重叠校验），使体内断点、单步、查看局部 `i` 与中止完整可用。
+- 并行块内触发算术/越界错误或 `fail(...)` 时，首个失败分块在栈上原子记录完整的 16 字节失败现场（原因、源码位置及可选元素层/索引）、取消未开始块并等待所有活动 worker `join` 后回到 Runtime 线程统一清理外层资源；不回滚已完成迭代对可写借用的修改。启用 `CompileOptions::diagnostics` 时按分块独立累计 `source_call` 等调用计数并在 `join` 后归并。启用 `CompileOptions::debugging` 编译时，`parallel_for` 在 Runtime 线程降级为等价串行循环（仍执行相同的分派前重叠校验），使体内断点、单步、查看局部 `i` 与中止完整可用。
 
 `void` 函数允许 `return;` 或自然落尾。非 void 函数必须返回同类型表达式；顺序块中确定返回或 `fail`、完整 `if/else` 两侧确定终结可证明不落尾，循环自身不能证明必定返回。不可达代码仍要通过语法和类型检查。
 

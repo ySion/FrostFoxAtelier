@@ -3395,7 +3395,7 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
                 desc += std::format("\nBoolean: {} faces · {} pairs · {} splits", bs->input_faces, bs->candidate_pairs,
                                     bs->splits);
             if (node.status->error)
-                desc += "\nError: " + node.status->error->message;
+                desc += "\nError: " + node.status->error->message + format_error_coordinates(*node.status->error);
         }
         help.description = application::diagnostic_text(desc);
         auto content = intern_tooltip(base_key, std::move(help));
@@ -3949,7 +3949,9 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
                         info_txt += std::format(L"\nBoolean: {} faces · {} pairs · {} splits", bs->input_faces,
                                                 bs->candidate_pairs, bs->splits);
                     if (nv->status->error)
-                        info_txt += L"\nError: " + application::diagnostic_text(nv->status->error->message);
+                        info_txt +=
+                            L"\nError: " + application::diagnostic_text(nv->status->error->message +
+                                                                        format_error_coordinates(*nv->status->error));
                 }
 
                 ui::Control stats;

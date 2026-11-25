@@ -999,6 +999,33 @@ void verify_examples_procedural_showcases() {
             changed(reloaded_ov.session->close());
         }
 
+        // Verify Session::inspect_graph preserves root_error_node, ErrorElement, SourceLocation, and coordinate formatting:
+        {
+            take(loaded.session->create_scratch_graph("scratch/diag_batch3"));
+            take(loaded.session->graph_apply("scratch/diag_batch3",
+                                             json::Document::literal<R"({
+                "nodes": {
+                    "near": {"type": "procedural.Line", "properties": {"start": {"x": 0, "y": 1, "z": -1}, "end": {"x": 4, "y": 1, "z": -1}, "count": 3}},
+                    "far": {"type": "procedural.Line", "properties": {"start": {"x": 0, "y": 2, "z": 1}, "end": {"x": 4, "y": 3, "z": 1}, "count": 3}},
+                    "board": {"type": "procedural.RailPanel", "inputs": {"rail_a": "far.output", "rail_b": "near.output"}},
+                    "after": {"type": "procedural.Transform", "inputs": {"input": "board.panel"}}
+                },
+                "settings": {"display": "after"}
+            })">()
+                                                 .root(),
+                                             &project));
+            const auto diag_view = take(loaded.session->inspect_graph("scratch/diag_batch3", &project));
+            const auto* board_nv = diag_view.find_node("board");
+            const auto* after_nv = diag_view.find_node("after");
+            require(diag_view.display_error.has_value() && diag_view.display_error_node == "board" &&
+                        diag_view.display_error->element == ErrorElement{"element", 0u} &&
+                        diag_view.display_error->source.has_value() &&
+                        editor::format_error_coordinates(*diag_view.display_error).contains("[element 0]") &&
+                        board_nv && board_nv->root_error_node == "board" && after_nv &&
+                        after_nv->root_error_node == "board",
+                    "Session::inspect_graph did not preserve root_error_node, ErrorElement, and SourceLocation.");
+        }
+
         std::printf(
             "  [Showcase Metrics] FortifiedOutpost: %zu pts, %zu prims, %zu instances | ModularRuinBuilding: %zu prims (intact) -> %zu prims (default) -> %zu prims (0.78 collapse), %zu instances\n",
             outpost_view.display_summary.counts[0], outpost_view.display_summary.counts[2],

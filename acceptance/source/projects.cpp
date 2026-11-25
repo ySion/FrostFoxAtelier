@@ -967,6 +967,11 @@ struct ErgHost {
             xs.add(k + 500);
         return static_cast<std::int32_t>(xs.size());
     }
+
+    Result<void> native_fail_at(std::uint32_t index) const noexcept {
+        return std::unexpected(Error{ErrorCode::invocation_failed, "native interval failed", std::nullopt,
+                                     ErrorElement{"interval", index}});
+    }
 };
 
 void verify_language_ergonomics() {
@@ -976,6 +981,7 @@ void verify_language_ergonomics() {
                                         NativeRegistration<ErgHost>(rt, "test.PairHost", TypeKind::object)
                                             .field<&ErgHost::scale>("scale")
                                             .method<&ErgHost::native_grow>("native_grow", true)
+                                            .method<&ErgHost::native_fail_at>("native_fail_at", true)
                                             .build()}));
     };
     Runtime runtime;
@@ -1342,6 +1348,112 @@ int hot.run() {
         reject_mod(
             "class s.D : test.PairHost { void process([InOut] Array<int>& col) { int n = self.native_grow(col); } }",
             "fixed element count and cannot change structure");
+        reject_single("void f() { fail(\"bad\", 1.5f); }", "fail element index requires uint or int");
+        reject_mod("[Flags] enum s.M : uint { A = 1 } void s.f() { fail(\"bad\", s.M::A, 0u); }",
+                   "fail element layer requires a uint-backed non-flags enum");
+    }
+
+    // 4. Structured fail("msg", [layer,] index), sentinel omission, DirectScope, Coroutine, parallel_for, and NativeFailure.
+    {
+        const std::string_view diag_src = R"(
+enum diag.Domain : uint {
+    Point = 10,
+    Primitive = 25,
+    Interval = 40
+};
+
+int diag.fail_two(int idx) {
+    fail("two-arg failure", idx);
+}
+
+int diag.fail_three(diag.Domain dom, uint idx) {
+    fail("three-arg failure", dom, idx);
+}
+
+int diag.fail_parallel(diag.Domain dom, uint target) {
+    Array<int> out;
+    out.resize(4096u);
+    parallel_for (uint i : out.size()) {
+        if (i == target) {
+            fail("parallel chunk failure", dom, i);
+        }
+        out[i] = int(i);
+    }
+    return out[0];
+}
+
+class diag.Runner : test.PairHost {
+    int call_native(uint idx) {
+        self.native_fail_at(idx);
+        return 0;
+    }
+}
+)";
+        Runtime diag_rt;
+        register_erg_host(diag_rt);
+        auto diag_prog = take(Program::create(diag_rt));
+        source::SourceSnapshot snap{"DiagBatch3", 1, {{"Source/Diag.source", 11, std::string(diag_src)}}};
+        auto cand = take(Program::prepare(take(diag_prog->request(snap))));
+        take(diag_prog->try_publish(cand));
+
+        // 2-arg valid index (layer empty at source level), negative index (element omitted), 0xffffffffu sentinel (omitted):
+        const auto f2 = take(diag_prog->entry("diag.fail_two"));
+        const auto typed_f2 = take(f2.bind<std::int32_t, std::int32_t>());
+        const auto e_valid = typed_f2.invoke(ObjectId{}, 17);
+        require(!e_valid && e_valid.error().message == "two-arg failure" && e_valid.error().source.has_value() &&
+                    e_valid.error().element == ErrorElement{"", 17u},
+                "DirectScope 2-arg fail did not report element index 17 with source location.");
+        const auto e_neg = typed_f2.invoke(ObjectId{}, -3);
+        require(!e_neg && e_neg.error().message == "two-arg failure" && !e_neg.error().element.has_value(),
+                "Negative fail index must omit Error::element while keeping message.");
+
+        const auto f3 = take(diag_prog->entry("diag.fail_three"));
+        const auto dom_type = take(diag_rt.find_type("diag.Domain"));
+        const std::array<Scalar, 2> args_3{EnumValue{dom_type, 25u}, std::uint32_t{42u}};
+        const auto e_three = f3.invoke(ObjectId{}, args_3);
+        require(!e_three && e_three.error().message == "three-arg failure" &&
+                    e_three.error().element == ErrorElement{"Primitive", 42u},
+                "3-arg fail did not decode non-contiguous enum layer name 'Primitive'.");
+        const std::array<Scalar, 2> args_sentinel{EnumValue{dom_type, 25u}, std::uint32_t{0xffffffffu}};
+        const auto e_sentinel = f3.invoke(ObjectId{}, args_sentinel);
+        require(!e_sentinel && e_sentinel.error().message == "three-arg failure" &&
+                    !e_sentinel.error().element.has_value(),
+                "0xffffffffu sentinel fail index must omit Error::element while keeping message.");
+
+        // Coroutine resume preserves element & location (single-entry async Program):
+        auto coro_prog = take(Program::create(diag_rt));
+        publish_single(
+            *coro_prog, "coro_diag.source",
+            "async int fail_coro(diag.Domain dom, uint idx) { yield; fail(\"coro element failure\", dom, idx); }",
+            "fail_coro");
+        const std::array<Scalar, 2> coro_args{EnumValue{dom_type, 25u}, std::uint32_t{9u}};
+        auto coro = take(coro_prog->entry().start(ObjectId{}, coro_args));
+        require(take(coro.resume()) == CoroutineState::suspended, "fail_coro did not suspend.");
+        const auto coro_failed = coro.resume();
+        require(!coro_failed && coro_failed.error().message == "coro element failure" &&
+                    coro_failed.error().source.has_value() &&
+                    coro_failed.error().element == ErrorElement{"Primitive", 9u},
+                "Coroutine fail(...) did not preserve ErrorElement and SourceLocation.");
+
+        // parallel_for captures outer enum + local and atomically records 16B first failure:
+        const auto fp = take(diag_prog->entry("diag.fail_parallel"));
+        const std::array<Scalar, 2> par_args{EnumValue{dom_type, 40u}, std::uint32_t{2500u}};
+        const auto par_failed = fp.invoke(ObjectId{}, par_args);
+        require(!par_failed && par_failed.error().message == "parallel chunk failure" &&
+                    par_failed.error().source.has_value() &&
+                    par_failed.error().element == ErrorElement{"Interval", 2500u},
+                "parallel_for fail(...) did not preserve captured layer and element index 2500.");
+
+        // Native BorrowSafe failure carries ErrorElement across NativeFailure:
+        const auto runner_type = take(diag_rt.find_type("diag.Runner"));
+        auto runner_obj = take(diag_rt.create(runner_type));
+        const auto fn_nat = take(diag_prog->entry("diag.Runner.call_native"));
+        const std::array<Scalar, 1> nat_args{std::uint32_t{17u}};
+        const auto nat_failed = fn_nat.invoke(runner_obj.id(), nat_args);
+        require(!nat_failed && nat_failed.error().message == "native interval failed" &&
+                    nat_failed.error().source.has_value() &&
+                    nat_failed.error().element == ErrorElement{"interval", 17u},
+                "Native BorrowSafe failure did not preserve ErrorElement across NativeFailure.");
     }
 }
 }

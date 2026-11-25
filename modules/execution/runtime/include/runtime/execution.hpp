@@ -33,9 +33,13 @@ struct NativeFailure {
     std::uint32_t code{};
 
     char message[512]{};
+
+    std::uint32_t element{0xffffffffu};
+
+    char layer[32]{};
 };
 
-static_assert(std::is_standard_layout_v<NativeFailure> && sizeof(NativeFailure) == 516);
+static_assert(std::is_standard_layout_v<NativeFailure> && sizeof(NativeFailure) == 552);
 
 // Protect exactly native code, not the enclosing script (which may create
 // objects and call policy observers). Also unwinds before a failed thunk returns.

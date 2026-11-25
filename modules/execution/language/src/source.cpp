@@ -870,6 +870,8 @@ private:
                         ATELIER_TRY(self(self, stmt.body));
                         return self(self, stmt.step);
                     case Kind::fail:
+                        ATELIER_TRY(check_expr(check_expr, stmt.body));
+                        return check_expr(check_expr, stmt.expression);
                     case Kind::break_loop:
                     case Kind::continue_loop:
                         return {};
@@ -1952,6 +1954,31 @@ private:
                 return reject(token_.position, "fail requires a string literal message.");
             ATELIER_TRY_BIND(message_token, consume());
             ATELIER_TRY_BIND(decoded, string_value(*message_token));
+            NodeId fail_layer = no_node;
+            NodeId fail_index = no_node;
+            ATELIER_TRY_BIND(has_extra, accept(","));
+            if (*has_extra) {
+                ATELIER_TRY_BIND(first_arg, expression());
+                ATELIER_TRY_BIND(has_third, accept(","));
+                if (*has_third) {
+                    const auto layer_type = function_.expressions[*first_arg].type;
+                    if (layer_type.kind != ValueType::enumeration ||
+                        environment_.enumerations[layer_type.type_index].flags ||
+                        environment_.enumerations[layer_type.type_index].underlying != ValueType::u32) {
+                        return reject(function_.expressions[*first_arg].position,
+                                      "fail element layer requires a uint-backed non-flags enum.");
+                    }
+                    fail_layer = *first_arg;
+                    ATELIER_TRY_BIND(second_arg, expression());
+                    fail_index = *second_arg;
+                } else {
+                    fail_index = *first_arg;
+                }
+                const auto idx_type = function_.expressions[fail_index].type;
+                if (idx_type != ValueType::u32 && idx_type != ValueType::i32)
+                    return reject(function_.expressions[fail_index].position,
+                                  "fail element index requires uint or int.");
+            }
             ATELIER_TRY(expect(")"));
             ATELIER_TRY(expect(";"));
             std::uint32_t message_index = 0;
@@ -1962,7 +1989,7 @@ private:
                 message_index = static_cast<std::uint32_t>(module_.failure_messages.size());
                 module_.failure_messages.push_back(std::move(*decoded));
             }
-            return add(Statement{Statement::Kind::fail, position, message_index, no_node, no_node, no_node, {}});
+            return add(Statement{Statement::Kind::fail, position, message_index, fail_index, fail_layer, no_node, {}});
         }
         ATELIER_TRY_BIND(yield, accept("yield"));
         if (*yield) {

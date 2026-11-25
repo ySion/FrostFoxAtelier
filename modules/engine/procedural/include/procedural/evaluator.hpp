@@ -49,6 +49,8 @@ struct NodeBindings {
 struct NodeStatus {
     std::optional<Error> error; // Set while the node or an input it reads fails.
 
+    ObjectId root_node{}; // Originating failed node in this graph when error is set.
+
     // Calls of process.
     std::uint64_t evaluations{};
 

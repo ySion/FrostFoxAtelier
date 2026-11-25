@@ -74,7 +74,7 @@ class procedural.RailPanel : procedural.Node {
             const vector3 upper_b = prims_b == 1u ? B[order_b[i]] : B[i];
             const vector3 lower_a = upper_a - depth;
             const vector3 lower_b = upper_b - depth;
-            if (!(math.is_finite(lower_a) && math.is_finite(lower_b))) { fail("RailPanel requires finite station positions."); }
+            if (!(math.is_finite(lower_a) && math.is_finite(lower_b))) { fail("RailPanel requires finite station positions.", i); }
             p.add(upper_a);
             p.add(upper_b);
             p.add(lower_a);
@@ -84,7 +84,7 @@ class procedural.RailPanel : procedural.Node {
                 const uint b = i * 4u;
                 if (!(math.cross(p[a + 1u] - p[a], p[b + 1u] - p[a]).y > 0.0f &&
                       math.cross(p[b + 1u] - p[a], p[b] - p[a]).y > 0.0f)) {
-                    fail("RailPanel rails cross, repeat a station or face down; check rail order.");
+                    fail("RailPanel rails cross, repeat a station or face down; check rail order.", i - 1u);
                 }
                 procedural.rail_panel_quad(p, corners, offsets, normals, a, a + 1u, b + 1u, b);
                 procedural.rail_panel_quad(p, corners, offsets, normals, a + 2u, b + 2u, b + 3u, a + 3u);

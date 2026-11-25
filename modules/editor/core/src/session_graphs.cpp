@@ -1839,17 +1839,17 @@ Result<std::optional<GraphNodeCatalogEntry>> describe_sop(Runtime& runtime, Type
             help += std::format(" · {}", rule.purpose);
     }
     auto& ports = schema->ports;
-    return GraphNodeCatalogEntry{type,
-                                 std::string((*info)->name),
-                                 std::string((*info)->description),
-                                 (*info)->native_storage,
-                                 {},
-                                 {},
-                                 {std::move(ports.inputs), std::move(ports.multiple), std::move(ports.outputs)},
-                                 help.empty() ? nullptr
-                                              : std::make_shared<GraphNodeHelp>(GraphNodeHelp{
-                                                    std::move(schema->port_descriptions), std::move(schema->attributes),
-                                                    std::move(help)})};
+    return GraphNodeCatalogEntry{
+        type,
+        std::string((*info)->name),
+        std::string((*info)->description),
+        (*info)->native_storage,
+        {},
+        {},
+        {std::move(ports.inputs), std::move(ports.multiple), std::move(ports.outputs)},
+        help.empty() ? nullptr
+                     : std::make_shared<GraphNodeHelp>(GraphNodeHelp{std::move(schema->port_descriptions),
+                                                                     std::move(schema->attributes), std::move(help)})};
 }
 
 GraphNodeCatalogEntry describe_graph_asset(const assets::ProjectEntry& entry, TypeId asset_node,
@@ -6587,8 +6587,14 @@ Result<GraphEvaluation> Session::evaluate_graph(std::string_view key, Project* p
     result.display_output = open.evaluator->output();
     result.preview_output = open.evaluator->retain_last_valid_output();
     if (result.display_node != ObjectId{}) {
-        if (const auto* st = open.evaluator->status(result.display_node); st && st->error)
+        if (const auto* st = open.evaluator->status(result.display_node); st && st->error) {
             result.display_error = st->error;
+            const ObjectId cause = st->root_node != ObjectId{} ? st->root_node : result.display_node;
+            if (const auto* cause_node = find_node_by_id(open.document, cause))
+                result.display_error_node = cause_node->name;
+            else
+                result.display_error_node = result.display_name;
+        }
     }
 
     if (open.document.template_node != ObjectId{} && listed->contains(open.document.template_node)) {
@@ -6604,8 +6610,14 @@ Result<GraphEvaluation> Session::evaluate_graph(std::string_view key, Project* p
         if (inspected_node != result.display_node && inspected_node != result.template_node)
             ATELIER_TRY(open.evaluator->evaluate_node(inspected_node, record_timings));
         result.inspected_output = open.evaluator->node_output(inspected_node);
-        if (const auto* st = open.evaluator->status(inspected_node); st && st->error)
+        if (const auto* st = open.evaluator->status(inspected_node); st && st->error) {
             result.inspected_error = st->error;
+            const ObjectId cause = st->root_node != ObjectId{} ? st->root_node : inspected_node;
+            if (const auto* cause_node = find_node_by_id(open.document, cause))
+                result.inspected_error_node = cause_node->name;
+            else if (const auto* insp_entry = find_node_by_id(open.document, inspected_node))
+                result.inspected_error_node = insp_entry->name;
+        }
     }
     std::uint64_t gen = 14695981039346656037ULL;
     const auto mix = [&](std::uint64_t v) {
@@ -6709,8 +6721,16 @@ Result<std::shared_ptr<const GraphInspectView>> Session::graph_topology(std::str
         ATELIER_TRY_BIND(ports, procedural::ports(runtime_, item.node.id()));
         node_view.ports = {std::move(ports->inputs), std::move(ports->multiple), std::move(ports->outputs)};
         if (open.evaluator) {
-            if (const auto* st = open.evaluator->status(item.node.id()))
+            if (const auto* st = open.evaluator->status(item.node.id())) {
                 node_view.status = *st;
+                if (st->error) {
+                    const ObjectId cause = st->root_node != ObjectId{} ? st->root_node : item.node.id();
+                    if (const auto* cause_node = find_node_by_id(open.document, cause))
+                        node_view.root_error_node = cause_node->name;
+                    else
+                        node_view.root_error_node = item.name;
+                }
+            }
         }
 
         ATELIER_TRY_BIND(conns, procedural::inputs(runtime_, *listed, item.node.id()));
@@ -6759,7 +6779,9 @@ Result<GraphInspectView> Session::inspect_graph(std::string_view key, Project* p
     ATELIER_TRY_BIND(topology, graph_topology(key));
     GraphInspectView view = **topology;
     view.display_error = eval->display_error;
+    view.display_error_node = eval->display_error_node;
     view.inspected_error = eval->inspected_error;
+    view.inspected_error_node = eval->inspected_error_node;
     view.display_summary =
         summarize_geometry_impl(eval->display_output, max_samples, include_spatial, ref_bvh.get(), reference_name);
     if (inspected_node != ObjectId{} &&

@@ -110,7 +110,7 @@ Agent 从 `{"op":"capabilities","args":{"scope":"graph"}}` 获取精简目录。
 | 查列契约 | `graph.inspect {"view":"catalog","type":"procedural.Realize"}` | `attribute_contracts` 列出已声明的具名绑定，每项给出端口、读写方向、层、类型、缺列行为及适用条件。Source 的 `name_from`、`layer_from` 指向可编辑字段。`when` 声明规则适用的枚举字段和值，`layer_from_column` 表示跟随实际列所在层。空表表示没有已声明的绑定。 |
 | 解释一次放置 | `graph.inspect {"view":"node","node":"place_clumps","bindings":true}` | 仅请求该节点的求值分支。`bindings.attributes` 按当前节点模式返回适用的列绑定，包括解析后的列名、层、状态和来源。`bound` 代表内核可读取该列，`inactive` 表示受优先级或前置列条件排除，`fallback` 使用缺列规则。`upstream` 是直接连线节点；`column_source` 沿主输入流或单输入算子追溯共享的非空列，到无法确认传递关系的节点、资产边界、快照或列重写处停止。冻结或旁路直接返回对应 `mode` 和空列表。求值失败返回首错。 |
 | 量节点净空 | `graph.inspect {"view":"node","node":"roof","raycast":{"output":"output","rays":[{"origin":[0,10,0],"direction":[0,-1,0],"max_distance":20}]}}` | 须显式指定节点与输出端口名。只求值其当前分支，在图局部坐标系内以米测量，接受 1–32 条双面射线，非零方向自动归一。`result.raycast.hits` 按输入顺序返回；段内无相交为 `null`，否则给出最近命中的 `distance`、`position`、零基 `primitive` 与面内扇形 `triangle`。查询多边形表面，实例须先实体化；求值或 BVH 构建失败返回首错。 |
-| 核对产物 | `graph.inspect {"node":"upper","samples":0,"spatial":false}` | 默认 `full` 视图求值并返回几何统计。布尔属性的 `count` 为层元素总数，`selected_count` 为完整成员数，均与样本上限无关。 |
+| 核对产物 | `graph.inspect {"node":"upper","samples":0,"spatial":false}` | 默认 `full` 视图求值并返回几何统计。布尔属性的 `count` 为层元素总数，`selected_count` 为完整成员数，均与样本上限无关。节点求值失败时，`status.error`、`display_error`、`inspected_error` 保留字符串错误，同时在节点 `status.diagnostic` 与顶层 `diagnostic` 返回 `{message, node, source?: {path, line, column}, element?: {layer, index}}`（未失败时为 `null`，下游被阻断时 `node` 直接指向最上游失败节点）。 |
 | 修改图 | `graph.apply` | 成功返回 `asset` 和 `changed`。一个有效修改对应一步图撤销。已生效的字段、连线等更新原样重发返回 `changed:false`；`remove` 要求节点仍存在，成功删除后重发同一删除会报错。 |
 
 精简目录的 `graph.apply.examples` 给出两个完整请求形状。`edit_nodes` 显示如何按名建节点、写字段、用 `node.port` 接线；`set_promoted_parameter` 用于 `controlled_fields` 中列出的目标。将示例的 `state_token` 替换为最新响应令牌。对门楼 `gate_vault.clear_width`，修改活动图中所有绑定目标的请求为：
@@ -341,7 +341,7 @@ manifest 标记 `view_schema: 7`，相机或视图快照合同改变时加一。
 - [view_options.hpp](../../../modules/editor/core/include/editor/view_options.hpp) 与 [view_options.cpp](../../../modules/editor/core/src/view_options.cpp)：菜单与指令的显示参数合同。Camera/Session 保留各自业务不变量。
 - [control_artifacts.hpp](../../../modules/editor/application/src/application/detail/control_artifacts.hpp) 与 [control_artifacts.cpp](../../../modules/editor/application/src/application/control_artifacts.cpp)：拥有快照的文件及图像工作，只持有数据和不可变 MeshRef，不跨线程借用 Runtime。
 
-关闭时先停止接入，再取消并等待文件工作，之后释放 Renderer 和文档。空闲帧只保留固定大小的最近帧信息，查询/采样时才构造 JSON。
+关闭时先记录一条 `Severity::info` 的 `application.closing` 结构化日志（包含关闭来源 `quit_source`：`wm_syscommand_close`、`operator:app.quit`、`wm_close`、`wm_quit` 或 `direct_close`，`play_running` 以及在途 Control 任务的 `active_control_job_id` / `active_control_job_kind` / `active_control_job_phase`），再停止接入、取消并等待文件工作，之后释放 Renderer 和文档。空闲帧只保留固定大小的最近帧信息，查询/采样时才构造 JSON。
 
 新增能力同时补目录中的参数/副作用说明、主线程调度和业务端到端验收。UI 与指令调用同一个负责不变量的模块。以后可在此协议上增加 MCP 适配层，无须复制引擎业务。
 

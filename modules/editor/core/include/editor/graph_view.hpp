@@ -96,6 +96,8 @@ struct GraphNodeView {
     GraphPortInfo ports;
 
     std::optional<procedural::NodeStatus> status;
+
+    std::string root_error_node{};
 };
 
 struct GraphAttributeStats {
@@ -253,7 +255,11 @@ struct GraphEvaluation {
 
     std::optional<Error> display_error;
 
+    std::string display_error_node{};
+
     std::optional<Error> inspected_error;
+
+    std::string inspected_error_node{};
 };
 
 struct GraphInspectView {
@@ -302,12 +308,40 @@ struct GraphInspectView {
 
     std::optional<Error> display_error;
 
+    std::string display_error_node{};
+
     std::optional<Error> inspected_error;
+
+    std::string inspected_error_node{};
 
     GraphGeometrySummary display_summary;
 
     std::optional<GraphGeometrySummary> inspected_summary;
 };
+
+[[nodiscard]] inline std::string format_error_coordinates(const Error& error) {
+    std::string out;
+    if (error.element) {
+        out += " [";
+        out += error.element->layer.empty() ? std::string_view{"element"} : std::string_view{error.element->layer};
+        out += ' ';
+        out += std::to_string(error.element->index);
+        out += ']';
+    }
+    if (error.source && !error.source->path.empty()) {
+        std::string_view file = error.source->path;
+        if (const auto slash = file.find_last_of("/\\"); slash != std::string_view::npos)
+            file = file.substr(slash + 1);
+        out += " (";
+        out += file;
+        out += ':';
+        out += std::to_string(error.source->line);
+        out += ':';
+        out += std::to_string(error.source->column);
+        out += ')';
+    }
+    return out;
+}
 
 [[nodiscard]] GraphGeometrySummary summarize_geometry(const procedural::Geometry* geometry, std::size_t max_samples = 4,
                                                       bool include_spatial = false,

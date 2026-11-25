@@ -313,11 +313,11 @@ struct Statement {
 
     SourcePosition position;
 
-    NodeId target{no_node};
+    NodeId target{no_node}; // local, lvalue, or fail message index
 
-    NodeId expression{no_node};
+    NodeId expression{no_node}; // rhs, condition, return value, or optional fail element index
 
-    NodeId body{no_node};
+    NodeId body{no_node}; // block/branch body, or optional fail layer enum expression
 
     NodeId alternative{no_node};
 

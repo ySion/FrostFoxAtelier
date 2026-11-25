@@ -2,6 +2,8 @@
 #include "renderer/renderer.hpp"
 #include "control/control.hpp"
 #include <filesystem>
+#include <optional>
+#include <string>
 
 namespace atelier::application {
 class Application;
@@ -10,11 +12,21 @@ class Application;
 // never borrow Application, Runtime, UI or GPU state.
 class EditorControl final {
 public:
+    struct ActiveJobInfo {
+        std::string id;
+
+        std::string kind;
+
+        std::string phase;
+    };
+
     static std::expected<EditorControl, control::Failure> create(Application&, const std::filesystem::path&);
 
     EditorControl(EditorControl&&) noexcept;
 
     ~EditorControl();
+
+    [[nodiscard]] std::optional<ActiveJobInfo> active_job() const;
 
     bool poll();
 

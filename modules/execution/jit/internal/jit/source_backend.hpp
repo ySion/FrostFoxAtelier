@@ -346,16 +346,23 @@ inline std::optional<std::string_view> failure_message(EntryFailure reason,
     return std::string_view("Unknown source execution failure.");
 }
 
-// Written only on a generated failure exit: the reason, then the innermost
-// failing site's index into the compiled location table.
+inline constexpr std::uint32_t no_failure_element = 0xffffffffu;
+
+// Written only on a generated failure exit: the reason, the innermost failing
+// site's index into the compiled location table, and optional element coordinates.
 struct BusinessFailure {
     EntryFailure reason{EntryFailure::none};
 
     std::uint32_t location{no_diagnostic_location};
+
+    std::uint32_t layer{no_failure_element};
+
+    std::uint32_t element{no_failure_element};
 };
 
-static_assert(std::is_standard_layout_v<BusinessFailure> && sizeof(BusinessFailure) == 8 &&
-              offsetof(BusinessFailure, location) == 4);
+static_assert(std::is_standard_layout_v<BusinessFailure> && sizeof(BusinessFailure) == 16 &&
+              offsetof(BusinessFailure, reason) == 0 && offsetof(BusinessFailure, location) == 4 &&
+              offsetof(BusinessFailure, layer) == 8 && offsetof(BusinessFailure, element) == 12);
 
 struct BusinessDebugVariable {
     const char* name;
@@ -674,7 +681,8 @@ atelier_invoke_business(atelier::source::detail::BusinessCode* code, void* invoc
                         const atelier::source::detail::BusinessValue* arguments, std::uint32_t argument_count,
                         atelier::source::detail::BusinessValue* result, char* error, std::uint32_t error_capacity,
                         atelier::source::detail::BusinessTrace* trace = nullptr,
-                        std::uint32_t* failure_location = nullptr) noexcept;
+                        std::uint32_t* failure_location = nullptr,
+                        atelier::source::detail::BusinessFailure* failure_detail = nullptr) noexcept;
 
 extern "C" ATELIER_BUSINESS_BACKEND void atelier_destroy_business(atelier::source::detail::BusinessCode* code) noexcept;
 
@@ -693,7 +701,8 @@ extern "C" ATELIER_BUSINESS_BACKEND std::uint32_t
 atelier_resume_business_coroutine(atelier::source::detail::BusinessCoroutine* coroutine, bool* suspended,
                                   atelier::source::detail::BusinessValue* result, char* error,
                                   std::uint32_t error_capacity, std::uint32_t* failure_location = nullptr,
-                                  atelier::source::detail::EntryFailure* failure_reason = nullptr) noexcept;
+                                  atelier::source::detail::EntryFailure* failure_reason = nullptr,
+                                  atelier::source::detail::BusinessFailure* failure_detail = nullptr) noexcept;
 
 extern "C" ATELIER_BUSINESS_BACKEND void
 atelier_destroy_business_coroutine(atelier::source::detail::BusinessCoroutine* coroutine) noexcept;

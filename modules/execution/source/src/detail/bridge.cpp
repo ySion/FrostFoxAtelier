@@ -499,7 +499,7 @@ void Invocation::record_resources(bool cleared) const noexcept {
     trace->resources_cleared = cleared;
 }
 
-void Invocation::fail(ErrorCode code, const char* message) noexcept {
+void Invocation::fail(ErrorCode code, const char* message, std::uint32_t element, std::string_view layer) noexcept {
     if (failed)
         return;
     failed = true;
@@ -508,6 +508,15 @@ void Invocation::fail(ErrorCode code, const char* message) noexcept {
     error_code = code;
     external_error.reset();
     std::snprintf(error, sizeof(error), "%s", message);
+    if (element != no_failure_element && layer.size() < sizeof(error_layer)) {
+        error_element = element;
+        if (!layer.empty())
+            std::memcpy(error_layer, layer.data(), layer.size());
+        error_layer[layer.size()] = '\0';
+    } else {
+        error_element = no_failure_element;
+        error_layer[0] = '\0';
+    }
 }
 
 void Invocation::fail_view(ErrorCode code, std::string_view message) noexcept {
@@ -519,6 +528,8 @@ void Invocation::fail_view(ErrorCode code, std::string_view message) noexcept {
     error_code = code;
     external_error = message;
     error[0] = '\0';
+    error_element = no_failure_element;
+    error_layer[0] = '\0';
 }
 
 void Invocation::invalidate_native() noexcept {
@@ -558,7 +569,8 @@ void native_stamp(NativeContext* context) noexcept {
 }
 
 void native_failure(void* context, const NativeFailure* failure) noexcept {
-    static_cast<Invocation*>(context)->fail(static_cast<ErrorCode>(failure->code), failure->message);
+    static_cast<Invocation*>(context)->fail(static_cast<ErrorCode>(failure->code), failure->message, failure->element,
+                                            failure->layer);
 }
 
 void native_segment(void* context) noexcept {
@@ -738,6 +750,10 @@ std::uint32_t parallel_for_service(std::size_t count, std::size_t grain, const v
         bool collect_trace;
 
         std::atomic<std::uint64_t> calls[counter_count]{};
+
+        std::atomic_flag failure_claimed{};
+
+        BusinessFailure first_failure{};
     } call{capture, body, trace != nullptr};
     const auto result = tasks::detail::parallel_for(
         {0, count}, &call,
@@ -763,8 +779,12 @@ std::uint32_t parallel_for_service(std::size_t count, std::size_t grain, const v
             }
             if (status != 0) {
                 const auto code = static_cast<std::uint32_t>(chunk_failure.reason);
-                return std::unexpected(tasks::Failure{
-                    code ? code : static_cast<std::uint32_t>(EntryFailure::parallel_failed), chunk_failure.location});
+                if (!code)
+                    chunk_failure.reason = EntryFailure::parallel_failed;
+                if (!active.failure_claimed.test_and_set(std::memory_order_acq_rel))
+                    active.first_failure = chunk_failure;
+                return std::unexpected(
+                    tasks::Failure{static_cast<std::uint32_t>(chunk_failure.reason), chunk_failure.location});
             }
             return {};
         },
@@ -777,13 +797,21 @@ std::uint32_t parallel_for_service(std::size_t count, std::size_t grain, const v
         }
     }
     if (!result) {
-        failure->reason = static_cast<EntryFailure>(result.error().code);
-        failure->location = static_cast<std::uint32_t>(result.error().item);
+        if (call.failure_claimed.test(std::memory_order_acquire)) {
+            *failure = call.first_failure;
+        } else {
+            failure->reason = static_cast<EntryFailure>(result.error().code);
+            failure->location = static_cast<std::uint32_t>(result.error().item);
+            failure->layer = no_failure_element;
+            failure->element = no_failure_element;
+        }
         return 1;
     }
     if (*result != tasks::Completion::completed) {
         failure->reason = EntryFailure::parallel_cancelled;
         failure->location = no_diagnostic_location;
+        failure->layer = no_failure_element;
+        failure->element = no_failure_element;
         return 1;
     }
     return 0;
@@ -887,6 +915,19 @@ Result<void> bind_receiver(Invocation& invocation, bool requires_receiver, Objec
     return {};
 }
 
+std::optional<ErrorElement> resolve_failure_element(const Binding& binding, const BusinessFailure& failure) {
+    if (failure.element == no_failure_element)
+        return std::nullopt;
+    std::string layer;
+    if (failure.layer != no_failure_element) {
+        const auto enum_index = failure.layer >> 16;
+        const auto item_index = failure.layer & 0xffffu;
+        if (enum_index < binding.enumerations.size() && item_index < binding.enumerations[enum_index].values.size())
+            layer = binding.enumerations[enum_index].values[item_index].first;
+    }
+    return ErrorElement{std::move(layer), failure.element};
+}
+
 Result<void> finish_invocation(Invocation& invocation, std::uint32_t status, const BusinessFailure& failure,
                                std::uint32_t* failure_site, const BusinessFailureMessage* failure_messages,
                                std::uint32_t failure_message_count) {
@@ -903,10 +944,18 @@ Result<void> finish_invocation(Invocation& invocation, std::uint32_t status, con
         if (failure_site)
             *failure_site = failure.location;
         const auto reason = failure_message(failure.reason, failure_messages, failure_message_count);
+        std::optional<ErrorElement> element;
+        if (invocation.failed) {
+            if (invocation.error_element != no_failure_element)
+                element = ErrorElement{std::string(invocation.error_layer), invocation.error_element};
+        } else {
+            element = resolve_failure_element(invocation.binding, failure);
+        }
         return std::unexpected(Error{invocation.failed ? invocation.error_code : ErrorCode::invocation_failed,
                                      invocation.failed ? std::string(invocation.error_message())
                                      : reason          ? std::string(*reason)
-                                                       : std::string("Source execution failed.")});
+                                                       : std::string("Source execution failed."),
+                                     std::nullopt, std::move(element)});
     }
     if (!cleared)
         return std::unexpected(Error{ErrorCode::invocation_failed, "Generated code left execution resources alive."});

@@ -394,6 +394,8 @@ void Window::poll(FunctionRef<void(NativeEvent&&)> consume) {
     const auto input_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2);
     while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
         if (message.message == WM_QUIT) {
+            if (!closing_ || quit_source_ == QuitSource::none)
+                quit_source_ = QuitSource::wm_quit;
             closing_ = true;
             continue;
         }
@@ -454,9 +456,24 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
         }
         return DefWindowProcW(handle_, message, wparam, lparam);
     }
+    case WM_SYSCOMMAND:
+        if ((wparam & 0xFFF0) == SC_CLOSE) {
+            pending_syscommand_close_ = true;
+            const auto result = DefWindowProcW(handle_, message, wparam, lparam);
+            pending_syscommand_close_ = false;
+            return result;
+        }
+        return DefWindowProcW(handle_, message, wparam, lparam);
     case WM_CLOSE:
         relative_pointer(false);
         input_anchor_.reset();
+        if (pending_syscommand_close_)
+            quit_source_ = QuitSource::wm_syscommand_close;
+        else if (pending_operator_close_)
+            quit_source_ = QuitSource::operator_app_quit;
+        else if (quit_source_ == QuitSource::none)
+            quit_source_ = QuitSource::wm_close;
+        pending_operator_close_ = false;
         closing_ = true;
         return 0;
     case WM_ERASEBKGND:
