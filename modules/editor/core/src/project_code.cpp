@@ -421,6 +421,14 @@ Result<std::string> describe_diagnostic(const Session& session, const world::Dia
     line += ": " + item.message;
     if (!item.value.empty())
         line += " Value: " + item.value;
+    if (item.element) {
+        line += " [";
+        if (!item.element->layer.empty()) {
+            line += item.element->layer.view();
+            line += ' ';
+        }
+        line += std::to_string(item.element->index) + "]";
+    }
     if (item.source)
         line += " at " + item.source->path + ":" + std::to_string(item.source->line) + ":" +
                 std::to_string(item.source->column);

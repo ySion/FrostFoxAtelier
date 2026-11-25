@@ -241,13 +241,7 @@ struct Invocation {
 
     std::size_t live_values{};
 
-    ErrorCode error_code{ErrorCode::invocation_failed};
-
-    char error[512];
-
-    std::uint32_t error_element{no_failure_element};
-
-    char error_layer[32]{};
+    NativeFailure error_storage;
 
     std::optional<std::string_view> external_error{};
 
@@ -258,12 +252,22 @@ struct Invocation {
 
     void record_resources(bool cleared) const noexcept;
 
-    void fail(ErrorCode, const char*, std::uint32_t element = no_failure_element, std::string_view layer = {}) noexcept;
+    void fail(const Error&) noexcept;
 
-    void fail_view(ErrorCode, std::string_view) noexcept;
+    void fail(ErrorCode, std::string_view, std::uint32_t element = no_failure_element,
+              std::string_view layer = {}) noexcept;
+
+    void fail_native(const NativeFailure&) noexcept;
+
+    void fail_view(ErrorCode, std::string_view, std::uint32_t element = no_failure_element,
+                   std::string_view layer = {}) noexcept;
+
+    ErrorCode error_code() const noexcept { return static_cast<ErrorCode>(error_storage.code); }
 
     std::string_view error_message() const noexcept {
-        return external_error ? *external_error : std::string_view(error);
+        if (!failed)
+            return {};
+        return external_error ? *external_error : std::string_view(error_storage.message);
     }
 
     void invalidate_native() noexcept;
@@ -274,9 +278,7 @@ std::uint32_t bridge(Invocation& invocation, Operation&& operation) noexcept {
     auto result = operation();
     if (result)
         return 0;
-    const auto& elem = result.error().element;
-    invocation.fail(result.error().code, result.error().message.c_str(), elem ? elem->index : no_failure_element,
-                    elem ? std::string_view{elem->layer} : std::string_view{});
+    invocation.fail(result.error());
     return 1;
 }
 
@@ -300,7 +302,13 @@ extern const BusinessServices services;
 
 bool same_environment(const Binding&, const BusinessEnvironment&);
 
+std::string_view resolve_failure_layer_view(const Binding&, std::uint32_t packed_layer) noexcept;
+
 std::optional<ErrorElement> resolve_failure_element(const Binding&, const BusinessFailure&);
+
+Error execution_error(const Invocation*, const Binding&, const BusinessFailure&,
+                      const BusinessFailureMessage* failure_messages = nullptr, std::uint32_t failure_message_count = 0,
+                      std::string_view fallback_message = "Source execution failed.");
 
 bool try_bind_receiver(Invocation&, bool requires_receiver, ObjectId) noexcept;
 

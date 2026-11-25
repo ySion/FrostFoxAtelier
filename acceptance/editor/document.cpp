@@ -2225,18 +2225,21 @@ Result<void> run_document(int argc, char** argv, std::string_view& stage) {
         require(!win.closing() && application::Window::quit_source_name(win.quit_source()) == "none",
                 "cancel_close() did not reset quit_source.");
         win.request_operator_close();
-        win.poll([](application::NativeEvent&&) {});
         require(win.closing() && application::Window::quit_source_name(win.quit_source()) == "operator:app.quit",
-                "request_operator_close() did not record operator:app.quit.");
+                "request_operator_close() did not synchronously latch operator:app.quit.");
         win.cancel_close();
+        win.poll([](application::NativeEvent&&) {});
+        require(!win.closing() && application::Window::quit_source_name(win.quit_source()) == "none",
+                "request_operator_close() left an orphaned queued WM_CLOSE after cancel_close().");
         SendMessageW(win.handle(), WM_CLOSE, 0, 0);
         require(win.closing() && application::Window::quit_source_name(win.quit_source()) == "wm_close",
                 "External WM_CLOSE did not record wm_close.");
         win.cancel_close();
         PostQuitMessage(0);
         win.poll([](application::NativeEvent&&) {});
+        SendMessageW(win.handle(), WM_CLOSE, 0, 0);
         require(win.closing() && application::Window::quit_source_name(win.quit_source()) == "wm_quit",
-                "WM_QUIT did not record wm_quit.");
+                "Subsequent WM_CLOSE overwrote first-latched wm_quit.");
     }
     std::puts(
         "Editor document acceptance: PASS (creation undo/redo, glTF transform, mesh reimport, graph format, SOP editor + 2D Network canvas)");

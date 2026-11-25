@@ -5,8 +5,10 @@
 #include "foundation/hash.hpp"
 #include "foundation/inline_array.hpp"
 #include "foundation/result.hpp"
+#include "foundation/string.hpp"
 #include "math/type.hpp"
 #include <array>
+#include <cstring>
 #include <ranges>
 
 #include <charconv>
@@ -71,13 +73,86 @@ struct SourceLocation {
     std::string disk_path{};
 };
 
+class ErrorLayer {
+public:
+    static constexpr std::size_t capacity = 31;
+
+    constexpr ErrorLayer() noexcept = default;
+
+    constexpr ErrorLayer(const char* text) noexcept : ErrorLayer(text ? std::string_view{text} : std::string_view{}) {}
+
+    constexpr ErrorLayer(std::string_view text) noexcept { assign(text); }
+
+    ErrorLayer(const std::string& text) noexcept : ErrorLayer(std::string_view{text}) {}
+
+    constexpr ErrorLayer& operator=(std::string_view text) noexcept {
+        assign(text);
+        return *this;
+    }
+
+    constexpr ErrorLayer& operator=(const char* text) noexcept {
+        assign(text ? std::string_view{text} : std::string_view{});
+        return *this;
+    }
+
+    ErrorLayer& operator=(const std::string& text) noexcept {
+        assign(text);
+        return *this;
+    }
+
+    [[nodiscard]] constexpr const char* c_str() const noexcept { return bytes_; }
+
+    [[nodiscard]] constexpr const char* data() const noexcept { return bytes_; }
+
+    [[nodiscard]] constexpr std::size_t size() const noexcept { return size_; }
+
+    [[nodiscard]] constexpr bool empty() const noexcept { return size_ == 0; }
+
+    [[nodiscard]] constexpr std::string_view view() const noexcept { return {bytes_, size_}; }
+
+    constexpr operator std::string_view() const noexcept { return view(); }
+
+    friend constexpr bool operator==(const ErrorLayer& a, const ErrorLayer& b) noexcept { return a.view() == b.view(); }
+
+    friend constexpr bool operator==(const ErrorLayer& a, std::string_view b) noexcept { return a.view() == b; }
+
+    friend constexpr bool operator==(const ErrorLayer& a, const char* b) noexcept {
+        return a.view() == (b ? std::string_view{b} : std::string_view{});
+    }
+
+    friend bool operator==(const ErrorLayer& a, const std::string& b) noexcept { return a.view() == b; }
+
+private:
+    constexpr void assign(std::string_view text) noexcept {
+        if (const auto nul = text.find('\0'); nul != std::string_view::npos)
+            text = text.substr(0, nul);
+        const auto prefix = StringView{text}.truncate_utf8_or_bytes(capacity);
+        size_ = static_cast<std::uint8_t>(prefix.size());
+        if !consteval {
+            if (size_)
+                std::memcpy(bytes_, prefix.data(), size_);
+        } else {
+            for (std::size_t i = 0; i < size_; ++i)
+                bytes_[i] = prefix[i];
+        }
+        bytes_[size_] = '\0';
+    }
+
+    std::uint8_t size_{};
+
+    char bytes_[capacity + 1]{};
+};
+
 struct ErrorElement {
-    std::string layer;
+    ErrorLayer layer{};
 
     std::uint32_t index{};
 
     bool operator==(const ErrorElement&) const = default;
 };
+
+static_assert(std::is_trivially_copyable_v<ErrorElement> && std::is_trivially_destructible_v<ErrorElement> &&
+              sizeof(ErrorElement) == 40);
 
 struct Error {
     ErrorCode code;

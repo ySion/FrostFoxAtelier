@@ -176,6 +176,17 @@ public:
         return {Unchecked{}, data_, maximum_bytes};
     }
 
+    // Cuts at a code point boundary when the view exceeds maximum_bytes and is valid UTF-8;
+    // returns the view untouched when within limit, or a raw byte prefix when malformed so
+    // downstream UTF-8 validators can still detect invalid input.
+    [[nodiscard]] constexpr StringView truncate_utf8_or_bytes(std::size_t maximum_bytes) const noexcept {
+        if (size_ <= maximum_bytes)
+            return *this;
+        if (is_valid_utf8())
+            return utf8_prefix(maximum_bytes);
+        return {Unchecked{}, data_, maximum_bytes};
+    }
+
     [[nodiscard]] constexpr bool starts_with(StringView value) const noexcept {
         return std_view().starts_with(value.std_view());
     }

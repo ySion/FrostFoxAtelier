@@ -71,6 +71,7 @@ DiagnosticReport Diagnostics::snapshot() const {
         report.error = Error{state.error_code, std::string(state.error, state.error_size)};
         if (report.location)
             report.error->source = report.location->source;
+        report.error->element = state.error_element;
     }
     return report;
 }
@@ -141,9 +142,12 @@ void DiagnosticAccess::fail(DiagnosticState& state, const Error& error) noexcept
         return;
     state.failed = true;
     state.error_code = error.code;
-    const auto prefix = StringView{error.message}.utf8_prefix(sizeof(state.error));
-    std::memcpy(state.error, prefix.data(), prefix.size());
+    const auto prefix = StringView{error.message}.truncate_utf8_or_bytes(sizeof(state.error));
+    if (!prefix.empty())
+        std::memcpy(state.error, prefix.data(), prefix.size());
     state.error_size = prefix.size();
+    if (error.element && error.element->index != no_failure_element)
+        state.error_element = error.element;
 }
 
 void DiagnosticAccess::finish(DiagnosticState& state, const Runtime& runtime, DiagnosticStatus status) noexcept {

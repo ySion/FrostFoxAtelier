@@ -768,9 +768,8 @@ struct Evaluator::Impl {
             }
             if (!invoked) {
                 if (invoked.error().element && invoked.error().element->layer.empty()) {
-                    invoked.error().element->layer = plan.run_over_field != FieldId{}
-                                                         ? std::string(layer_name(dynamic_layer))
-                                                         : std::string("element");
+                    invoked.error().element->layer =
+                        plan.run_over_field != FieldId{} ? layer_name(dynamic_layer) : std::string_view{"element"};
                 }
                 return invoked;
             }
@@ -843,11 +842,19 @@ struct Evaluator::Impl {
     }
 
     void update(ObjectId id, State& state, bool record_timings) {
-        if (state.fault) {
-            state.status.error = state.fault;
+        const auto clear_error = [&]() noexcept {
+            state.status.error.reset();
+            state.status.root_node = {};
+            state.root_error.reset();
+        };
+        const auto fail_root = [&](const Error& cause) {
+            state.status.error = cause;
             state.status.root_node = id;
-            state.root_error = Error{state.fault->code, node_label(state.type) + ": " + state.fault->message,
-                                     state.fault->source, state.fault->element};
+            state.root_error =
+                Error{cause.code, node_label(state.type) + ": " + cause.message, cause.source, cause.element};
+        };
+        if (state.fault) {
+            fail_root(*state.fault);
             return;
         }
         if (!state.bypassed && state.frozen && state.frozen_entry) {
@@ -855,9 +862,7 @@ struct Evaluator::Impl {
                 ++state.status.cache_hits;
             state.entry = state.frozen_entry;
             pool->impl_->touch(*state.entry);
-            state.status.error.reset();
-            state.status.root_node = {};
-            state.root_error.reset();
+            clear_error();
             return;
         }
         std::string key = state.local;
@@ -914,16 +919,11 @@ struct Evaluator::Impl {
             pool->impl_->touch(*state.entry);
             if (!state.bypassed && state.frozen && !state.frozen_entry)
                 state.frozen_entry = state.entry;
-            state.status.error.reset();
-            state.status.root_node = {};
-            state.root_error.reset();
+            clear_error();
             return;
         }
         if (key == state.failed && revision == state.failed_revision) {
-            state.status.error = state.failure;
-            state.status.root_node = id;
-            state.root_error = Error{state.failure.code, node_label(state.type) + ": " + state.failure.message,
-                                     state.failure.source, state.failure.element};
+            fail_root(state.failure);
             return;
         }
         if (auto* found = pool->impl_->cache.find(key); found &&
@@ -934,9 +934,7 @@ struct Evaluator::Impl {
             ++state.status.cache_hits;
             if (!state.bypassed && state.frozen && !state.frozen_entry)
                 state.frozen_entry = state.entry;
-            state.status.error.reset();
-            state.status.root_node = {};
-            state.root_error.reset();
+            clear_error();
             return;
         }
         auto evaluated = run(id, state, source_kernel, key, record_timings);
@@ -945,19 +943,14 @@ struct Evaluator::Impl {
             state.failed = std::move(key);
             state.failed_revision = revision;
             state.failure = evaluated.error();
-            state.status.error = evaluated.error();
-            state.status.root_node = id;
-            state.root_error = Error{state.failure.code, node_label(state.type) + ": " + state.failure.message,
-                                     state.failure.source, state.failure.element};
+            fail_root(state.failure);
             return;
         }
         state.entry = std::move(*evaluated);
         if (!state.bypassed && state.frozen && !state.frozen_entry)
             state.frozen_entry = state.entry;
         state.failed.clear();
-        state.status.error.reset();
-        state.status.root_node = {};
-        state.root_error.reset();
+        clear_error();
     }
 
     // Upstream first, ending at each root in `roots`. When `active_only` is true, bypassed nodes
@@ -1233,17 +1226,48 @@ struct Evaluator::Impl {
         ATELIER_TRY(order(target_roots, candidate, false));
         if (republished)
             source_kernels.clear();
-        bool changed =
-            !cursor || refreshed || republished || resources.revision() != revision || seed_changed || ext_changed;
+        const bool global_invalidation = republished || resources.revision() != revision || seed_changed || ext_changed;
+        bool changed = !cursor || refreshed || global_invalidation;
+        const auto is_locked_frozen = [](const State& st) noexcept {
+            return !st.bypassed && st.frozen && st.frozen_entry != nullptr;
+        };
+        const auto active_inputs_equal = [&](const State& a, const State& b) noexcept {
+            if (is_locked_frozen(a) && is_locked_frozen(b))
+                return true;
+            if (!a.bypassed && !b.bypassed)
+                return a.inputs == b.inputs;
+            if (a.bypassed != b.bypassed)
+                return false;
+            std::size_t ia = 0;
+            std::size_t ib = 0;
+            while (true) {
+                while (ia < a.inputs.size() && a.inputs[ia].input != 0)
+                    ++ia;
+                while (ib < b.inputs.size() && b.inputs[ib].input != 0)
+                    ++ib;
+                if (ia == a.inputs.size() || ib == b.inputs.size())
+                    return ia == a.inputs.size() && ib == b.inputs.size();
+                if (a.inputs[ia++] != b.inputs[ib++])
+                    return false;
+            }
+        };
+        std::vector<ObjectId> invalidated;
         for (auto [node, state] : candidate) {
             const auto* prior = nodes.find(node);
             auto read = this->read(node, state, prior);
             state.fault.reset();
             if (!read)
                 state.fault = read.error();
-            changed = changed || !prior || !read || state.bypassed != prior->bypassed ||
-                      state.frozen != prior->frozen || state.frozen_entry != prior->frozen_entry ||
-                      state.local != prior->local || state.inputs != prior->inputs;
+            const bool any_change = !prior || !read || prior->fault.has_value() || state.bypassed != prior->bypassed ||
+                                    state.frozen != prior->frozen || state.frozen_entry != prior->frozen_entry ||
+                                    state.local != prior->local || state.inputs != prior->inputs;
+            const bool output_invalidated = !prior || !read || prior->fault.has_value() ||
+                                            state.bypassed != prior->bypassed || state.frozen != prior->frozen ||
+                                            state.frozen_entry != prior->frozen_entry || state.local != prior->local ||
+                                            !active_inputs_equal(state, *prior);
+            if (output_invalidated || (republished && !is_locked_frozen(state)))
+                invalidated.push_back(node);
+            changed = changed || any_change;
         }
         for (auto [node, state] : candidate) {
             auto& target = *nodes.try_emplace(node).value;
@@ -1269,6 +1293,42 @@ struct Evaluator::Impl {
                     removed.push_back(node);
             for (const auto node : removed)
                 (void)nodes.remove(node);
+        }
+        if (changed) {
+            for (const auto& [node, st] : nodes) {
+                if (is_locked_frozen(st))
+                    continue;
+                if (((global_invalidation && st.status.error.has_value()) ||
+                     (st.status.root_node != ObjectId{} && !nodes.contains(st.status.root_node))) &&
+                    !std::ranges::contains(invalidated, node))
+                    invalidated.push_back(node);
+            }
+            for (bool progress = !invalidated.empty(); progress;) {
+                progress = false;
+                for (const auto& [node, st] : nodes) {
+                    if (is_locked_frozen(st) || std::ranges::contains(invalidated, node))
+                        continue;
+                    const bool upstream_invalidated = std::ranges::any_of(st.inputs, [&](const Input& in) {
+                        if (st.bypassed && in.input != 0)
+                            return false;
+                        return !nodes.contains(in.from) || std::ranges::contains(invalidated, in.from);
+                    });
+                    if (upstream_invalidated || (st.status.root_node != ObjectId{} &&
+                                                 std::ranges::contains(invalidated, st.status.root_node))) {
+                        invalidated.push_back(node);
+                        progress = true;
+                    }
+                }
+            }
+            for (const auto node : invalidated) {
+                if (auto* st = nodes.find(node)) {
+                    st->entry.reset();
+                    st->root_error.reset();
+                    st->status.error.reset();
+                    st->status.root_node = {};
+                    st->synced_generation = 0;
+                }
+            }
         }
         if (refreshed)
             members = std::move(*refreshed);

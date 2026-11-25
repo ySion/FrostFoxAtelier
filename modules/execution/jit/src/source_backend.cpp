@@ -415,9 +415,20 @@ public:
         sample_texture_ = declare("material_sample_texture", i32, {ptr, i32, ptr, ptr});
         sample_orientation_ = declare("material_sample_orientation", i32, {ptr, i32, ptr, ptr});
         parallel_for_ = declare("business_parallel_for", i32, {ir_.getInt64Ty(), ir_.getInt64Ty(), ptr, ptr, ptr, ptr});
+        if (auto* pf = llvm::dyn_cast<llvm::Function>(parallel_for_.getCallee())) {
+            const auto no_capture = llvm::Attribute::getWithCaptureInfo(*context_, llvm::CaptureInfo::none());
+            pf->addParamAttr(2, llvm::Attribute::ReadOnly);
+            pf->addParamAttr(2, no_capture);
+            pf->addParamAttr(3, no_capture);
+            pf->addParamAttr(4, llvm::Attribute::WriteOnly);
+            pf->addParamAttr(4, llvm::Attribute::NoAlias);
+            pf->addParamAttr(4, no_capture);
+            pf->addParamAttr(5, llvm::Attribute::NoAlias);
+            pf->addParamAttr(5, no_capture);
+        }
         if (debugging_) {
             debug_enter_ = declare("business_debug_enter", i32, {ptr, ptr});
-            debug_point_ = declare("business_debug_point", i32, {ptr, ptr, i32, i32, i32});
+            debug_point_ = declare("business_debug_point", i32, {ptr, ptr, i32, i32, ptr});
             debug_leave_ = declare("business_debug_leave", ir_.getVoidTy(), {ptr, ptr});
             debug_local_type_ = llvm::StructType::get(*context_, {ptr, i32, i32});
             debug_frame_type_ = llvm::StructType::get(*context_, {ptr, ptr, ir_.getInt64Ty(), i32, i32});
@@ -469,6 +480,8 @@ public:
         ir_.SetInsertPoint(failure_);
         failure_status_ = ir_.CreatePHI(ir_.getInt32Ty(), 0, "failure.status");
         failure_reason_ = ir_.CreatePHI(ir_.getInt32Ty(), 0, "failure.reason");
+        failure_layer_ = ir_.CreatePHI(ir_.getInt32Ty(), 0, "failure.layer");
+        failure_element_ = ir_.CreatePHI(ir_.getInt32Ty(), 0, "failure.element");
         failure_report_native_ = ir_.CreatePHI(ir_.getInt1Ty(), 0, "failure.native");
         // Without weights, block placement makes each per-site failure stub the
         // fall-through and moves the success path behind a taken branch.
@@ -630,11 +643,11 @@ public:
             failure_report_native_->eraseFromParent();
             failure_report_native_ = nullptr;
         }
+        emit_failure_stores();
         trace_failure();
         debug_failure();
         clear_execution_resources();
         close_debug_frame();
-        ir_.CreateStore(failure_reason_, failure_output_);
         complete(failure_status_);
         if (function_.is_coroutine)
             finish_coroutine();
@@ -694,8 +707,9 @@ private:
         const auto site = location();
         if (kind == DebugPoint::statement || kind == DebugPoint::entry)
             catalog_->debug_sites.push_back(site);
-        checked_call(debug_point_, {invocation_, debug_frame_, ir_.getInt32(site),
-                                    ir_.getInt32(static_cast<std::uint32_t>(kind)), ir_.getInt32(0)});
+        checked_call(debug_point_,
+                     {invocation_, debug_frame_, ir_.getInt32(site), ir_.getInt32(static_cast<std::uint32_t>(kind)),
+                      llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(*context_))});
     }
 
     void debug_failure() {
@@ -704,9 +718,11 @@ private:
         trace_event(DiagnosticCall::debug_hook);
         // An error stop cannot recover the failed operation. Its command is
         // observed by the host, then the original failure continues to cleanup.
-        ir_.CreateCall(debug_point_, {invocation_, debug_frame_,
-                                      ir_.CreateLoad(ir_.getInt32Ty(), failure_location_address(failure_output_)),
-                                      ir_.getInt32(static_cast<std::uint32_t>(DebugPoint::error)), failure_reason_});
+        ir_.CreateCall(debug_point_,
+                       {invocation_, debug_frame_,
+                        ir_.CreateLoad(ir_.getInt32Ty(),
+                                       failure_field_address(failure_output_, offsetof(BusinessFailure, location))),
+                        ir_.getInt32(static_cast<std::uint32_t>(DebugPoint::error)), failure_output_});
     }
 
     void close_debug_frame() {
@@ -794,47 +810,63 @@ private:
         auto* site = block("failure.site");
         ir_.SetInsertPoint(site);
         has_native_failure_edges_ |= report_native;
+        has_element_failure_edges_ |= (layer != nullptr || element != nullptr || reason == nullptr);
         llvm::Value* location = ir_.getInt32(this->location());
         llvm::Value* layer_value = layer ? layer : ir_.getInt32(no_failure_element);
         llvm::Value* element_value = element ? element : ir_.getInt32(no_failure_element);
         if (!reason) {
             reason = ir_.CreateLoad(ir_.getInt32Ty(), source_failure_);
-            location = ir_.CreateLoad(ir_.getInt32Ty(), failure_location_address(source_failure_));
-            layer_value = ir_.CreateLoad(ir_.getInt32Ty(), failure_layer_address(source_failure_));
-            element_value = ir_.CreateLoad(ir_.getInt32Ty(), failure_element_address(source_failure_));
+            location = ir_.CreateLoad(ir_.getInt32Ty(),
+                                      failure_field_address(source_failure_, offsetof(BusinessFailure, location)));
+            layer_value = ir_.CreateLoad(ir_.getInt32Ty(),
+                                         failure_field_address(source_failure_, offsetof(BusinessFailure, layer)));
+            element_value = ir_.CreateLoad(ir_.getInt32Ty(),
+                                           failure_field_address(source_failure_, offsetof(BusinessFailure, element)));
         }
-        ir_.CreateStore(location, failure_location_address(failure_output_));
-        ir_.CreateStore(layer_value, failure_layer_address(failure_output_));
-        ir_.CreateStore(element_value, failure_element_address(failure_output_));
+        ir_.CreateStore(location, failure_field_address(failure_output_, offsetof(BusinessFailure, location)));
         // SimplifyCFG would otherwise sink these stores into a location PHI
-        // materialized on the success path; a nomerge call cannot be sunk and emits no code.
-        llvm::cast<llvm::CallInst>(ir_.CreateIntrinsic(llvm::Intrinsic::sideeffect, {}))
-            ->addFnAttr(llvm::Attribute::NoMerge);
+        // materialized on the success path; a cold nomerge call cannot be sunk,
+        // marks predecessor fail(...) branches cold for BPI, and emits no code.
+        auto* marker = llvm::cast<llvm::CallInst>(ir_.CreateIntrinsic(llvm::Intrinsic::sideeffect, {}));
+        marker->addFnAttr(llvm::Attribute::NoMerge);
+        marker->addFnAttr(llvm::Attribute::Cold);
         ir_.CreateBr(failure_);
         failure_status_->addIncoming(status, site);
         failure_reason_->addIncoming(reason, site);
+        failure_layer_->addIncoming(layer_value, site);
+        failure_element_->addIncoming(element_value, site);
         failure_report_native_->addIncoming(ir_.getInt1(report_native), site);
         ir_.SetInsertPoint(origin);
         return site;
     }
 
-    llvm::Value* failure_location_address(llvm::Value* failure) {
-        return ir_.CreateConstInBoundsGEP1_32(ir_.getInt8Ty(), failure, offsetof(BusinessFailure, location));
+    void emit_failure_stores() {
+        llvm::Value* layer_value = ir_.getInt32(no_failure_element);
+        llvm::Value* element_value = ir_.getInt32(no_failure_element);
+        if (has_element_failure_edges_) {
+            layer_value = failure_layer_;
+            element_value = failure_element_;
+        } else {
+            failure_layer_->eraseFromParent();
+            failure_element_->eraseFromParent();
+            failure_layer_ = nullptr;
+            failure_element_ = nullptr;
+        }
+        ir_.CreateStore(failure_reason_, failure_output_);
+        ir_.CreateStore(layer_value, failure_field_address(failure_output_, offsetof(BusinessFailure, layer)));
+        ir_.CreateStore(element_value, failure_field_address(failure_output_, offsetof(BusinessFailure, element)));
     }
 
-    llvm::Value* failure_layer_address(llvm::Value* failure) {
-        return ir_.CreateConstInBoundsGEP1_32(ir_.getInt8Ty(), failure, offsetof(BusinessFailure, layer));
-    }
-
-    llvm::Value* failure_element_address(llvm::Value* failure) {
-        return ir_.CreateConstInBoundsGEP1_32(ir_.getInt8Ty(), failure, offsetof(BusinessFailure, element));
+    llvm::Value* failure_field_address(llvm::Value* failure, std::size_t byte_offset) {
+        return ir_.CreateConstInBoundsGEP1_32(ir_.getInt8Ty(), failure, static_cast<unsigned>(byte_offset));
     }
 
     void trace_failure() {
         record([&] {
             auto* address = trace_address(offsetof(BusinessTrace, failure_location));
             auto* previous = ir_.CreateLoad(ir_.getInt32Ty(), address);
-            auto* failed = ir_.CreateLoad(ir_.getInt32Ty(), failure_location_address(failure_output_));
+            auto* failed = ir_.CreateLoad(ir_.getInt32Ty(),
+                                          failure_field_address(failure_output_, offsetof(BusinessFailure, location)));
             ir_.CreateStore(
                 ir_.CreateSelect(ir_.CreateICmpEQ(previous, ir_.getInt32(no_diagnostic_location)), failed, previous),
                 address);
@@ -1328,10 +1360,14 @@ private:
                 auto* next = block("field.finite");
                 ir_.CreateCondBr(ir_.CreateFCmpOLE(absolute, limit), next, rejected, failure_weights_);
                 ir_.SetInsertPoint(rejected);
-                NativeFailure failure{static_cast<std::uint32_t>(ErrorCode::argument_mismatch)};
-                std::snprintf(failure.message, sizeof(failure.message),
-                              "%s.%s: Hard-bounded fields require finite values.", environment_.object_type_name,
-                              field.name);
+                NativeFailure failure{};
+                char text[512];
+                const int written =
+                    std::snprintf(text, sizeof(text), "%s.%s: Hard-bounded fields require finite values.",
+                                  environment_.object_type_name, field.name);
+                failure.record(ErrorCode::argument_mismatch,
+                               written > 0 ? std::string_view(text, std::min<std::size_t>(written, sizeof(text) - 1))
+                                           : std::string_view{});
                 auto* diagnostic =
                     ir_.CreateGlobalString(llvm::StringRef(reinterpret_cast<const char*>(&failure), sizeof(failure)),
                                            "field.failure", 0, module_, false);
@@ -1762,7 +1798,6 @@ private:
             if (managed_value(node.type))
                 result_storage = allocate_value_storage(node.type, "function.value.result");
             arguments[1] = result_storage;
-            ir_.CreateStore(ir_.getInt32(0), source_failure_);
             debug_location();
             trace_event(DiagnosticCall::source_call);
             auto* target_fn = in_parallel_context_ ? parallel_functions_.at(node.value) : functions_.at(node.value);
@@ -2256,7 +2291,6 @@ private:
                 llvm::Value* valid_idx = idx_type == language::ValueType::i32
                                              ? ir_.CreateICmpSGE(raw_index, ir_.getInt32(0))
                                              : ir_.CreateICmpNE(raw_index, ir_.getInt32(no_failure_element));
-                element_value = ir_.CreateSelect(valid_idx, raw_index, ir_.getInt32(no_failure_element));
                 if (raw_layer) {
                     const auto enum_idx = function_.expressions[node.body].type.type_index;
                     const auto& enum_info = environment_.enumerations[enum_idx];
@@ -2265,8 +2299,10 @@ private:
                         auto* matches = ir_.CreateICmpEQ(raw_layer, ir_.getInt32(enum_info.values[k].bits));
                         packed = ir_.CreateSelect(matches, ir_.getInt32((enum_idx << 16) | k), packed);
                     }
+                    valid_idx = ir_.CreateAnd(valid_idx, ir_.CreateICmpNE(packed, ir_.getInt32(no_failure_element)));
                     layer_value = ir_.CreateSelect(valid_idx, packed, ir_.getInt32(no_failure_element));
                 }
+                element_value = ir_.CreateSelect(valid_idx, raw_index, ir_.getInt32(no_failure_element));
             }
             clear_temporaries();
             const auto code =
@@ -2490,10 +2526,14 @@ private:
         chunk_fn->addFnAttr("disable-tail-calls", "true");
         chunk_fn->addFnAttr("reciprocal-estimates", "sqrt:1,vec-sqrt:1");
         chunk_fn->setUWTableKind(llvm::UWTableKind::Async);
+        const auto no_capture = llvm::Attribute::getWithCaptureInfo(*context_, llvm::CaptureInfo::none());
         chunk_fn->addParamAttr(0, llvm::Attribute::NoAlias);
         chunk_fn->addParamAttr(0, llvm::Attribute::ReadOnly);
+        chunk_fn->addParamAttr(0, no_capture);
         chunk_fn->addParamAttr(3, llvm::Attribute::NoAlias);
+        chunk_fn->addParamAttr(3, no_capture);
         chunk_fn->addParamAttr(4, llvm::Attribute::NoAlias);
+        chunk_fn->addParamAttr(4, no_capture);
 
         SourceLowering chunk(*this, chunk_fn, loop_node.position);
         auto* start = chunk.block("entry");
@@ -2502,6 +2542,8 @@ private:
         chunk.ir_.SetInsertPoint(chunk.failure_);
         chunk.failure_status_ = chunk.ir_.CreatePHI(chunk.ir_.getInt32Ty(), 0, "failure.status");
         chunk.failure_reason_ = chunk.ir_.CreatePHI(chunk.ir_.getInt32Ty(), 0, "failure.reason");
+        chunk.failure_layer_ = chunk.ir_.CreatePHI(chunk.ir_.getInt32Ty(), 0, "failure.layer");
+        chunk.failure_element_ = chunk.ir_.CreatePHI(chunk.ir_.getInt32Ty(), 0, "failure.element");
         chunk.failure_report_native_ = chunk.ir_.CreatePHI(chunk.ir_.getInt1Ty(), 0, "failure.native");
         chunk.failure_weights_ = llvm::MDBuilder(*context_).createLikelyBranchWeights();
 
@@ -2594,7 +2636,7 @@ private:
             chunk.ir_.SetInsertPoint(chunk.failure_);
             chunk.failure_report_native_->eraseFromParent();
             chunk.failure_report_native_ = nullptr;
-            chunk.ir_.CreateStore(chunk.failure_reason_, chunk.failure_output_);
+            chunk.emit_failure_stores();
             chunk.ir_.CreateRet(chunk.failure_status_);
         }
         location_ids_ = std::move(chunk.location_ids_);
@@ -2751,7 +2793,6 @@ private:
         }
 
         auto* chunk_fn = generate_parallel_chunk(statement_id, capture, capture_type);
-        ir_.CreateStore(ir_.getInt32(0), source_failure_);
         auto* trace_arg =
             diagnostics_ ? trace_ : static_cast<llvm::Value*>(llvm::ConstantPointerNull::get(ir_.getPtrTy()));
         auto* status = ir_.CreateCall(
@@ -2796,6 +2837,10 @@ private:
     llvm::PHINode* failure_status_{};
 
     llvm::PHINode* failure_reason_{};
+
+    llvm::PHINode* failure_layer_{};
+
+    llvm::PHINode* failure_element_{};
 
     llvm::PHINode* failure_report_native_{};
 
@@ -2918,6 +2963,8 @@ private:
     bool has_native_calls_{};
 
     bool has_native_failure_edges_{};
+
+    bool has_element_failure_edges_{};
 
     bool has_source_calls_{};
 
@@ -3104,8 +3151,23 @@ generate_business(LLJIT& jit, llvm::TargetMachine& machine, const language::Prog
         function->addFnAttr("disable-tail-calls", "true");
         function->addFnAttr("reciprocal-estimates", "sqrt:1,vec-sqrt:1");
         function->setUWTableKind(llvm::UWTableKind::Async);
-        if (coroutine)
+        if (coroutine) {
             function->addFnAttr(llvm::Attribute::PresplitCoroutine);
+        } else {
+            const auto no_capture = llvm::Attribute::getWithCaptureInfo(*context, llvm::CaptureInfo::none());
+            const auto param_count = static_cast<unsigned>(program.functions[i].parameters.size());
+            const unsigned res_idx = direct ? param_count + 1 : entry ? 2 : 1;
+            const unsigned fail_idx = direct ? param_count + 2 : entry ? 3 : 2;
+            function->addParamAttr(0, no_capture);
+            function->addParamAttr(res_idx, llvm::Attribute::NoAlias);
+            function->addParamAttr(res_idx, no_capture);
+            function->addParamAttr(fail_idx, llvm::Attribute::NoAlias);
+            function->addParamAttr(fail_idx, no_capture);
+            if (direct || options.diagnostics) {
+                const unsigned trace_idx = direct ? param_count + 3 : entry ? 4 : 3;
+                function->addParamAttr(trace_idx, no_capture);
+            }
+        }
         functions[i] = function;
 
         if (!options.debugging && program.functions[i].used_in_parallel) {
@@ -3140,6 +3202,16 @@ generate_business(LLJIT& jit, llvm::TargetMachine& machine, const language::Prog
             parallel_fn->addFnAttr("disable-tail-calls", "true");
             parallel_fn->addFnAttr("reciprocal-estimates", "sqrt:1,vec-sqrt:1");
             parallel_fn->setUWTableKind(llvm::UWTableKind::Async);
+            const auto no_capture = llvm::Attribute::getWithCaptureInfo(*context, llvm::CaptureInfo::none());
+            parallel_fn->addParamAttr(0, no_capture);
+            parallel_fn->addParamAttr(1, llvm::Attribute::NoAlias);
+            parallel_fn->addParamAttr(1, no_capture);
+            parallel_fn->addParamAttr(2, llvm::Attribute::NoAlias);
+            parallel_fn->addParamAttr(2, no_capture);
+            if (options.diagnostics) {
+                parallel_fn->addParamAttr(3, llvm::Attribute::NoAlias);
+                parallel_fn->addParamAttr(3, no_capture);
+            }
             parallel_functions[i] = parallel_fn;
         }
     }
@@ -4157,36 +4229,34 @@ std::uint32_t atelier_invoke_business(atelier::source::detail::BusinessCode* cod
                                       const atelier::source::detail::BusinessValue* arguments,
                                       std::uint32_t argument_count, atelier::source::detail::BusinessValue* result,
                                       char* error, std::uint32_t error_capacity,
-                                      atelier::source::detail::BusinessTrace* trace, std::uint32_t* failure_location,
+                                      atelier::source::detail::BusinessTrace* trace,
                                       atelier::source::detail::BusinessFailure* failure_detail) noexcept {
-    if (!error || error_capacity == 0)
-        return 1;
-    error[0] = '\0';
-    if (!code || !invocation) {
-        std::snprintf(error, error_capacity, "%s", "Invalid business invocation.");
+    if (!error || error_capacity == 0) {
+        if (failure_detail)
+            *failure_detail = {};
         return 1;
     }
+    error[0] = '\0';
+    const auto reject = [&](const char* msg) noexcept -> std::uint32_t {
+        if (failure_detail)
+            *failure_detail = {};
+        std::snprintf(error, error_capacity, "%s", msg);
+        return 1;
+    };
+    if (!code || !invocation)
+        return reject("Invalid business invocation.");
     // Do not read code again: a synchronous callback may destroy its handle.
     const auto active_code = code->state;
-    if (trace && !active_code->options.diagnostics) {
-        std::snprintf(error, error_capacity, "%s", "Source code was compiled without diagnostics.");
-        return 1;
-    }
+    if (trace && !active_code->options.diagnostics)
+        return reject("Source code was compiled without diagnostics.");
     const auto& signature = active_code->signature;
-    if (signature.is_coroutine) {
-        std::snprintf(error, error_capacity, "%s", "Coroutine code requires a persistent execution instance.");
-        return 1;
-    }
+    if (signature.is_coroutine)
+        return reject("Coroutine code requires a persistent execution instance.");
     using atelier::source::detail::ValueKind;
-    if (argument_count != signature.parameter_count || (argument_count != 0 && !arguments)) {
-        std::snprintf(error, error_capacity, "%s",
-                      "Business argument count or storage does not match the compiled signature.");
-        return 1;
-    }
-    if (signature.result != ValueKind::void_value && !result) {
-        std::snprintf(error, error_capacity, "%s", "A business result requires output storage.");
-        return 1;
-    }
+    if (argument_count != signature.parameter_count || (argument_count != 0 && !arguments))
+        return reject("Business argument count or storage does not match the compiled signature.");
+    if (signature.result != ValueKind::void_value && !result)
+        return reject("A business result requires output storage.");
     for (std::uint32_t index = 0; index < argument_count; ++index) {
         const auto mode = signature.parameters[index].passing;
         const auto& argument = arguments[index];
@@ -4210,6 +4280,8 @@ std::uint32_t atelier_invoke_business(atelier::source::detail::BusinessCode* cod
                  ? argument.data && reinterpret_cast<std::uintptr_t>(argument.data) % alignment == 0
                  : type == ValueKind::f64 || argument.bits <= (type == ValueKind::boolean ? 1 : UINT32_MAX));
         if (argument.kind != signature.parameters[index].type || !valid_storage || !valid_value) {
+            if (failure_detail)
+                *failure_detail = {};
             std::snprintf(error, error_capacity, "Business argument %u does not match its compiled kind or storage.",
                           index);
             return 1;
@@ -4219,10 +4291,8 @@ std::uint32_t atelier_invoke_business(atelier::source::detail::BusinessCode* cod
                                    ? &active_code->catalog->values.at(signature.result.type_index)
                                    : nullptr;
     if (value_result &&
-        (!result->data || reinterpret_cast<std::uintptr_t>(result->data) % value_result->alignment != 0)) {
-        std::snprintf(error, error_capacity, "%s", "Record result requires aligned typed output storage.");
-        return 1;
-    }
+        (!result->data || reinterpret_cast<std::uintptr_t>(result->data) % value_result->alignment != 0))
+        return reject("Record result requires aligned typed output storage.");
     std::uint64_t staged_bits{};
     atelier::detail::ValueStorage result_storage;
     void* staged_value = value_result ? result_storage.prepare(value_result->size, value_result->alignment) : nullptr;
@@ -4232,15 +4302,14 @@ std::uint32_t atelier_invoke_business(atelier::source::detail::BusinessCode* cod
             ? active_code->diagnostic_entry(invocation, arguments, value_result ? staged_value : &staged_bits, &failure,
                                             trace)
             : active_code->entry(invocation, arguments, value_result ? staged_value : &staged_bits, &failure);
-    if (const auto message = atelier::source::detail::failure_message(
-            failure.reason, active_code->catalog->failure_message_views.data(),
-            static_cast<std::uint32_t>(active_code->catalog->failure_message_views.size())))
-        std::snprintf(error, error_capacity, "%.*s", static_cast<int>(message->size()), message->data());
-    if (status != 0 && failure_location)
-        *failure_location = failure.location;
-    if (status != 0 && failure_detail)
-        *failure_detail = failure;
-    if (status == 0 && result) {
+    if (status != 0) {
+        if (const auto message = atelier::source::detail::failure_message(
+                failure.reason, active_code->catalog->failure_message_views.data(),
+                static_cast<std::uint32_t>(active_code->catalog->failure_message_views.size())))
+            std::snprintf(error, error_capacity, "%.*s", static_cast<int>(message->size()), message->data());
+        if (failure_detail)
+            *failure_detail = failure;
+    } else if (result) {
         if (value_result) {
             std::memcpy(const_cast<void*>(result->data), staged_value, value_result->size);
             *result = {signature.result, 0, atelier::source::detail::ArgumentStorage::value, result->data};
@@ -4305,37 +4374,35 @@ std::uint32_t atelier_create_business_coroutine(atelier::source::detail::Busines
 
 std::uint32_t atelier_resume_business_coroutine(atelier::source::detail::BusinessCoroutine* coroutine, bool* suspended,
                                                 atelier::source::detail::BusinessValue* result, char* error,
-                                                std::uint32_t error_capacity, std::uint32_t* failure_location,
-                                                atelier::source::detail::EntryFailure* failure_reason,
+                                                std::uint32_t error_capacity,
                                                 atelier::source::detail::BusinessFailure* failure_detail) noexcept {
-    if (!error || error_capacity == 0)
+    if (!error || error_capacity == 0) {
+        if (failure_detail)
+            *failure_detail = {};
         return 1;
+    }
     error[0] = '\0';
-    if (failure_reason)
-        *failure_reason = atelier::source::detail::EntryFailure::none;
-    if (failure_detail)
-        *failure_detail = {};
     if (!coroutine || !suspended || !result) {
+        if (failure_detail)
+            *failure_detail = {};
         std::snprintf(error, error_capacity, "%s", "Coroutine resume requires an instance and output storage.");
         return 1;
     }
     const auto active = coroutine->state;
     if (active->running || active->completed) {
+        if (failure_detail)
+            *failure_detail = {};
         std::snprintf(error, error_capacity, "%s", "Coroutine is running or has already completed.");
         return 1;
     }
     active->running = true;
     active->code->resume(active->handle);
     active->running = false;
-    if (const auto message = atelier::source::detail::failure_message(
-            active->failure.reason, active->code->catalog->failure_message_views.data(),
-            static_cast<std::uint32_t>(active->code->catalog->failure_message_views.size())))
-        std::snprintf(error, error_capacity, "%.*s", static_cast<int>(message->size()), message->data());
     if (active->status != 0) {
-        if (failure_location)
-            *failure_location = active->failure.location;
-        if (failure_reason)
-            *failure_reason = active->failure.reason;
+        if (const auto message = atelier::source::detail::failure_message(
+                active->failure.reason, active->code->catalog->failure_message_views.data(),
+                static_cast<std::uint32_t>(active->code->catalog->failure_message_views.size())))
+            std::snprintf(error, error_capacity, "%.*s", static_cast<int>(message->size()), message->data());
         if (failure_detail)
             *failure_detail = active->failure;
         return active->status;

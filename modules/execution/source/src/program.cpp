@@ -671,11 +671,9 @@ bool Program::DirectScope::try_finish(std::uint32_t status) noexcept {
 Error Program::DirectScope::finish_error(std::uint32_t status) {
     if (mode_ == Mode::stateless) {
         auto& stateless = *std::launder(reinterpret_cast<Stateless*>(storage_));
-        const auto reason = failure_message(stateless.failure.reason, stateless.version->info.failure_messages,
-                                            stateless.version->info.failure_message_count);
-        Error error{ErrorCode::invocation_failed,
-                    reason ? std::string(*reason) : std::string("Source execution failed."), std::nullopt,
-                    resolve_failure_element(stateless.version->contract->binding, stateless.failure)};
+        Error error =
+            execution_error(nullptr, stateless.version->contract->binding, stateless.failure,
+                            stateless.version->info.failure_messages, stateless.version->info.failure_message_count);
         stateless.version->locate(error, stateless.failure.location);
         leave();
         return error;
@@ -808,11 +806,9 @@ struct Program::Frame final : CoroutineFrame {
         char message[512];
         bool suspended{};
         BusinessValue output{};
-        std::uint32_t site = no_diagnostic_location;
-        EntryFailure reason = EntryFailure::none;
         BusinessFailure failure_detail{};
         const auto status = atelier_resume_business_coroutine(code_frame.get(), &suspended, &output, message,
-                                                              sizeof(message), &site, &reason, &failure_detail);
+                                                              sizeof(message), &failure_detail);
         const auto decoded = status == 0 && !suspended && !invocation.failed
                                  ? scalar_value(output, &version->contract->binding)
                                  : std::optional<Scalar>{};
@@ -830,23 +826,11 @@ struct Program::Frame final : CoroutineFrame {
             return CoroutineStep{CoroutineState::completed};
         }
         if (status != 0 || invocation.failed) {
-            const auto resolved =
-                !invocation.failed && reason != EntryFailure::none
-                    ? failure_message(reason, version->info.failure_messages, version->info.failure_message_count)
-                    : std::nullopt;
-            std::optional<ErrorElement> element;
-            if (invocation.failed) {
-                if (invocation.error_element != no_failure_element)
-                    element = ErrorElement{std::string(invocation.error_layer), invocation.error_element};
-            } else {
-                element = resolve_failure_element(version->contract->binding, failure_detail);
-            }
-            Error error{invocation.failed ? invocation.error_code : ErrorCode::invocation_failed,
-                        invocation.failed ? std::string(invocation.error_message())
-                        : resolved        ? std::string(*resolved)
-                                          : std::string(message),
-                        std::nullopt, std::move(element)};
-            version->locate(error, site);
+            Error error = execution_error(&invocation, version->contract->binding, failure_detail,
+                                          version->info.failure_messages, version->info.failure_message_count,
+                                          message[0] != '\0' ? std::string_view{message}
+                                                             : std::string_view{"Source execution failed."});
+            version->locate(error, failure_detail.location);
             return failure(std::move(error));
         }
         if (terminal_step && !cleared)

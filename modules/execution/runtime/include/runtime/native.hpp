@@ -150,23 +150,12 @@ struct NativeThunk<Pointer, std::tuple<A...>> {
     static std::uint32_t invoke(NativeContext* context, void* receiver, NativeArgument<A>... arguments, void* output,
                                 NativeFailure* failure) noexcept {
         NativeCallback scope{*context};
-        const auto fail = [&](const Error& err) {
-            failure->code = static_cast<std::uint32_t>(err.code);
-            std::snprintf(failure->message, sizeof(failure->message), "%s", err.message.c_str());
-            if (err.element && err.element->layer.size() < sizeof(failure->layer)) {
-                failure->element = err.element->index;
-                std::memcpy(failure->layer, err.element->layer.data(), err.element->layer.size());
-                failure->layer[err.element->layer.size()] = '\0';
-            } else {
-                failure->element = 0xffffffffu;
-                failure->layer[0] = '\0';
-            }
-            return 1u;
-        };
         auto result =
             invoke_native<Pointer>(*context->runtime, context->self, receiver, native_argument<A>(arguments)...);
-        if (!result)
-            return fail(result.error());
+        if (!result) {
+            failure->record(result.error());
+            return 1u;
+        }
         using Return = typename Method<decltype(Pointer)>::Return;
         if constexpr (std::same_as<Return, bool> || std::is_enum_v<Return>)
             *static_cast<std::uint32_t*>(output) = static_cast<std::uint32_t>(*result);

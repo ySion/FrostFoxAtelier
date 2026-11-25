@@ -92,11 +92,13 @@ struct Slice {
     std::uint64_t count() const { return 2 + end_corner - first_corner; }
 };
 
-Result<Slice> slice_interval(const PolylineArc& arc, float start, float end, bool end_from_tip) {
+Result<Slice> slice_interval(const PolylineArc& arc, float start, float end, bool end_from_tip, ErrorElement element) {
     const double a = arc.distance(start);
     const double b = end_from_tip ? arc.length() - arc.distance(end) : arc.distance(end);
     if (!(start >= 0.f && end >= 0.f && a >= 0. && a < b && b <= arc.length()))
-        return failure("Curve slice requires 0 <= start < end <= polyline length.");
+        return std::unexpected(Error{ErrorCode::argument_mismatch,
+                                     "Curve slice requires 0 <= start < end <= polyline length.", std::nullopt,
+                                     std::move(element)});
     const auto lo = arc.edge_at(a);
     const auto hi = arc.edge_at(b);
     // Each retained edge end is strictly inside the interval. Values that round to the
@@ -112,7 +114,9 @@ Result<Slice> slice_interval(const PolylineArc& arc, float start, float end, boo
     if (first < stop && arc.position(arc.corner_after(stop - 1)) == pb)
         --stop;
     if (first == stop && pa == pb)
-        return failure("Curve slice endpoints collapse at output precision.");
+        return std::unexpected(Error{ErrorCode::argument_mismatch,
+                                     "Curve slice endpoints collapse at output precision.", std::nullopt,
+                                     std::move(element)});
     return Slice{a, b, lo, hi, first, stop};
 }
 
@@ -236,10 +240,8 @@ Result<Geometry> sample_curves(const Geometry& input, float distance, bool from_
         const auto arc = curves[p];
         const double d = from_end ? arc.length() - arc.distance(distance) : arc.distance(distance);
         if (!(d >= 0. && d <= arc.length()))
-            return std::unexpected(
-                Error{ErrorCode::argument_mismatch,
-                      "Curve sample distance exceeds the length of primitive " + std::to_string(p) + ".", std::nullopt,
-                      ErrorElement{"primitive", p}});
+            return primitive_failure(p, "Curve sample distance exceeds the length of primitive " + std::to_string(p) +
+                                            ".");
         const auto i = arc.edge_at(d);
         ATELIER_TRY(output.emit(arc, arc.station(i, d), d, arc.tangent(i)));
         output.finish_primitive();
@@ -259,11 +261,7 @@ Result<Geometry> slice_curves(const Geometry& input, float start, float end, boo
     std::uint64_t vertices{};
     for (std::uint32_t p = 0; p < prim_count; ++p) {
         const auto arc = curves[p];
-        auto slice = slice_interval(arc, start, end, end_from_tip);
-        if (!slice) {
-            slice.error().element = ErrorElement{"primitive", p};
-            return std::unexpected(std::move(slice.error()));
-        }
+        ATELIER_TRY_BIND(slice, slice_interval(arc, start, end, end_from_tip, ErrorElement{"primitive", p}));
         vertices += slice->count();
         if (vertices > element_limit)
             return failure("Curve slices exceed the Geometry vertex limit.");
@@ -301,11 +299,7 @@ Result<void> read_curve_slices(const Geometry& curves, std::uint32_t primitive, 
     std::uint64_t count{};
     for (std::uint32_t i = 0; i < intervals.size(); ++i) {
         const auto& interval = intervals[i];
-        auto slice = slice_interval(arc, interval.x, interval.y, false);
-        if (!slice) {
-            slice.error().element = ErrorElement{"interval", i};
-            return std::unexpected(std::move(slice.error()));
-        }
+        ATELIER_TRY_BIND(slice, slice_interval(arc, interval.x, interval.y, false, ErrorElement{"interval", i}));
         count += slice->count();
         if (count > element_limit)
             return failure("Curve slices exceed the Geometry vertex limit.");

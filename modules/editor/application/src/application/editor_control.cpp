@@ -829,7 +829,7 @@ struct EditorControl::Impl {
     struct Job {
         std::string id;
 
-        std::string kind;
+        std::string_view kind;
 
         std::string token;
 
@@ -880,6 +880,10 @@ struct EditorControl::Impl {
         bool recorded{};
 
         std::uint64_t history_resets{};
+
+        std::string_view phase() const noexcept {
+            return preparing ? "preparing" : rendering ? "rendering" : tracing ? "observing" : "writing";
+        }
     };
 
     std::deque<std::unique_ptr<Job>> jobs;
@@ -1249,6 +1253,26 @@ struct EditorControl::Impl {
         trim_cache();
     }
 
+    void reap_finished_writer() {
+        if (auto* job = active()) {
+            if (job->writer.valid() && job->writer.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                auto result = job->writer.get();
+                if (!job->work->cancelled()) {
+                    if (result) {
+                        json::Builder response;
+                        response.set_validated(response.root(), "status", "ok");
+                        response.set_validated(response.root(), "result", result->root());
+                        job->response = response.finish();
+                    } else {
+                        fail(*job, result.error().code, result.error().message);
+                    }
+                }
+                job->complete = true;
+            }
+        }
+        record_completions();
+    }
+
     json::Result<void> checkpoint() {
         observe();
         if (auto* job = active()) {
@@ -1298,22 +1322,8 @@ struct EditorControl::Impl {
                 ATELIER_TRY(response.numbers(error, "current_extent", std::span{current}));
                 job->response = response.finish();
             }
-            if (job->writer.valid() && job->writer.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-                auto result = job->writer.get();
-                if (!job->work->cancelled()) {
-                    if (result) {
-                        json::Builder response;
-                        response.set_validated(response.root(), "status", "ok");
-                        response.set_validated(response.root(), "result", result->root());
-                        job->response = response.finish();
-                    } else {
-                        fail(*job, result.error().code, result.error().message);
-                    }
-                }
-                job->complete = true;
-            }
         }
-        record_completions();
+        reap_finished_writer();
         return {};
     }
 
@@ -2088,7 +2098,7 @@ struct EditorControl::Impl {
         }
         if (error->element) {
             const auto elem = result.object_validated(diag, "element");
-            ATELIER_TRY(result.set(elem, "layer", error->element->layer));
+            ATELIER_TRY(result.set(elem, "layer", error->element->layer.view()));
             ATELIER_TRY(result.set(elem, "index", error->element->index));
         }
         return {};
@@ -2120,18 +2130,14 @@ struct EditorControl::Impl {
                 ATELIER_TRY(result.set(root, "inspected_error", view.inspected_error->message));
             else
                 ATELIER_TRY(result.set_null(root, "inspected_error"));
-            if (!inspected_name.empty() && view.inspected_error) {
-                const std::string_view node_ref =
-                    view.inspected_error_node.empty() ? inspected_name : std::string_view{view.inspected_error_node};
-                ATELIER_TRY(write_graph_diagnostic(result, root, "diagnostic", view.inspected_error, node_ref));
-            } else if (view.display_error) {
-                const std::string_view node_ref = view.display_error_node.empty()
-                                                      ? std::string_view{view.display}
-                                                      : std::string_view{view.display_error_node};
-                ATELIER_TRY(write_graph_diagnostic(result, root, "diagnostic", view.display_error, node_ref));
-            } else {
-                ATELIER_TRY(result.set_null(root, "diagnostic"));
-            }
+            const bool use_inspected = !inspected_name.empty();
+            const auto& diag_error = use_inspected ? view.inspected_error : view.display_error;
+            const std::string_view diag_node =
+                use_inspected
+                    ? (view.inspected_error_node.empty() ? inspected_name : std::string_view{view.inspected_error_node})
+                    : (view.display_error_node.empty() ? std::string_view{view.display}
+                                                       : std::string_view{view.display_error_node});
+            ATELIER_TRY(write_graph_diagnostic(result, root, "diagnostic", diag_error, diag_node));
             ATELIER_TRY_BIND(parameters, result.array(root, "parameters"));
             for (const auto& param : view.parameters) {
                 const auto item = result.append_object(*parameters);
@@ -2456,14 +2462,14 @@ struct EditorControl::Impl {
         job.tracing = true;
         job.deadline = job.started + std::chrono::milliseconds(timeout);
         json::Builder manifest(job.manifest);
-        manifest.set_validated(manifest.root(), "kind", "render.trace");
+        manifest.set_validated(manifest.root(), "kind", job.kind);
         manifest.set_validated(manifest.root(), "scope", "scene_lit_post");
         ATELIER_TRY(manifest.set(manifest.root(), "document_generation", job.context.document));
         job.manifest = manifest.finish();
         json::Builder response;
         response.set_validated(response.root(), "status", "pending");
         response.set_validated(response.root(), "job_id", id);
-        response.set_validated(response.object_validated(response.root(), "result"), "phase", "observing");
+        response.set_validated(response.object_validated(response.root(), "result"), "phase", job.phase());
         publish_job(std::move(*created));
         return response.finish();
     }
@@ -2544,10 +2550,7 @@ struct EditorControl::Impl {
         job.bounds = app.accepted_view_->bounds;
         job.deadline = job.started + std::chrono::milliseconds(timeout);
         json::Builder manifest(job.manifest);
-        manifest.set_validated(manifest.root(), "kind",
-                               prepare   ? "render.prepare"
-                               : compare ? "render.compare"
-                                         : "render.capture");
+        manifest.set_validated(manifest.root(), "kind", job.kind);
         manifest.set_validated(
             manifest.root(), "history_policy",
             "natural renderer transitions, no full history reset or GPU-history restoration; accepted ordinals exclude skipped frames");
@@ -2555,8 +2558,7 @@ struct EditorControl::Impl {
         json::Builder response;
         response.set_validated(response.root(), "status", "pending");
         response.set_validated(response.root(), "job_id", id);
-        response.set_validated(response.object_validated(response.root(), "result"), "phase",
-                               prepare ? "preparing" : "rendering");
+        response.set_validated(response.object_validated(response.root(), "result"), "phase", job.phase());
         publish_job(std::move(*created));
         return response.finish();
     }
@@ -3511,11 +3513,7 @@ struct EditorControl::Impl {
                     response.set_validated(response.root(), "status", "pending");
                     response.set_validated(response.root(), "job_id", job->id);
                     const auto progress = response.object_validated(response.root(), "result");
-                    response.set_validated(progress, "phase",
-                                           job->preparing   ? "preparing"
-                                           : job->rendering ? "rendering"
-                                           : job->tracing   ? "observing"
-                                                            : "writing");
+                    response.set_validated(progress, "phase", job->phase());
                     ATELIER_TRY(response.set(progress, "case_index", job->case_index));
                     ATELIER_TRY(response.set(progress, "accepted_frames", job->accepted));
                     ATELIER_TRY(response.set(progress, "cancel_requested", job->work->cancelled()));
@@ -3668,15 +3666,12 @@ EditorControl::EditorControl(EditorControl&&) noexcept = default;
 
 EditorControl::~EditorControl() = default;
 
-std::optional<EditorControl::ActiveJobInfo> EditorControl::active_job() const {
+std::optional<EditorControl::ActiveJobInfo> EditorControl::active_job() {
+    impl_->reap_finished_writer();
     const auto* job = impl_->active();
     if (!job)
         return std::nullopt;
-    const std::string_view phase = job->preparing   ? "preparing"
-                                   : job->rendering ? "rendering"
-                                   : job->tracing   ? "observing"
-                                                    : "writing";
-    return ActiveJobInfo{job->id, job->kind, std::string(phase)};
+    return ActiveJobInfo{job->id, job->kind, job->phase()};
 }
 
 bool EditorControl::poll() {

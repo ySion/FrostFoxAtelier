@@ -26,7 +26,7 @@ class procedural.NormalAlign : procedural.Node {
             parallel_for (uint i : n) {
                 const vector3 normal = N[i];
                 if (!math.is_finite(normal)) {
-                    fail("NormalAlign input normal must be finite.");
+                    fail("NormalAlign input normal must be finite.", procedural.Layer::point, i);
                 }
                 orient[i] = procedural.align_to_normal(normal, upward);
             }
@@ -35,7 +35,7 @@ class procedural.NormalAlign : procedural.Node {
                 if (!selected[i]) { continue; }
                 const vector3 normal = N[i];
                 if (!math.is_finite(normal)) {
-                    fail("NormalAlign input normal must be finite.");
+                    fail("NormalAlign input normal must be finite.", procedural.Layer::point, i);
                 }
                 orient[i] = procedural.align_to_normal(normal, upward);
             }
@@ -43,14 +43,14 @@ class procedural.NormalAlign : procedural.Node {
             parallel_for (uint i : n) {
                 const vector3 normal = N[i];
                 if (!math.is_finite(normal)) {
-                    fail("NormalAlign input normal must be finite.");
+                    fail("NormalAlign input normal must be finite.", procedural.Layer::point, i);
                 }
                 if (selected[i]) {
                     orient[i] = procedural.align_to_normal(normal, upward);
                 } else if (has_point_up && normal != vector3()) {
                     const vector3 fallback_up = point_up[i];
                     if (!math.is_finite(fallback_up)) {
-                        fail("NormalAlign point up must be finite.");
+                        fail("NormalAlign point up must be finite.", procedural.Layer::point, i);
                     }
                     orient[i] = procedural.align_to_normal(normal, fallback_up);
                 } else {

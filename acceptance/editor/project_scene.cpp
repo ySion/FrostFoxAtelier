@@ -1025,6 +1025,35 @@ void verify_examples_procedural_showcases() {
                         board_nv && board_nv->root_error_node == "board" && after_nv &&
                         after_nv->root_error_node == "board",
                     "Session::inspect_graph did not preserve root_error_node, ErrorElement, and SourceLocation.");
+            // Switching display alone to a healthy branch must preserve valid error badges on untouched broken branches,
+            // while subsequently disconnecting/removing the failing upstream node must clear stale off-display error state:
+            take(loaded.session->graph_apply("scratch/diag_batch3",
+                                             json::Document::literal<R"({
+                "settings": {"display": "near"}
+            })">()
+                                                 .root(),
+                                             &project));
+            const auto off_display_view = take(loaded.session->inspect_graph("scratch/diag_batch3", &project));
+            const auto* off_board = off_display_view.find_node("board");
+            const auto* off_after = off_display_view.find_node("after");
+            require(!off_display_view.display_error.has_value() && off_board && off_board->status &&
+                        off_board->status->error.has_value() && off_board->root_error_node == "board" && off_after &&
+                        off_after->status && off_after->status->error.has_value() &&
+                        off_after->root_error_node == "board",
+                    "Switching display flag alone erased valid error badges on untouched off-display branch.");
+            take(loaded.session->graph_apply("scratch/diag_batch3",
+                                             json::Document::literal<R"({
+                "nodes": {"after": {"inputs": {"input": null}}},
+                "remove": ["board"]
+            })">()
+                                                 .root(),
+                                             &project));
+            const auto cleaned_view = take(loaded.session->inspect_graph("scratch/diag_batch3", &project));
+            const auto* cleaned_after = cleaned_view.find_node("after");
+            require(!cleaned_view.display_error.has_value() && cleaned_after &&
+                        (!cleaned_after->status || !cleaned_after->status->error.has_value()) &&
+                        cleaned_after->root_error_node.empty(),
+                    "Off-display node retained stale error or dangling root_error_node after upstream removal.");
         }
 
         // Verify Session::procedural_source_program exposes both engine procedural and Examples project functions:

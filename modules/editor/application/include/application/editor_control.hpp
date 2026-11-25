@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace atelier::application {
 class Application;
@@ -15,9 +16,9 @@ public:
     struct ActiveJobInfo {
         std::string id;
 
-        std::string kind;
+        std::string_view kind;
 
-        std::string phase;
+        std::string_view phase;
     };
 
     static std::expected<EditorControl, control::Failure> create(Application&, const std::filesystem::path&);
@@ -26,7 +27,7 @@ public:
 
     ~EditorControl();
 
-    [[nodiscard]] std::optional<ActiveJobInfo> active_job() const;
+    [[nodiscard]] std::optional<ActiveJobInfo> active_job();
 
     bool poll();
 

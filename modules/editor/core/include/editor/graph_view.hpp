@@ -319,11 +319,10 @@ struct GraphInspectView {
     std::optional<GraphGeometrySummary> inspected_summary;
 };
 
-[[nodiscard]] inline std::string format_error_coordinates(const Error& error) {
-    std::string out;
+inline void append_error_coordinates(std::string& out, const Error& error) {
     if (error.element) {
         out += " [";
-        out += error.element->layer.empty() ? std::string_view{"element"} : std::string_view{error.element->layer};
+        out += error.element->layer.empty() ? std::string_view{"element"} : error.element->layer.view();
         out += ' ';
         out += std::to_string(error.element->index);
         out += ']';
@@ -340,6 +339,23 @@ struct GraphInspectView {
         out += std::to_string(error.source->column);
         out += ')';
     }
+}
+
+inline void append_error(std::string& out, const Error& error) {
+    out += error.message;
+    append_error_coordinates(out, error);
+}
+
+[[nodiscard]] inline std::string format_error_coordinates(const Error& error) {
+    std::string out;
+    append_error_coordinates(out, error);
+    return out;
+}
+
+[[nodiscard]] inline std::string format_error(const Error& error) {
+    std::string out;
+    out.reserve(error.message.size() + 32);
+    append_error(out, error);
     return out;
 }
 

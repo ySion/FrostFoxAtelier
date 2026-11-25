@@ -981,6 +981,16 @@ struct ErgHost {
     }
 
     Result<void> native_fail_at(std::uint32_t index) const noexcept {
+        if (index == 888u) {
+            std::string long_cjk;
+            for (int i = 0; i < 171; ++i)
+                long_cjk += "\xe4\xb8\xad"; // 171 * 3 = 513 bytes; byte 511 splits the 171st codepoint.
+            std::string long_layer;
+            for (int i = 0; i < 11; ++i)
+                long_layer += "\xe5\xb1\x82"; // 11 * 3 = 33 bytes; byte 31 splits the 11th codepoint.
+            return std::unexpected(Error{ErrorCode::invocation_failed, std::move(long_cjk), std::nullopt,
+                                         ErrorElement{std::move(long_layer), index}});
+        }
         return std::unexpected(Error{ErrorCode::invocation_failed, "native interval failed", std::nullopt,
                                      ErrorElement{"interval", index}});
     }
@@ -1391,6 +1401,22 @@ int diag.fail_three(diag.Domain dom, uint idx) {
     fail("three-arg failure", dom, idx);
 }
 
+uint diag.only_in_fail_helper(uint i) {
+    return i + 100u;
+}
+
+int diag.fail_parallel_helper(uint target) {
+    Array<int> out;
+    out.resize(64u);
+    parallel_for (uint i : out.size()) {
+        if (i == target) {
+            fail("parallel helper operand", diag.only_in_fail_helper(i));
+        }
+        out[i] = int(i);
+    }
+    return out[0];
+}
+
 int diag.fail_parallel(diag.Domain dom, uint target) {
     Array<int> out;
     out.resize(4096u);
@@ -1414,7 +1440,7 @@ class diag.Runner : test.PairHost {
         register_erg_host(diag_rt);
         auto diag_prog = take(Program::create(diag_rt));
         source::SourceSnapshot snap{"DiagBatch3", 1, {{"Source/Diag.source", 11, std::string(diag_src)}}};
-        auto cand = take(Program::prepare(take(diag_prog->request(snap))));
+        auto cand = take(Program::prepare(take(diag_prog->request(snap, source::CompileOptions{.diagnostics = true}))));
         take(diag_prog->try_publish(cand));
 
         // 2-arg valid index (layer empty at source level), negative index (element omitted), 0xffffffffu sentinel (omitted):
@@ -1432,29 +1458,99 @@ class diag.Runner : test.PairHost {
         const auto dom_type = take(diag_rt.find_type("diag.Domain"));
         const std::array<Scalar, 2> args_3{EnumValue{dom_type, 25u}, std::uint32_t{42u}};
         const auto e_three = f3.invoke(ObjectId{}, args_3);
+        const std::string expected_prim = "Primitive";
         require(!e_three && e_three.error().message == "three-arg failure" &&
-                    e_three.error().element == ErrorElement{"Primitive", 42u},
+                    e_three.error().element == ErrorElement{"Primitive", 42u} &&
+                    e_three.error().element->layer == "Primitive" && e_three.error().element->layer == expected_prim,
                 "3-arg fail did not decode non-contiguous enum layer name 'Primitive'.");
         const std::array<Scalar, 2> args_sentinel{EnumValue{dom_type, 25u}, std::uint32_t{0xffffffffu}};
         const auto e_sentinel = f3.invoke(ObjectId{}, args_sentinel);
         require(!e_sentinel && e_sentinel.error().message == "three-arg failure" &&
                     !e_sentinel.error().element.has_value(),
                 "0xffffffffu sentinel fail index must omit Error::element while keeping message.");
+        // Unmatched dynamic enum bit pattern must omit Error::element instead of aliasing 2-arg empty layer:
+        const std::array<Scalar, 2> args_unmatched{EnumValue{dom_type, 999u}, std::uint32_t{5u}};
+        source::Diagnostics sync_diag;
+        const auto e_unmatched = f3.invoke(ObjectId{}, args_unmatched, &sync_diag);
+        require(!e_unmatched && !e_unmatched.error().element.has_value() && sync_diag.snapshot().error &&
+                    !sync_diag.snapshot().error->element.has_value(),
+                "Unmatched 3-arg enum bits fabricated a 2-arg empty-layer ErrorElement.");
+        const auto e_with_diag = f3.invoke(ObjectId{}, args_3, &sync_diag);
+        require(!e_with_diag && sync_diag.snapshot().error &&
+                    sync_diag.snapshot().error->element == ErrorElement{"Primitive", 42u},
+                "Diagnostics::snapshot() dropped Error::element on sync failure.");
 
-        // Coroutine resume preserves element & location (single-entry async Program):
+        // Debugger-enabled Program preserves Error::element in both DebugSnapshot and final Result/Diagnostics:
+        {
+            Runtime dbg_rt;
+            register_erg_host(dbg_rt);
+            auto dbg_prog = take(Program::create(dbg_rt));
+            auto dbg_cand = take(Program::prepare(
+                take(dbg_prog->request(snap, source::CompileOptions{.diagnostics = true, .debugging = true}))));
+            take(dbg_prog->try_publish(dbg_cand));
+            const auto dbg_dom_type = take(dbg_rt.find_type("diag.Domain"));
+            const std::array<Scalar, 2> dbg_args_3{EnumValue{dbg_dom_type, 25u}, std::uint32_t{42u}};
+            const auto dbg_f3 = take(dbg_prog->entry("diag.fail_three"));
+            std::optional<ErrorElement> stopped_element;
+            source::Debugger stop_dbg{[&](const source::DebugSnapshot& stop) noexcept -> Result<source::DebugCommand> {
+                                          if (stop.error)
+                                              stopped_element = stop.error->element;
+                                          return stop.command(source::DebugAction::continue_execution);
+                                      },
+                                      {.break_on_entry = false, .break_on_error = true}};
+            source::Diagnostics dbg_diag;
+            const auto e_dbg_stop = dbg_f3.invoke(ObjectId{}, dbg_args_3, &dbg_diag, &stop_dbg);
+            require(!e_dbg_stop && stopped_element == ErrorElement{"Primitive", 42u} &&
+                        e_dbg_stop.error().element == ErrorElement{"Primitive", 42u} && dbg_diag.snapshot().error &&
+                        dbg_diag.snapshot().error->element == ErrorElement{"Primitive", 42u},
+                    "Debugger break_on_error dropped Error::element in DebugSnapshot, Result, or Diagnostics.");
+            source::Debugger pass_dbg{[](const source::DebugSnapshot& stop) noexcept -> Result<source::DebugCommand> {
+                                          return stop.command(source::DebugAction::continue_execution);
+                                      },
+                                      {.break_on_entry = false, .break_on_error = false}};
+            const auto e_dbg_pass = dbg_f3.invoke(ObjectId{}, dbg_args_3, &dbg_diag, &pass_dbg);
+            require(!e_dbg_pass && e_dbg_pass.error().element == ErrorElement{"Primitive", 42u},
+                    "Attached Debugger with break_on_error=false dropped Error::element.");
+        }
+
+        // UTF-8 vs malformed byte truncation preserves valid CJK codepoints while keeping invalid UTF-8 detectable:
+        {
+            std::string cjk;
+            for (int i = 0; i < 200; ++i)
+                cjk += "诊断界"; // 9 bytes per iteration -> 1800 bytes
+            const auto cjk_cut = StringView{cjk}.truncate_utf8_or_bytes(511);
+            require(cjk_cut.size() == 510 && cjk_cut.is_valid_utf8(),
+                    "truncate_utf8_or_bytes did not cut multi-byte CJK text at a codepoint boundary.");
+            const std::string bad_utf8(520, '\x80');
+            const auto bad_cut = StringView{bad_utf8}.truncate_utf8_or_bytes(511);
+            require(bad_cut.size() == 511 && !bad_cut.is_valid_utf8(),
+                    "truncate_utf8_or_bytes erased malformed UTF-8 bytes instead of preserving detectability.");
+        }
+
+        // Helper called ONLY inside parallel_for fail(...) operand compiles and reports exact computed element:
+        const auto f_par_helper = take(diag_prog->entry("diag.fail_parallel_helper"));
+        const std::array<Scalar, 1> par_helper_args{std::uint32_t{7u}};
+        const auto par_helper_err = f_par_helper.invoke(ObjectId{}, par_helper_args);
+        require(!par_helper_err && par_helper_err.error().message == "parallel helper operand" &&
+                    par_helper_err.error().element == ErrorElement{"", 107u},
+                "Source helper called only inside parallel_for fail(...) operand failed to compile or run.");
+
+        // Coroutine resume preserves element & location (single-entry async Program, including Diagnostics):
         auto coro_prog = take(Program::create(diag_rt));
         publish_single(
             *coro_prog, "coro_diag.source",
             "async int fail_coro(diag.Domain dom, uint idx) { yield; fail(\"coro element failure\", dom, idx); }",
-            "fail_coro");
+            "fail_coro", {.diagnostics = true});
         const std::array<Scalar, 2> coro_args{EnumValue{dom_type, 25u}, std::uint32_t{9u}};
-        auto coro = take(coro_prog->entry().start(ObjectId{}, coro_args));
+        source::Diagnostics coro_diag;
+        auto coro = take(coro_prog->entry().start(ObjectId{}, coro_args, &coro_diag));
         require(take(coro.resume()) == CoroutineState::suspended, "fail_coro did not suspend.");
         const auto coro_failed = coro.resume();
         require(!coro_failed && coro_failed.error().message == "coro element failure" &&
                     coro_failed.error().source.has_value() &&
-                    coro_failed.error().element == ErrorElement{"Primitive", 9u},
-                "Coroutine fail(...) did not preserve ErrorElement and SourceLocation.");
+                    coro_failed.error().element == ErrorElement{"Primitive", 9u} && coro_diag.snapshot().error &&
+                    coro_diag.snapshot().error->element == ErrorElement{"Primitive", 9u},
+                "Coroutine fail(...) or Diagnostics::snapshot() did not preserve ErrorElement and SourceLocation.");
 
         // parallel_for captures outer enum + local and atomically records 16B first failure:
         const auto fp = take(diag_prog->entry("diag.fail_parallel"));
@@ -1475,6 +1571,14 @@ class diag.Runner : test.PairHost {
                     nat_failed.error().source.has_value() &&
                     nat_failed.error().element == ErrorElement{"interval", 17u},
                 "Native BorrowSafe failure did not preserve ErrorElement across NativeFailure.");
+        // Multi-byte UTF-8 native error message (>511B) and layer (>31B) truncate cleanly on codepoint boundaries:
+        const std::array<Scalar, 1> nat_utf8_args{std::uint32_t{888u}};
+        const auto nat_utf8 = fn_nat.invoke(runner_obj.id(), nat_utf8_args);
+        require(!nat_utf8 && nat_utf8.error().message.size() == 510u &&
+                    StringView{nat_utf8.error().message}.is_valid_utf8() && nat_utf8.error().element.has_value() &&
+                    nat_utf8.error().element->index == 888u && nat_utf8.error().element->layer.size() == 30u &&
+                    StringView{nat_utf8.error().element->layer}.is_valid_utf8(),
+                "NativeThunk / Invocation sliced multi-byte UTF-8 mid-codepoint or dropped long-layer element.");
     }
 
     // 9. Batch 4: .rdata zero-allocation constant tables (math, plain struct, Array<T>),
@@ -1616,8 +1720,11 @@ float read_prof_y(uint idx) {
         }
         const auto lease = take(b4_prog->pin("tab.read_profile_radius"));
         const auto ir = take(lease.artifacts()).optimized_ir;
-        require(ir.contains("@__source_const_data."),
-                "Module constant tables did not emit @__source_const_data globals.");
+        require(ir.contains("@__source_const_data.") && ir.contains("cold"),
+                "Module constant tables did not emit @__source_const_data globals or cold failure stubs.");
+        const auto par_ir = take(take(b4_prog->pin("tab.parallel_sum")).artifacts()).optimized_ir;
+        require(par_ir.contains("captures(none)"),
+                "parallel_for IR declaration is missing captures(none) alias attributes.");
 
         const auto read_entry = take(b4_prog->entry("tab.read_profile_radius"));
         const auto typed_read = take(read_entry.bind<float, std::uint32_t>());

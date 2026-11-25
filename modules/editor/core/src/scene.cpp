@@ -811,6 +811,7 @@ struct Session::GraphCodec {
             if (cause) {
                 item.error_code = cause->code;
                 item.source = cause->source;
+                item.element = cause->element;
             }
             issues.push_back(std::move(item));
             return {};
@@ -3033,6 +3034,7 @@ struct Session::GraphCodec {
             if (cause) {
                 item.error_code = cause->code;
                 item.source = cause->source;
+                item.element = cause->element;
             }
             out.push_back(std::move(item));
         }

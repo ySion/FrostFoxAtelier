@@ -37,6 +37,8 @@ struct DiagnosticState {
 
     std::size_t error_size{};
 
+    std::optional<ErrorElement> error_element{};
+
     std::uint64_t resumes{};
 
     std::chrono::steady_clock::time_point started;

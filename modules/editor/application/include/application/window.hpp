@@ -92,21 +92,15 @@ public:
         return "none";
     }
 
-    bool closing() const noexcept { return closing_; }
+    bool closing() const noexcept { return quit_source_ != QuitSource::none; }
 
     QuitSource quit_source() const noexcept { return quit_source_; }
 
-    void request_operator_close() noexcept {
-        pending_operator_close_ = true;
-        if (handle_)
-            PostMessageW(handle_, WM_CLOSE, 0, 0);
-    }
+    void request_operator_close() noexcept;
 
     void cancel_close() noexcept {
-        closing_ = false;
         quit_source_ = QuitSource::none;
         pending_syscommand_close_ = false;
-        pending_operator_close_ = false;
     }
 
     float dpi_scale() const noexcept;
@@ -143,13 +137,14 @@ private:
 
     std::vector<ToolCursor> tool_cursors_; // Owned, keyed by semantic intent and display DPI.
 
-    bool closing_{};
-
     QuitSource quit_source_{QuitSource::none};
 
     bool pending_syscommand_close_{};
 
-    bool pending_operator_close_{};
+    void latch_close(QuitSource source) noexcept {
+        if (quit_source_ == QuitSource::none)
+            quit_source_ = source;
+    }
 
     bool releasing_capture_{};
 

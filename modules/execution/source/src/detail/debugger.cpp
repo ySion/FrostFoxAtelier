@@ -314,7 +314,11 @@ public:
             }
         }
         if (invocation_.failed) {
-            result_.error = Error{invocation_.error_code, text(invocation_.error_message())};
+            std::optional<ErrorElement> element;
+            if (invocation_.error_storage.element != no_failure_element)
+                element = ErrorElement{text(invocation_.error_storage.layer), invocation_.error_storage.element};
+            result_.error =
+                Error{invocation_.error_code(), text(invocation_.error_message()), std::nullopt, std::move(element)};
             if (invocation_.debug_top && invocation_.debug_top->location < metadata_.locations->size())
                 result_.error->source = source_location((*metadata_.locations)[invocation_.debug_top->location].source);
         }
@@ -361,21 +365,28 @@ std::uint32_t debug_enter(void* context, BusinessDebugFrame* frame) noexcept {
 }
 
 std::uint32_t debug_point(void* context, BusinessDebugFrame* frame, std::uint32_t location, DebugPoint point,
-                          EntryFailure failure) noexcept {
+                          const BusinessFailure* failure) noexcept {
     auto& invocation = *static_cast<Invocation*>(context);
     // Hold the session through the handler: callers may destroy or replace the
     // public Debugger while this same native stack remains stopped.
     const auto state = invocation.debugger;
     if (!state || !state->active)
         return 0;
-    if (point == DebugPoint::error && invocation.debug_aborted && !invocation.failed && failure == EntryFailure::none)
+    const auto failure_reason = failure ? failure->reason : EntryFailure::none;
+    if (point == DebugPoint::error && invocation.debug_aborted && !invocation.failed &&
+        failure_reason == EntryFailure::none)
         return 1;
     if (point == DebugPoint::error) {
         if (!invocation.failed) {
             const auto& views = state->metadata->tables->failure_message_views;
-            const auto message = failure_message(failure, views.data(), static_cast<std::uint32_t>(views.size()));
+            const auto message =
+                failure_message(failure_reason, views.data(), static_cast<std::uint32_t>(views.size()));
+            const auto element = failure ? failure->element : no_failure_element;
+            const auto layer = failure && element != no_failure_element
+                                   ? resolve_failure_layer_view(invocation.binding, failure->layer)
+                                   : std::string_view{};
             invocation.fail_view(ErrorCode::invocation_failed,
-                                 message ? *message : std::string_view("Source execution failed."));
+                                 message ? *message : std::string_view("Source execution failed."), element, layer);
         }
         if (state->error_stopped)
             return 1;
@@ -412,7 +423,7 @@ std::uint32_t debug_point(void* context, BusinessDebugFrame* frame, std::uint32_
     auto inspection = ExecutionInspection::enter(invocation.runtime);
     if (!inspection) {
         state->handler_failed = true;
-        invocation.fail(inspection.error().code, inspection.error().message.c_str());
+        invocation.fail(inspection.error());
         return 1;
     }
     state->last_stop = SnapshotBuilder{invocation, *state, *reason, ++state->next_stop_id}.build();
@@ -421,7 +432,7 @@ std::uint32_t debug_point(void* context, BusinessDebugFrame* frame, std::uint32_
     state->status = DebugStatus::running;
     if (!command) {
         state->handler_failed = true;
-        invocation.fail(command.error().code, command.error().message.c_str());
+        invocation.fail(command.error());
         return 1;
     }
     if (command->stop_id != state->last_stop->stop_id) {

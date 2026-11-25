@@ -106,6 +106,7 @@ bool World::Impl::contain(const Error& failure, Diagnostic diagnostic) {
     if (invariant_failed || !isolatable(failure))
         return false;
     diagnostic.source = failure.source;
+    diagnostic.element = failure.element;
     diagnostic.message = failure.message;
     report(std::move(diagnostic));
     return policy == FailurePolicy::isolate;

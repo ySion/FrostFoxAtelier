@@ -30,13 +30,41 @@ struct NativeContext {
 static_assert(std::is_standard_layout_v<NativeContext>);
 
 struct NativeFailure {
-    std::uint32_t code{};
+    std::uint32_t code{static_cast<std::uint32_t>(ErrorCode::invocation_failed)};
 
-    char message[512]{};
+    char message[512];
 
     std::uint32_t element{0xffffffffu};
 
-    char layer[32]{};
+    char layer[32];
+
+    void record(ErrorCode error_code, std::string_view text, std::uint32_t element_index = 0xffffffffu,
+                std::string_view element_layer = {}) noexcept {
+        code = static_cast<std::uint32_t>(error_code);
+        if (const auto nul = text.find('\0'); nul != std::string_view::npos)
+            text = text.substr(0, nul);
+        const auto msg_prefix = StringView{text}.truncate_utf8_or_bytes(sizeof(message) - 1);
+        if (!msg_prefix.empty())
+            std::memcpy(message, msg_prefix.data(), msg_prefix.size());
+        message[msg_prefix.size()] = '\0';
+        if (element_index != 0xffffffffu) {
+            if (const auto nul = element_layer.find('\0'); nul != std::string_view::npos)
+                element_layer = element_layer.substr(0, nul);
+            const auto layer_prefix = StringView{element_layer}.truncate_utf8_or_bytes(sizeof(layer) - 1);
+            element = element_index;
+            if (!layer_prefix.empty())
+                std::memcpy(layer, layer_prefix.data(), layer_prefix.size());
+            layer[layer_prefix.size()] = '\0';
+        } else {
+            element = 0xffffffffu;
+            layer[0] = '\0';
+        }
+    }
+
+    void record(const Error& error) noexcept {
+        record(error.code, error.message, error.element ? error.element->index : 0xffffffffu,
+               error.element ? error.element->layer.view() : std::string_view{});
+    }
 };
 
 static_assert(std::is_standard_layout_v<NativeFailure> && sizeof(NativeFailure) == 552);

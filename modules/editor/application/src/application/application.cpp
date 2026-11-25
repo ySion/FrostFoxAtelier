@@ -2871,11 +2871,9 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
                     if (eval->template_output && eval->template_node != eval->display_node)
                         sop_template_geom = eval->template_output;
                     if (eval->display_error)
-                        workspace_.render_notice =
-                            L"SOP cook error: " +
-                            diagnostic_text(eval->display_error->message +
-                                            editor::format_error_coordinates(*eval->display_error)) +
-                            (eval->preview_output ? L" (showing last valid output)" : L"");
+                        workspace_.render_notice = L"SOP cook error: " +
+                                                   diagnostic_text(editor::format_error(*eval->display_error)) +
+                                                   (eval->preview_output ? L" (showing last valid output)" : L"");
                 }
                 material_preparation = procedural_preview_.prepare(renderer_);
             } else {
@@ -3140,8 +3138,8 @@ Result<void> Application::close() {
             if (control_) {
                 if (auto job = control_->active_job()) {
                     entry.fields.push_back({"active_control_job_id", std::move(job->id)});
-                    entry.fields.push_back({"active_control_job_kind", std::move(job->kind)});
-                    entry.fields.push_back({"active_control_job_phase", std::move(job->phase)});
+                    entry.fields.push_back({"active_control_job_kind", std::string(job->kind)});
+                    entry.fields.push_back({"active_control_job_phase", std::string(job->phase)});
                 }
             }
             static_cast<void>(workspace_.output.submit_owned(std::move(entry)));

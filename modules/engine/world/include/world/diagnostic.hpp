@@ -143,6 +143,8 @@ struct Diagnostic {
 
     std::optional<SourceLocation> source; // Script failures, when the Source program recorded one.
 
+    std::optional<ErrorElement> element; // Element-level coordinates when recorded by the producer.
+
     std::string value; // Truncated preview of the offending value; may be empty.
 
     std::string message;

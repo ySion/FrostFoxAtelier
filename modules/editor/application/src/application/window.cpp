@@ -394,9 +394,7 @@ void Window::poll(FunctionRef<void(NativeEvent&&)> consume) {
     const auto input_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2);
     while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
         if (message.message == WM_QUIT) {
-            if (!closing_ || quit_source_ == QuitSource::none)
-                quit_source_ = QuitSource::wm_quit;
-            closing_ = true;
+            latch_close(QuitSource::wm_quit);
             continue;
         }
         if (message.hwnd == handle_ && message.message == WM_KEYDOWN) {
@@ -410,6 +408,12 @@ void Window::poll(FunctionRef<void(NativeEvent&&)> consume) {
         if (message.message == WM_MOUSEMOVE && std::chrono::steady_clock::now() >= input_deadline)
             break;
     }
+}
+
+void Window::request_operator_close() noexcept {
+    relative_pointer(false);
+    input_anchor_.reset();
+    latch_close(QuitSource::operator_app_quit);
 }
 
 NativeEvent Window::event(UINT message, WPARAM wparam, LPARAM lparam) const {
@@ -467,14 +471,7 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
     case WM_CLOSE:
         relative_pointer(false);
         input_anchor_.reset();
-        if (pending_syscommand_close_)
-            quit_source_ = QuitSource::wm_syscommand_close;
-        else if (pending_operator_close_)
-            quit_source_ = QuitSource::operator_app_quit;
-        else if (quit_source_ == QuitSource::none)
-            quit_source_ = QuitSource::wm_close;
-        pending_operator_close_ = false;
-        closing_ = true;
+        latch_close(pending_syscommand_close_ ? QuitSource::wm_syscommand_close : QuitSource::wm_close);
         return 0;
     case WM_ERASEBKGND:
         return 1;

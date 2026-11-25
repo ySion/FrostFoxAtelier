@@ -54,6 +54,11 @@ void error_source(logging::Entry& entry, const SourceLocation& source) {
                                              {"error.disk_path", source.disk_path}});
 }
 
+void error_element(logging::Entry& entry, const ErrorElement& element) {
+    entry.fields.push_back({"error.element_layer", std::string(element.layer.view())});
+    entry.fields.push_back({"error.element_index", std::uint64_t{element.index}});
+}
+
 std::string path_field(std::span<const std::string> fields) {
     std::string result;
     for (const auto& field : fields) {
@@ -93,6 +98,8 @@ Result<logging::Entry> error_diagnostic(const Error& error, std::string_view eve
     entry.fields = {{"error_code", static_cast<std::uint64_t>(error.code)}, {"project_root", std::move(*path)}};
     if (error.source)
         error_source(entry, *error.source);
+    if (error.element)
+        error_element(entry, *error.element);
     return entry;
 }
 
@@ -127,6 +134,8 @@ Result<logging::Entry> world_diagnostic(const editor::Session& session, const wo
         if (item.source)
             error_source(entry, *item.source);
     }
+    if (item.element)
+        error_element(entry, *item.element);
     if (const auto local = session.document_identity(item.object))
         entry.fields.push_back({"scene_local_id", *local});
     // Presentation repeat groups survive a resolved/recurrent value, but are
@@ -245,6 +254,8 @@ void report_source_capture(const source::DiagnosticReport& report, const std::fi
             if (!report.location)
                 entry.source = diagnostic_source(location);
         }
+        if (report.error->element)
+            error_element(entry, *report.error->element);
     }
     static_cast<void>(logging::submit(std::move(entry)));
 }

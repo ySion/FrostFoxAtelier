@@ -452,6 +452,18 @@ const GraphNode* find_node_by_id(const GraphDocument& doc, ObjectId id) noexcept
     return at == doc.nodes.end() ? nullptr : &*at;
 }
 
+std::string resolve_root_error_node(const GraphDocument& doc, const procedural::NodeStatus& st, ObjectId self_id,
+                                    std::string_view fallback_name = {}) {
+    const ObjectId cause = st.root_node != ObjectId{} ? st.root_node : self_id;
+    if (const auto* cause_node = find_node_by_id(doc, cause))
+        return cause_node->name;
+    if (!fallback_name.empty())
+        return std::string(fallback_name);
+    if (const auto* self_node = find_node_by_id(doc, self_id))
+        return self_node->name;
+    return {};
+}
+
 Result<std::vector<std::string>> format_live_port_endpoints(Runtime& runtime, const GraphDocument& doc,
                                                             std::span<const procedural::Input> node_inputs,
                                                             std::uint32_t port_index) {
@@ -6606,11 +6618,8 @@ Result<GraphEvaluation> Session::evaluate_graph(std::string_view key, Project* p
     if (result.display_node != ObjectId{}) {
         if (const auto* st = open.evaluator->status(result.display_node); st && st->error) {
             result.display_error = st->error;
-            const ObjectId cause = st->root_node != ObjectId{} ? st->root_node : result.display_node;
-            if (const auto* cause_node = find_node_by_id(open.document, cause))
-                result.display_error_node = cause_node->name;
-            else
-                result.display_error_node = result.display_name;
+            result.display_error_node =
+                resolve_root_error_node(open.document, *st, result.display_node, result.display_name);
         }
     }
 
@@ -6629,11 +6638,7 @@ Result<GraphEvaluation> Session::evaluate_graph(std::string_view key, Project* p
         result.inspected_output = open.evaluator->node_output(inspected_node);
         if (const auto* st = open.evaluator->status(inspected_node); st && st->error) {
             result.inspected_error = st->error;
-            const ObjectId cause = st->root_node != ObjectId{} ? st->root_node : inspected_node;
-            if (const auto* cause_node = find_node_by_id(open.document, cause))
-                result.inspected_error_node = cause_node->name;
-            else if (const auto* insp_entry = find_node_by_id(open.document, inspected_node))
-                result.inspected_error_node = insp_entry->name;
+            result.inspected_error_node = resolve_root_error_node(open.document, *st, inspected_node);
         }
     }
     std::uint64_t gen = 14695981039346656037ULL;
@@ -6701,6 +6706,8 @@ Result<std::shared_ptr<const GraphInspectView>> Session::graph_topology(std::str
     }
 
     Project* active_project = open.resources.project();
+    ObjectId cached_error_cause{};
+    std::string_view cached_error_name{};
     for (const auto& item : open.document.nodes) {
         GraphNodeView node_view;
         node_view.name = item.name;
@@ -6742,10 +6749,19 @@ Result<std::shared_ptr<const GraphInspectView>> Session::graph_topology(std::str
                 node_view.status = *st;
                 if (st->error) {
                     const ObjectId cause = st->root_node != ObjectId{} ? st->root_node : item.node.id();
-                    if (const auto* cause_node = find_node_by_id(open.document, cause))
-                        node_view.root_error_node = cause_node->name;
-                    else
+                    if (cause == item.node.id()) {
+                        cached_error_cause = cause;
+                        cached_error_name = item.name;
                         node_view.root_error_node = item.name;
+                    } else if (cause == cached_error_cause && !cached_error_name.empty()) {
+                        node_view.root_error_node = std::string(cached_error_name);
+                    } else if (const auto* cause_node = find_node_by_id(open.document, cause)) {
+                        cached_error_cause = cause;
+                        cached_error_name = cause_node->name;
+                        node_view.root_error_node = cause_node->name;
+                    } else {
+                        node_view.root_error_node = item.name;
+                    }
                 }
             }
         }

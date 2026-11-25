@@ -87,7 +87,7 @@ struct DebugAccess {
 // on that invocation's native stack or in its LLVM coroutine frame.
 std::uint32_t debug_enter(void*, BusinessDebugFrame*) noexcept;
 
-std::uint32_t debug_point(void*, BusinessDebugFrame*, std::uint32_t, DebugPoint, EntryFailure) noexcept;
+std::uint32_t debug_point(void*, BusinessDebugFrame*, std::uint32_t, DebugPoint, const BusinessFailure*) noexcept;
 
 void debug_leave(void*, BusinessDebugFrame*) noexcept;
 

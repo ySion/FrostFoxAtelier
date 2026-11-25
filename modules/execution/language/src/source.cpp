@@ -282,6 +282,10 @@ public:
                     self(self, stmt.body);
                     self(self, stmt.step);
                     return;
+                case Kind::fail:
+                    scan_expr(scan_expr, stmt.body);
+                    scan_expr(scan_expr, stmt.expression);
+                    return;
                 default:
                     return;
                 }
@@ -2760,9 +2764,10 @@ private:
                 ATELIER_TRY_BIND(has_third, accept(","));
                 if (*has_third) {
                     const auto layer_type = function_.expressions[*first_arg].type;
-                    if (layer_type.kind != ValueType::enumeration ||
+                    if (layer_type.kind != ValueType::enumeration || layer_type.type_index >= 0xffffu ||
                         environment_.enumerations[layer_type.type_index].flags ||
-                        environment_.enumerations[layer_type.type_index].underlying != ValueType::u32) {
+                        environment_.enumerations[layer_type.type_index].underlying != ValueType::u32 ||
+                        environment_.enumerations[layer_type.type_index].values.size() >= 0xffffu) {
                         return reject(function_.expressions[*first_arg].position,
                                       "fail element layer requires a uint-backed non-flags enum.");
                     }
