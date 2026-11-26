@@ -934,3 +934,9 @@ inline StringView::StringView(const String& text) noexcept : StringView(text.vie
 }
 
 }
+
+template <>
+inline constexpr bool std::ranges::enable_borrowed_range<atelier::StringView> = true;
+
+template <>
+inline constexpr bool std::ranges::enable_view<atelier::StringView> = true;

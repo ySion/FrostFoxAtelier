@@ -47,8 +47,8 @@ names.clear();                      // 析构元素，保留容量
 names.squeeze();                    // 显式收紧容量；空数组释放缓冲
 ```
 
-- `size/capacity/empty` 查询状态，`data/begin/end/view/slice` 提供连续访问与子区间借用。`operator[]` 与 `front/back` 在所有构建中检查索引；`try_at` 在越界时返回空指针。`find` 返回索引或 `npos`，`contains` 返回是否存在。
-- `reserve(n)` 只准备容量；`resize(n)` 对新增元素做值初始化，`resize(n, value)` 从 value 复制构造新增元素，value 可以是本数组的元素；两者都对移除元素做析构。`emplace` 直接构造新增元素。`release()` 清空并释放缓冲。删除不自动缩容。
+- `size/capacity/empty` 查询状态，`data/begin/end/rbegin/rend/view/slice` 提供连续访问与子区间借用；支持计数默认构造 `Array(count)`、计数填充构造 `Array(count, value)`、连续或输入迭代器区间构造 `Array(first, last)` 与通用输入范围构造 `explicit Array(range)`（对非借用型右值范围自动按移动语义转移元素，保持初始精确容量）。`operator[]` 与 `front/back` 在所有构建中检查索引；`try_at` 在越界时返回空指针。`find` 返回索引或 `npos`，`contains` 返回是否存在；提供同构及与 `Span` 的 `operator==` / `operator<=>`。
+- `reserve(n)` 只准备容量；`resize(n)` 对新增元素做值初始化（全零位表示的标量与无填充平凡类型直接批量清零），`resize(n, value)` 从 value 复制构造新增元素（1/2/4/8/16 字节平凡无填充类型走 `memset` 或双路 SSE2 广播填充），value 可以是本数组的元素；`resize_uninitialized(n)` 仅对隐式生命周期且平凡析构类型开放，保留已有活前缀而不清零新增尾部；`assign` 支持计数填充、`Span`、初值列表、迭代器区间与输入范围原地复用容量重置（含自元素与自切片安全保护）；`append` 支持 `Span`、初值列表与输入范围追加。`emplace` 直接构造新增元素。`release()` 清空并释放缓冲。删除不自动缩容。
 - 扩容为几何增长；只构造实际元素，不构造预留槽位。元素要求不抛异常析构，并提供不抛异常的移动构造或复制构造。支持 move-only 元素，但此时复制 Array 的接口不可用。
 - 扩容优先不抛异常移动，否则复制。复制、追加与扩容只在类型 trivially-copyable 且实际选中的构造也平凡时批量复制；有序删除另外要求平凡移动赋值，使用可重叠的 memmove。类型标签不会跳过选中模板构造或赋值的副作用。
 - 复制赋值在容量足够、元素可平凡复制构造且平凡复制赋值时复用缓冲，包括空值、变短和重新增长；其他情况先构造完整副本再替换。可复制但不可赋值的元素仍然可用。String、智能指针和其他资源类型保留逐元素构析；不抛异常的非平凡赋值不自动取得字节搬运或容量复用资格。
@@ -72,9 +72,9 @@ names.squeeze();                    // 显式收紧容量；空数组释放缓�
 
 `BitVector` 是独立类型，不特化 `Array<bool>`，不改变 SharedArray<bool> 或程序化 group 列的表示。Windows x64 上为 32B/align8（Array<uint64_t> 加位数）；每个 word 的低位对应较低下标，尾 word 未使用位始终为零，缩小再扩大不复活旧位。
 
-- `size/empty/reserve/resize(bits,value=false)/clear/release/swap` 管理存储；resize 的 value 只填新增区间，clear 保留容量，release 释放。复制独立拥有，移动后源为空。字数用除法加余数计算，不先做 bits+63。
-- `test/operator[]` 返回 bool，不借出可写引用；`contains(index)` 查询集合成员，未置位或不存在的下标返回 false，由位图入口一次判界，供 SparseArray 占用查询使用；test 的越界 fatal 合同不变。`set(index,value=true)/reset/flip/set_range(first,count,value=true)` 显式修改。`count/any/none` 查询集合，`find_first/find_from/find_next` 返回下标或 npos；`find_from` 从给定下标起查找（超出末尾时返回 npos），`find_next` 严格从给定下标之后查找。`set_bits()` 是升序、零分配 forward range，`words()` 返回只读 `Span<const uint64_t>` 字视图，二者均禁止从临时对象借出。
-- `&=/|=/^=` 要求位数相等，按 word 计算；test/operator[] 与修改操作的索引/范围越界，以及不等位数运算为 contract-fatal。CPU OOM 和内部容量错误沿 Array 唯一出口。没有原子位、平台分派或第二套分配器。修改内容或结构后重新取得迭代器。
+- `size/empty/reserve/resize(bits,value=false)/assign(bits,value=false)/assign(init_list)/fill(value=true)/clear/release/swap` 管理存储；支持 `BitVector{true, false}` 初值列表构造，避免单/双布尔花括号误命中计数构造；resize 的 value 只填新增区间（整字直接 `memset` 填充，仅掩码处理旧尾边界字），assign 原地复用容量重置，clear 保留容量，release 释放。`add(value)/pop()/front()/back()` 支持无分支顺序追加与尾部弹出并严格保持尾未使用位为零与字数不变量（`max_size = ~size_t{63}`）。复制独立拥有，移动后源为空。字数用除法加余数计算，不先做 bits+63；提供先判位长再 `memcmp` 的 `operator==` 与混入位长的 `Hash<BitVector>`。
+- `test/operator[]/front/back` 返回 bool，不借出可写引用；`contains(index)` 查询集合成员，未置位或不存在的下标返回 false，由位图入口一次判界，供 SparseArray 占用查询使用；test 的越界 fatal 合同不变。`set(index,value=true)/reset/flip(index)/flip()/set_range(first,count,value=true)` 显式修改（大跨度 `set_range` 中间整字走 `memset`）。`count/all/any/none/intersects/is_subset_of` 查询集合（空位集的 `all()` 为真），`find_first/find_from/find_next` 与对称反向 `find_last/find_last_from/find_prev` 返回下标或 npos；`find_from` 从给定下标起前向查找，`find_next` 严格从给定下标之后查找，`find_last_from` 从给定上界起反向查找，`find_prev` 严格从给定下标之前查找（`size()` 返回 `find_last()`，`0`、`npos` 或超出 `size()` 返回 `npos`）。`set_bits()` 是零分配双向视图（启用 `enable_borrowed_range` 与 `enable_view`），`words()` 返回只读 `Span<const uint64_t>` 字视图，二者均禁止从临时对象借出。
+- `&=/|=/^=/and_not`（自操作短路且异构字指针以 `__restrict` 交由编译器生成 SSE2 向量运算）及 `intersects/is_subset_of` 要求位数相等，按 word 计算；test/operator[] 与修改操作的索引/范围越界，以及不等位数运算为 contract-fatal。CPU OOM 和内部容量错误沿 Array 唯一出口。没有原子位、平台分派或第二套分配器。修改内容或结构后重新取得迭代器。
 
 `SparseArray<T>` 的 `size` 是活值数，`extent` 是槽位上界，`capacity` 是槽存储容量。`emplace` 返回下标，先 LIFO 复用空槽，空闲链为空才延伸 extent；`erase` 对空洞或不存在下标返回 false。`contains_index/try_at/find_index_from` 查询正常缺项或自指定起点查找下一个占用下标，`operator[]` 对缺项 contract-fatal。查询指针/引用和 `entries()` 禁止从临时对象借出；entries 按下标升序返回 `{index,value引用}`，const 版本只读。结构修改后重新取得迭代器。
 
@@ -151,7 +151,7 @@ seen.remove(7u);                            // 返回是否移除了成员
 
 ### Hash/Equal 与失败合同
 
-[Hash/Equal](../modules/core/foundation/include/foundation/hash.hpp) 是共同入口。Foundation 自己实现字节、整数和复合键哈希。`hash_bytes(Span<const std::byte>)` 用于显式选择按位相等的原始字节，`String/StringView` 与 `std::string/std::string_view` 共用同一透明字节混合（`std::wstring/std::wstring_view` 同理按宽字符字节混合）。Windows x64 上的数值与原 unordered_dense v5.3.0 兼容。字节实现沿用其 wyhash 派生算法，保留 [MIT 许可](../third_party/unordered_dense/LICENSE)。`hash_fields` 从非零种子起按字段顺序单次折叠混合（整数、枚举、指针直接混入位表示，其余类型取 `Hash<T>`），另为 `std::pair`（任一成员透明时同步支持透明异构查询）、`std::tuple`、`std::array` 和 `Optional` 提供同规则的 `is_avalanching` 组合 `Hash/Equal` 特化；TypeId 和 ObjectId 仍覆盖 Runtime 上下文、槽位以及 ObjectId 的代际。整数、枚举、指针使用一次 64 位乘法并折叠乘积的高低半部，其他类型沿用 `std::hash<T>`。哈希结果只服务进程内查询。[算法对照与 Renderer 实测](research/foundation-hash/README.md)
+[Hash/Equal](../modules/core/foundation/include/foundation/hash.hpp) 是共同入口。Foundation 自己实现字节、整数和复合键哈希。`hash_bytes(Span<const std::byte>)` 用于显式选择按位相等的原始字节，`String/StringView` 与 `std::string/std::string_view` 共用同一透明字节混合（`std::wstring/std::wstring_view` 同理按宽字符字节混合）。Windows x64 上的数值与原 unordered_dense v5.3.0 兼容。字节实现沿用其 wyhash 派生算法，保留 [MIT 许可](../third_party/unordered_dense/LICENSE)。`hash_fields` 从非零种子起按字段顺序单次折叠混合（整数、枚举、指针直接混入位表示，其余类型取 `Hash<T>`），另为 `std::pair`（任一成员透明时同步支持透明异构查询）、`std::tuple`、`std::array`、`Span`（位相等标量直接走多路 wyhash 字节范围混合，其余类型按混入长度种子后的逐元素折叠混合）、`Array`/`InlineArray`/`FixedArray`（直接继承 `Span<const T>` 的透明哈希与相等，支持以 `Span` 零分配查找）和 `Optional` 提供同规则的 `is_avalanching` 组合 `Hash/Equal` 特化；TypeId 和 ObjectId 仍覆盖 Runtime 上下文、槽位以及 ObjectId 的代际。整数、枚举、指针使用一次 64 位乘法并折叠乘积的高低半部，其他类型沿用 `std::hash<T>`。哈希结果只服务进程内查询。[算法对照与 Renderer 实测](research/foundation-hash/README.md)
 
 充分混合的策略声明 `using is_avalanching = void` 或 `std::true_type`，`std::false_type` 要求再次混合。`Hash<T>` 识别 `std::hash<T>` 上的类型标记。Map 默认构造策略；Set 也可通过 `Set(hash, equal)` 绑定具体策略实例。策略的复制、移动、交换、析构以及哈希和比较调用须不抛，结果转换也在检查范围内。需要外部上下文的策略可使用不可默认构造的引用包装器，调用方负责上下文的生命周期。Set 的复制携带绑定，release 释放缓冲并保留绑定。移动后，若两个策略均可不抛默认构造，源容器使用新的默认策略；若绑定是必需的，源容器保留策略副本，可继续使用。Map/Set 的元素须可不抛移动构造、移动赋值及析构。
 
@@ -221,7 +221,7 @@ StringView 的 `front/back/first/last/slice`、`remove_prefix/remove_suffix`、`
 
 `code_points()` 先验证整个视图，返回 `expected<CodePointRange, StringError>`，不以替换字符吞掉坏输入；成功范围逐项给出 `{char32_t value, byte_offset, byte_count}`，偏移与长度均为 UTF-8 字节，不是 UTF-16 单元或字素。空文本产生空范围，嵌入 NUL 是一个正常码点。校验后迭代器步进仅按首字节单遍推进且不分配；取得范围后必须保持来源内容不变。新增范围不注册为 Runtime 值，也不新增 Source 字符串遍历语法。
 
-Span 提供 `size/size_bytes/empty`、`front/back/operator[]/try_at`、`first/last/slice`、`explicit Span(std::span<T>)` 与 `std_span()`，以及 `as_bytes/as_writable_bytes` 字节视图转换。`Span<T>` 可转 `Span<const T>`，反向不允许。`const Span<T>` 只冻结描述本身，不冻结元素。只读元素必须写 `Span<const T>`。
+Span 提供 `size/size_bytes/empty`、`begin/end/rbegin/rend`、`front/back/operator[]/try_at`、`first/last/slice`、`remove_prefix/remove_suffix`、`starts_with/ends_with/strip_prefix/strip_suffix`、`find/find_last/contains`（支持起始偏移、异构等值目标及 1/2/4/8 字节位标量与单双精度浮点的运行期 SSE2 加速）、`find_if/find_last_if/contains_if/index_of`、`operator==/operator<=>`（位标量走 `memcmp`，单双精度浮点走遵循 IEEE-754 `-0.0`/`NaN` 规则的 SSE2 比较）、连续迭代器构造、左值连续范围隐式借用构造、`explicit Span(std::span<U, Extent>)` 与 `std_span()`，以及 `as_bytes/as_writable_bytes` 字节视图转换，并启用 `std::ranges::enable_borrowed_range` 与 `enable_view`。`Span<T>` 可转 `Span<const T>`，反向不允许；非借用型右值连续容器显式删除隐式/显式 `Span` 构造以阻断临时缓冲悬垂。`const Span<T>` 只冻结描述本身，不冻结元素。只读元素必须写 `Span<const T>`。
 
 Span 构造、索引和切片均 constexpr/noexcept（字节重解释转换除外）。空指针配非零数量、超过可表示的元素范围、越界索引或切片在 dev/release 都为合同 fatal；外部输入先由所属业务边界验证。合法的空 Span 与尾后空切片可用。切片复用来源的合法存储不变量，不重复验证构造条件。
 
@@ -245,9 +245,9 @@ Span 构造、索引和切片均 constexpr/noexcept（字节重解释转换除�
 
 ## Optional 的原生合同
 
-Optional 不承载错误；内部采用 `union` 存储，空值不构造 T，也不要求 T 默认可构造。payload 从偏移零开始，占 sizeof(T)，随后是 1 字节 engaged（0/1），总大小按 alignof(T) 向上补齐；不使用 niche 或 padding 压缩。复制、移动、赋值、emplace、`value_or`、`operator==` 和 swap 按 T 对应的 nothrow 能力提供，并全面支持 `constexpr`；当 T 满足对应平凡构析条件时，`Optional<T>` 保留平凡复制、平凡移动、平凡析构与 `std::is_implicit_lifetime_v` 性质。emplace 先销毁旧值，参数不能借用该旧值；reset/emplace/赋值使 payload 借用失效。
+Optional 不承载错误；内部采用 `union` 存储，空值不构造 T，也不要求 T 默认可构造。payload 从偏移零开始，占 sizeof(T)，随后是 1 字节 engaged（0/1），总大小按 alignof(T) 向上补齐；不使用 niche 或 padding 压缩。析构要求不抛异常；在项目全局禁异常契约下，复制、移动、跨类型 `Optional<U>` 转换构造/赋值（含编译期拦截从临时右值拥有型 `Optional<String>` / `Optional<Array<T>>` 向借用视图 `Optional<StringView>` / `Optional<Span<const T>>` 的悬垂转换）、值赋值（遵循 `LWG 2756` 同时支持 `opt = {a, b}` 聚合原地容量复用与 `opt = {}` 清空）、`in_place`/`emplace`（含 `initializer_list` 重载）、`take`、`transform`、`value_or`、`operator==/operator<=>`（含异构字面量与跨 `Optional<U>` 比较）、CTAD `Optional(T) -> Optional<T>` 和 swap 按 T 对应能力提供，并全面支持 `constexpr`；当 T 满足对应平凡构析条件时，`Optional<T>` 保留平凡复制、平凡移动、平凡析构与 `std::is_implicit_lifetime_v` 性质。emplace 先销毁旧值，参数不能借用该旧值；reset/emplace/take/赋值使 payload 借用失效。
 
-`has_value/bool` 查询状态；`try_get() &/const&` 缺席时返回 nullptr，`value_or(fallback)` 按 `const&` 或 `&&` 返回含值副本/移动值或转换后的默认值；`operator==` 支持与另一 `Optional<T>`、`T` 及 `std::nullopt` 比较。`operator*/operator->` 空访问为合同 fatal，所有指针/引用借用接口禁止临时对象。移动保留源 engaged；Optional<String> 的源含一个空 String，而不是空 Optional。不提供抛 bad_optional_access 的 value()。Runtime/Source 的接线由 Runtime 负责：通过回调访问，不读取 engaged 私有偏移，也不能自动把 Optional 中的引用作为 GC 根。
+`has_value/bool` 查询状态；`try_get() &/const&` 缺席时返回 nullptr，`take() &` 单出口 NRVO 提取移动值并将原 Optional 置空，`transform(fn)` 映射含值载荷或返回空 Optional，`value_or(fallback)` 按 `const&` 或 `&&` 返回含值副本/移动值或转换后的默认值；`operator==` 与 `operator<=>` 支持与另一 `Optional<U>`、`U` 及 `std::nullopt` 比较（空值小于任何含值 Optional），且当内部元素支持透明哈希时 `Hash<Optional<T>>` / `Equal<Optional<T>>` 同步支持 `Optional<U>` 与 `std::nullopt` 透明查询。`operator*/operator->` 空访问为合同 fatal，所有指针/引用借用与 `take` 接口禁止临时对象。移动保留源 engaged；Optional<String> 的源含一个空 String，而不是空 Optional。不提供抛 bad_optional_access 的 value()。Runtime/Source 的接线由 Runtime 负责：通过回调访问，不读取 engaged 私有偏移，也不能自动把 Optional 中的引用作为 GC 根。
 
 原生操作集为默认/`nullopt`/值（对可隐式转换至 `T` 的实参支持隐式构造，保留 `T` 自身的 `explicit` 边界，便于承载 `Optional<FunctionRef<...>>` 等可选同步参数）/`in_place` 构造、复制/移动构造和赋值、`nullopt` 赋值、`reset/emplace/swap`、`value_or`、`operator==`，以及上述查询和借用接口。普通操作均 noexcept；`emplace` 返回新值引用，不能保存临时 Optional 的该引用到完整表达式之后。该类型表示缺席而不是可恢复失败；业务失败使用 Result。尚未开放 Runtime/Source/反射/JIT 注册。
 

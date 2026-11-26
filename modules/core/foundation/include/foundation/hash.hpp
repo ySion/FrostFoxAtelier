@@ -18,7 +18,12 @@ namespace atelier {
 template <class T>
 class Optional;
 
+template <class T>
+class Array;
+
 namespace detail {
+template <class T, std::size_t N, bool Spill>
+class InlineSequence;
 template <class H>
 inline constexpr bool hash_is_avalanching_v = [] {
     if constexpr (requires { typename H::is_avalanching; }) {
@@ -112,8 +117,12 @@ template <detail::FieldHashable... T>
 
 template <class T>
 struct Equal {
-    [[nodiscard]] bool operator()(const T& left, const T& right) const
-        noexcept(noexcept(static_cast<bool>(left == right))) {
+    [[nodiscard]] constexpr bool operator()(const T& left, const T& right) const
+        noexcept(noexcept(static_cast<bool>(left == right)))
+        requires requires {
+            { left == right } -> std::convertible_to<bool>;
+        }
+    {
         return static_cast<bool>(left == right);
     }
 };
@@ -345,8 +354,82 @@ struct Equal<std::array<T, N>> {
     }
 };
 
+namespace detail {
+template <class S, class V>
+concept SpanLikeOf = std::is_nothrow_convertible_v<const S&, Span<const V>>;
+}
+
+template <class T>
+    requires detail::HashableElement<std::remove_const_t<T>>
+struct Hash<Span<T>> {
+    using is_transparent = void;
+
+    using is_avalanching = void;
+
+    template <detail::SpanLikeOf<std::remove_const_t<T>> S = Span<T>>
+    [[nodiscard]] std::size_t operator()(const S& source) const noexcept {
+        using V = std::remove_const_t<T>;
+        const Span<const V> values{source};
+        if constexpr (detail::BitwiseScalar<V>) {
+            return detail::hash_byte_range(reinterpret_cast<const std::byte*>(values.data()), values.size_bytes());
+        } else {
+            std::uint64_t state = detail::multiply_fold(detail::hash_seed ^ values.size(), detail::hash_constants[0]);
+            for (const auto& element : values)
+                state = detail::hash_element_step<V>(state, element);
+            return state;
+        }
+    }
+};
+
+template <class T>
+    requires detail::EquatableElement<std::remove_const_t<T>>
+struct Equal<Span<T>> {
+    using is_transparent = void;
+
+    template <detail::SpanLikeOf<std::remove_const_t<T>> L = Span<T>,
+              detail::SpanLikeOf<std::remove_const_t<T>> R = Span<T>>
+    [[nodiscard]] constexpr bool operator()(const L& left_source, const R& right_source) const noexcept {
+        using V = std::remove_const_t<T>;
+        const Span<const V> left{left_source};
+        const Span<const V> right{right_source};
+        if constexpr (detail::BitwiseScalar<V> || std::floating_point<V>) {
+            return left == right;
+        } else {
+            if (left.size() != right.size())
+                return false;
+            for (std::size_t i = 0; i < left.size(); ++i)
+                if (!Equal<V>{}(left[i], right[i]))
+                    return false;
+            return true;
+        }
+    }
+};
+
 template <detail::HashableElement T>
-struct Hash<Optional<T>> {
+struct Hash<Array<T>> : Hash<Span<const T>> {};
+
+template <detail::EquatableElement T>
+struct Equal<Array<T>> : Equal<Span<const T>> {};
+
+template <detail::HashableElement T, std::size_t N, bool Spill>
+struct Hash<detail::InlineSequence<T, N, Spill>> : Hash<Span<const T>> {};
+
+template <detail::EquatableElement T, std::size_t N, bool Spill>
+struct Equal<detail::InlineSequence<T, N, Spill>> : Equal<Span<const T>> {};
+
+namespace detail {
+template <class T>
+struct OptionalTransparency {};
+
+template <class T>
+    requires TransparentPolicyPair<Hash<T>, Equal<T>>
+struct OptionalTransparency<T> {
+    using is_transparent = void;
+};
+}
+
+template <detail::HashableElement T>
+struct Hash<Optional<T>> : detail::OptionalTransparency<T> {
     using is_avalanching = void;
 
     [[nodiscard]] std::size_t operator()(const Optional<T>& value) const noexcept {
@@ -354,15 +437,53 @@ struct Hash<Optional<T>> {
             return detail::hash_element_step<T>(detail::hash_seed, *present);
         return UINT64_C(0x9e3779b97f4a7c15);
     }
+
+    [[nodiscard]] std::size_t operator()(std::nullopt_t) const noexcept
+        requires detail::TransparentPolicyPair<Hash<T>, Equal<T>>
+    {
+        return UINT64_C(0x9e3779b97f4a7c15);
+    }
+
+    template <class U>
+        requires(!std::same_as<U, T>) && detail::TransparentPolicyPair<Hash<T>, Equal<T>> &&
+                detail::HashQuery<T, U, Hash<T>, Equal<T>>
+    [[nodiscard]] std::size_t operator()(const Optional<U>& value) const noexcept {
+        if (const auto* present = value.try_get())
+            return detail::hash_element_step<T>(detail::hash_seed, *present);
+        return UINT64_C(0x9e3779b97f4a7c15);
+    }
 };
 
 template <detail::EquatableElement T>
-struct Equal<Optional<T>> {
+struct Equal<Optional<T>> : detail::OptionalTransparency<T> {
     [[nodiscard]] constexpr bool operator()(const Optional<T>& left, const Optional<T>& right) const noexcept {
         const auto* a = left.try_get();
         const auto* b = right.try_get();
         if (!a || !b)
             return a == b;
+        return Equal<T>{}(*a, *b);
+    }
+
+    template <class U>
+        requires detail::TransparentPolicyPair<Hash<T>, Equal<T>>
+    [[nodiscard]] constexpr bool operator()(std::nullopt_t, const Optional<U>& right) const noexcept {
+        return !right.has_value();
+    }
+
+    template <class U>
+        requires detail::TransparentPolicyPair<Hash<T>, Equal<T>>
+    [[nodiscard]] constexpr bool operator()(const Optional<U>& left, std::nullopt_t) const noexcept {
+        return !left.has_value();
+    }
+
+    template <class U, class V>
+        requires(!std::same_as<U, T> || !std::same_as<V, T>) && detail::TransparentPolicyPair<Hash<T>, Equal<T>> &&
+                std::is_nothrow_invocable_r_v<bool, const Equal<T>&, const U&, const V&>
+    [[nodiscard]] constexpr bool operator()(const Optional<U>& left, const Optional<V>& right) const noexcept {
+        const auto* a = left.try_get();
+        const auto* b = right.try_get();
+        if (!a || !b)
+            return !a && !b;
         return Equal<T>{}(*a, *b);
     }
 };

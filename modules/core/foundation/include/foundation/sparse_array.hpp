@@ -158,12 +158,14 @@ public:
         }
         const auto index = free_head_ == npos ? extent() : free_head_;
         if (index == extent()) {
-            occupied_.resize(index + 1);
             std::construct_at(slots_ + index);
-        } else
+            std::construct_at(std::addressof(slots_[index].value), std::forward<Args>(args)...);
+            occupied_.add(true);
+        } else {
             free_head_ = slots_[index].next;
-        std::construct_at(std::addressof(slots_[index].value), std::forward<Args>(args)...);
-        occupied_.set(index);
+            std::construct_at(std::addressof(slots_[index].value), std::forward<Args>(args)...);
+            occupied_.set(index);
+        }
         ++size_;
         return index;
     }
