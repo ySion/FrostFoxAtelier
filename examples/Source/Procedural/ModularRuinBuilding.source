@@ -1,6 +1,20 @@
 // Modular Ruin Building layout & rubble stages for FrostFox Atelier Examples.
 // Demonstrates L3 multi-output quad/polyline/point emission + per-primitive Extrude & Sweep articulation.
 
+const Array<vector2> game.FACADE_ORIGIN_SIGNS = {
+    vector2( 1.0f, -1.0f),
+    vector2(-1.0f,  1.0f),
+    vector2( 1.0f,  1.0f),
+    vector2(-1.0f, -1.0f),
+};
+
+const Array<vector3> game.FACADE_U_AXES = {
+    vector3(-1.0f, 0.0f,  0.0f),
+    vector3( 1.0f, 0.0f,  0.0f),
+    vector3( 0.0f, 0.0f, -1.0f),
+    vector3( 0.0f, 0.0f,  1.0f),
+};
+
 float game.ruin_survival_ceiling(uint seed,
                                  float x,
                                  float z,
@@ -122,8 +136,9 @@ class game.ModularBuildingLayout : procedural.Node {
               math.is_finite(c_angle))) {
             fail("ModularBuildingLayout parameters must be finite.");
         }
-        if (w < 3.0f || d < 3.0f || n_floors < 1 || fh < 1.6f || target_bay < 1.0f) {
-            fail("ModularBuildingLayout dimensions are below minimum structural bounds.");
+        if (w < 3.0f || w > 4096.0f || d < 3.0f || d > 4096.0f || n_floors < 1 || n_floors > 256 || fh < 1.6f ||
+            target_bay < 1.0f) {
+            fail("ModularBuildingLayout dimensions are outside structural bounds.");
         }
 
         const uint mixed_seed = procedural.hash2(context.seed, self.seed);
@@ -136,21 +151,21 @@ class game.ModularBuildingLayout : procedural.Node {
         const float half_d = 0.5f * d;
         const float half_span = math.length(vector2(half_w, half_d));
 
+        const uint max_panels = 2u * (bays_x + bays_z) * (2u + uint(n_floors) * 8u);
         Array<vector3> wall_pts;
         Array<uint> wall_quads;
         Array<float> wall_dists;
         Array<float> wall_insets;
+        wall_pts.reserve(max_panels * 4u);
+        wall_quads.reserve(max_panels * 4u);
+        wall_dists.reserve(max_panels);
+        wall_insets.reserve(max_panels);
 
         // 1. Build all 4 facades: 0 = Front (-Z), 1 = Back (+Z), 2 = Right (+X), 3 = Left (-X).
         for (uint side = 0; side < 4; side += 1) {
-            const vector3 origin = side == 0 ? vector3(half_w, 0.0f, -half_d)
-                                 : side == 1 ? vector3(-half_w, 0.0f, half_d)
-                                 : side == 2 ? vector3(half_w, 0.0f, half_d)
-                                             : vector3(-half_w, 0.0f, -half_d);
-            const vector3 u_axis = side == 0 ? vector3(-1.0f, 0.0f, 0.0f)
-                                 : side == 1 ? vector3(1.0f, 0.0f, 0.0f)
-                                 : side == 2 ? vector3(0.0f, 0.0f, -1.0f)
-                                             : vector3(0.0f, 0.0f, 1.0f);
+            const vector2 sign = game.FACADE_ORIGIN_SIGNS[side];
+            const vector3 origin = vector3(sign.x * half_w, 0.0f, sign.y * half_d);
+            const vector3 u_axis = game.FACADE_U_AXES[side];
             const float span = side < 2 ? w : d;
             const uint n_bays = side < 2 ? bays_x : bays_z;
             const float bw = span / float(n_bays);
@@ -245,8 +260,11 @@ class game.ModularBuildingLayout : procedural.Node {
         self.set_float("ext_inset", procedural.Layer::primitive, wall_insets, 0u);
 
         // 2. Foundation floor plates, exterior podium apron, porch steps, and fractured upper gallery slabs.
+        const uint max_slabs = bays_x * bays_z * uint(n_floors) + 6u;
         Array<vector3> slab_pts;
         Array<uint> slab_quads;
+        slab_pts.reserve(max_slabs * 4u);
+        slab_quads.reserve(max_slabs * 4u);
 
         const float cell_w = w / float(bays_x);
         const float cell_d = d / float(bays_z);
@@ -284,12 +302,16 @@ class game.ModularBuildingLayout : procedural.Node {
         self.emit_quads(slab_pts, slab_quads, 1u);
 
         // 3. Exposed gabled timber ridge beam and paired rafters (clipped by collapse front).
+        const uint rafter_pairs = bays_z * 2 + 1;
+        const uint max_timbers = rafter_pairs * 2u + bays_z;
         Array<vector3> timber_pts;
         Array<uint> timber_vp;
         Array<uint> timber_off;
+        timber_pts.reserve(max_timbers * 2u);
+        timber_vp.reserve(max_timbers * 2u);
+        timber_off.reserve(max_timbers + 1u);
         timber_off.add(0u);
 
-        const uint rafter_pairs = bays_z * 2 + 1;
         const float overhang_x = 0.38f;
         const float overhang_z = 0.35f;
         for (uint rf = 0; rf < rafter_pairs; rf += 1) {
@@ -342,6 +364,7 @@ class game.ModularBuildingLayout : procedural.Node {
         // 4. Rubble & sanctuary relic candidate points around collapsed zone + exterior colonnade.
         Array<vector3> cand_pts;
         const uint cand_count = 36;
+        cand_pts.reserve(cand_count);
         for (uint k = 0; k < cand_count; k += 1) {
             const uint h1 = procedural.hash2(mixed_seed, k * 3 + 1);
             const uint h2 = procedural.hash2(mixed_seed, k * 3 + 2);
@@ -428,10 +451,20 @@ class game.RuinRubbleGrounder : procedural.Node {
         }
 
         const float min_dist_sq = spacing * spacing;
+        uint valid_count = 0u;
+        for (uint idx = 0u; idx < count; idx += 1u) {
+            if (decisions[idx].valid) {
+                valid_count += 1u;
+            }
+        }
         Array<vector3> out_P;
         Array<quaternion> out_orient;
         Array<float> out_scale;
         Array<uint> out_variant;
+        out_P.reserve(valid_count);
+        out_orient.reserve(valid_count);
+        out_scale.reserve(valid_count);
+        out_variant.reserve(valid_count);
 
         for (uint idx = 0; idx < count; idx += 1) {
             const game.PropDecision d = decisions[idx];

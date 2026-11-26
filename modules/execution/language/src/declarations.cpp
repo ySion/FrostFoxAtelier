@@ -20,7 +20,9 @@ std::expected<std::string, Diagnostic> detail::parse_presentation_text(Tokens& t
     return text;
 }
 
-std::expected<std::string_view, Diagnostic> detail::peek_attributed_keyword(const Tokens& tokens) {
+std::expected<std::string_view, Diagnostic> detail::peek_declaration_keyword(const Tokens& tokens) {
+    if (tokens.token_.text != "[")
+        return tokens.token_.text;
     auto probe = tokens;
     while (probe.token_.text == "[") {
         ATELIER_TRY(probe.consume());
@@ -31,6 +33,8 @@ std::expected<std::string_view, Diagnostic> detail::peek_attributed_keyword(cons
         }
         ATELIER_TRY(probe.consume());
     }
+    if (probe.token_.text == "const")
+        return reject(tokens.token_.position, "Attributes do not apply to module constants.");
     return probe.token_.text;
 }
 
@@ -79,6 +83,25 @@ std::expected<void, Diagnostic> detail::skip_constant_initializer(Tokens& tokens
     }
 }
 
+std::expected<std::size_t, Diagnostic> detail::skip_function_body(Tokens& tokens) {
+    ATELIER_TRY(tokens.expect("{"));
+    std::size_t depth = 1;
+    std::size_t end_offset = 0;
+    while (depth) {
+        if (tokens.token_.kind == Token::Kind::end)
+            return reject(tokens.token_.position, "Expected '}' to close the function body.");
+        if (tokens.token_.text == "{")
+            ++depth;
+        else if (tokens.token_.text == "}") {
+            --depth;
+            if (depth == 0)
+                end_offset = tokens.token_.position.offset + tokens.token_.text.size();
+        }
+        ATELIER_TRY(tokens.consume());
+    }
+    return end_offset;
+}
+
 std::expected<TypeName, Diagnostic> detail::parse_type_name(Tokens& tokens) {
     TypeName result;
     for (;;) {
@@ -103,12 +126,12 @@ std::expected<TypeName, Diagnostic> detail::parse_type_name(Tokens& tokens) {
     return result;
 }
 
-std::expected<TypeDeclaration, Diagnostic> detail::parse_type_declaration(Tokens& tokens) {
+std::expected<TypeDeclaration, Diagnostic> detail::parse_type_declaration(Tokens& tokens,
+                                                                          std::string_view target_keyword) {
     TypeDeclaration result;
     result.position = tokens.token_.position;
-    std::string_view target_keyword = tokens.token_.text;
-    if (target_keyword == "[") {
-        ATELIER_TRY_ASSIGN(target_keyword, peek_attributed_keyword(tokens));
+    if (target_keyword.empty()) {
+        ATELIER_TRY_ASSIGN(target_keyword, peek_declaration_keyword(tokens));
     }
     bool seen_flags = false;
     bool seen_desc = false;
@@ -387,17 +410,11 @@ std::expected<std::vector<TypeDeclaration>, Diagnostic> collect_declarations(std
     auto& tokens = *created;
     std::vector<TypeDeclaration> result;
     while (tokens.token_.kind != Token::Kind::end) {
-        bool is_type = tokens.token_.text == "enum" || tokens.token_.text == "struct";
-        if (tokens.token_.text == "[") {
-            ATELIER_TRY_BIND(target, peek_attributed_keyword(tokens));
-            if (*target == "const")
-                return reject(tokens.token_.position, "Attributes do not apply to module constants.");
-            is_type = *target == "enum" || *target == "struct";
-        }
-        if (is_type) {
+        ATELIER_TRY_BIND(keyword, peek_declaration_keyword(tokens));
+        if (*keyword == "enum" || *keyword == "struct") {
             if (result.size() == 1024)
                 return reject(tokens.token_.position, "A source module supports at most 1024 type declarations.");
-            ATELIER_TRY_BIND(declaration, parse_type_declaration(tokens));
+            ATELIER_TRY_BIND(declaration, parse_type_declaration(tokens, *keyword));
             if (std::ranges::any_of(result, [&](const auto& other) { return other.name == declaration->name; }))
                 return reject(declaration->position, "Duplicate source type name.");
             result.push_back(std::move(*declaration));
@@ -412,24 +429,12 @@ std::expected<std::vector<TypeDeclaration>, Diagnostic> collect_declarations(std
         ATELIER_TRY(parse_description_attribute(tokens, "function"));
         // Function syntax and bodies are checked by the full typed parser.
         // The lexer skips comments, keeps strings whole and tracks author positions.
-        for (;;) {
-            ATELIER_TRY_BIND(open, tokens.accept("{"));
-            if (*open)
-                break;
+        while (tokens.token_.text != "{") {
             if (tokens.token_.kind == Token::Kind::end)
                 return reject(tokens.token_.position, "Expected a function body.");
             ATELIER_TRY(tokens.consume());
         }
-        std::size_t depth = 1;
-        while (depth) {
-            if (tokens.token_.kind == Token::Kind::end)
-                return reject(tokens.token_.position, "Expected '}' to close the function body.");
-            if (tokens.token_.text == "{")
-                ++depth;
-            if (tokens.token_.text == "}")
-                --depth;
-            ATELIER_TRY(tokens.consume());
-        }
+        ATELIER_TRY(skip_function_body(tokens));
     }
     std::ranges::sort(result, {}, &TypeDeclaration::name);
     return result;

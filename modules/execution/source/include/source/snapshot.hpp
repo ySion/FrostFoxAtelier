@@ -71,4 +71,7 @@ struct FunctionInfo {
 
 // The source tree's assets/engine while it exists, otherwise engine/ beside the executable.
 [[nodiscard]] std::filesystem::path default_engine_root();
+
+// Formats a committed Runtime value or enum TypeId using its canonical Source spelling.
+[[nodiscard]] Result<std::string> source_type_name(const Runtime&, TypeId);
 }

@@ -782,6 +782,9 @@ struct NativeLayout {
 
     bool trivially_destructible{};
 
+    // True only for 3-word {data, size, capacity} mutable Array<T> definitions.
+    bool standard_array_layout{};
+
     // This specific constructor produces a repeatable, byte-copyable default without per-instance effects.
     // Replacing construct automatically revokes the qualification.
     decltype(construct) prototype_constructor{};
@@ -1075,6 +1078,9 @@ struct TypeInfo {
     Result<void> (*sequence_mutate)(SequenceMutation, void*, const void*, std::size_t) noexcept {};
 
     bool value_operations_preserve_borrows{};
+
+    // True when `kind == array` uses the standard 3-word {data, size, capacity} storage of Array<T> or DescribedArray.
+    bool standard_array_layout{};
 
     // Assigned exclusively when Runtime bootstraps its canonical math types.
     // User definitions cannot acquire compiler intrinsic semantics by naming.

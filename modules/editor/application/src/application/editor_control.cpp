@@ -1509,14 +1509,7 @@ struct EditorControl::Impl {
                 if (enum_info.flags || std::ranges::any_of(enum_info.metadata, [](const auto& m) {
                         return !m.label.empty() || !m.description.empty();
                     })) {
-                    ATELIER_TRY_BIND(enumerators, result.array(field, "enumerators"));
-                    for (std::size_t i = 0; i < enum_info.values.size(); ++i) {
-                        const auto item = result.append_object(*enumerators);
-                        ATELIER_TRY(result.set(item, "name", enum_info.values[i].first));
-                        ATELIER_TRY(result.set(item, "value", static_cast<std::uint64_t>(enum_info.values[i].second)));
-                        ATELIER_TRY(result.set(item, "label", enum_info.metadata[i].label));
-                        ATELIER_TRY(result.set(item, "description", enum_info.metadata[i].description));
-                    }
+                    ATELIER_TRY(write_enumerators(runtime, result, field, enum_info));
                 }
             }
             if (property.transient)
@@ -3021,30 +3014,51 @@ struct EditorControl::Impl {
         return clause;
     }
 
-    Result<std::string> format_runtime_source_type(Runtime& runtime, TypeId id) const {
-        if (const auto b = runtime.native_type<bool>(); b && id == *b)
-            return std::string("bool");
-        if (const auto i = runtime.native_type<std::int32_t>(); i && id == *i)
-            return std::string("int");
-        if (const auto u = runtime.native_type<std::uint32_t>(); u && id == *u)
-            return std::string("uint");
-        if (const auto f = runtime.native_type<float>(); f && id == *f)
-            return std::string("float");
-        if (const auto d = runtime.native_type<double>(); d && id == *d)
-            return std::string("double");
-        if (const auto s = runtime.native_type<String>(); s && id == *s)
-            return std::string("String");
-        ATELIER_TRY_BIND(described, runtime.describe(id));
-        const TypeInfo& info = **described;
-        if (info.math)
-            return std::string(math::short_name(info.math));
-        if (info.kind == TypeKind::array && info.element) {
-            if (!info.sequence_mutate && !info.name.starts_with("__source_array."))
-                return info.name;
-            ATELIER_TRY_BIND(elem, format_runtime_source_type(runtime, *info.element));
-            return "Array<" + *elem + ">";
+    static std::expected<void, Failure> write_enumerators(Runtime& runtime, json::Builder& result, json::Value parent,
+                                                          const TypeInfo::Enumeration& enum_info) {
+        const auto i32_type = runtime.native_type<std::int32_t>();
+        const bool signed_enum = i32_type && enum_info.underlying == *i32_type;
+        ATELIER_TRY_BIND(enums_arr, result.array(parent, "enumerators"));
+        for (std::size_t i = 0; i < enum_info.values.size(); ++i) {
+            const auto e_obj = result.append_object(*enums_arr);
+            ATELIER_TRY(result.set(e_obj, "name", enum_info.values[i].first));
+            if (signed_enum) {
+                ATELIER_TRY(
+                    result.set(e_obj, "value",
+                               static_cast<std::int64_t>(std::bit_cast<std::int32_t>(enum_info.values[i].second))));
+            } else {
+                ATELIER_TRY(result.set(e_obj, "value", static_cast<std::uint64_t>(enum_info.values[i].second)));
+            }
+            ATELIER_TRY(result.set(e_obj, "label", enum_info.metadata[i].label));
+            ATELIER_TRY(result.set(e_obj, "description", enum_info.metadata[i].description));
         }
-        return info.name;
+        return {};
+    }
+
+    static std::expected<json::Value, Failure> append_library_parameter(json::Builder& result, json::Value params_arr,
+                                                                        std::string& sig, bool comma,
+                                                                        std::string_view name, std::string_view type,
+                                                                        ParameterPassing passing) {
+        if (comma)
+            sig += ", ";
+        sig += format_param_clause(type, passing, name);
+        const auto p_obj = result.append_object(params_arr);
+        ATELIER_TRY(result.set(p_obj, "name", name));
+        ATELIER_TRY(result.set(p_obj, "type", type));
+        result.set_validated(p_obj, "passing", passing_mode_name(passing));
+        return p_obj;
+    }
+
+    static std::expected<void, Failure> finish_library_callable(json::Builder& result, json::Value item,
+                                                                std::string_view name, std::string_view return_type,
+                                                                std::string_view signature, bool parallel_safe,
+                                                                std::string_view description) {
+        ATELIER_TRY(result.set(item, "name", name));
+        ATELIER_TRY(result.set(item, "return_type", return_type));
+        ATELIER_TRY(result.set(item, "signature", signature));
+        ATELIER_TRY(result.set(item, "parallel_safe", parallel_safe));
+        ATELIER_TRY(result.set(item, "description", description));
+        return {};
     }
 
     std::expected<json::Document, Failure> graph_library(json::Value args) {
@@ -3053,9 +3067,12 @@ struct EditorControl::Impl {
         if (const auto p = *args.find("prefix")) {
             ATELIER_TRY_ASSIGN(prefix, text(*p, 256));
         }
-        std::string symbol;
+        std::optional<std::string> symbol;
         if (const auto s = *args.find("symbol")) {
-            ATELIER_TRY_ASSIGN(symbol, text(*s, 256));
+            ATELIER_TRY_BIND(parsed, text(*s, 256));
+            if (parsed->empty())
+                return std::unexpected(Failure("invalid_request", "symbol requires a non-empty name"));
+            symbol = std::move(*parsed);
         }
         auto& doc = *app.document_;
         ATELIER_TRY_BIND(program_res, operation(doc.procedural_source_program()));
@@ -3068,8 +3085,8 @@ struct EditorControl::Impl {
         if (program) {
             std::vector<const source::FunctionInfo*> matched_fns;
             for (const auto& fn : program->functions()) {
-                if (!symbol.empty()) {
-                    if (fn.name != symbol)
+                if (symbol) {
+                    if (fn.name != *symbol)
                         continue;
                 } else if (!fn.engine_module.empty() && fn.description.empty()) {
                     continue;
@@ -3081,100 +3098,132 @@ struct EditorControl::Impl {
             std::ranges::sort(matched_fns, {}, &source::FunctionInfo::name);
             for (const auto* fn : matched_fns) {
                 const auto item = result.append_object(*functions_arr);
-                ATELIER_TRY(result.set(item, "name", fn->name));
                 ATELIER_TRY(result.set(item, "module", fn->engine_module.empty() ? "project" : fn->engine_module));
-                ATELIER_TRY(result.set(item, "return_type", fn->return_type));
                 std::string sig = fn->return_type + " " + fn->name + "(";
                 ATELIER_TRY_BIND(params_arr, result.array(item, "parameters"));
                 for (std::size_t p = 0; p < fn->parameters.size(); ++p) {
                     const auto& param = fn->parameters[p];
-                    if (p > 0)
-                        sig += ", ";
-                    sig += format_param_clause(param.type, param.passing, param.name);
-                    const auto p_obj = result.append_object(*params_arr);
-                    ATELIER_TRY(result.set(p_obj, "name", param.name));
-                    ATELIER_TRY(result.set(p_obj, "type", param.type));
-                    result.set_validated(p_obj, "passing", passing_mode_name(param.passing));
+                    ATELIER_TRY_BIND(p_obj, append_library_parameter(result, *params_arr, sig, p > 0, param.name,
+                                                                     param.type, param.passing));
                     if (param.passing == ParameterPassing::reference && param.mutates_structure)
-                        ATELIER_TRY(result.set(p_obj, "mutates_structure", true));
+                        ATELIER_TRY(result.set(*p_obj, "mutates_structure", true));
                 }
-                sig += ")";
-                ATELIER_TRY(result.set(item, "signature", sig));
-                ATELIER_TRY(result.set(item, "parallel_safe", fn->parallel_safe));
-                ATELIER_TRY(result.set(item, "description", fn->description));
+                sig += ')';
+                ATELIER_TRY(finish_library_callable(result, item, fn->name, fn->return_type, sig, fn->parallel_safe,
+                                                    fn->description));
             }
         }
 
         ATELIER_TRY_BIND(methods_arr, result.array(root, "node_methods"));
         ATELIER_TRY_BIND(node_base, operation(runtime.native_type<procedural::Node>()));
         ATELIER_TRY_BIND(node_info, operation(runtime.describe(*node_base)));
+        const auto matches_qualified = [](std::string_view query, std::string_view qualifier, std::string_view member) {
+            return query.size() == qualifier.size() + member.size() && query.starts_with(qualifier) &&
+                   query.ends_with(member);
+        };
+        const auto prefix_matches_qualified = [](std::string_view pref, std::string_view qualifier,
+                                                 std::string_view member) {
+            if (pref.size() <= qualifier.size())
+                return qualifier.starts_with(pref);
+            return pref.starts_with(qualifier) && member.starts_with(pref.substr(qualifier.size()));
+        };
+        std::vector<std::string> method_param_types;
         for (const auto& method : (*node_info)->methods) {
             if (!method.preserves_borrows)
                 continue;
-            const std::string self_qualified = "self." + method.name;
-            const std::string type_qualified = "procedural.Node." + method.name;
-            if (!symbol.empty() && method.name != symbol && self_qualified != symbol && type_qualified != symbol)
+            if (symbol && method.name != *symbol && !matches_qualified(*symbol, "self.", method.name) &&
+                !matches_qualified(*symbol, "procedural.Node.", method.name))
                 continue;
-            if (!prefix.empty() && !method.name.starts_with(prefix) && !self_qualified.starts_with(prefix) &&
-                !type_qualified.starts_with(prefix))
+            if (!prefix.empty() && !method.name.starts_with(prefix) &&
+                !prefix_matches_qualified(prefix, "self.", method.name) &&
+                !prefix_matches_qualified(prefix, "procedural.Node.", method.name))
                 continue;
             std::string ret_type = "void";
             if (method.signature.result) {
-                ATELIER_TRY_ASSIGN(ret_type,
-                                   operation(format_runtime_source_type(runtime, method.signature.result->type)));
+                auto projected = source::source_type_name(runtime, method.signature.result->type);
+                if (!projected) {
+                    if (projected.error().code == ErrorCode::invalid_type)
+                        continue;
+                    return std::unexpected(operation(std::move(projected)).error());
+                }
+                ret_type = std::move(*projected);
             }
+            method_param_types.clear();
+            bool native_only = false;
+            for (const auto& param : method.signature.parameters) {
+                auto projected = source::source_type_name(runtime, param.type);
+                if (!projected) {
+                    if (projected.error().code == ErrorCode::invalid_type) {
+                        native_only = true;
+                        break;
+                    }
+                    return std::unexpected(operation(std::move(projected)).error());
+                }
+                method_param_types.push_back(std::move(*projected));
+            }
+            if (native_only)
+                continue;
             const auto item = result.append_object(*methods_arr);
-            ATELIER_TRY(result.set(item, "name", method.name));
-            ATELIER_TRY(result.set(item, "return_type", ret_type));
             std::string sig = ret_type + " self." + method.name + "(";
             ATELIER_TRY_BIND(params_arr, result.array(item, "parameters"));
             for (std::size_t p = 0; p < method.signature.parameters.size(); ++p) {
                 const auto& param = method.signature.parameters[p];
-                ATELIER_TRY_BIND(ptype, operation(format_runtime_source_type(runtime, param.type)));
                 const std::string_view pname = p < method.parameter_names.size()
                                                    ? std::string_view{method.parameter_names[p]}
                                                    : std::string_view{};
-                if (p > 0)
-                    sig += ", ";
-                sig += format_param_clause(*ptype, param.passing, pname);
-                const auto p_obj = result.append_object(*params_arr);
-                ATELIER_TRY(result.set(p_obj, "name", pname));
-                ATELIER_TRY(result.set(p_obj, "type", *ptype));
-                result.set_validated(p_obj, "passing", passing_mode_name(param.passing));
+                ATELIER_TRY_BIND(p_obj, append_library_parameter(result, *params_arr, sig, p > 0, pname,
+                                                                 method_param_types[p], param.passing));
                 if (p < method.parameter_defaults.size() && method.parameter_defaults[p]) {
                     ATELIER_TRY_BIND(def_type, operation(runtime.describe(param.type)));
                     ATELIER_TRY_BIND(def_json, scalar_json(*method.parameter_defaults[p], **def_type));
-                    result.set_validated(p_obj, "default", def_json->root());
+                    result.set_validated(*p_obj, "default", def_json->root());
                 }
             }
-            sig += ")";
-            ATELIER_TRY(result.set(item, "signature", sig));
-            ATELIER_TRY(result.set(item, "parallel_safe", false));
-            ATELIER_TRY(result.set(item, "description", method.description));
+            sig += ')';
+            ATELIER_TRY(finish_library_callable(result, item, method.name, ret_type, sig, false, method.description));
         }
 
         ATELIER_TRY_BIND(types_arr, result.array(root, "value_types"));
+        const auto is_engine_namespace = [&](std::string_view type_name) {
+            if (!program)
+                return false;
+            for (const auto& mod : program->engine_modules())
+                if (type_name.size() > mod.size() && type_name.starts_with(mod) && type_name[mod.size()] == '.')
+                    return true;
+            return false;
+        };
         std::vector<const TypeInfo*> matched_types;
-        for (const auto type_id : runtime.types()) {
+        const auto consider_type = [&](TypeId type_id) -> std::expected<void, Failure> {
             ATELIER_TRY_BIND(described, operation(runtime.describe(type_id)));
             const TypeInfo& info = **described;
             if (info.kind != TypeKind::record && info.kind != TypeKind::enumeration)
-                continue;
-            if (info.math || info.name.starts_with("editor.") || info.name.starts_with("__source_array.") ||
-                info.name.starts_with("core."))
-                continue;
+                return {};
+            if (info.math || info.contains_references || info.name.starts_with("core."))
+                return {};
             if (info.native_storage && !info.name.starts_with("procedural."))
-                continue;
-            if (symbol.empty() && !info.native_storage && info.name.starts_with("procedural.") &&
-                info.description.empty())
-                continue;
-            if (!symbol.empty() && info.name != symbol)
-                continue;
+                return {};
+            if (!symbol && (info.native_storage || is_engine_namespace(info.name)) && info.description.empty())
+                return {};
+            if (symbol && info.name != *symbol)
+                return {};
             if (!prefix.empty() && !info.name.starts_with(prefix))
-                continue;
+                return {};
+            if (auto projected = source::source_type_name(runtime, type_id); !projected) {
+                if (projected.error().code == ErrorCode::invalid_type)
+                    return {};
+                return std::unexpected(operation(std::move(projected)).error());
+            }
             matched_types.push_back(&info);
+            return {};
+        };
+        if (symbol) {
+            if (const auto found = runtime.find_type(*symbol))
+                ATELIER_TRY(consider_type(*found));
+        } else {
+            for (const auto type_id : runtime.types())
+                ATELIER_TRY(consider_type(type_id));
+            std::ranges::sort(matched_types, {}, &TypeInfo::name);
         }
-        std::ranges::sort(matched_types, {}, &TypeInfo::name);
         for (const auto* info : matched_types) {
             const auto item = result.append_object(*types_arr);
             ATELIER_TRY(result.set(item, "name", info->name));
@@ -3182,30 +3231,20 @@ struct EditorControl::Impl {
             ATELIER_TRY(result.set(item, "description", info->description));
             if (info->enumeration) {
                 const auto& enum_info = *info->enumeration;
-                const auto i32_type = runtime.native_type<std::int32_t>();
-                const bool signed_enum = i32_type && enum_info.underlying == *i32_type;
                 if (enum_info.flags)
                     ATELIER_TRY(result.set(item, "flags", true));
-                ATELIER_TRY_BIND(enums_arr, result.array(item, "enumerators"));
-                for (std::size_t i = 0; i < enum_info.values.size(); ++i) {
-                    const auto e_obj = result.append_object(*enums_arr);
-                    ATELIER_TRY(result.set(e_obj, "name", enum_info.values[i].first));
-                    if (signed_enum) {
-                        ATELIER_TRY(result.set(
-                            e_obj, "value",
-                            static_cast<std::int64_t>(std::bit_cast<std::int32_t>(enum_info.values[i].second))));
-                    } else {
-                        ATELIER_TRY(result.set(e_obj, "value", static_cast<std::uint64_t>(enum_info.values[i].second)));
-                    }
-                    if (i < enum_info.metadata.size()) {
-                        ATELIER_TRY(result.set(e_obj, "label", enum_info.metadata[i].label));
-                        ATELIER_TRY(result.set(e_obj, "description", enum_info.metadata[i].description));
-                    }
-                }
+                ATELIER_TRY(write_enumerators(runtime, result, item, enum_info));
             } else {
                 ATELIER_TRY_BIND(fields_arr, result.array(item, "fields"));
                 for (const auto& field : info->fields) {
-                    ATELIER_TRY_BIND(ftype, operation(format_runtime_source_type(runtime, field.value.type)));
+                    if (!field.offset || field.value.form != ValueForm::inline_value)
+                        continue;
+                    auto ftype = source::source_type_name(runtime, field.value.type);
+                    if (!ftype) {
+                        if (ftype.error().code == ErrorCode::invalid_type)
+                            continue;
+                        return std::unexpected(operation(std::move(ftype)).error());
+                    }
                     const auto f_obj = result.append_object(*fields_arr);
                     ATELIER_TRY(result.set(f_obj, "name", field.name));
                     ATELIER_TRY(result.set(f_obj, "type", *ftype));

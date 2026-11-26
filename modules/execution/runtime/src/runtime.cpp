@@ -2743,12 +2743,12 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             definition.described_methods.size() >= no_slot) {
             return failure(ErrorCode::capacity_exceeded, "Member identity space exhausted.");
         }
-        const bool is_native = native.size || native.alignment || native.representation || native.construct ||
-                               native.destroy || native.copy_construct || native.copy_assign || native.swap ||
-                               native.base_address || native.base_offset || native.element_representation ||
-                               native.sequence_view || native.sequence_mutate ||
-                               native.value_operations_preserve_borrows || native.plain_value ||
-                               native.trivially_destructible || native.prototype_constructor;
+        const bool is_native =
+            native.size || native.alignment || native.representation || native.construct || native.destroy ||
+            native.copy_construct || native.copy_assign || native.swap || native.base_address || native.base_offset ||
+            native.element_representation || native.sequence_view || native.sequence_mutate ||
+            native.value_operations_preserve_borrows || native.plain_value || native.trivially_destructible ||
+            native.standard_array_layout || native.prototype_constructor;
         if (is_native && (!native.size || !std::has_single_bit(native.alignment) || !native.representation ||
                           !native.construct || !native.destroy || native.size % native.alignment != 0)) {
             return failure(ErrorCode::invalid_definition,
@@ -2791,6 +2791,11 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
         if (array && (!definition.fields.empty() || (is_native && (!native.copy_construct || !native.copy_assign))))
             return failure(ErrorCode::invalid_definition,
                            "Foundation values require native ownership operations and no inline fields.");
+        if (native.standard_array_layout &&
+            (!array || native.size != sizeof(Impl::DescribedArray) ||
+             native.alignment != alignof(Impl::DescribedArray) || !native.sequence_view || !native.sequence_mutate))
+            return failure(ErrorCode::invalid_definition,
+                           "Standard array layout requires a 3-word mutable Array<T> definition.");
         if (string && native.representation != detail::representation<String>())
             return failure(ErrorCode::invalid_definition,
                            "String types require the engine UTF-8 String representation.");
@@ -2823,6 +2828,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
         type->info.sequence_mutate = native.sequence_mutate;
         type->info.value_operations_preserve_borrows =
             (array && !is_native) ? true : native.value_operations_preserve_borrows;
+        type->info.standard_array_layout = array && (!is_native || native.standard_array_layout);
         staged.add(std::move(type));
     }
 

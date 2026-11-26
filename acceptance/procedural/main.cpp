@@ -2922,6 +2922,17 @@ class test.ConstQuadSop : procedural.Node {
     require(!hit_info->description.empty() && hit_info->fields.size() == 5 && !hit_info->fields[0].description.empty(),
             "procedural.SurfaceHit missing struct or field DESC in Runtime.");
 
+    // R3-C1: procedural.Spatial (8B SharedArray<SpatialNode>) must be rejected as a .rdata constant and must not
+    // masquerade as Array<procedural.SpatialNode>:
+    for (std::string_view bad_spatial_src : {
+             std::string_view{"const procedural.Spatial S = {}; int f() { return int(S.size()); }"},
+             std::string_view{"const Array<procedural.SpatialNode> S = {}; int f() { return int(S.size()); }"},
+         }) {
+        auto bad_prog = take(source::Program::create(runtime));
+        auto bad_res = source::Program::prepare(take(bad_prog->request("bad_spatial.source", bad_spatial_src, "f")));
+        require(!bad_res, "Non-Array<T> procedural.Spatial unexpectedly compiled as a module constant.");
+    }
+
     // Evaluate ConstQuadSop directly from .rdata tables:
     const auto graph_type = take(runtime.native_type<procedural::Graph>());
     const auto quad_sop_type = take(runtime.find_type("test.ConstQuadSop"));

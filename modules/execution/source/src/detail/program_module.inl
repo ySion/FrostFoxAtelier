@@ -372,7 +372,7 @@ Result<DescribedMethodDefinition> class_method(const SourceSnapshot& snapshot, c
         }
         for (std::uint32_t depth = 0; depth < name.array_depth; ++depth) {
             const auto array = std::ranges::find_if(binding.values, [&](const BoundValue& v) {
-                return v.kind == ValueKind::array && v.element == element;
+                return v.kind == ValueKind::array && v.standard_array_layout && v.element == element;
             });
             if (array == binding.values.end())
                 return at(position, "This Array element type has not been registered in the Runtime.");
@@ -464,7 +464,7 @@ std::string format_source_value_type(const Binding& binding, language::ValueType
     }
     case language::ValueType::array: {
         const auto& value = binding.values[type.type_index];
-        if (!value.can_mutate && !language::synthesized_array_name(value.name))
+        if (!value.standard_array_layout)
             return value.name;
         return "Array<" + format_source_value_type(binding, binding_value_type(value.element)) + ">";
     }
@@ -474,7 +474,6 @@ std::string format_source_value_type(const Binding& binding, language::ValueType
 }
 
 Result<std::vector<FunctionInfo>> inspect_unit_functions(const SourceSnapshot& snapshot,
-                                                         const language::SourceModule& source_module,
                                                          const language::MappedSource& text,
                                                          std::string_view source_name, const Binding& binding,
                                                          std::string_view unit_engine) {
@@ -505,6 +504,7 @@ Result<std::vector<FunctionInfo>> inspect_unit_functions(const SourceSnapshot& s
                                      value.sequence_view,
                                      value.can_own,
                                      value.can_mutate,
+                                     value.standard_array_layout,
                                      value.math,
                                      value.plain_value,
                                      value.zero_default,
@@ -520,12 +520,11 @@ Result<std::vector<FunctionInfo>> inspect_unit_functions(const SourceSnapshot& s
         return std::unexpected(mapped_error(snapshot, text, parsed.error().position, parsed.error().message));
 
     std::vector<FunctionInfo> result;
+    if (unit_engine.empty())
+        return result;
     for (const auto& fn : parsed->functions) {
-        const auto decl = std::ranges::find_if(source_module.declarations, [&](const language::TopLevel& item) {
-            return item.kind == language::TopLevel::Kind::function && item.name == fn.function_name &&
-                   item.engine == unit_engine;
-        });
-        if (decl == source_module.declarations.end())
+        if (fn.function_name.size() <= unit_engine.size() || !fn.function_name.starts_with(unit_engine) ||
+            fn.function_name[unit_engine.size()] != '.')
             continue;
         FunctionInfo info;
         info.name = fn.function_name;
@@ -559,6 +558,11 @@ std::span<const EntryInfo> Program::entries() const noexcept {
 
 std::span<const FunctionInfo> Program::functions() const noexcept {
     return state_->module ? std::span<const FunctionInfo>{state_->module->functions} : std::span<const FunctionInfo>{};
+}
+
+std::span<const std::string> Program::engine_modules() const noexcept {
+    return state_->module ? std::span<const std::string>{state_->module->request->source.engine_modules}
+                          : std::span<const std::string>{};
 }
 
 std::uint64_t Program::revision() const noexcept {
@@ -656,20 +660,12 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
             }
         }
     }
-    language::MappedSource types;
-    for (const auto& declaration : module.source.declarations)
-        if (declaration.kind == language::TopLevel::Kind::type)
-            types.append(declaration.source);
-    auto values = language::collect_declarations(types.text);
-    if (!values)
-        return fail(mapped_error(input, types, values.error().position, values.error().message));
-    module.value_types = std::move(*values);
     // Functions, constants and accessor projections share names with the complete type catalog,
     // including empty classes that produce no bound compile unit.
     const auto type_named = [&](std::string_view name) {
         return (!language::editor_reserved(name) && !language::synthesized_array_name(name) &&
                 runtime.find_type(name)) ||
-               find_named(module.source.classes, name) || find_named(module.value_types, name);
+               find_named(module.source.classes, name) || find_named(module.source.types, name);
     };
     for (const auto& declaration : module.source.declarations) {
         if (declaration.kind == language::TopLevel::Kind::type)
@@ -698,8 +694,8 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
                     {ErrorCode::rebuild_required,
                      "Published source export was removed or changed; rebuild the Runtime context: " + function.name});
         }
-        for (const auto& type : published->value_types) {
-            const auto* found = find_named(module.value_types, type.name);
+        for (const auto& type : published->source.types) {
+            const auto* found = find_named(module.source.types, type.name);
             if (!found || !found->same_definition(type))
                 return fail(
                     {ErrorCode::rebuild_required,
@@ -724,13 +720,13 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
             return fail(source_error(input, file_index, uses.error().position, uses.error().message));
         array_uses.insert(array_uses.end(), uses->begin(), uses->end());
     }
-    auto definitions = type_definitions(module.value_types, array_uses, *current_binding);
+    auto definitions = type_definitions(module.source.types, array_uses, *current_binding);
     if (!definitions)
         return fail(definitions.error());
     // Existing source types stay published; new ones still reference them by name.
     if (published)
         std::erase_if(*definitions,
-                      [&](const auto& definition) { return find_named(published->value_types, definition.name); });
+                      [&](const auto& definition) { return find_named(published->source.types, definition.name); });
     std::erase_if(*definitions, [&](const auto& definition) {
         return language::synthesized_array_name(definition.name) && runtime.find_type(definition.name).has_value();
     });
@@ -760,7 +756,7 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
         definition.base = *base;
         std::vector<FieldDefinition> fields;
         for (const auto& field : cls.fields) {
-            auto declared = class_field(input, cls, field, module.value_types, *current_binding, runtime);
+            auto declared = class_field(input, cls, field, module.source.types, *current_binding, runtime);
             if (!declared)
                 return fail(declared.error());
             fields.push_back(std::move(*declared));
@@ -768,7 +764,7 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
         std::vector<DescribedMethodDefinition> methods;
         methods.reserve(cls.methods.size());
         for (const auto& method : cls.methods) {
-            auto declared = class_method(input, cls, method, module.value_types, *current_binding, runtime);
+            auto declared = class_method(input, cls, method, module.source.types, *current_binding, runtime);
             if (!declared)
                 return fail(declared.error());
             methods.push_back(std::move(*declared));
@@ -848,18 +844,10 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
         }
         module.units.push_back(std::move(unit));
     }
-    std::vector<std::string_view> engines;
-    for (const auto& declaration : module.source.declarations)
-        if (!declaration.engine.empty() && std::ranges::find(engines, declaration.engine) == engines.end())
-            engines.push_back(declaration.engine);
-    for (const auto engine : engines)
-        module.units.push_back({request->compilation_contract_,
-                                module.source.closure(home(engine)),
-                                {},
-                                "engine/" + std::string(engine),
-                                {},
-                                {},
-                                false});
+    for (const auto& engine : module.source.engine_modules)
+        if (const auto roots = home(engine); !roots.empty())
+            module.units.push_back(
+                {request->compilation_contract_, module.source.closure(roots), {}, "engine/" + engine, {}, {}, false});
     for (const auto& cls : module.source.classes) {
         const TypeInfo* info{};
         if (catalog.empty()) {
@@ -964,14 +952,13 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
                         module->functions.push_back(fn);
             }
         } else {
-            if (!unit.receiver) {
+            if (!unit.receiver && unit.names.empty()) {
                 ATELIER_TRY_BIND(unit_functions,
-                                 inspect_unit_functions(*request->module_->snapshot, request->module_->source, text,
-                                                        request->source_name, unit.contract->binding, unit_engine));
+                                 inspect_unit_functions(*request->module_->snapshot, text, request->source_name,
+                                                        unit.contract->binding, unit_engine));
                 for (auto& fn : *unit_functions)
                     module->functions.push_back(std::move(fn));
-                if (unit.names.empty())
-                    continue;
+                continue;
             }
             const EnvironmentView storage(unit.contract->binding);
             const auto environment = storage.view(unit.contract->type_name.c_str());
@@ -1012,6 +999,23 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
             auto info = atelier_business_info(codes[i].get());
             ATELIER_TRY_BIND(signature, unit.contract->resolve_signature(info, request->type_publication_.get()));
             const auto& method = unit.names[i];
+            if (!kept && !unit.receiver) {
+                FunctionInfo fn_info;
+                fn_info.name = method;
+                fn_info.return_type =
+                    format_source_value_type(unit.contract->binding, binding_value_type(info.signature.result));
+                fn_info.parallel_safe = info.parallel_safe;
+                fn_info.description = info.description ? info.description : "";
+                fn_info.parameters.reserve(info.signature.parameter_count);
+                for (std::uint32_t p = 0; p < info.signature.parameter_count; ++p) {
+                    const auto& param = info.signature.parameters[p];
+                    fn_info.parameters.push_back(
+                        {unit.parameter_names[i][p],
+                         format_source_value_type(unit.contract->binding, binding_value_type(param.type)),
+                         param.passing, param.mutates_structure});
+                }
+                module->functions.push_back(std::move(fn_info));
+            }
             if (unit.receiver) {
                 const bool tick = method == "tick" || method == "post_physics_tick" || method == "late_tick";
                 if ((tick || method == "begin" || method == "end") &&

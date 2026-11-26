@@ -110,6 +110,8 @@ struct BusinessParameter {
 
     std::uint64_t default_bits{};
 
+    bool mutates_structure{};
+
     bool operator==(const BusinessParameter&) const = default;
 };
 
@@ -236,6 +238,8 @@ struct BusinessValueBinding {
     bool can_own{};
 
     bool can_mutate{};
+
+    bool standard_array_layout{};
 
     math::Type math{};
 
@@ -509,6 +513,10 @@ struct BusinessCodeInfo {
     const BusinessFailureMessage* failure_messages;
 
     std::uint32_t failure_message_count;
+
+    bool parallel_safe;
+
+    const char* description;
 };
 
 struct BusinessFrameLayout {

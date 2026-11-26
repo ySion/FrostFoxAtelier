@@ -136,6 +136,94 @@ int main() {
             math_eval.base_color.x == 2.0f && math_eval.base_color.y == 3.0f && math_eval.base_color.z == 4.0f &&
                 std::abs(math_eval.coverage - 2.19f) < 1e-5f,
             "Material CPU evaluation of Batch 1 math intrinsics mismatched expected ties-to-even and distance values.");
+
+        // R3-C4: Material top-level const accepts finite float/bool/float-vector constants, and rejects out-of-subset
+        // types, non-finite folded floats, and any TextureInput.slot access (including constants & unused helpers):
+        const auto const_mat = take(
+            source::compile_material(runtime, take(runtime.native_type<Context>()), take(runtime.native_type<Output>()),
+                                     take(runtime.native_type<TextureInput>()), "const_material.source", R"(
+            const bool ENABLE_TINT = true;
+            const float GAIN = 0.5f;
+            const vector3 TINT = vector3(0.2f, 0.4f, 0.8f) * GAIN;
+            struct Params { float bias; };
+            Params defaults() { Params p; p.bias = GAIN; return p; }
+            material.Output shade(material.Context c, Params p) {
+                material.Output o;
+                o.base_color = ENABLE_TINT ? TINT : vector3(0.0f);
+                o.coverage = p.bias;
+                o.normal_world = c.normal_world;
+                return o;
+            })"));
+        const auto const_eval =
+            take(take(resolve_source(take(make_definition(const_mat, {}, std::span<const TextureDefault>{})), {}))
+                     ->evaluate({}));
+        require(std::abs(const_eval.base_color.z - 0.4f) < 1e-6f && std::abs(const_eval.coverage - 0.5f) < 1e-6f &&
+                    take(const_mat->hlsl("test_const")).contains("ms_shade"),
+                "Valid float/bool/vector3 material top-level constants failed CPU evaluate or HLSL emission.");
+        // Unaligned (+1 byte offset) context, parameter, and output spans honor MaterialProgram::evaluate's contract:
+        {
+            Context unaligned_ctx_val{};
+            unaligned_ctx_val.normal_world = {0.0f, 1.0f, 0.0f};
+            const float unaligned_bias = 0.75f;
+            std::vector<std::byte> raw_ctx(sizeof(Context) + 1);
+            std::vector<std::byte> raw_params(const_mat->parameter_layout().size + 1);
+            std::vector<std::byte> raw_out(sizeof(Output) + 1);
+            std::memcpy(raw_ctx.data() + 1, &unaligned_ctx_val, sizeof(Context));
+            std::memcpy(raw_params.data() + 1, &unaligned_bias, sizeof(unaligned_bias));
+            take(const_mat->evaluate(
+                std::span<const std::byte>{raw_ctx.data() + 1, sizeof(Context)},
+                std::span<const std::byte>{raw_params.data() + 1, const_mat->parameter_layout().size},
+                std::span<std::byte>{raw_out.data() + 1, sizeof(Output)}));
+            Output unaligned_out{};
+            std::memcpy(&unaligned_out, raw_out.data() + 1, sizeof(Output));
+            require(std::abs(unaligned_out.coverage - 0.75f) < 1e-6f &&
+                        std::abs(unaligned_out.normal_world.y - 1.0f) < 1e-6f,
+                    "MaterialProgram::evaluate failed on unaligned (+1 byte) input/output spans.");
+        }
+
+        for (const auto& [bad_mat_src, expected_msg] : std::array<std::pair<std::string_view, std::string_view>, 5>{{
+                 {R"(
+                    const int BAD = 1;
+                    struct Params { float x; };
+                    Params defaults() { Params p; return p; }
+                    material.Output shade(material.Context c, Params p) { material.Output o; return o; }
+                 )",
+                  "Material constants require float, bool, or float vector types."},
+                 {R"(
+                    const material.TextureInput T = {};
+                    struct Params { float x; };
+                    Params defaults() { Params p; return p; }
+                    material.Output shade(material.Context c, Params p) { material.Output o; return o; }
+                 )",
+                  "Material constants require float, bool, or float vector types."},
+                 {R"(
+                    const float BAD_NAN = 0.0f / 0.0f;
+                    struct Params { float x; };
+                    Params defaults() { Params p; return p; }
+                    material.Output shade(material.Context c, Params p) { material.Output o; o.coverage = BAD_NAN; return o; }
+                 )",
+                  "Material constants must be finite."},
+                 {R"(
+                    const vector3 BAD_INF = vector3(1e30f * 1e30f, 0.0f, 0.0f);
+                    struct Params { float x; };
+                    Params defaults() { Params p; return p; }
+                    material.Output shade(material.Context c, Params p) { material.Output o; o.base_color = BAD_INF; return o; }
+                 )",
+                  "Material constants must be finite."},
+                 {R"(
+                    struct Params { float x; };
+                    float leak_slot(material.TextureInput t) { return float(t.slot); }
+                    Params defaults() { Params p; return p; }
+                    material.Output shade(material.Context c, Params p) { material.Output o; return o; }
+                 )",
+                  "TextureInput members are compiler-owned"},
+             }}) {
+            const auto res = source::compile_material(
+                runtime, take(runtime.native_type<Context>()), take(runtime.native_type<Output>()),
+                take(runtime.native_type<TextureInput>()), "bad_const_mat.source", bad_mat_src);
+            require(!res && res.error().message.contains(expected_msg),
+                    res ? "Invalid material constant or TextureInput.slot leak compiled." : res.error().message);
+        }
     }
     const auto output = take(surviving->evaluate({}));
     // IEC sRGB decode and the authored gain/alpha, not a previous capture's output.

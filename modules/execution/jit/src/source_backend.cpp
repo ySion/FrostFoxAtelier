@@ -222,6 +222,10 @@ struct CompiledBusiness {
 
     bool requires_receiver{};
 
+    bool parallel_safe{};
+
+    std::string description;
+
     BusinessFrameLayout layout{};
 
     std::shared_ptr<LLJIT> jit;
@@ -369,14 +373,20 @@ struct ConstantGlobal {
     std::size_t element_count{};
 };
 
+std::size_t value_alignment(language::ValueType type, std::span<const language::ValueLayout> layouts) noexcept {
+    return language::aggregate(type)              ? layouts[type.type_index].alignment
+           : type == language::ValueType::boolean ? 1
+           : type == language::ValueType::f64     ? 8
+                                                  : 4;
+}
+
 class SourceLowering {
 public:
     SourceLowering(llvm::LLVMContext& context, llvm::Module& module, const language::Program& source,
                    std::uint32_t function, const std::vector<llvm::Function*>& functions,
-                   const std::vector<llvm::Function*>& parallel_functions,
-                   std::span<const ConstantGlobal> constant_globals, std::uint32_t strong_base, std::uint32_t weak_base,
-                   DiagnosticCatalog* catalog, CompileOptions options, const BusinessEnvironment& environment,
-                   bool parallel_callee = false)
+                   const std::vector<llvm::Function*>& parallel_functions, std::span<ConstantGlobal> constant_globals,
+                   std::uint32_t strong_base, std::uint32_t weak_base, DiagnosticCatalog* catalog,
+                   CompileOptions options, const BusinessEnvironment& environment, bool parallel_callee = false)
         : function_(source.functions[function]), source_(source), functions_(functions),
           parallel_functions_(parallel_functions), constant_globals_(constant_globals), context_(&context),
           module_(&module), ir_(context), entry_(parallel_callee ? parallel_functions[function] : functions[function]),
@@ -592,8 +602,8 @@ public:
                 auto* source = ir_.CreateLoad(ir_.getPtrTy(), ir_.CreateStructGEP(abi_value_type_, argument, 4));
                 if (plain_record(type)) {
                     const auto& layout = source_.value_layouts.at(type.type_index);
-                    ir_.CreateMemCpy(locals_[index], llvm::Align(layout.alignment), source, llvm::Align(1),
-                                     layout.size);
+                    ir_.CreateMemCpy(locals_[index], llvm::Align(layout.alignment), source,
+                                     llvm::Align(layout.alignment), layout.size);
                 } else {
                     construct_owned(owned_local_slots_[index], source);
                 }
@@ -1088,7 +1098,8 @@ private:
 
     bool terminated() const { return ir_.GetInsertBlock()->getTerminatorOrNull() != nullptr; }
 
-    void checked_call(llvm::FunctionCallee function, llvm::ArrayRef<llvm::Value*> arguments, bool count = true) {
+    llvm::CallInst* checked_call(llvm::FunctionCallee function, llvm::ArrayRef<llvm::Value*> arguments,
+                                 bool count = true) {
         if (diagnostics_ && count)
             trace_event(service_kind(function));
         auto* status = ir_.CreateCall(function, arguments);
@@ -1096,6 +1107,16 @@ private:
         auto* next = block("service.ok");
         ir_.CreateCondBr(ir_.CreateICmpEQ(status, ir_.getInt32(0)), next, failed, failure_weights_);
         ir_.SetInsertPoint(next);
+        return status;
+    }
+
+    void mark_uncaptured_array(llvm::CallInst* call, language::ValueType type,
+                               std::initializer_list<unsigned> indices) {
+        if (type.kind != language::ValueType::array || !source_.value_layouts.at(type.type_index).standard_array_layout)
+            return;
+        const auto no_capture = llvm::Attribute::getWithCaptureInfo(*context_, llvm::CaptureInfo::none());
+        for (const unsigned idx : indices)
+            call->addParamAttr(idx, no_capture);
     }
 
     void clear_slot(std::uint32_t slot) {
@@ -1139,14 +1160,19 @@ private:
         const auto& value = owned_.at(slot);
         if (source_.material) {
             const auto& layout = source_.value_layouts[value.type.type_index];
-            if (!source)
-                source = ir_.CreateGlobalString(llvm::StringRef(
+            if (!source) {
+                auto* gv = ir_.CreateGlobalString(llvm::StringRef(
                     reinterpret_cast<const char*>(layout.initial_value.data()), layout.initial_value.size()));
-            ir_.CreateMemCpy(value.storage, llvm::Align(layout.alignment), source, llvm::Align(1), layout.size);
+                gv->setAlignment(llvm::Align(layout.alignment));
+                source = gv;
+            }
+            ir_.CreateMemCpy(value.storage, llvm::Align(layout.alignment), source, llvm::Align(layout.alignment),
+                             layout.size);
             return;
         }
-        checked_call(construct_value_, {invocation_, ir_.getInt32(value.type.type_index), value.storage,
-                                        source ? source : llvm::ConstantPointerNull::get(ir_.getPtrTy())});
+        auto* call = checked_call(construct_value_, {invocation_, ir_.getInt32(value.type.type_index), value.storage,
+                                                     source ? source : llvm::ConstantPointerNull::get(ir_.getPtrTy())});
+        mark_uncaptured_array(call, value.type, {2, 3});
         ir_.CreateStore(ir_.getTrue(), value.live);
     }
 
@@ -1175,7 +1201,8 @@ private:
             auto* storage = trivial_temporaries_[slot].storage;
             if (source) {
                 const auto& layout = source_.value_layouts.at(type.type_index);
-                ir_.CreateMemCpy(storage, llvm::Align(layout.alignment), source, llvm::Align(1), layout.size);
+                ir_.CreateMemCpy(storage, llvm::Align(layout.alignment), source, llvm::Align(layout.alignment),
+                                 layout.size);
             }
             return storage;
         }
@@ -1204,7 +1231,8 @@ private:
         ir_.SetInsertPoint(destroy);
         ir_.CreateStore(ir_.getFalse(), value.live);
         trace_event(DiagnosticCall::value_destroy);
-        ir_.CreateCall(destroy_value_, {invocation_, ir_.getInt32(value.type.type_index), value.storage});
+        auto* call = ir_.CreateCall(destroy_value_, {invocation_, ir_.getInt32(value.type.type_index), value.storage});
+        mark_uncaptured_array(call, value.type, {2});
         ir_.CreateBr(next);
         ir_.SetInsertPoint(next);
     }
@@ -1421,6 +1449,8 @@ private:
     }
 
     void check_value(llvm::Value* valid, EntryFailure reason) {
+        if (const auto* constant = llvm::dyn_cast<llvm::ConstantInt>(valid); constant && constant->isOne())
+            return;
         auto* failed = failure_edge(ir_.getInt32(1), ir_.getInt32(static_cast<std::uint32_t>(reason)));
         auto* next = block("borrow.valid");
         ir_.CreateCondBr(valid, next, failed, failure_weights_);
@@ -1433,37 +1463,102 @@ private:
         llvm::Value* size{};
     };
 
+    const ConstantGlobal& constant_global(std::uint32_t index) {
+        auto& slot = constant_globals_[index];
+        if (slot.data)
+            return slot;
+        const auto& constant = source_.constants.at(index);
+        const auto& value_layout = source_.value_layouts.at(constant.type.type_index);
+        std::size_t data_align = constant.type.kind == language::ValueType::array
+                                     ? value_alignment(value_layout.element, source_.value_layouts)
+                                     : value_layout.alignment;
+        data_align = std::max<std::size_t>(data_align, alignof(void*));
+        if (constant.bytes.size() >= 64)
+            data_align = std::max<std::size_t>(data_align, 64);
+        else if (constant.bytes.size() >= 32)
+            data_align = std::max<std::size_t>(data_align, 32);
+        else if (constant.bytes.size() >= 16)
+            data_align = std::max<std::size_t>(data_align, 16);
+        auto* i8 = ir_.getInt8Ty();
+        llvm::Constant* data_init =
+            constant.bytes.empty()
+                ? static_cast<llvm::Constant*>(llvm::ConstantAggregateZero::get(llvm::ArrayType::get(i8, data_align)))
+                : static_cast<llvm::Constant*>(llvm::ConstantDataArray::getRaw(
+                      llvm::StringRef(reinterpret_cast<const char*>(constant.bytes.data()), constant.bytes.size()),
+                      constant.bytes.size(), i8));
+        auto* data_gv =
+            new llvm::GlobalVariable(*module_, data_init->getType(), true, llvm::GlobalValue::InternalLinkage,
+                                     data_init, "__source_const_data." + std::to_string(index));
+        data_gv->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+        data_gv->setAlignment(llvm::Align(data_align));
+        slot = {data_gv, nullptr, constant.element_count};
+        return slot;
+    }
+
+    llvm::GlobalVariable* constant_array_header(std::uint32_t index) {
+        (void)constant_global(index);
+        auto& slot = constant_globals_[index];
+        if (slot.array_header)
+            return slot.array_header;
+        const auto& constant = source_.constants.at(index);
+        assert(constant.type.kind == language::ValueType::array &&
+               source_.value_layouts.at(constant.type.type_index).standard_array_layout &&
+               source_.value_layouts.at(constant.type.type_index).size == 3 * sizeof(void*) &&
+               source_.value_layouts.at(constant.type.type_index).alignment == alignof(void*));
+        auto* i64 = ir_.getInt64Ty();
+        auto* header_ty = llvm::StructType::get(*context_, {ir_.getPtrTy(), i64, i64});
+        auto* header_init =
+            llvm::ConstantStruct::get(header_ty, {slot.data, llvm::ConstantInt::get(i64, constant.element_count),
+                                                  llvm::ConstantInt::get(i64, 0)});
+        auto* header_gv = new llvm::GlobalVariable(*module_, header_ty, true, llvm::GlobalValue::InternalLinkage,
+                                                   header_init, "__source_const_array." + std::to_string(index));
+        header_gv->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+        header_gv->setAlignment(llvm::Align(alignof(void*)));
+        slot.array_header = header_gv;
+        return header_gv;
+    }
+
     Sequence sequence_view(llvm::Value* value, language::ValueType type) {
         const auto& layout = source_.value_layouts.at(type.type_index);
-        // Entry allocas are reused by accesses in loops; projection is a trusted
-        // leaf operation on the native container, with no business callbacks.
-        llvm::IRBuilder<> entry_ir(&entry_->getEntryBlock(), entry_->getEntryBlock().begin());
-        auto* data = entry_ir.CreateAlloca(ir_.getPtrTy(), nullptr, "sequence.data");
-        auto* size = entry_ir.CreateAlloca(ir_.getInt64Ty(), nullptr, "sequence.size");
-        auto* function_type =
-            llvm::FunctionType::get(ir_.getVoidTy(), {ir_.getPtrTy(), ir_.getPtrTy(), ir_.getPtrTy()}, false);
-        auto* address = llvm::ConstantExpr::getIntToPtr(
-            ir_.getInt64(reinterpret_cast<std::uintptr_t>(layout.sequence_view)), ir_.getPtrTy());
         trace_event(DiagnosticCall::sequence_view);
-        auto* call = ir_.CreateCall(function_type, address, {value, data, size});
-        call->setDoesNotThrow();
-        call->addFnAttr(llvm::Attribute::WillReturn);
-        call->setMemoryEffects(llvm::MemoryEffects::argMemOnly());
-        call->addParamAttr(0, llvm::Attribute::ReadOnly);
-        const auto no_capture = llvm::Attribute::getWithCaptureInfo(*context_, llvm::CaptureInfo::none());
-        if (type.kind == language::ValueType::array)
-            call->addParamAttr(0, no_capture); // Array holds heap storage; String SSO may point into value.
-        call->addParamAttr(1, llvm::Attribute::WriteOnly);
-        call->addParamAttr(1, no_capture);
-        call->addParamAttr(2, llvm::Attribute::WriteOnly);
-        call->addParamAttr(2, no_capture);
-        Sequence result{ir_.CreateLoad(ir_.getPtrTy(), data), ir_.CreateLoad(ir_.getInt64Ty(), size)};
+        Sequence result{};
+        if (type.kind == language::ValueType::array && layout.standard_array_layout) {
+            assert(layout.size == 3 * sizeof(void*) && layout.alignment == alignof(void*));
+            auto* size_addr = ir_.CreateInBoundsGEP(ir_.getInt8Ty(), value, ir_.getInt64(sizeof(void*)));
+            result.data = ir_.CreateAlignedLoad(ir_.getPtrTy(), value, llvm::Align(alignof(void*)), "array.data");
+            result.size = ir_.CreateAlignedLoad(ir_.getInt64Ty(), size_addr, llvm::Align(alignof(void*)), "array.size");
+        } else {
+            // Entry allocas are reused by accesses in loops; projection is a trusted
+            // leaf operation on the native container, with no business callbacks.
+            llvm::IRBuilder<> entry_ir(&entry_->getEntryBlock(), entry_->getEntryBlock().begin());
+            auto* data = entry_ir.CreateAlloca(ir_.getPtrTy(), nullptr, "sequence.data");
+            auto* size = entry_ir.CreateAlloca(ir_.getInt64Ty(), nullptr, "sequence.size");
+            auto* function_type =
+                llvm::FunctionType::get(ir_.getVoidTy(), {ir_.getPtrTy(), ir_.getPtrTy(), ir_.getPtrTy()}, false);
+            auto* address = llvm::ConstantExpr::getIntToPtr(
+                ir_.getInt64(reinterpret_cast<std::uintptr_t>(layout.sequence_view)), ir_.getPtrTy());
+            auto* call = ir_.CreateCall(function_type, address, {value, data, size});
+            call->setDoesNotThrow();
+            call->addFnAttr(llvm::Attribute::WillReturn);
+            call->setMemoryEffects(llvm::MemoryEffects::argMemOnly());
+            call->addParamAttr(0, llvm::Attribute::ReadOnly);
+            const auto no_capture = llvm::Attribute::getWithCaptureInfo(*context_, llvm::CaptureInfo::none());
+            if (type.kind == language::ValueType::array)
+                call->addParamAttr(0, no_capture); // Array holds heap storage; String SSO may point into value.
+            call->addParamAttr(1, llvm::Attribute::WriteOnly);
+            call->addParamAttr(1, no_capture);
+            call->addParamAttr(2, llvm::Attribute::WriteOnly);
+            call->addParamAttr(2, no_capture);
+            result = {ir_.CreateLoad(ir_.getPtrTy(), data), ir_.CreateLoad(ir_.getInt64Ty(), size)};
+        }
         const auto stride = type.kind == language::ValueType::string ? 1 : storage_size(layout.element);
         const auto alignment = type.kind == language::ValueType::string ? 1 : storage_alignment(layout.element);
-        auto* pointer = ir_.CreatePtrToInt(result.data, ir_.getInt64Ty());
-        auto* live =
-            ir_.CreateAnd(ir_.CreateICmpNE(pointer, ir_.getInt64(0)),
-                          ir_.CreateICmpEQ(ir_.CreateAnd(pointer, ir_.getInt64(alignment - 1)), ir_.getInt64(0)));
+        llvm::Value* live = ir_.CreateIsNotNull(result.data);
+        if (alignment > 1) {
+            auto* pointer = ir_.CreatePtrToInt(result.data, ir_.getInt64Ty());
+            live = ir_.CreateAnd(
+                live, ir_.CreateICmpEQ(ir_.CreateAnd(pointer, ir_.getInt64(alignment - 1)), ir_.getInt64(0)));
+        }
         auto* valid = ir_.CreateAnd(
             ir_.CreateICmpULE(result.size, ir_.getInt64(std::min<std::uint64_t>(UINT32_MAX, PTRDIFF_MAX / stride))),
             ir_.CreateOr(ir_.CreateICmpEQ(result.size, ir_.getInt64(0)), live));
@@ -1479,10 +1574,7 @@ private:
     }
 
     std::size_t storage_alignment(language::ValueType type) const {
-        return language::aggregate(type)              ? source_.value_layouts.at(type.type_index).alignment
-               : type == language::ValueType::boolean ? 1
-               : type == language::ValueType::f64     ? 8
-                                                      : 4;
+        return value_alignment(type, source_.value_layouts);
     }
 
     bool caches_sequence_parameter(std::uint32_t parameter) const {
@@ -1500,16 +1592,22 @@ private:
         });
     }
 
-    Sequence sequence(language::NodeId id) {
+    Sequence local_sequence(std::uint32_t local) {
+        if (local < parameter_views_.size() && parameter_views_[local].data)
+            return parameter_views_[local];
+        return sequence_view(locals_[local], function_.locals[local].type);
+    }
+
+    Sequence sequence(language::NodeId id,
+                      std::span<const std::pair<language::NodeId, llvm::Value*>> prepared_indices = {}) {
         const auto& node = function_.expressions[id];
         if (node.kind == language::Expression::Kind::constant_data) {
-            const auto& constant = constant_globals_[node.value];
+            const auto& constant = constant_global(node.value);
             return {constant.data, ir_.getInt64(constant.element_count)};
         }
-        if (node.kind == language::Expression::Kind::local && node.value < parameter_views_.size() &&
-            parameter_views_[node.value].data)
-            return parameter_views_[node.value];
-        return sequence_view(value_address(id), node.type);
+        if (node.kind == language::Expression::Kind::local)
+            return local_sequence(node.value);
+        return sequence_view(value_address(id, prepared_indices), node.type);
     }
 
     void collect_lvalue_indices(language::NodeId id, llvm::SmallVectorImpl<language::NodeId>& out) const {
@@ -1549,8 +1647,8 @@ private:
         const auto& node = function_.expressions[id];
         PositionScope position(position_, node.position);
         if (node.kind == language::Expression::Kind::constant_data) {
-            const auto& constant = constant_globals_[node.value];
-            return node.type.kind == language::ValueType::array ? constant.array_header : constant.data;
+            return node.type.kind == language::ValueType::array ? constant_array_header(node.value)
+                                                                : constant_global(node.value).data;
         }
         if (node.kind == language::Expression::Kind::local)
             return locals_.at(node.value);
@@ -1566,16 +1664,7 @@ private:
                     pre_index = idx_val;
                     break;
                 }
-            Sequence input;
-            if (function_.expressions[node.left].kind == language::Expression::Kind::constant_data)
-                input = sequence(node.left);
-            else if (function_.expressions[node.left].kind == language::Expression::Kind::local &&
-                     function_.expressions[node.left].value < parameter_views_.size() &&
-                     parameter_views_[function_.expressions[node.left].value].data)
-                input = parameter_views_[function_.expressions[node.left].value];
-            else
-                input =
-                    sequence_view(value_address(node.left, prepared_indices), function_.expressions[node.left].type);
+            const Sequence input = sequence(node.left, prepared_indices);
             auto* index = pre_index ? pre_index : expression(node.right);
             auto* offset = function_.expressions[node.right].type == language::ValueType::i32
                                ? ir_.CreateSExt(index, ir_.getInt64Ty())
@@ -1680,9 +1769,13 @@ private:
                 input = input_address(node.right);
             if (!target)
                 target = value_address(node.left, prepared_indices);
-            checked_call(mutate_sequence_,
-                         {invocation_, ir_.getInt32(type.type_index),
-                          ir_.getInt32(static_cast<std::uint32_t>(node.mutation)), target, input, count});
+            auto* call = checked_call(mutate_sequence_,
+                                      {invocation_, ir_.getInt32(type.type_index),
+                                       ir_.getInt32(static_cast<std::uint32_t>(node.mutation)), target, input, count});
+            mark_uncaptured_array(call, type, {3});
+            if (node.right != language::no_node && node.mutation != SequenceMutation::reserve &&
+                node.mutation != SequenceMutation::resize)
+                mark_uncaptured_array(call, function_.expressions[node.right].type, {4});
             return nullptr;
         }
         case Kind::length:
@@ -2115,12 +2208,13 @@ private:
                             llvm::StringRef(reinterpret_cast<const char*>(layout.initial_value.data()),
                                             layout.initial_value.size()),
                             "record.default");
-                        ir_.CreateMemCpy(locals_[node.target], llvm::Align(layout.alignment), proto, llvm::Align(1),
-                                         layout.size);
+                        proto->setAlignment(llvm::Align(layout.alignment));
+                        ir_.CreateMemCpy(locals_[node.target], llvm::Align(layout.alignment), proto,
+                                         llvm::Align(layout.alignment), layout.size);
                     }
                 } else {
                     ir_.CreateMemCpy(locals_[node.target], llvm::Align(layout.alignment), expression(node.expression),
-                                     llvm::Align(1), layout.size);
+                                     llvm::Align(layout.alignment), layout.size);
                 }
                 clear_temporaries();
                 debug_local(node.target, DebugAvailability::available);
@@ -2157,12 +2251,15 @@ private:
                     auto* rhs_ptr = expression(node.expression);
                     if (!address)
                         address = value_address(node.target, prepared_indices);
-                    if (source_.material || plain_record(target.type))
-                        ir_.CreateMemMove(address, llvm::Align(1), rhs_ptr, llvm::Align(1),
-                                          source_.value_layouts[target.type.type_index].size);
-                    else
-                        checked_call(assign_value_,
-                                     {invocation_, ir_.getInt32(target.type.type_index), address, rhs_ptr});
+                    if (source_.material || plain_record(target.type)) {
+                        const auto& layout = source_.value_layouts.at(target.type.type_index);
+                        ir_.CreateMemMove(address, llvm::Align(layout.alignment), rhs_ptr,
+                                          llvm::Align(layout.alignment), layout.size);
+                    } else {
+                        auto* call = checked_call(
+                            assign_value_, {invocation_, ir_.getInt32(target.type.type_index), address, rhs_ptr});
+                        mark_uncaptured_array(call, target.type, {2, 3});
+                    }
                 }
                 clear_temporaries();
                 return;
@@ -2658,12 +2755,8 @@ private:
         const auto capture = collect_parallel_capture(node);
         std::vector<Sequence> views;
         views.reserve(capture.sequences.size());
-        for (const auto& seq : capture.sequences) {
-            if (seq.local < parameter_views_.size() && parameter_views_[seq.local].data)
-                views.push_back(parameter_views_[seq.local]);
-            else
-                views.push_back(sequence_view(locals_[seq.local], function_.locals[seq.local].type));
-        }
+        for (const auto& seq : capture.sequences)
+            views.push_back(local_sequence(seq.local));
         std::vector<std::uint32_t> borrowed_params;
         for (const auto rec : capture.records)
             if (rec < function_.parameters.size() && function_.parameters[rec].passing != ParameterPassing::value)
@@ -2814,7 +2907,7 @@ private:
 
     const std::vector<llvm::Function*>& parallel_functions_;
 
-    std::span<const ConstantGlobal> constant_globals_;
+    std::span<ConstantGlobal> constant_globals_;
 
     llvm::LLVMContext* context_;
 
@@ -3250,49 +3343,7 @@ generate_business(LLJIT& jit, llvm::TargetMachine& machine, const language::Prog
                                                 : llvm::ConstantPointerNull::get(ptr));
         ir.CreateRet(ir.CreateCall(direct, arguments));
     }
-    auto* i8 = llvm::Type::getInt8Ty(*context);
-    auto* i64 = llvm::Type::getInt64Ty(*context);
-    auto* const_array_header_ty = llvm::StructType::get(*context, {ptr, i64, i64});
     std::vector<ConstantGlobal> constant_globals(program.constants.size());
-    for (std::size_t i = 0; i < program.constants.size(); ++i) {
-        const auto& constant = program.constants[i];
-        const auto& value_layout = program.value_layouts.at(constant.type.type_index);
-        std::size_t data_align = value_layout.alignment;
-        if (constant.type.kind == language::ValueType::array) {
-            const auto elem = value_layout.element;
-            data_align = language::aggregate(elem)              ? program.value_layouts.at(elem.type_index).alignment
-                         : elem == language::ValueType::boolean ? 1
-                         : elem == language::ValueType::f64     ? 8
-                                                                : 4;
-        }
-        data_align = std::max<std::size_t>(data_align, alignof(void*));
-        llvm::Constant* data_init = nullptr;
-        if (constant.bytes.empty()) {
-            data_init = llvm::ConstantAggregateZero::get(llvm::ArrayType::get(i8, data_align));
-        } else {
-            data_init = llvm::ConstantDataArray::getRaw(
-                llvm::StringRef(reinterpret_cast<const char*>(constant.bytes.data()), constant.bytes.size()),
-                constant.bytes.size(), i8);
-        }
-        auto* data_gv =
-            new llvm::GlobalVariable(*module, data_init->getType(), true, llvm::GlobalValue::InternalLinkage, data_init,
-                                     "__source_const_data." + std::to_string(i));
-        data_gv->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
-        data_gv->setAlignment(llvm::Align(data_align));
-
-        llvm::GlobalVariable* header_gv = nullptr;
-        if (constant.type.kind == language::ValueType::array) {
-            auto* header_init = llvm::ConstantStruct::get(
-                const_array_header_ty,
-                {data_gv, llvm::ConstantInt::get(i64, constant.element_count), llvm::ConstantInt::get(i64, 0)});
-            header_gv =
-                new llvm::GlobalVariable(*module, const_array_header_ty, true, llvm::GlobalValue::InternalLinkage,
-                                         header_init, "__source_const_array." + std::to_string(i));
-            header_gv->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
-            header_gv->setAlignment(llvm::Align(alignof(void*)));
-        }
-        constant_globals[i] = {data_gv, header_gv, constant.element_count};
-    }
     layout = {business_root_slots, 0, nullptr, false};
     for (std::uint32_t i = 0; i < functions.size(); ++i) {
         if (!program.reachable[i])
@@ -3412,11 +3463,14 @@ compile(const BusinessServices& services, const language::Program& program, lang
     state->options = options;
     state->parameters.reserve(entry.parameters.size());
     for (const auto parameter : entry.parameters)
-        state->parameters.push_back({business_type(parameter.type), parameter.passing});
+        state->parameters.push_back({business_type(parameter.type), parameter.passing, parameter.has_default,
+                                     parameter.default_bits, parameter.mutates_structure});
     state->signature = {state->parameters.empty() ? nullptr : state->parameters.data(),
                         static_cast<std::uint32_t>(state->parameters.size()), business_type(entry.result),
                         entry.is_coroutine};
     state->requires_receiver = entry.requires_receiver;
+    state->parallel_safe = entry.parallel_safe;
+    state->description = entry.description;
     if (shared) {
         state->catalog = shared->catalog;
         state->jit = shared->jit;
@@ -3520,8 +3574,8 @@ compile(const BusinessServices& services, const language::Program& program, lang
             catalog->values.push_back({catalog->value_names.back().c_str(), business_type({value.kind}).kind,
                                        value.size, value.alignment, business_type(value.element), fields.data(),
                                        static_cast<std::uint32_t>(fields.size()), value.sequence_view, value.can_own,
-                                       value.can_mutate, value.math, value.plain_value, value.zero_default,
-                                       defaults.empty() ? nullptr : defaults.data()});
+                                       value.can_mutate, value.standard_array_layout, value.math, value.plain_value,
+                                       value.zero_default, defaults.empty() ? nullptr : defaults.data()});
         }
         catalog->environment = {catalog->fields.empty() ? nullptr : catalog->fields.data(),
                                 static_cast<std::uint32_t>(catalog->fields.size()),
@@ -3772,18 +3826,10 @@ source_values(const atelier::source::detail::BusinessEnvironment& environment) {
         auto type = source_type({value.kind, i});
         if (!type)
             return type.takeError();
-        language::ValueLayout layout{value.name,
-                                     type->kind,
-                                     value.size,
-                                     value.alignment,
-                                     language::ValueType::void_value,
-                                     {},
-                                     value.sequence_view,
-                                     value.can_own,
-                                     value.can_mutate,
-                                     value.math,
-                                     value.plain_value,
-                                     value.zero_default};
+        language::ValueLayout layout{
+            value.name, type->kind,          value.size,        value.alignment,  language::ValueType::void_value,
+            {},         value.sequence_view, value.can_own,     value.can_mutate, value.standard_array_layout,
+            value.math, value.plain_value,   value.zero_default};
         if (value.initial_value && value.size)
             layout.initial_value.assign(value.initial_value, value.initial_value + value.size);
         if (value.kind == ValueKind::array) {
@@ -4197,7 +4243,9 @@ void atelier_query_business_info(atelier::source::detail::BusinessCode* code,
                state.options.debugging ? static_cast<std::uint32_t>(state.diagnostics->debug_sites.size()) : 0,
                state.stateless_typed,
                state.catalog->failure_message_views.empty() ? nullptr : state.catalog->failure_message_views.data(),
-               static_cast<std::uint32_t>(state.catalog->failure_message_views.size())};
+               static_cast<std::uint32_t>(state.catalog->failure_message_views.size()),
+               state.parallel_safe,
+               state.description.c_str()};
 }
 
 bool atelier_query_business_artifacts(atelier::source::detail::BusinessCode* code,

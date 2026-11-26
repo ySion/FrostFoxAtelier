@@ -52,11 +52,16 @@ void game.arch_block(Array<vector3>& p, Array<uint>& faces, vector2 a, vector2 b
 }
 
 void game.arch_normals(const Array<vector3>& p, const Array<uint>& faces, Array<vector3>& normals) {
-    normals.reserve(faces.size());
-    for (uint face = 0; face < faces.size() / 4; face += 1) {
-        const uint at = 4 * face;
-        const vector3 n = math.normalize_or_zero(math.cross(p[faces[at + 1]] - p[faces[at]], p[faces[at + 2]] - p[faces[at]]));
-        normals.add(n); normals.add(n); normals.add(n); normals.add(n);
+    const uint face_count = faces.size() / 4u;
+    normals.resize(face_count * 4u);
+    for (uint face = 0u; face < face_count; face += 1u) {
+        const uint at = 4u * face;
+        const vector3 p0 = p[faces[at]];
+        const vector3 n = math.normalize_or_zero(math.cross(p[faces[at + 1u]] - p0, p[faces[at + 2u]] - p0));
+        normals[at] = n;
+        normals[at + 1u] = n;
+        normals[at + 2u] = n;
+        normals[at + 3u] = n;
     }
 }
 

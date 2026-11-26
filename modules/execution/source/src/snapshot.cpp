@@ -1,5 +1,6 @@
 #include "source/snapshot.hpp"
 #include "foundation/string.hpp"
+#include "language/declarations.hpp"
 #include "platform/error.hpp"
 #include "platform/utf.hpp"
 #include "platform/windows_path.hpp"
@@ -106,5 +107,46 @@ std::filesystem::path default_engine_root() {
     const auto length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
     executable.resize(length);
     return std::filesystem::path(executable).parent_path() / L"engine";
+}
+
+Result<std::string> source_type_name(const Runtime& runtime, TypeId id) {
+    ATELIER_TRY_BIND(described, runtime.describe(id));
+    const TypeInfo& info = **described;
+    const auto unprojectable = [&] {
+        return std::unexpected(Error{ErrorCode::invalid_type, "Type has no Source projection: " + info.name});
+    };
+    if (language::editor_reserved(info.name) || info.contains_references)
+        return unprojectable();
+    switch (info.kind) {
+    case TypeKind::scalar:
+        if (runtime.native_type<bool>() == id)
+            return std::string("bool");
+        if (runtime.native_type<std::int32_t>() == id)
+            return std::string("int");
+        if (runtime.native_type<std::uint32_t>() == id)
+            return std::string("uint");
+        if (runtime.native_type<float>() == id)
+            return std::string("float");
+        if (runtime.native_type<double>() == id)
+            return std::string("double");
+        return unprojectable();
+    case TypeKind::enumeration:
+        return info.enumeration ? Result<std::string>{info.name} : unprojectable();
+    case TypeKind::string:
+        return info.sequence_view ? Result<std::string>{"String"} : unprojectable();
+    case TypeKind::record:
+        if (info.math)
+            return std::string(math::short_name(info.math));
+        return info.name;
+    case TypeKind::array: {
+        if (!info.sequence_view || !info.element)
+            return unprojectable();
+        ATELIER_TRY_BIND(elem, source_type_name(runtime, *info.element));
+        return info.standard_array_layout ? "Array<" + *elem + ">" : info.name;
+    }
+    case TypeKind::object:
+        return unprojectable();
+    }
+    return unprojectable();
 }
 }

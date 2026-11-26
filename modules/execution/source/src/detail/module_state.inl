@@ -23,8 +23,6 @@ struct Program::ModuleRequest {
 
     language::SourceModule source;
 
-    std::vector<language::TypeDeclaration> value_types;
-
     // Per class, the resolved field definitions that a published class must keep.
     std::vector<std::vector<FieldDefinition>> class_fields;
 

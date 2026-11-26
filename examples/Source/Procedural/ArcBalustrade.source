@@ -130,36 +130,78 @@ class game.BalustradeCourses : procedural.Node {
     }
 };
 
-const Array<vector2> game.SPINDLE_STATIONS = {
-    vector2(0.100f, 0.130f),
-    vector2(0.114f, 0.147f),
-    vector2(0.132f, 0.150f),
-    vector2(0.148f, 0.138f),
-    vector2(0.161f, 0.105f),
-    vector2(0.183f, 0.094f),
-    vector2(0.208f, 0.087f),
-    vector2(0.230f, 0.092f),
-    vector2(0.254f, 0.106f),
-    vector2(0.289f, 0.128f),
-    vector2(0.326f, 0.145f),
-    vector2(0.365f, 0.155f),
-    vector2(0.406f, 0.160f),
-    vector2(0.444f, 0.157f),
-    vector2(0.492f, 0.147f),
-    vector2(0.542f, 0.132f),
-    vector2(0.592f, 0.112f),
-    vector2(0.641f, 0.095f),
-    vector2(0.687f, 0.081f),
-    vector2(0.721f, 0.076f),
-    vector2(0.740f, 0.081f),
-    vector2(0.752f, 0.104f),
-    vector2(0.763f, 0.119f),
-    vector2(0.779f, 0.122f),
-    vector2(0.790f, 0.115f),
-    vector2(0.802f, 0.094f),
-    vector2(0.822f, 0.099f),
-    vector2(0.840f, 0.128f),
+const Array<vector3> game.SPINDLE_POINTS = {
+    vector3(0.0f, 0.100f, 0.0f),
+    vector3(0.0f, 0.114f, 0.0f),
+    vector3(0.0f, 0.132f, 0.0f),
+    vector3(0.0f, 0.148f, 0.0f),
+    vector3(0.0f, 0.161f, 0.0f),
+    vector3(0.0f, 0.183f, 0.0f),
+    vector3(0.0f, 0.208f, 0.0f),
+    vector3(0.0f, 0.230f, 0.0f),
+    vector3(0.0f, 0.254f, 0.0f),
+    vector3(0.0f, 0.289f, 0.0f),
+    vector3(0.0f, 0.326f, 0.0f),
+    vector3(0.0f, 0.365f, 0.0f),
+    vector3(0.0f, 0.406f, 0.0f),
+    vector3(0.0f, 0.444f, 0.0f),
+    vector3(0.0f, 0.492f, 0.0f),
+    vector3(0.0f, 0.542f, 0.0f),
+    vector3(0.0f, 0.592f, 0.0f),
+    vector3(0.0f, 0.641f, 0.0f),
+    vector3(0.0f, 0.687f, 0.0f),
+    vector3(0.0f, 0.721f, 0.0f),
+    vector3(0.0f, 0.740f, 0.0f),
+    vector3(0.0f, 0.752f, 0.0f),
+    vector3(0.0f, 0.763f, 0.0f),
+    vector3(0.0f, 0.779f, 0.0f),
+    vector3(0.0f, 0.790f, 0.0f),
+    vector3(0.0f, 0.802f, 0.0f),
+    vector3(0.0f, 0.822f, 0.0f),
+    vector3(0.0f, 0.840f, 0.0f),
 };
+
+const Array<float> game.SPINDLE_RADII = {
+    0.130f, 0.147f, 0.150f, 0.138f, 0.105f, 0.094f, 0.087f,
+    0.092f, 0.106f, 0.128f, 0.145f, 0.155f, 0.160f, 0.157f,
+    0.147f, 0.132f, 0.112f, 0.095f, 0.081f, 0.076f, 0.081f,
+    0.104f, 0.119f, 0.122f, 0.115f, 0.094f, 0.099f, 0.128f,
+};
+
+const Array<uint> game.SPINDLE_CORNERS = {
+    0u,  1u,  2u,  3u,  4u,  5u,  6u,  7u,  8u,  9u,  10u, 11u, 12u, 13u,
+    14u, 15u, 16u, 17u, 18u, 19u, 20u, 21u, 22u, 23u, 24u, 25u, 26u, 27u,
+};
+const Array<uint> game.SPINDLE_OFFSETS = { 0u, 28u };
+
+const float game.ASHLAR_HALF_W = 0.54f * 0.5f;
+const float game.ASHLAR_HALF_H = 0.248f * 0.5f;
+const Array<vector3> game.ASHLAR_POINTS = {
+    vector3(-game.ASHLAR_HALF_W + 0.012f, -game.ASHLAR_HALF_H, 0.0f),
+    vector3( game.ASHLAR_HALF_W - 0.012f, -game.ASHLAR_HALF_H, 0.0f),
+    vector3( game.ASHLAR_HALF_W, -game.ASHLAR_HALF_H + 0.012f, 0.0f),
+    vector3( game.ASHLAR_HALF_W,  game.ASHLAR_HALF_H - 0.012f, 0.0f),
+    vector3( game.ASHLAR_HALF_W - 0.012f,  game.ASHLAR_HALF_H, 0.0f),
+    vector3(-game.ASHLAR_HALF_W + 0.012f,  game.ASHLAR_HALF_H, 0.0f),
+    vector3(-game.ASHLAR_HALF_W,  game.ASHLAR_HALF_H - 0.012f, 0.0f),
+    vector3(-game.ASHLAR_HALF_W, -game.ASHLAR_HALF_H + 0.012f, 0.0f),
+};
+
+const float game.COPING_HALF_W = 0.66f * 0.5f;
+const float game.COPING_HALF_H = 0.18f * 0.5f;
+const Array<vector3> game.COPING_POINTS = {
+    vector3(-game.COPING_HALF_W + 0.034f, -game.COPING_HALF_H, 0.0f),
+    vector3( game.COPING_HALF_W - 0.034f, -game.COPING_HALF_H, 0.0f),
+    vector3( game.COPING_HALF_W, -game.COPING_HALF_H + 0.034f, 0.0f),
+    vector3( game.COPING_HALF_W,  game.COPING_HALF_H - 0.018f, 0.0f),
+    vector3( game.COPING_HALF_W - 0.018f,  game.COPING_HALF_H, 0.0f),
+    vector3(-game.COPING_HALF_W + 0.018f,  game.COPING_HALF_H, 0.0f),
+    vector3(-game.COPING_HALF_W,  game.COPING_HALF_H - 0.018f, 0.0f),
+    vector3(-game.COPING_HALF_W, -game.COPING_HALF_H + 0.034f, 0.0f),
+};
+
+const Array<uint> game.SECTION_CORNERS = { 0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u };
+const Array<uint> game.SECTION_OFFSETS = { 0u, 8u };
 
 const Array<vector3> game.CROWN_POINTS = {
     vector3(-0.207f, -0.090f, 0.0f),
@@ -202,30 +244,10 @@ class game.BalustradeProfiles : procedural.Node {
         [Port, DESC = "墙石的 XY 倒棱截面，宽 0.54 米，高 0.248 米。接 custom Sweep.cross_section。"] procedural.Geometry& ashlar,
         [Port, DESC = "基座压顶石的 XY 截面，宽 0.66 米，高 0.18 米。"] procedural.Geometry& coping,
         [Port, DESC = "连续扶手的 XY 截面，底窄顶冠略收，宽 0.52 米，高 0.18 米。"] procedural.Geometry& handrail) {
-        const uint station_count = game.SPINDLE_STATIONS.size();
-        game.StonePaths turning;
-        Array<float> radius;
-        turning.p.reserve(station_count);
-        turning.corners.reserve(station_count);
-        turning.offsets.reserve(2u);
-        radius.reserve(station_count);
-        turning.offsets.add(0u);
-        for (uint i = 0u; i < station_count; i += 1u) {
-            const vector2 station = game.SPINDLE_STATIONS[i];
-            game.stone_point(turning, vector3(0.0f, station.x, 0.0f));
-            radius.add(station.y);
-        }
-        game.stone_break(turning);
-        self.emit_polylines(turning.p, turning.corners, turning.offsets, 0);
-        self.set_float("shaft_scale", procedural.Layer::point, radius, 0);
-
-        game.StonePaths block_section;
-        game.StonePaths sill_section;
-        game.eased_section(block_section, 0.54f, 0.248f, 0.012f, 0.012f);
-        game.eased_section(sill_section, 0.66f, 0.18f, 0.034f, 0.018f);
-        self.emit_polygons(block_section.p, block_section.corners, block_section.offsets, 1);
-        self.emit_polygons(sill_section.p, sill_section.corners, sill_section.offsets, 2);
-
+        self.emit_polylines(game.SPINDLE_POINTS, game.SPINDLE_CORNERS, game.SPINDLE_OFFSETS, 0);
+        self.set_float("shaft_scale", procedural.Layer::point, game.SPINDLE_RADII, 0);
+        self.emit_polygons(game.ASHLAR_POINTS, game.SECTION_CORNERS, game.SECTION_OFFSETS, 1);
+        self.emit_polygons(game.COPING_POINTS, game.SECTION_CORNERS, game.SECTION_OFFSETS, 2);
         self.emit_polygons(game.CROWN_POINTS, game.CROWN_CORNERS, game.CROWN_OFFSETS, 3);
     }
 };

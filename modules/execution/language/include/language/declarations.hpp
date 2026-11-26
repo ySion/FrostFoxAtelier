@@ -89,15 +89,17 @@ struct Token;
 
 std::expected<std::string, Diagnostic> parse_presentation_text(Tokens&, const Token& option);
 
-std::expected<std::string_view, Diagnostic> peek_attributed_keyword(const Tokens&);
+std::expected<std::string_view, Diagnostic> peek_declaration_keyword(const Tokens&);
 
 std::expected<std::string, Diagnostic> parse_description_attribute(Tokens&, std::string_view target_kind);
 
 std::expected<void, Diagnostic> skip_constant_initializer(Tokens&);
 
+std::expected<std::size_t, Diagnostic> skip_function_body(Tokens&);
+
 std::expected<TypeName, Diagnostic> parse_type_name(Tokens&);
 
-std::expected<TypeDeclaration, Diagnostic> parse_type_declaration(Tokens&);
+std::expected<TypeDeclaration, Diagnostic> parse_type_declaration(Tokens&, std::string_view target_keyword = {});
 
 std::expected<void, Diagnostic> parse_parameter_attributes(Tokens&, bool allow_attributes,
                                                            std::vector<std::pair<std::string, std::string>>& metadata);

@@ -94,8 +94,6 @@ struct FunctionDeclaration {
     std::string signature;
 
     std::vector<std::string> parameters;
-
-    std::string description{};
 };
 
 // A top-level struct, enum, constant or function. uses names every other top-level
@@ -116,8 +114,6 @@ struct TopLevel {
     std::vector<std::uint32_t> uses;
 
     std::string property; // eligible accessor projection for the complete project type-name check
-
-    std::string description{};
 };
 
 struct ClassDeclaration {
@@ -141,7 +137,11 @@ struct ClassDeclaration {
 // File collection and class structure use the ordinary lexer. Function bodies,
 // signatures and constant expressions are checked by the one typed Source parser.
 struct SourceModule {
+    std::vector<std::string> engine_modules;
+
     std::vector<TopLevel> declarations; // snapshot order
+
+    std::vector<TypeDeclaration> types; // sorted by name
 
     std::vector<FunctionDeclaration> functions; // project-file functions, the exported ones
 

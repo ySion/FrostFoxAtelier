@@ -1724,6 +1724,10 @@ Result<void> verify_graph_discovery_cli(ControlCli& cli) {
                                            json::Document::literal<R"({"view":"catalog","prefix":"procedural."})">()));
     if (bad_lib_arg->root().string({"error", "code"}) != "invalid_request")
         return fixture_failure("prefix without view=library did not return invalid_request");
+    ATELIER_TRY_BIND(empty_lib_sym,
+                     cli.call("graph.inspect", 1, json::Document::literal<R"({"view":"library","symbol":""})">()));
+    if (empty_lib_sym->root().string({"error", "code"}) != "invalid_request")
+        return fixture_failure("empty symbol in view=library did not return invalid_request");
     ATELIER_TRY_BIND(sweep, cli.call("graph.inspect", 0,
                                      json::Document::literal<R"({"view":"catalog","type":"procedural.Sweep"})">()));
     const auto hints = *sweep->root().at("result");

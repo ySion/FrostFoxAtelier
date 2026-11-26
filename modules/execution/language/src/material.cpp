@@ -1523,9 +1523,6 @@ std::expected<MaterialModule, Diagnostic> compile_material(std::string_view name
         }
         for (auto& node : function.expressions) {
             using Kind = Expression::Kind;
-            if (node.kind == Kind::value_field && function.expressions[node.left].type == token)
-                return reject(node.position,
-                              "TextureInput members are compiler-owned, not accessible to material Source.");
             if (!(node.kind == Kind::literal && node.type == ValueType::u32)) {
                 ATELIER_TRY(check_type(node.type, node.position));
             }

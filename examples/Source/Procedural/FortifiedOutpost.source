@@ -97,8 +97,9 @@ class game.OutpostLayoutSkeleton : procedural.Node {
               math.is_finite(approach) && math.is_finite(meander))) {
             fail("OutpostLayoutSkeleton parameters must be finite.");
         }
-        if (radius < 2.5f || side_count < 4 || gate_w <= 0.8f || gate_w >= radius * 1.5f) {
-            fail("OutpostLayoutSkeleton requires valid radius, sides >= 4, and gate_width < 1.5 * radius.");
+        if (radius < 2.5f || radius > 4096.0f || side_count < 4 || side_count > 1024 || gate_w <= 0.8f ||
+            gate_w >= radius * 1.5f) {
+            fail("OutpostLayoutSkeleton requires valid radius, sides in 4..1024, and gate_width < 1.5 * radius.");
         }
 
         const uint mixed_seed = procedural.hash2(context.seed, self.seed);
@@ -112,6 +113,7 @@ class game.OutpostLayoutSkeleton : procedural.Node {
         const uint road_steps = 20;
         road_pts.reserve(road_steps);
         road_vp.reserve(road_steps);
+        road_off.reserve(2u);
         road_scales.reserve(road_steps);
 
         const float z_start = -approach;
@@ -150,6 +152,7 @@ class game.OutpostLayoutSkeleton : procedural.Node {
         Array<uint> wall_off;
         wall_pts.reserve(wall_station_count);
         wall_vp.reserve(wall_station_count);
+        wall_off.reserve(2u);
 
         Array<vector2> poly_xz;
         poly_xz.reserve(n_sides + 1);
@@ -181,8 +184,12 @@ class game.OutpostLayoutSkeleton : procedural.Node {
         Array<vector3> merlon_pts;
         Array<uint> merlon_vp;
         Array<uint> merlon_off;
-        merlon_off.add(0u);
         const float pitch = merlon_len + gap_len;
+        const uint est_merlons = uint((span_ang * radius) / math.max(0.5f, pitch)) + n_sides;
+        merlon_pts.reserve(est_merlons * 2u);
+        merlon_vp.reserve(est_merlons * 2u);
+        merlon_off.reserve(est_merlons + 1u);
+        merlon_off.add(0u);
         const float merlon_y_offset = wall_h - wall_embed + 0.5f * merlon_h - 0.04f;
 
         for (uint ms = 0; ms < n_sides; ms += 1) {
@@ -207,10 +214,15 @@ class game.OutpostLayoutSkeleton : procedural.Node {
         }
 
         // 4. Twin gatehouse pillars + alternating bastion corner buttress columns.
+        const uint max_posts = n_sides / 2u + 2u;
         Array<vector3> post_pts;
         Array<quaternion> post_orients;
         Array<float> post_scales;
         Array<uint> post_variants;
+        post_pts.reserve(max_posts);
+        post_orients.reserve(max_posts);
+        post_scales.reserve(max_posts);
+        post_variants.reserve(max_posts);
 
         for (uint c = 0; c <= n_sides; c += 1) {
             const bool is_gate_pillar = (c == 0) || (c == n_sides);
@@ -347,10 +359,20 @@ class game.OutpostTacticalScatter : procedural.Node {
         // Serial minimum-distance filter against gate/buttress posts and accepted props.
         const float min_dist_sq = spacing * spacing;
         const float post_dist_sq = (spacing + 0.35f) * (spacing + 0.35f);
+        uint valid_count = 0u;
+        for (uint idx = 0u; idx < count; idx += 1u) {
+            if (decisions[idx].valid) {
+                valid_count += 1u;
+            }
+        }
         Array<vector3> out_P;
         Array<quaternion> out_orient;
         Array<float> out_scale;
         Array<uint> out_variant;
+        out_P.reserve(valid_count);
+        out_orient.reserve(valid_count);
+        out_scale.reserve(valid_count);
+        out_variant.reserve(valid_count);
 
         for (uint idx = 0; idx < count; idx += 1) {
             const game.PropDecision d = decisions[idx];

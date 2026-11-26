@@ -1072,6 +1072,24 @@ void verify_examples_procedural_showcases() {
             require(
                 has_align_up && has_eased,
                 "Examples procedural_source_program missed engine procedural.align_to_up or project game.eased_section.");
+            require(std::ranges::find(prog->engine_modules(), "procedural") != prog->engine_modules().end(),
+                    "Examples procedural_source_program missed 'procedural' in engine_modules().");
+
+            // R3-C6: Binding an unbuilt ProjectCode must report an explicit invalid_definition error instead of null:
+            editor::Session unbuilt_session;
+            editor::ProjectCode* unbuilt_code = nullptr;
+            take(unbuilt_session.initialize(
+                [&](world::World& world) -> Result<std::shared_ptr<void>> {
+                    auto code = std::make_shared<editor::ProjectCode>(world);
+                    unbuilt_code = code.get();
+                    return std::static_pointer_cast<void>(std::move(code));
+                },
+                editor::SessionRole::editor));
+            unbuilt_session.bind_project_code(unbuilt_code);
+            const auto unbuilt_prog = unbuilt_session.procedural_source_program();
+            require(!unbuilt_prog && unbuilt_prog.error().code == ErrorCode::invalid_definition,
+                    "Session::procedural_source_program silently accepted an unpublished ProjectCode.");
+            changed(unbuilt_session.close());
         }
 
         std::printf(

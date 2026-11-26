@@ -104,6 +104,8 @@ struct ValueLayout {
 
     bool can_mutate{};
 
+    bool standard_array_layout{};
+
     math::Type math{};
 
     bool plain_value{};

@@ -1771,6 +1771,159 @@ float read_prof_y(uint idx) {
         require(f_read_v2 && f_read_v2->description == "Updated docstring v2." &&
                     std::abs(take(typed_read.invoke(ObjectId{}, 1u)) - 0.15f) < 1e-6f,
                 "Function DESC-only edit broke hot-reload compatibility or did not update Program::functions().");
+
+        // R3-C1 / R3-C2 / R3-C3 regression checks:
+        // - R3-C1: non-standard read-only TypeKind::array views cannot declare module constants or match Array<T>.
+        // - R3-C2: module constants referencing properties in short-circuit/unevaluated branches validate getters
+        //          (rejecting write-only properties) and isolate property_uses_ across nested constants & functions.
+        // - R3-C3: passing .rdata constant structs/arrays to non-BorrowSafe native methods or in async coroutines
+        //          sets uses_scoped_values and is rejected at compile time.
+        {
+            struct UnsafeBorrowHost {
+                std::int32_t touch_array(const Array<std::int32_t>& xs) { return static_cast<std::int32_t>(xs.size()); }
+
+                std::int32_t touch_pair(PlainPair p) { return p.x + p.y; }
+
+                std::int32_t touch_int_ref(const std::int32_t& x) { return x; }
+
+                std::int32_t safe_int_ref(const std::int32_t& x) const { return x; }
+
+                std::int32_t safe_array(const Array<std::int32_t>& xs) const {
+                    return static_cast<std::int32_t>(xs.size());
+                }
+            };
+            using CustomSpan = std::span<const double>;
+            Runtime r3_rt;
+            auto span_def = NativeRegistration<CustomSpan>(r3_rt, "test.DoubleSpan", TypeKind::array).build();
+            span_def.element = TypeReference::native<double>();
+            span_def.native.element_representation = detail::representation<double>();
+            span_def.native.value_operations_preserve_borrows = true;
+            span_def.native.sequence_view = [](const void* value, const void** data, std::size_t* size) noexcept {
+                const auto view = *static_cast<const CustomSpan*>(value);
+                *data = view.data();
+                *size = view.size();
+            };
+            take(r3_rt.register_types(std::vector<TypeDefinition>{
+                std::move(span_def), array_definition<std::int32_t>(r3_rt, "test.IntArray"),
+                NativeRegistration<PlainPair>(r3_rt, "test.PlainPair", TypeKind::record)
+                    .field<&PlainPair::x>("x", {TypeReference::native<std::int32_t>()}, offsetof(PlainPair, x))
+                    .field<&PlainPair::y>("y", {TypeReference::native<std::int32_t>()}, offsetof(PlainPair, y))
+                    .build()}));
+            const auto host_type = take(NativeRegistration<UnsafeBorrowHost>(r3_rt, "test.UnsafeHost", TypeKind::object)
+                                            .method<&UnsafeBorrowHost::touch_array>("touch_array", false)
+                                            .method<&UnsafeBorrowHost::touch_pair>("touch_pair", false)
+                                            .method<&UnsafeBorrowHost::touch_int_ref>("touch_int_ref", false)
+                                            .method<&UnsafeBorrowHost::safe_int_ref>("safe_int_ref", true)
+                                            .method<&UnsafeBorrowHost::safe_array>("safe_array", true)
+                                            .publish());
+
+            const auto expect_r3_reject = [&](TypeId receiver, std::string_view code, std::string_view expected) {
+                auto p = take(Program::create(r3_rt, receiver));
+                auto req = take(p->request("r3_reject.source", code, "run"));
+                auto res = Program::prepare(req);
+                require(!res && res.error().message.contains(expected),
+                        res ? "Expected R3 rejection did not trigger." : res.error().message);
+            };
+            // R3-C1: custom sequence view rejected both by explicit name and via Array<double> syntax:
+            expect_r3_reject({}, "const test.DoubleSpan S = {}; int run() { return 0; }",
+                             "Module constants require a scalar, enum, built-in math, plain struct, or Array");
+            expect_r3_reject({}, "const Array<double> S = {}; int run() { return 0; }",
+                             "This Array element type has not been registered in the Runtime");
+            expect_r3_reject({}, "int run(const Array<double>& s) { return int(s.size()); }",
+                             "This Array element type has not been registered in the Runtime");
+
+            // R3-C2: write-only property in unevaluated constant branch is rejected; readable property in unevaluated
+            // branch (including nested constant dependency) does not corrupt AST of subsequent functions:
+            expect_r3_reject({}, "void SetOnly(int v) {} const int K = true ? 7 : Only; int run() { return K; }",
+                             "Property is write-only: Only");
+            {
+                auto p = take(Program::create(r3_rt));
+                constexpr std::string_view prop_const_src = R"(
+int GetFlag() { return 99; }
+const int INNER = 5;
+const bool GUARD = true || (Flag == 1);
+const int PICK = GUARD ? (false ? Flag : INNER) : Flag;
+int run() {
+    const int a = Flag;
+    return PICK + a;
+}
+)";
+                auto req = take(p->request("r3_prop_const.source", prop_const_src, "run"));
+                auto cand = take(Program::prepare(req));
+                take(p->try_publish(cand));
+                const auto val = take(p->entry().bind<std::int32_t>()).invoke(ObjectId{});
+                require(val && *val == 104,
+                        "Short-circuit property in module constant corrupted function AST or folded wrong value.");
+            }
+
+            // R3-C3: .rdata constant Array / Struct (including element/field const-ref projections) cannot be passed
+            // to non-BorrowSafe native methods (directly or via helper) or borrowed in async coroutines:
+            expect_r3_reject(host_type, "const Array<int> K = { 1, 2, 3 }; int run() { return self.touch_array(K); }",
+                             "BorrowSafe");
+            expect_r3_reject(host_type, "const test.PlainPair P = { 1, 2 }; int run() { return self.touch_pair(P); }",
+                             "BorrowSafe");
+            expect_r3_reject(host_type, "const Array<int> K = { 1, 2 }; int run() { return self.touch_int_ref(K[0]); }",
+                             "BorrowSafe");
+            expect_r3_reject(host_type,
+                             "const test.PlainPair P = { 1, 2 }; int run() { return self.touch_int_ref(P.x); }",
+                             "BorrowSafe");
+            expect_r3_reject(
+                host_type,
+                "const Array<int> K = { 1, 2 }; int hop(const int& r) { return self.touch_int_ref(r); } int run() { return hop(K[0]); }",
+                "BorrowSafe");
+            expect_r3_reject(
+                host_type,
+                "const Array<int> K = { 1, 2 }; async int run() { int n = self.safe_array(K); yield; return n; }",
+                "Scoped value execution");
+            expect_r3_reject(
+                host_type,
+                "const Array<int> K = { 1, 2 }; async int run() { int n = self.safe_int_ref(K[0]); yield; return n; }",
+                "Scoped value execution");
+            // Frame-local copy from .rdata constant in async coroutine remains valid (LANGUAGE.md:60):
+            {
+                auto coro_p = take(Program::create(r3_rt, host_type));
+                auto coro_req = take(coro_p->request(
+                    "r3_coro_local.source",
+                    "const Array<int> K = { 9, 4 }; async int run() { int loc = K[0]; int n = self.safe_int_ref(loc); yield; return n + K[1]; }",
+                    "run"));
+                auto coro_cand = take(Program::prepare(coro_req));
+                take(coro_p->try_publish(coro_cand));
+                auto host_obj = take(r3_rt.create(host_type));
+                auto task = take(coro_p->entry().start(host_obj.id(), std::span<const Scalar>{}));
+                require(take(task.resume()) == CoroutineState::suspended &&
+                            take(task.resume()) == CoroutineState::completed &&
+                            std::get<std::int32_t>(*take(task.result())) == 13,
+                        "Frame-local scalar borrow in async coroutine after reading .rdata constant failed.");
+            }
+            // source::source_type_name enforces the exact Source value/enum projection contract:
+            {
+                TypeDefinition editor_rec;
+                editor_rec.name = "editor.HiddenPair";
+                editor_rec.kind = TypeKind::record;
+                FieldDefinition hidden_field;
+                hidden_field.name = "x";
+                hidden_field.value = {take(r3_rt.native_type<std::int32_t>())};
+                editor_rec.fields.push_back(std::move(hidden_field));
+                take(
+                    r3_rt.register_types(std::vector<TypeDefinition>{string_definition(r3_rt), std::move(editor_rec)}));
+                const auto hidden_id = take(r3_rt.find_type("editor.HiddenPair"));
+                require(take(source::source_type_name(r3_rt, take(r3_rt.native_type<std::int32_t>()))) == "int" &&
+                            take(source::source_type_name(r3_rt, take(r3_rt.native_type<String>()))) == "String" &&
+                            take(source::source_type_name(r3_rt, take(r3_rt.native_type<math::Vector3>()))) ==
+                                "vector3" &&
+                            take(source::source_type_name(r3_rt, take(r3_rt.native_type<Array<std::int32_t>>()))) ==
+                                "Array<int>" &&
+                            take(source::source_type_name(r3_rt, take(r3_rt.find_type("test.DoubleSpan")))) ==
+                                "test.DoubleSpan",
+                        "source::source_type_name formatted projected Runtime types unexpectedly.");
+                const auto obj_proj = source::source_type_name(r3_rt, host_type);
+                const auto ed_proj = source::source_type_name(r3_rt, hidden_id);
+                const auto null_proj = source::source_type_name(r3_rt, TypeId{});
+                require(!obj_proj && obj_proj.error().code == ErrorCode::invalid_type && !ed_proj &&
+                            ed_proj.error().code == ErrorCode::invalid_type && !null_proj,
+                        "source::source_type_name failed to reject object, editor-reserved, or null TypeIds.");
+            }
+        }
     }
 }
 }

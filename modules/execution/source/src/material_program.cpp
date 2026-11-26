@@ -275,11 +275,24 @@ Result<void> MaterialProgram::evaluate(std::span<const std::byte> context, std::
     if (!state->context_check.valid(context.data()) || !state->parameter_check.valid(parameters.data()))
         return std::unexpected(Error{ErrorCode::argument_mismatch, "Material inputs must be finite values."});
     atelier::detail::ValueStorage output_storage;
+    atelier::detail::ValueStorage context_storage;
+    atelier::detail::ValueStorage parameter_storage;
     auto* output_data = output_storage.prepare(output.size(), state->output.alignment);
-    std::byte empty{};
-    BusinessValue arguments[3]{
-        {state->context_type, 0, ArgumentStorage::value, context.empty() ? &empty : context.data()},
-        {state->parameter_type, 0, ArgumentStorage::value, parameters.empty() ? &empty : parameters.data()}};
+    alignas(std::max_align_t) std::byte empty{};
+    const auto aligned_input = [&](std::span<const std::byte> bytes, std::size_t alignment,
+                                   atelier::detail::ValueStorage& staging) -> const void* {
+        if (bytes.empty())
+            return &empty;
+        if (alignment <= 1 || reinterpret_cast<std::uintptr_t>(bytes.data()) % alignment == 0)
+            return bytes.data();
+        auto* dst = staging.prepare(bytes.size(), alignment);
+        std::memcpy(dst, bytes.data(), bytes.size());
+        return dst;
+    };
+    BusinessValue arguments[3]{{state->context_type, 0, ArgumentStorage::value,
+                                aligned_input(context, state->context.alignment, context_storage)},
+                               {state->parameter_type, 0, ArgumentStorage::value,
+                                aligned_input(parameters, state->parameters.alignment, parameter_storage)}};
     if (state->view.resources != UINT32_MAX) {
         arguments[2] = {state->resource_type, 0, ArgumentStorage::value,
                         state->resource_values.empty() ? &empty : state->resource_values.data()};

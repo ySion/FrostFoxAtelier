@@ -1377,8 +1377,6 @@ private:
 
     Result<void> publish_procedural_mesh(assets::Reader&, const assets::MeshAsset&);
 
-    Result<const source::Program*> ensure_procedural_program();
-
     Result<OpenGraph*> editable_graph(std::string_view key, bool need_program = false);
 
     Result<void> apply_graph_patch(std::string_view key, json::Value patch, Project* project);

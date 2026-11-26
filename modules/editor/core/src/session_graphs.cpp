@@ -1747,11 +1747,16 @@ AssetPortResolver Session::make_asset_port_resolver(Project* project) const {
     };
 }
 
-Result<const source::Program*> Session::ensure_procedural_program() {
-    if (project_code_ && project_code_->program() && project_code_->program()->revision() > 0)
-        return project_code_->program();
-    if (project_code_)
-        return project_code_->program();
+Result<const source::Program*> Session::procedural_source_program() {
+    if (world_.closed())
+        return graph_error("Procedural library inspection requires an open Session.", ErrorCode::invalid_definition);
+    if (project_code_) {
+        if (project_code_->program() && project_code_->program()->revision() > 0)
+            return project_code_->program();
+        if (project_code_->report() && project_code_->report()->error)
+            return std::unexpected(*project_code_->report()->error);
+        return graph_error("Bound ProjectCode has not published a Source program.", ErrorCode::invalid_definition);
+    }
     if (engine_program_)
         return engine_program_.get();
     while (runtime_.collection_phase() != CollectionPhase::idle) {
@@ -1771,12 +1776,6 @@ Result<const source::Program*> Session::ensure_procedural_program() {
     ATELIER_TRY((*program)->try_publish(*candidate));
     engine_program_ = std::shared_ptr<source::Program>(std::move(*program));
     return engine_program_.get();
-}
-
-Result<const source::Program*> Session::procedural_source_program() {
-    if (world_.closed())
-        return graph_error("Procedural library inspection requires an open Session.", ErrorCode::invalid_definition);
-    return ensure_procedural_program();
 }
 
 Result<void> Session::remember_graph_scalar_edit(ObjectRoot target, std::vector<world::FieldPath> paths,
@@ -1892,7 +1891,7 @@ GraphNodeCatalogEntry describe_graph_asset(const assets::ProjectEntry& entry, Ty
 Result<std::optional<GraphNodeCatalogEntry>> Session::procedural_node_type(std::string_view name, Project* project) {
     if (world_.closed())
         return graph_error("Procedural node catalog requires an open Session.", ErrorCode::invalid_definition);
-    ATELIER_TRY(ensure_procedural_program());
+    ATELIER_TRY(procedural_source_program());
     ATELIER_TRY_BIND(asset_node, runtime_.native_type<procedural::AssetNode>());
     if (name.starts_with("asset:")) {
         const auto* entry = project ? project->entry(name.substr(6)) : nullptr;
@@ -1911,7 +1910,7 @@ Result<std::vector<GraphNodeCatalogEntry>> Session::procedural_node_types(Projec
                                                                           std::string_view exclude_graph_key) {
     if (world_.closed())
         return graph_error("Procedural node catalog requires an open Session.", ErrorCode::invalid_definition);
-    ATELIER_TRY(ensure_procedural_program());
+    ATELIER_TRY(procedural_source_program());
     if (!asset_schema_cache_)
         asset_schema_cache_.reset(new AssetSchemaCache());
 
@@ -1974,7 +1973,7 @@ Result<ObjectId> Session::open_graph(Project& project, std::string_view key) {
         return graph_error("Opening a procedural graph requires a live Session.", ErrorCode::invalid_definition);
     if (const auto existing = graphs_.find(std::string(key)); existing != graphs_.end())
         return existing->second->document.graph.id();
-    ATELIER_TRY(ensure_procedural_program());
+    ATELIER_TRY(procedural_source_program());
     ATELIER_TRY_BIND(asset, project.assets().procedural_graph(key));
     ATELIER_TRY_BIND(loaded, load_graph(runtime_, asset->text, make_asset_port_resolver(&project)));
     ATELIER_TRY_BIND(canonical, editor::save_graph(runtime_, *loaded));
@@ -1998,7 +1997,7 @@ Result<ObjectId> Session::create_scratch_graph(std::string_view key) {
                            ErrorCode::invalid_definition);
     if (const auto existing = graphs_.find(std::string(key)); existing != graphs_.end())
         return existing->second->document.graph.id();
-    ATELIER_TRY(ensure_procedural_program());
+    ATELIER_TRY(procedural_source_program());
     ATELIER_TRY_BIND(graph_type, runtime_.native_type<procedural::Graph>());
     ATELIER_TRY_BIND(graph_root, runtime_.create(*graph_type));
     std::unique_ptr<OpenGraph, OpenGraphDeleter> open(new OpenGraph());
@@ -2058,7 +2057,7 @@ Result<void> Session::restore_open_graphs(Project* project, std::span<const Open
         return graph_error("Restoring procedural graphs requires an open Session.", ErrorCode::invalid_definition);
     if (snapshots.empty())
         return {};
-    ATELIER_TRY(ensure_procedural_program());
+    ATELIER_TRY(procedural_source_program());
     const auto fallback_resolver = make_asset_port_resolver(project);
     const AssetPortResolver snapshot_resolver = [&](std::string_view asset_key) -> Result<procedural::Ports> {
         const auto in_snap = std::ranges::find(snapshots, asset_key, &OpenGraphSnapshot::key);
@@ -2391,7 +2390,7 @@ Result<Session::OpenGraph*> Session::editable_graph(std::string_view key, bool n
     if (world_.running() || world_.closed())
         return graph_error("Graph editing requires an open, stopped Session.", ErrorCode::invalid_definition);
     if (need_program)
-        ATELIER_TRY(ensure_procedural_program());
+        ATELIER_TRY(procedural_source_program());
     const auto at = graphs_.find(std::string(key));
     if (at == graphs_.end() || !at->second)
         return graph_error("Procedural graph is not open: " + std::string(key), ErrorCode::invalid_definition);
@@ -5413,7 +5412,7 @@ Result<void> Session::set_generator_override_json(Project* project, ObjectId com
         return graph_error("Target component is not a ProceduralGeneratorComponent.");
     if (!valid_graph_identifier(param_name))
         return graph_error("Invalid override parameter name '" + std::string(param_name) + "'.");
-    ATELIER_TRY(ensure_procedural_program());
+    ATELIER_TRY(procedural_source_program());
     ATELIER_TRY_BIND(current_src, presentation::read_procedural_source(runtime_, component));
     if (current_src->source.empty() && value.has_value())
         return graph_error("ProceduralGeneratorComponent has no bound .procgraph asset.");
@@ -6130,7 +6129,7 @@ Result<void> Session::begin_graph_parameter_edit(std::string_view key, std::stri
         ATELIER_TRY_BIND(is_gen, runtime_.is_a(comp_state->type, presentation_types_.procedural_generator_component));
         if (!*is_gen)
             return graph_error("Target component is not a ProceduralGeneratorComponent.");
-        ATELIER_TRY(ensure_procedural_program());
+        ATELIER_TRY(procedural_source_program());
         ATELIER_TRY_BIND(proc_src, presentation::read_procedural_source(runtime_, generator_component));
         if (proc_src->source.empty())
             return graph_error("ProceduralGeneratorComponent has no bound .procgraph asset.");
@@ -6550,7 +6549,7 @@ Result<void> Session::set_string_property(ObjectId object, std::span<const Field
 }
 
 Result<procedural::Evaluator*> Session::prepare_graph_evaluator(OpenGraph& open, Project* project) {
-    ATELIER_TRY_BIND(program, ensure_procedural_program());
+    ATELIER_TRY_BIND(program, procedural_source_program());
     if (project)
         open.resources.bind(project);
     ATELIER_TRY(sync_open_graph_assets(open, project ? project : open.resources.project(), true));
@@ -6982,7 +6981,7 @@ Result<void> Session::sync_procedural_generators(Project* project) {
         return {};
     };
 
-    auto program_res = ensure_procedural_program();
+    auto program_res = procedural_source_program();
     assets::Reader builtin_reader;
     assets::Reader& active_reader =
         project ? project->assets() : (cache.fallback_reader ? *cache.fallback_reader : builtin_reader);

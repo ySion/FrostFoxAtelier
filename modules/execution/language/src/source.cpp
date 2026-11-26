@@ -11,6 +11,7 @@
 #include <numbers>
 #include <span>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 
 namespace atelier::language {
@@ -114,19 +115,9 @@ public:
         std::vector<Body> bodies;
         std::vector<std::string> type_names;
         while (token_.kind != Token::Kind::end) {
-            bool is_type = token_.text == "struct" || token_.text == "enum";
-            std::string function_description;
-            if (token_.text == "[") {
-                ATELIER_TRY_BIND(target, peek_attributed_keyword(*this));
-                if (*target == "const")
-                    return reject(token_.position, "Attributes do not apply to module constants.");
-                if (*target == "struct" || *target == "enum")
-                    is_type = true;
-                else
-                    ATELIER_TRY_ASSIGN(function_description, parse_description_attribute(*this, "function"));
-            }
-            if (is_type) {
-                ATELIER_TRY_BIND(declaration, parse_type_declaration(*this));
+            ATELIER_TRY_BIND(keyword, peek_declaration_keyword(*this));
+            if (*keyword == "struct" || *keyword == "enum") {
+                ATELIER_TRY_BIND(declaration, parse_type_declaration(*this, *keyword));
                 if (type_names.size() == 1024)
                     return reject(declaration->position, "A source module supports at most 1024 type declarations.");
                 if (std::ranges::find(type_names, declaration->name) != type_names.end())
@@ -135,13 +126,24 @@ public:
                 type_names.push_back(std::move(declaration->name));
                 continue;
             }
+            std::string function_description;
+            if (token_.text == "[")
+                ATELIER_TRY_ASSIGN(function_description, parse_description_attribute(*this, "function"));
             ATELIER_TRY_BIND(constant, accept("const"));
             if (*constant) {
                 const auto position = token_.position;
                 ATELIER_TRY_BIND(type, parameter_type());
-                const bool valid_constant_type = scalar(*type) || bool(math_type(*type)) ||
-                                                 (plain_record(*type) && parallel_value_type(*type)) ||
-                                                 (type->kind == ValueType::array && parallel_sequence_type(*type));
+                if (environment_.material) {
+                    const auto mtype = math_type(*type);
+                    if (*type != ValueType::f32 && *type != ValueType::boolean &&
+                        !(mtype.vector() && mtype.precision == math::Precision::f32))
+                        return reject(position, "Material constants require float, bool, or float vector types.");
+                }
+                const bool valid_constant_type =
+                    scalar(*type) || bool(math_type(*type)) || (plain_record(*type) && parallel_value_type(*type)) ||
+                    (type->kind == ValueType::array && environment_.values[type->type_index].standard_array_layout &&
+                     environment_.values[type->type_index].can_own &&
+                     environment_.values[type->type_index].can_mutate && parallel_sequence_type(*type));
                 if (!valid_constant_type)
                     return reject(
                         position,
@@ -150,11 +152,12 @@ public:
                 ATELIER_TRY_BIND(name, qualified_identifier());
                 if (math_reserved_name(*name))
                     return reject(name_position, "Module constants cannot replace built-in math names.");
-                if (std::ranges::any_of(constants_, [&](const auto& value) { return value.name == *name; }))
+                if (constant_indices_.contains(*name))
                     return reject(name_position, "Duplicate module constant name.");
                 if (constants_.size() == 1024)
                     return reject(position, "A source module supports at most 1024 constants.");
                 ATELIER_TRY(expect("="));
+                constant_indices_.emplace(*name, static_cast<std::uint32_t>(constants_.size()));
                 constants_.push_back({std::move(*name), *type, name_position, lexer_, token_});
                 ATELIER_TRY(skip_constant_initializer(*this));
                 continue;
@@ -171,19 +174,7 @@ public:
                     return reject(function_.position, "Duplicate source function name.");
             bodies.push_back({lexer_, token_});
             module_.functions.push_back(std::move(function_));
-            ATELIER_TRY(expect("{"));
-            std::size_t braces = 1;
-            while (braces != 0) {
-                if (token_.kind == Token::Kind::end)
-                    return reject(token_.position, "Expected '}' to close the function body.");
-                if (token_.text == "{")
-                    ++braces;
-                if (token_.text == "}")
-                    --braces;
-                if (braces == 0)
-                    module_.functions.back().end_offset = token_.position.offset + token_.text.size();
-                ATELIER_TRY(consume());
-            }
+            ATELIER_TRY_ASSIGN(module_.functions.back().end_offset, skip_function_body(*this));
         }
         if (module_.functions.empty() && !allow_declarations)
             return reject(token_.position, "Source module requires an entry function.");
@@ -385,7 +376,7 @@ private:
         ATELIER_TRY_BIND(type, named_type(name.name, position));
         for (std::uint32_t depth = 0; depth < name.array_depth; ++depth) {
             const auto array = std::ranges::find_if(environment_.values, [&](const auto& value) {
-                return value.kind == ValueType::array && value.element == *type;
+                return value.kind == ValueType::array && value.standard_array_layout && value.element == *type;
             });
             if (array == environment_.values.end())
                 return reject(position, "This Array element type has not been registered in the Runtime.");
@@ -507,6 +498,38 @@ private:
         return std::nullopt;
     }
 
+    bool borrows_constant_data(NodeId id) const noexcept {
+        while (id != no_node) {
+            const auto& expr = function_.expressions[id];
+            if (expr.kind == Expression::Kind::constant_data)
+                return true;
+            if (expr.kind == Expression::Kind::value_field) {
+                id = expr.left;
+                continue;
+            }
+            if (expr.kind == Expression::Kind::index &&
+                function_.expressions[expr.left].type.kind != ValueType::string) {
+                id = expr.left;
+                continue;
+            }
+            return false;
+        }
+        return false;
+    }
+
+    static void mark_structure_mutation(Function& function, NodeId id) noexcept {
+        if (const auto root = root_local(function, id);
+            root && *root < function.parameters.size() &&
+            function.parameters[*root].passing == ParameterPassing::reference)
+            function.parameters[*root].mutates_structure = true;
+    }
+
+    bool parallel_outer_sequence(const Expression& seq, std::uint32_t local_limit) const noexcept {
+        return (seq.kind == Expression::Kind::constant_data ||
+                (seq.kind == Expression::Kind::local && seq.value < local_limit)) &&
+               parallel_sequence_type(seq.type);
+    }
+
     std::expected<void, Diagnostic> analyze_calls() {
         // Summarize direct effects before propagating callee effects bottom-up.
         for (auto& function : module_.functions) {
@@ -521,18 +544,12 @@ private:
                     stored[statement.target] = true;
                     const auto target_type = function.expressions[statement.target].type;
                     if (aggregate(target_type) && !plain_record(target_type))
-                        if (const auto root = root_local(function, statement.target);
-                            root && *root < function.parameters.size() &&
-                            function.parameters[*root].passing == ParameterPassing::reference)
-                            function.parameters[*root].mutates_structure = true;
+                        mark_structure_mutation(function, statement.target);
                 }
             }
             for (const auto& node : function.expressions) {
                 if (node.kind == Expression::Kind::sequence_mutation)
-                    if (const auto root = root_local(function, node.left);
-                        root && *root < function.parameters.size() &&
-                        function.parameters[*root].passing == ParameterPassing::reference)
-                        function.parameters[*root].mutates_structure = true;
+                    mark_structure_mutation(function, node.left);
                 if (node.kind == Expression::Kind::call)
                     for (std::size_t i = 0; i < node.arguments.size(); ++i) {
                         const auto arg_type = function.expressions[node.arguments[i]].type;
@@ -542,10 +559,7 @@ private:
                             stored[node.arguments[i]] = true;
                         if (node.argument_passing[i] == ParameterPassing::reference && aggregate(arg_type) &&
                             !plain_record(arg_type))
-                            if (const auto root = root_local(function, node.arguments[i]);
-                                root && *root < function.parameters.size() &&
-                                function.parameters[*root].passing == ParameterPassing::reference)
-                                function.parameters[*root].mutates_structure = true;
+                            mark_structure_mutation(function, node.arguments[i]);
                     }
             }
             for (std::size_t i = 0; i < function.expressions.size(); ++i) {
@@ -604,17 +618,14 @@ private:
                          (expr.type.kind == ValueType::array || expr.type.kind == ValueType::string))
                     function.parallel_safe = false;
                 else if ((expr.kind == Kind::index || expr.kind == Kind::length) &&
-                         ((function.expressions[expr.left].kind != Kind::local &&
-                           function.expressions[expr.left].kind != Kind::constant_data) ||
-                          !parallel_sequence_type(function.expressions[expr.left].type)))
+                         !parallel_outer_sequence(function.expressions[expr.left],
+                                                  static_cast<std::uint32_t>(function.locals.size())))
                     function.parallel_safe = false;
                 else if (expr.kind == Kind::source_call) {
                     for (const auto arg_id : expr.arguments) {
                         const auto& arg = function.expressions[arg_id];
                         if ((arg.type.kind == ValueType::array || arg.type.kind == ValueType::string) &&
-                            (((arg.kind != Kind::local || arg.value >= function.parameters.size()) &&
-                              arg.kind != Kind::constant_data) ||
-                             !parallel_sequence_type(arg.type))) {
+                            !parallel_outer_sequence(arg, static_cast<std::uint32_t>(function.parameters.size()))) {
                             function.parallel_safe = false;
                             break;
                         }
@@ -658,10 +669,7 @@ private:
                     for (std::size_t a = 0; a < call.arguments.size(); ++a)
                         if (call.argument_passing[a] == ParameterPassing::reference &&
                             callee.parameters[a].mutates_structure)
-                            if (const auto root = root_local(function, call.arguments[a]);
-                                root && *root < function.parameters.size() &&
-                                function.parameters[*root].passing == ParameterPassing::reference)
-                                function.parameters[*root].mutates_structure = true;
+                            mark_structure_mutation(function, call.arguments[a]);
                     ++cursor.next;
                 } else {
                     if (function.uses_scoped_values && (function.is_coroutine || !function.preserves_borrows))
@@ -807,9 +815,7 @@ private:
                         return self(self, expr.right);
                     case Kind::length: {
                         const auto& seq = function.expressions[expr.left];
-                        const bool valid_seq =
-                            seq.kind == Kind::constant_data || (seq.kind == Kind::local && seq.value < ivar);
-                        if (!valid_seq || !parallel_sequence_type(seq.type))
+                        if (!parallel_outer_sequence(seq, ivar))
                             return reject(expr.position,
                                           "parallel_for sequence size requires a top-level outer Array or String.");
                         return self(self, expr.left);
@@ -817,9 +823,7 @@ private:
                     case Kind::index: {
                         const auto& seq = function.expressions[expr.left];
                         const auto& idx = function.expressions[expr.right];
-                        const bool valid_seq =
-                            seq.kind == Kind::constant_data || (seq.kind == Kind::local && seq.value < ivar);
-                        if (!valid_seq || !parallel_sequence_type(seq.type))
+                        if (!parallel_outer_sequence(seq, ivar))
                             return reject(expr.position,
                                           "parallel_for indexing requires a top-level outer Array or String.");
                         if (seq.kind == Kind::local && (idx.kind != Kind::local || idx.value != ivar))
@@ -846,9 +850,7 @@ private:
                                 ATELIER_TRY(check_mutable_lvalue(arg_id, arg.position));
                             } else if (expr.argument_passing[a] == ParameterPassing::read_only &&
                                        (arg.type.kind == ValueType::array || arg.type.kind == ValueType::string)) {
-                                const bool valid_seq =
-                                    arg.kind == Kind::constant_data || (arg.kind == Kind::local && arg.value < ivar);
-                                if (!valid_seq || !parallel_sequence_type(arg.type))
+                                if (!parallel_outer_sequence(arg, ivar))
                                     return reject(
                                         arg.position,
                                         "parallel_for helper sequence arguments require a top-level outer Array or String.");
@@ -977,6 +979,9 @@ private:
                 !math_type(parameter.type) && !environment_.values[parameter.type.type_index].can_own)
                 return reject(node.position,
                               "Plain record value arguments require borrow-preserving copy and lifecycle operations.");
+            if ((aggregate(parameter.type) && !math_type(parameter.type)) ||
+                (parameter.passing != ParameterPassing::value && borrows_constant_data(*argument)))
+                function_.uses_scoped_values = true;
             if (parameter.passing == ParameterPassing::reference && !writable_storage(*argument))
                 return reject(node.position, "Writable reference requires a mutable lvalue.");
             if (parameter.passing != ParameterPassing::value && node.kind == Expression::Kind::field) {
@@ -1133,9 +1138,10 @@ private:
                    });
         };
         const auto aggregate_constant = [&](std::string_view candidate_name) {
-            return !native && std::ranges::any_of(constants_, [&](const auto& constant) {
-                return constant.name == candidate_name && aggregate(constant.type);
-            });
+            if (native)
+                return false;
+            const auto found = constant_indices_.find(candidate_name);
+            return found != constant_indices_.end() && aggregate(constants_[found->second].type);
         };
         while (token_.text == "." && !find_property(name, native) && !string_field(name) && !aggregate_constant(name)) {
             ATELIER_TRY(consume());
@@ -1239,6 +1245,9 @@ private:
                 return reject({}, "Sequence layout requires its native view operation.");
             if (value.kind == ValueType::array && !supported_value(value.element))
                 return reject({}, "Invalid array element type.");
+            if (value.standard_array_layout && (value.kind != ValueType::array || value.size != 3 * sizeof(void*) ||
+                                                value.alignment != alignof(void*) || !value.can_mutate))
+                return reject({}, "Invalid standard array layout.");
             if (value.math) {
                 if (value.kind != ValueType::record || value.name != math::name(value.math) ||
                     value.math.components() == 0 || value.size != value.math.size() ||
@@ -1384,10 +1393,9 @@ private:
             return reject(name.position, "Locals cannot replace math constructors or the math namespace.");
         if (find_property(name.text, false))
             return reject(name.position, "Locals cannot shadow a property.");
-        for (const auto& value : constants_)
-            if (value.name == name.text)
-                return reject(name.position,
-                              "A module constant with this name is already visible; shadowing is not supported.");
+        if (constant_indices_.contains(name.text))
+            return reject(name.position,
+                          "A module constant with this name is already visible; shadowing is not supported.");
         for (const auto index : visible_)
             if (function_.locals[index].name == name.text)
                 return reject(name.position,
@@ -1632,28 +1640,20 @@ private:
         return bits;
     }
 
-    std::expected<std::uint64_t, Diagnostic> fold_constant(NodeId id) {
+    std::expected<std::optional<std::span<const std::byte>>, Diagnostic> try_constant_slice(NodeId id) {
         Depth guard(depth_);
         if (depth_ > 128)
             return reject(function_.expressions[id].position, "Source nesting exceeds the compiler limit of 128.");
         const auto& node = function_.expressions[id];
-        if (node.kind == Expression::Kind::literal)
-            return node.bits;
-        if (node.kind == Expression::Kind::conditional) {
-            ATELIER_TRY_BIND(cond, fold_constant(node.receiver));
-            return *cond ? fold_constant(node.left) : fold_constant(node.right);
+        if (node.kind == Expression::Kind::constant_data) {
+            const auto& constant = module_.constants[node.value];
+            return std::span<const std::byte>{constant.bytes.data(), constant.bytes.size()};
         }
         if (node.kind == Expression::Kind::value_field) {
-            const auto owner_type = function_.expressions[node.left].type;
-            std::vector<std::byte> owner_bytes(value_size(owner_type));
-            ATELIER_TRY(fold_value_bytes(node.left, owner_bytes));
-            return read_scalar_bits(node.type, owner_bytes.data() + node.offset);
-        }
-        if (node.kind == Expression::Kind::length) {
-            const auto& seq = function_.expressions[node.left];
-            if (seq.kind != Expression::Kind::constant_data)
-                return reject(node.position, "Module constant initializers require compile-time constant expressions.");
-            return static_cast<std::uint32_t>(module_.constants[seq.value].element_count);
+            ATELIER_TRY_BIND(base, try_constant_slice(node.left));
+            if (!*base)
+                return std::optional<std::span<const std::byte>>{};
+            return (*base)->subspan(node.offset, value_size(node.type));
         }
         if (node.kind == Expression::Kind::index) {
             const auto& seq = function_.expressions[node.left];
@@ -1667,13 +1667,76 @@ private:
             const auto& constant = module_.constants[seq.value];
             if (idx >= constant.element_count)
                 return reject(node.position, "Constant array index is out of bounds.");
-            const auto stride = value_size(node.type);
-            return read_scalar_bits(node.type, constant.bytes.data() + idx * stride);
+            const std::size_t elem_size = value_size(node.type);
+            return std::span<const std::byte>{constant.bytes}.subspan(idx * elem_size, elem_size);
         }
-        if (node.kind == Expression::Kind::math_intrinsic) {
-            std::byte result_bytes[8]{};
-            ATELIER_TRY(fold_math_intrinsic(node, std::span<std::byte>{result_bytes, value_size(node.type)}));
-            return read_scalar_bits(node.type, result_bytes);
+        if (node.kind == Expression::Kind::conditional) {
+            ATELIER_TRY_BIND(cond, fold_constant(node.receiver));
+            return try_constant_slice(*cond ? node.left : node.right);
+        }
+        return std::optional<std::span<const std::byte>>{};
+    }
+
+    std::expected<void, Diagnostic> fold_projection_or_intrinsic(const Expression& node, std::span<std::byte> out) {
+        if (node.kind == Expression::Kind::value_field) {
+            ATELIER_TRY_BIND(slice, try_constant_slice(node.left));
+            if (*slice) {
+                std::memcpy(out.data(), (*slice)->data() + node.offset, out.size());
+                return {};
+            }
+            const auto owner_type = function_.expressions[node.left].type;
+            const std::size_t owner_size = value_size(owner_type);
+            if (owner_size <= 256) {
+                std::array<std::byte, 256> owner_bytes{};
+                ATELIER_TRY(fold_value_bytes(node.left, std::span{owner_bytes.data(), owner_size}));
+                std::memcpy(out.data(), owner_bytes.data() + node.offset, out.size());
+                return {};
+            }
+            std::vector<std::byte> owner_bytes(owner_size);
+            ATELIER_TRY(fold_value_bytes(node.left, owner_bytes));
+            std::memcpy(out.data(), owner_bytes.data() + node.offset, out.size());
+            return {};
+        }
+        if (node.kind == Expression::Kind::index) {
+            const auto& seq = function_.expressions[node.left];
+            if (seq.kind != Expression::Kind::constant_data)
+                return reject(node.position, "Module constant initializers require compile-time constant expressions.");
+            ATELIER_TRY_BIND(idx_bits, fold_constant(node.right));
+            const auto idx_type = function_.expressions[node.right].type;
+            if (idx_type == ValueType::i32 && std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(*idx_bits)) < 0)
+                return reject(node.position, "Constant array index is out of bounds.");
+            const auto idx = static_cast<std::size_t>(static_cast<std::uint32_t>(*idx_bits));
+            const auto& constant = module_.constants[seq.value];
+            if (idx >= constant.element_count)
+                return reject(node.position, "Constant array index is out of bounds.");
+            std::memcpy(out.data(), constant.bytes.data() + idx * out.size(), out.size());
+            return {};
+        }
+        return fold_math_intrinsic(node, out);
+    }
+
+    std::expected<std::uint64_t, Diagnostic> fold_constant(NodeId id) {
+        Depth guard(depth_);
+        if (depth_ > 128)
+            return reject(function_.expressions[id].position, "Source nesting exceeds the compiler limit of 128.");
+        const auto& node = function_.expressions[id];
+        if (node.kind == Expression::Kind::literal)
+            return node.bits;
+        if (node.kind == Expression::Kind::conditional) {
+            ATELIER_TRY_BIND(cond, fold_constant(node.receiver));
+            return *cond ? fold_constant(node.left) : fold_constant(node.right);
+        }
+        if (node.kind == Expression::Kind::length) {
+            const auto& seq = function_.expressions[node.left];
+            if (seq.kind != Expression::Kind::constant_data)
+                return reject(node.position, "Module constant initializers require compile-time constant expressions.");
+            return static_cast<std::uint32_t>(module_.constants[seq.value].element_count);
+        }
+        if (node.kind == Expression::Kind::value_field || node.kind == Expression::Kind::index ||
+            node.kind == Expression::Kind::math_intrinsic) {
+            std::array<std::byte, 8> bytes{};
+            ATELIER_TRY(fold_projection_or_intrinsic(node, std::span<std::byte>{bytes.data(), value_size(node.type)}));
+            return read_scalar_bits(node.type, bytes.data());
         }
         if (node.kind != Expression::Kind::unary && node.kind != Expression::Kind::binary &&
             node.kind != Expression::Kind::scalar_cast)
@@ -2084,21 +2147,27 @@ private:
     }
 
     template <class T>
+    static std::array<T, 16> unpack_lanes(math::Type mtype, const std::byte* raw) noexcept {
+        std::array<T, 16> lanes{};
+        if (mtype) {
+            std::memcpy(lanes.data(), raw, mtype.components() * sizeof(T));
+        } else {
+            T scalar_val{};
+            std::memcpy(&scalar_val, raw, sizeof(T));
+            lanes.fill(scalar_val);
+        }
+        return lanes;
+    }
+
+    template <class T>
     std::expected<void, Diagnostic> fold_float_math_intrinsic(const Expression& node, std::size_t lanes,
                                                               std::span<std::byte> out) {
         std::array<std::array<T, 16>, 3> unpacked{};
         for (std::size_t a = 0; a < node.arguments.size(); ++a) {
             const auto atype = function_.expressions[node.arguments[a]].type;
-            const auto amath = math_type(atype);
             std::array<std::byte, 128> raw{};
             ATELIER_TRY(fold_value_bytes(node.arguments[a], std::span<std::byte>{raw.data(), value_size(atype)}));
-            if (amath) {
-                std::memcpy(unpacked[a].data(), raw.data(), amath.components() * sizeof(T));
-            } else {
-                T scalar_val{};
-                std::memcpy(&scalar_val, raw.data(), sizeof(T));
-                unpacked[a].fill(scalar_val);
-            }
+            unpacked[a] = unpack_lanes<T>(math_type(atype), raw.data());
         }
         return eval_math_lanes<T>(node.math_operation, lanes, std::span{unpacked.data(), node.arguments.size()}, out,
                                   node.position);
@@ -2108,23 +2177,9 @@ private:
     static void fold_math_binary_lanes(Operation op, math::Type left_math, math::Type right_math,
                                        const std::byte* lhs_raw, const std::byte* rhs_raw, std::byte* out) noexcept {
         const auto mtype = left_math ? left_math : right_math;
-        std::array<T, 16> lhs{};
-        std::array<T, 16> rhs{};
+        const auto lhs = unpack_lanes<T>(left_math, lhs_raw);
+        const auto rhs = unpack_lanes<T>(right_math, rhs_raw);
         std::array<T, 16> res{};
-        if (left_math) {
-            std::memcpy(lhs.data(), lhs_raw, left_math.components() * sizeof(T));
-        } else {
-            T s{};
-            std::memcpy(&s, lhs_raw, sizeof(T));
-            lhs.fill(s);
-        }
-        if (right_math) {
-            std::memcpy(rhs.data(), rhs_raw, right_math.components() * sizeof(T));
-        } else {
-            T s{};
-            std::memcpy(&s, rhs_raw, sizeof(T));
-            rhs.fill(s);
-        }
         if (op == Operation::multiply && left_math && right_math) {
             if (left_math.shape == math::Shape::quaternion) {
                 res[0] = lhs[3] * rhs[0] + lhs[0] * rhs[3] + lhs[1] * rhs[2] - lhs[2] * rhs[1];
@@ -2168,15 +2223,15 @@ private:
     }
 
     std::expected<void, Diagnostic> fold_value_bytes(NodeId id, std::span<std::byte> out) {
-        Depth guard(depth_);
-        if (depth_ > 128)
-            return reject(function_.expressions[id].position, "Source nesting exceeds the compiler limit of 128.");
         const auto& node = function_.expressions[id];
         if (scalar(node.type)) {
             ATELIER_TRY_BIND(bits, fold_constant(id));
             write_scalar_bytes(node.type, *bits, out.data());
             return {};
         }
+        Depth guard(depth_);
+        if (depth_ > 128)
+            return reject(node.position, "Source nesting exceeds the compiler limit of 128.");
         if (node.kind == Expression::Kind::conditional) {
             ATELIER_TRY_BIND(cond, fold_constant(node.receiver));
             return fold_value_bytes(*cond ? node.left : node.right, out);
@@ -2186,28 +2241,9 @@ private:
             std::memcpy(out.data(), constant.bytes.data(), out.size());
             return {};
         }
-        if (node.kind == Expression::Kind::value_field) {
-            const auto owner_type = function_.expressions[node.left].type;
-            std::vector<std::byte> owner_bytes(value_size(owner_type));
-            ATELIER_TRY(fold_value_bytes(node.left, owner_bytes));
-            std::memcpy(out.data(), owner_bytes.data() + node.offset, out.size());
-            return {};
-        }
-        if (node.kind == Expression::Kind::index) {
-            const auto& seq = function_.expressions[node.left];
-            if (seq.kind != Expression::Kind::constant_data)
-                return reject(node.position, "Module constant initializers require compile-time constant expressions.");
-            ATELIER_TRY_BIND(idx_bits, fold_constant(node.right));
-            const auto idx_type = function_.expressions[node.right].type;
-            if (idx_type == ValueType::i32 && std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(*idx_bits)) < 0)
-                return reject(node.position, "Constant array index is out of bounds.");
-            const auto idx = static_cast<std::size_t>(static_cast<std::uint32_t>(*idx_bits));
-            const auto& constant = module_.constants[seq.value];
-            if (idx >= constant.element_count)
-                return reject(node.position, "Constant array index is out of bounds.");
-            std::memcpy(out.data(), constant.bytes.data() + idx * out.size(), out.size());
-            return {};
-        }
+        if (node.kind == Expression::Kind::value_field || node.kind == Expression::Kind::index ||
+            node.kind == Expression::Kind::math_intrinsic)
+            return fold_projection_or_intrinsic(node, out);
         if (const auto mtype = math_type(node.type)) {
             const bool f64 = mtype.precision == math::Precision::f64;
             const std::size_t lane_bytes = mtype.scalar_size();
@@ -2288,8 +2324,6 @@ private:
                                                   rhs.data(), out.data());
                 return {};
             }
-            if (node.kind == Expression::Kind::math_intrinsic)
-                return fold_math_intrinsic(node, out);
         }
         return reject(node.position, "Module constant initializers require compile-time constant expressions.");
     }
@@ -2332,6 +2366,7 @@ private:
         }
         ATELIER_TRY_BIND(parsed, expression());
         ATELIER_TRY_BIND(initializer, converted(*parsed, target_type));
+        ATELIER_TRY(finish_properties());
         return fold_value_bytes(*initializer, out);
     }
 
@@ -2342,154 +2377,102 @@ private:
         if (value.state == Constant::State::active)
             return reject(value.position, "Circular module constant dependency.");
         value.state = Constant::State::active;
-        const auto saved_lexer = lexer_;
-        const auto saved_token = token_;
-        auto saved_function = std::move(function_);
-        auto saved_heights = std::move(expression_heights_);
-        auto saved_visible = std::move(visible_);
-        const auto restore = [&] {
-            lexer_ = saved_lexer;
-            token_ = saved_token;
-            function_ = std::move(saved_function);
-            expression_heights_ = std::move(saved_heights);
-            visible_ = std::move(saved_visible);
-        };
-        function_ = {};
-        expression_heights_.clear();
-        visible_.clear();
+        struct ConstantScope {
+            Parser& parser;
+
+            Lexer lexer;
+
+            Token token;
+
+            Function function;
+
+            std::vector<std::size_t> heights;
+
+            std::vector<std::uint32_t> visible;
+
+            std::vector<PropertyUse> property_uses;
+
+            explicit ConstantScope(Parser& owner)
+                : parser(owner), lexer(owner.lexer_), token(owner.token_), function(std::move(owner.function_)),
+                  heights(std::move(owner.expression_heights_)), visible(std::move(owner.visible_)),
+                  property_uses(std::move(owner.property_uses_)) {
+                parser.function_ = {};
+                parser.expression_heights_.clear();
+                parser.visible_.clear();
+                parser.property_uses_.clear();
+            }
+
+            ~ConstantScope() {
+                parser.lexer_ = lexer;
+                parser.token_ = token;
+                parser.function_ = std::move(function);
+                parser.expression_heights_ = std::move(heights);
+                parser.visible_ = std::move(visible);
+                parser.property_uses_ = std::move(property_uses);
+            }
+        } scope{*this};
         lexer_ = value.lexer;
         token_ = value.token;
 
         if (value.type.kind == ValueType::array) {
             const auto elem_type = environment_.values[value.type.type_index].element;
             const std::size_t stride = value_size(elem_type);
-            ConstantData data{value.type, 0, {}};
             ATELIER_TRY_BIND(open_brace, accept("{"));
             if (*open_brace) {
+                ConstantData data{value.type, 0, {}};
                 if (token_.text != "}") {
                     for (;;) {
-                        if (data.element_count >= 65536 || data.bytes.size() + stride > 4 * 1024 * 1024) {
-                            restore();
+                        if (data.element_count >= 65536 || data.bytes.size() + stride > 4 * 1024 * 1024)
                             return reject(token_.position,
                                           "Constant array exceeds the 65536-element or 4 MiB compile-time limit.");
-                        }
                         const std::size_t offset = data.bytes.size();
                         data.bytes.resize(offset + stride);
-                        auto elem_status =
-                            parse_constant_bytes(elem_type, std::span{data.bytes.data() + offset, stride});
-                        if (!elem_status) {
-                            restore();
-                            return elem_status;
-                        }
+                        function_.expressions.clear();
+                        expression_heights_.clear();
+                        ATELIER_TRY(parse_constant_bytes(elem_type, std::span{data.bytes.data() + offset, stride}));
                         ++data.element_count;
                         ATELIER_TRY_BIND(comma, accept(","));
                         if (!*comma || token_.text == "}")
                             break;
                     }
                 }
-                auto close_status = expect("}");
-                if (!close_status) {
-                    restore();
-                    return std::unexpected(std::move(close_status).error());
-                }
+                ATELIER_TRY(expect("}"));
+                ATELIER_TRY(expect(";"));
+                value.data_index = static_cast<std::uint32_t>(module_.constants.size());
+                module_.constants.push_back(std::move(data));
             } else {
-                auto parsed = expression();
-                if (!parsed) {
-                    restore();
-                    return std::unexpected(std::move(parsed).error());
-                }
-                auto init = converted(*parsed, value.type);
-                if (!init) {
-                    restore();
-                    return std::unexpected(std::move(init).error());
-                }
+                ATELIER_TRY_BIND(parsed, expression());
+                ATELIER_TRY_BIND(init, converted(*parsed, value.type));
+                ATELIER_TRY(finish_properties());
                 const auto& node = function_.expressions[*init];
-                if (node.kind != Expression::Kind::constant_data) {
-                    restore();
+                if (node.kind != Expression::Kind::constant_data)
                     return reject(node.position,
                                   "Constant Array requires a '{ ... }' initializer or another constant Array.");
-                }
-                data = module_.constants[node.value];
+                ATELIER_TRY(expect(";"));
+                value.data_index = node.value;
             }
-            auto semi = expect(";");
-            if (!semi) {
-                restore();
-                return std::unexpected(std::move(semi).error());
-            }
-            value.data_index = static_cast<std::uint32_t>(module_.constants.size());
-            module_.constants.push_back(std::move(data));
             value.state = Constant::State::complete;
-            restore();
             return {};
         }
 
-        if (scalar(value.type)) {
-            if (token_.text == "{") {
-                const auto pos = token_.position;
-                restore();
-                return reject(pos, "Brace initializers require a plain struct or constant Array type.");
+        if (scalar(value.type) || math_type(value.type)) {
+            ATELIER_TRY(parse_constant_bytes(value.type, std::span{value.inline_bytes.data(), value_size(value.type)}));
+            ATELIER_TRY(expect(";"));
+            if (environment_.material && value.type != ValueType::boolean) {
+                const auto mtype = math_type(value.type);
+                if (!lanes_finite<float>(value.inline_bytes.data(), mtype ? mtype.components() : 1))
+                    return reject(value.position, "Material constants must be finite.");
             }
-            auto parsed = expression();
-            if (!parsed) {
-                restore();
-                return std::unexpected(std::move(parsed).error());
-            }
-            auto initializer = converted(*parsed, value.type);
-            if (!initializer) {
-                restore();
-                return std::unexpected(std::move(initializer).error());
-            }
-            auto semi = expect(";");
-            if (!semi) {
-                restore();
-                return std::unexpected(std::move(semi).error());
-            }
-            auto bits = fold_constant(*initializer);
-            if (!bits) {
-                restore();
-                return std::unexpected(std::move(bits).error());
-            }
-            value.bits = *bits;
             value.state = Constant::State::complete;
-            restore();
-            return {};
-        }
-
-        if (const auto mtype = math_type(value.type)) {
-            std::array<std::byte, 128> raw{};
-            auto status = parse_constant_bytes(value.type, std::span{raw.data(), mtype.size()});
-            if (!status) {
-                restore();
-                return status;
-            }
-            auto semi = expect(";");
-            if (!semi) {
-                restore();
-                return std::unexpected(std::move(semi).error());
-            }
-            value.math_lanes.resize(mtype.components());
-            for (std::size_t i = 0; i < mtype.components(); ++i)
-                value.math_lanes[i] = read_scalar_bits(math_scalar(mtype), raw.data() + i * mtype.scalar_size());
-            value.state = Constant::State::complete;
-            restore();
             return {};
         }
 
         ConstantData data{value.type, 1, std::vector<std::byte>(value_size(value.type))};
-        auto status = parse_constant_bytes(value.type, data.bytes);
-        if (!status) {
-            restore();
-            return status;
-        }
-        auto semi = expect(";");
-        if (!semi) {
-            restore();
-            return std::unexpected(std::move(semi).error());
-        }
+        ATELIER_TRY(parse_constant_bytes(value.type, data.bytes));
+        ATELIER_TRY(expect(";"));
         value.data_index = static_cast<std::uint32_t>(module_.constants.size());
         module_.constants.push_back(std::move(data));
         value.state = Constant::State::complete;
-        restore();
         return {};
     }
 
@@ -3051,6 +3034,9 @@ private:
                         receiver = *mutated;
                     }
                 } else {
+                    if (environment_.material && type == environment_.texture_input)
+                        return reject(member->position,
+                                      "TextureInput members are compiler-owned, not accessible to material Source.");
                     const auto& fields = environment_.values[type.type_index].fields;
                     const auto field = std::find_if(fields.begin(), fields.end(), [&](const auto& candidate) {
                         return candidate.name == member->text;
@@ -3058,6 +3044,27 @@ private:
                     if (field == fields.end())
                         return reject(member->position, "Field has no published direct native layout.");
                     const auto& owner = function_.expressions[receiver];
+                    if (const auto mtype = math_type(type);
+                        mtype && field->type == math_scalar(mtype) && owner.kind == Expression::Kind::math_construct &&
+                        (owner.arguments.empty() || owner.arguments.size() == mtype.components() ||
+                         (owner.arguments.size() == 1 && mtype.vector())) &&
+                        std::ranges::all_of(owner.arguments, [&](NodeId arg) {
+                            return function_.expressions[arg].kind == Expression::Kind::literal;
+                        })) {
+                        const std::size_t lane = field->offset / mtype.scalar_size();
+                        std::uint64_t lane_bits = 0;
+                        if (owner.arguments.size() == mtype.components()) {
+                            lane_bits = function_.expressions[owner.arguments[lane]].bits;
+                        } else if (owner.arguments.size() == 1) {
+                            lane_bits = function_.expressions[owner.arguments[0]].bits;
+                        } else if (mtype.shape == math::Shape::quaternion && lane == 3) {
+                            lane_bits = mtype.precision == math::Precision::f64 ? std::bit_cast<std::uint64_t>(1.0)
+                                                                                : std::bit_cast<std::uint32_t>(1.0f);
+                        }
+                        ATELIER_TRY_BIND(extracted, literal(field->type, position, lane_bits, true));
+                        receiver = *extracted;
+                        continue;
+                    }
                     if (owner.kind == Expression::Kind::field) {
                         const auto path = std::string(environment_.fields[owner.value].name) + "." + field->name;
                         const auto projection = std::ranges::find_if(environment_.fields, [&](const auto& candidate) {
@@ -3578,19 +3585,21 @@ private:
     std::expected<NodeId, Diagnostic> module_constant(std::string_view name, SourcePosition position) {
         if (const auto* property = find_property(name, false))
             return property_access(*property, position);
-        for (std::size_t i = 0; i < constants_.size(); ++i) {
-            if (constants_[i].name != name)
-                continue;
+        if (const auto found = constant_indices_.find(name); found != constant_indices_.end()) {
+            const std::size_t i = found->second;
             ATELIER_TRY(resolve_constant(i));
             const auto& constant = constants_[i];
             if (scalar(constant.type)) {
-                ATELIER_TRY_BIND(node, literal(constant.type, position, constant.bits, true));
+                ATELIER_TRY_BIND(node, literal(constant.type, position,
+                                               read_scalar_bits(constant.type, constant.inline_bytes.data()), true));
                 return node;
             }
             if (const auto mtype = math_type(constant.type)) {
                 Expression result{Expression::Kind::math_construct, constant.type, position};
-                result.arguments.reserve(constant.math_lanes.size());
-                for (const auto lane_bits : constant.math_lanes) {
+                result.arguments.reserve(mtype.components());
+                for (std::size_t lane_idx = 0; lane_idx < mtype.components(); ++lane_idx) {
+                    const auto lane_bits = read_scalar_bits(math_scalar(mtype), constant.inline_bytes.data() +
+                                                                                    lane_idx * mtype.scalar_size());
                     ATELIER_TRY_BIND(lane, literal(math_scalar(mtype), position, lane_bits, true));
                     result.arguments.push_back(*lane);
                 }
@@ -3617,6 +3626,12 @@ private:
 
     Environment environment_;
 
+    struct TransparentStringHash {
+        using is_transparent = void;
+
+        std::size_t operator()(std::string_view text) const noexcept { return std::hash<std::string_view>{}(text); }
+    };
+
     struct Constant {
         std::string name;
 
@@ -3630,14 +3645,14 @@ private:
 
         enum class State { fresh, active, complete } state{};
 
-        std::uint64_t bits{};
-
-        std::vector<std::uint64_t> math_lanes{};
+        std::array<std::byte, 128> inline_bytes{};
 
         std::uint32_t data_index{UINT32_MAX};
     };
 
     std::vector<Constant> constants_;
+
+    std::unordered_map<std::string, std::uint32_t, TransparentStringHash, std::equal_to<>> constant_indices_;
 
     Function function_;
 

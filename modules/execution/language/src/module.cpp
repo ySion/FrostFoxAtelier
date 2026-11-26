@@ -26,21 +26,6 @@ void MappedSource::append(const SourceFile& source, std::uint32_t file, std::siz
 namespace {
 using namespace detail;
 
-std::expected<void, Diagnostic> body(Tokens& tokens) {
-    ATELIER_TRY(tokens.expect("{"));
-    std::size_t depth = 1;
-    while (depth) {
-        if (tokens.token_.kind == Token::Kind::end)
-            return reject(tokens.token_.position, "Expected '}' to close a function body.");
-        if (tokens.token_.text == "{")
-            ++depth;
-        else if (tokens.token_.text == "}")
-            --depth;
-        ATELIER_TRY(tokens.consume());
-    }
-    return {};
-}
-
 // Consumes one expression up to a top-level ',' or `close`, which stay unconsumed.
 std::expected<void, Diagnostic> expression_until(Tokens& tokens, std::string_view close, SourcePosition owner,
                                                  const char* message) {
@@ -293,11 +278,10 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
     SourceModule result;
     if (snapshot.files.size() > 1024)
         return std::unexpected(ModuleDiagnostic{0, {{}, "A source snapshot supports at most 1024 files."}});
-    std::vector<std::string_view> engine_modules;
     for (const auto& unit : snapshot.files)
         if (const auto name = engine_module(unit.path);
-            !name.empty() && std::ranges::find(engine_modules, name) == engine_modules.end())
-            engine_modules.push_back(name);
+            !name.empty() && std::ranges::find(result.engine_modules, name) == result.engine_modules.end())
+            result.engine_modules.emplace_back(name);
     for (std::uint32_t file = 0; file < snapshot.files.size(); ++file) {
         const auto& unit = snapshot.files[file];
         const auto collected = [&]() -> std::expected<void, Diagnostic> {
@@ -329,35 +313,25 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                                                 "/ may only declare names in the " + std::string(own) +
                                                 ". namespace: " + name);
                 if (own.empty())
-                    for (const auto space : engine_modules)
+                    for (const auto& space : result.engine_modules)
                         if (in_namespace(name, space))
-                            return reject(position, "Only engine sources under engine/" + std::string(space) +
-                                                        "/ may declare names in the " + std::string(space) +
-                                                        ". namespace: " + name);
+                            return reject(position, "Only engine sources under engine/" + space +
+                                                        "/ may declare names in the " + space + ". namespace: " + name);
                 return {};
             };
             ATELIER_TRY_BIND(created, Tokens::create(unit.source));
             auto& tokens = *created;
             while (tokens.token_.kind != Token::Kind::end) {
                 const auto begin = tokens.token_.position;
-                bool is_type = tokens.token_.text == "enum" || tokens.token_.text == "struct";
-                std::string class_description;
-                std::string function_description;
-                if (tokens.token_.text == "[") {
-                    ATELIER_TRY_BIND(target, peek_attributed_keyword(tokens));
-                    if (*target == "const")
-                        return reject(begin, "Attributes do not apply to module constants.");
-                    if (*target == "enum" || *target == "struct") {
-                        is_type = true;
-                    } else if (*target == "class") {
-                        ATELIER_TRY_ASSIGN(class_description, parse_description_attribute(tokens, "class"));
-                    } else {
-                        ATELIER_TRY_ASSIGN(function_description, parse_description_attribute(tokens, "function"));
-                    }
-                }
-                if (is_type) {
-                    ATELIER_TRY_BIND(parsed_type, parse_type_declaration(tokens));
+                ATELIER_TRY_BIND(keyword, peek_declaration_keyword(tokens));
+                if (*keyword == "enum" || *keyword == "struct") {
+                    if (result.types.size() == 1024)
+                        return reject(begin, "A source module supports at most 1024 type declarations.");
+                    ATELIER_TRY_BIND(parsed_type, parse_type_declaration(tokens, *keyword));
                     ATELIER_TRY(declare(parsed_type->name, parsed_type->position));
+                    if (std::ranges::any_of(result.types,
+                                            [&](const auto& other) { return other.name == parsed_type->name; }))
+                        return reject(parsed_type->position, "Duplicate source type name.");
                     TopLevel declaration{TopLevel::Kind::type,
                                          parsed_type->name,
                                          std::string(own),
@@ -365,11 +339,19 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                                          parsed_type->position,
                                          {},
                                          {},
-                                         {},
-                                         parsed_type->description};
+                                         {}};
                     declaration.source.append(unit, file, begin.offset, tokens.token_.position.offset);
+                    result.types.push_back(std::move(*parsed_type));
                     result.declarations.push_back(std::move(declaration));
                     continue;
+                }
+                std::string class_description;
+                if (tokens.token_.text == "[") {
+                    if (*keyword == "class") {
+                        ATELIER_TRY_ASSIGN(class_description, parse_description_attribute(tokens, "class"));
+                    } else {
+                        ATELIER_TRY(parse_description_attribute(tokens, "function"));
+                    }
                 }
                 ATELIER_TRY_BIND(object, tokens.accept("class"));
                 if (!*object) {
@@ -387,8 +369,7 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                         result.declarations.push_back(std::move(declaration));
                         continue;
                     }
-                    TopLevel declaration{TopLevel::Kind::function, {}, std::string(own), file, {}, {}, {}, {},
-                                         function_description};
+                    TopLevel declaration{TopLevel::Kind::function, {}, std::string(own), file, {}, {}, {}, {}};
                     ATELIER_TRY_BIND(async, tokens.accept("async"));
                     if (*async)
                         return reject(begin, "Project exports must be synchronous.");
@@ -399,13 +380,13 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                     ATELIER_TRY_BIND(name, tokens.qualified_identifier());
                     declaration.name = std::move(*name);
                     ATELIER_TRY(declare(declaration.name, declaration.position));
-                    FunctionDeclaration exported{declaration.name, {}, {}, std::move(function_description)};
+                    FunctionDeclaration exported{declaration.name, {}, {}};
                     ATELIER_TRY_BIND(signature, function_signature(tokens, *type, &exported.parameters, &declaration));
                     exported.signature = std::move(*signature);
                     // Engine functions serve Source calls only; project functions are the global entries.
                     if (own.empty())
                         result.functions.push_back(std::move(exported));
-                    ATELIER_TRY(body(tokens));
+                    ATELIER_TRY(skip_function_body(tokens));
                     declaration.source.append(unit, file, begin.offset, tokens.token_.position.offset);
                     result.declarations.push_back(std::move(declaration));
                     continue;
@@ -461,7 +442,7 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                         ATELIER_TRY_BIND(signature,
                                          function_signature(tokens, *type, nullptr, nullptr, &method.parameters));
                         method.signature = std::move(*signature);
-                        ATELIER_TRY(body(tokens));
+                        ATELIER_TRY(skip_function_body(tokens));
                         method.source.append(unit, file, start.offset, tokens.token_.position.offset);
                         declaration.methods.push_back(std::move(method));
                     } else {
@@ -520,6 +501,7 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
     for (auto& cls : result.classes)
         for (const auto& method : cls.methods)
             spelled(method.source.text, names, cls.uses);
+    std::ranges::sort(result.types, {}, &TypeDeclaration::name);
     std::ranges::sort(result.classes, {}, &ClassDeclaration::name);
     return result;
 }

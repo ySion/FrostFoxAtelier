@@ -55,9 +55,12 @@ inline TypeDefinition string_definition(Runtime& runtime) {
 template <class T>
 TypeDefinition array_definition(Runtime& runtime, std::string name) {
     static_assert(std::is_copy_constructible_v<T>);
+    static_assert(std::is_standard_layout_v<Array<T>> && sizeof(Array<T>) == 3 * sizeof(void*) &&
+                  alignof(Array<T>) == alignof(void*));
     auto definition = NativeRegistration<Array<T>>{runtime, std::move(name), TypeKind::array}.build();
     definition.element = TypeReference::native<T>();
     definition.native.element_representation = detail::representation<T>();
+    definition.native.standard_array_layout = true;
     definition.native.sequence_view = [](const void* value, const void** data, std::size_t* size) noexcept {
         const auto& array = *static_cast<const Array<T>*>(value);
         *data = array.data();

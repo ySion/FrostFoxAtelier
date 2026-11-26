@@ -214,7 +214,8 @@ Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language:
                     for (std::uint32_t depth = 0; depth < type.array_depth; ++depth) {
                         const auto element = value_kind(binding, resolved);
                         const auto array = std::ranges::find_if(binding.values, [&](const auto& value) {
-                            return value.kind == ValueKind::array && value.element == element;
+                            return value.kind == ValueKind::array && value.standard_array_layout &&
+                                   value.element == element;
                         });
                         if (array == binding.values.end())
                             return std::unexpected(Error{
@@ -945,6 +946,12 @@ std::span<const EntryInfo> Program::Candidate::entries() const noexcept {
 std::span<const FunctionInfo> Program::Candidate::functions() const noexcept {
     return prepared_ && prepared_->module ? std::span<const FunctionInfo>{prepared_->module->functions}
                                           : std::span<const FunctionInfo>{};
+}
+
+std::span<const std::string> Program::Candidate::engine_modules() const noexcept {
+    return prepared_ && prepared_->module
+               ? std::span<const std::string>{prepared_->module->request->source.engine_modules}
+               : std::span<const std::string>{};
 }
 
 Program::Lease::Lease(std::shared_ptr<const Version> version) : version_(std::move(version)) {}
