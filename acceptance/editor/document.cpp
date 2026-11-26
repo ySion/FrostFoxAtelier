@@ -36,7 +36,6 @@
 #include <cstdio>
 #include "files.hpp"
 #include <thread>
-#include <unordered_set>
 #include <windows.h>
 
 atelier::Result<void> verify_mesh_reimport();

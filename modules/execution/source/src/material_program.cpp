@@ -352,12 +352,8 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
     // ever passing preview TypeIds to live Runtime operations.
     std::vector<std::vector<std::byte>> initial(binding->values.size());
     std::vector<bool> captured(binding->values.size());
-    struct Defaults {
-        std::function<Result<const std::byte*>(std::uint32_t)> capture;
-
-        std::optional<Error> error;
-    } defaults;
-    defaults.capture = [&](std::uint32_t index) noexcept -> Result<const std::byte*> {
+    std::optional<Error> default_error;
+    auto capture_default = [&](this auto&& self, std::uint32_t index) noexcept -> Result<const std::byte*> {
         if (captured[index])
             return initial[index].data();
         captured[index] = true;
@@ -373,19 +369,24 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
             for (const auto& field : value.fields) {
                 if (field.type.kind != ValueKind::record)
                     continue;
-                ATELIER_TRY_BIND(result, defaults.capture(field.type.type_index));
+                ATELIER_TRY(self(field.type.type_index));
                 const auto& child = initial[field.type.type_index];
                 if (!child.empty())
                     std::memcpy(initial[index].data() + field.offset, child.data(), child.size());
             }
         return initial[index].data();
     };
+    struct CaptureState {
+        decltype(capture_default)& capture;
+
+        std::optional<Error>& error;
+    } defaults{capture_default, default_error};
     const auto capture = [](void* state, std::uint32_t type) noexcept -> const std::byte* {
-        auto& defaults = *static_cast<Defaults*>(state);
-        auto result = defaults.capture(type);
+        auto& context_state = *static_cast<CaptureState*>(state);
+        auto result = context_state.capture(type);
         if (result)
             return *result;
-        defaults.error = std::move(result.error());
+        context_state.error = std::move(result.error());
         return nullptr;
     };
     EnvironmentView environment(*binding);

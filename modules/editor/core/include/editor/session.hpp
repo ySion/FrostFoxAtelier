@@ -4,10 +4,9 @@
 #include "world/diagnostic.hpp"
 #include "assets/reader.hpp"
 #include "editor/graph_view.hpp"
+#include "foundation/map.hpp"
 #include "physics/physics.hpp"
 #include "presentation/presentation.hpp"
-#include <map>
-#include <unordered_map>
 
 namespace atelier::procedural {
 class Bvh;
@@ -166,16 +165,7 @@ struct MissingResource {
 
 // A key names one resource of each kind: a scene that names a material as a mesh
 // leaves only the mesh unavailable.
-struct ResourceLess {
-    using is_transparent = void;
-
-    bool operator()(std::pair<assets::AssetKind, std::string_view> a,
-                    std::pair<assets::AssetKind, std::string_view> b) const noexcept {
-        return a < b;
-    }
-};
-
-using UnavailableResources = std::map<std::pair<assets::AssetKind, std::string>, MissingResource, ResourceLess>;
+using UnavailableResources = Map<std::pair<assets::AssetKind, std::string>, MissingResource>;
 
 // Resource publications own their exact content until sent; ordinary changes
 // carry only JSON text. Resource keys are part of that text.
@@ -801,7 +791,7 @@ public:
     bool dirty() const noexcept {
         return !saved_cursor_ || *saved_cursor_ != cursor_ || (active_ && !is_graph_object(active_->root.id())) ||
                (group_ && !is_graph_object(group_->root.id())) || transform_ ||
-               (material_edit_ && !material_edit_->document) ||
+               (material_edit_ && material_edit_->document_key.empty()) ||
                (graph_param_edit_ && graph_param_edit_->generator_root.id() != ObjectId{});
     }
 
@@ -1122,10 +1112,10 @@ private:
 
     std::optional<TransformChange> transform_;
 
-    std::unordered_map<ObjectId, std::wstring> names_; // Non-owning IDs; prune after collection.
+    Map<ObjectId, std::wstring> names_; // Non-owning IDs; prune after collection.
 
     // Non-owning IDs like names_; entries travel with their object through history.
-    std::unordered_map<ObjectId, Retained> retained_;
+    Map<ObjectId, Retained> retained_;
 
     Retained retained_document_;
 
@@ -1133,14 +1123,14 @@ private:
 
     // Document-local identities never confer Runtime validity or World membership.
     // Detached history objects retain their ID; IDs are never reused.
-    mutable std::unordered_map<ObjectId, std::uint64_t> local_ids_;
+    mutable Map<ObjectId, std::uint64_t> local_ids_;
 
     mutable std::uint64_t next_local_id_{1};
 
     bool play_{};
 
     // Play copy: document identity to object, including objects the game destroyed.
-    std::unordered_map<std::uint64_t, ObjectId> live_objects_;
+    Map<std::uint64_t, ObjectId> live_objects_;
 
     std::vector<ObjectRoot> live_materials_; // Scene materials a Play change defined.
 
@@ -1158,7 +1148,7 @@ private:
     std::optional<Error> live_failure_;
 
     // TRS leaves (1 position, 2 rotation, 4 scale) the active edit's previews sent, per Entity.
-    std::unordered_map<ObjectId, unsigned> live_leaves_;
+    Map<ObjectId, unsigned> live_leaves_;
 
     struct GraphCodec;
 
@@ -1182,7 +1172,7 @@ private:
         std::size_t cursor{};
     };
 
-    std::unordered_map<std::string, MaterialDocument> materials_;
+    Map<std::string, MaterialDocument> materials_;
 
     struct OpenGraph;
 
@@ -1190,7 +1180,7 @@ private:
         void operator()(OpenGraph*) const noexcept;
     };
 
-    std::unordered_map<std::string, std::unique_ptr<OpenGraph, OpenGraphDeleter>> graphs_;
+    Map<std::string, std::unique_ptr<OpenGraph, OpenGraphDeleter>> graphs_;
 
     struct GeneratorRuntimeCache;
 
@@ -1211,7 +1201,7 @@ private:
     std::shared_ptr<procedural::CachePool> procedural_cache_pool_;
 
     // Sparse promoted-parameter override records per ProceduralGeneratorComponent; travels through history like names_.
-    std::unordered_map<ObjectId, json::Document> generator_overrides_;
+    Map<ObjectId, json::Document> generator_overrides_;
 
     struct GraphParameterEdit {
         std::uint64_t control{};
@@ -1261,11 +1251,11 @@ private:
 
     Result<const GraphDocument*> resolve_target_graph_document(std::string_view asset_key, Project* project) const;
 
-    std::unordered_map<ObjectId, std::string> scene_material_parents_; // Non-owning; survives parent loss.
+    Map<ObjectId, std::string> scene_material_parents_; // Non-owning; survives parent loss.
 
     std::vector<std::string> loading_materials_; // Synchronous recursion guard, not a resource cache.
 
-    std::unordered_map<std::string, ObjectRoot> textures_;
+    Map<std::string, ObjectRoot> textures_;
 
     UnavailableResources unavailable_;
 
@@ -1277,8 +1267,8 @@ private:
 
         std::uint64_t control{};
 
-        // A shared document lives in a stable map node until Session::close cancels edits.
-        MaterialDocument* document{};
+        // Empty for a scene material; asset key in `materials_` for a shared material asset.
+        std::string document_key;
 
         std::vector<MaterialEntryChange> entries;
     };
@@ -1288,7 +1278,7 @@ private:
     Result<void> apply_material_entries(ObjectId, std::span<const MaterialEntryChange>, bool forward,
                                         Project* = nullptr);
 
-    Result<MaterialDocument*> admit_material_edit(ObjectId);
+    Result<std::string> admit_material_edit(ObjectId);
 
     Result<MaterialEdit> prepare_material_edit(ObjectId, std::uint64_t control = 0);
 

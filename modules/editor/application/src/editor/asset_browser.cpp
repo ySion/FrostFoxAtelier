@@ -147,7 +147,7 @@ void AssetBrowser::visit(Location location, bool remember) {
     if (!engine_)
         for (auto ancestor = directory_; !ancestor.empty();) {
             ancestor = ancestor.parent_path();
-            expansion_[ancestor] = true;
+            expansion_.insert_or_assign(ancestor, true);
         }
     if (navigation_.empty()) {
         navigation_.push_back(location);
@@ -189,8 +189,8 @@ void AssetBrowser::update_directories(const Project* project) {
                         !relative.empty() && *relative.begin() != L"..")
                         expansion_.try_emplace(entry.path, true);
             }
-    std::erase_if(expansion_,
-                  [&](const auto& entry) { return !entry.first.empty() && !listed(directories_, entry.first); });
+    expansion_.remove_if(
+        [&](const std::filesystem::path& path, bool) { return !path.empty() && !listed(directories_, path); });
     const auto valid = [&](const Location& location) {
         return location.engine ||
                (has_project_ && (location.directory.empty() || listed(directories_, location.directory)));
@@ -232,8 +232,8 @@ ui::Result<ui_language::ItemList> AssetBrowser::directory_items() {
     std::vector<ui::TreeNode> nodes;
     nodes.reserve(directories_.size() + 2);
     const auto expanded = [&](const std::filesystem::path& path, bool initial) {
-        const auto at = expansion_.find(path);
-        return at == expansion_.end() ? initial : at->second;
+        const auto* at = expansion_.find(path);
+        return at ? *at : initial;
     };
     labels.push_back(
         {browser_control::project, L"Project", has_project_, !engine_ && directory_.empty(), ui::ControlIcon::folder});
@@ -274,7 +274,7 @@ Result<void> AssetBrowser::set_expanded(std::span<const std::filesystem::path> p
             return std::unexpected(
                 Error{ErrorCode::invalid_member, "The path is not a directory row of the Asset Browser."});
     for (const auto& path : paths)
-        expansion_[path] = expanded;
+        expansion_.insert_or_assign(path, expanded);
     directory_items_dirty_ = true;
     return {};
 }
@@ -297,7 +297,7 @@ void AssetBrowser::sort_items() {
     row_indices_.clear();
     row_indices_.reserve(items_.size());
     for (std::size_t i = 0; i < items_.size(); ++i)
-        row_indices_.emplace(key_for("item:" + items_[i].key), i);
+        row_indices_.try_emplace(key_for("item:" + items_[i].key), i);
     table_dirty_ = true;
 }
 
@@ -335,10 +335,10 @@ void AssetBrowser::update_items(const Project* project) {
 }
 
 bool AssetBrowser::select_item(ui::TableKey key) {
-    const auto found = row_indices_.find(key);
-    if (found == row_indices_.end())
+    const auto* found = row_indices_.find(key);
+    if (!found)
         return false;
-    const auto& item = items_[found->second];
+    const auto& item = items_[*found];
     if (!matches_filter(item, folded(query_), filter_))
         return false;
     if (!selected_ || selected_->key != item.key)

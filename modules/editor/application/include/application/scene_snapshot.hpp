@@ -3,15 +3,15 @@
 #include "application/timing.hpp"
 #include "editor/session.hpp"
 #include "editor/viewport_tool.hpp"
+#include "foundation/map.hpp"
 #include "foundation/result.hpp"
+#include "foundation/set.hpp"
 #include "renderer/renderer.hpp"
 #include "logging/logging.hpp"
 #include <algorithm>
 #include <limits>
 #include <optional>
 #include <tuple>
-#include <unordered_map>
-#include <unordered_set>
 
 namespace atelier::application {
 // Host-owned candidate, pending preparation and adopted draw group. refresh()
@@ -122,7 +122,7 @@ public:
             }
         }
         if (relayout) {
-            for (auto& [object, key] : mesh_keys_) {
+            for (auto [object, key] : mesh_keys_) {
                 (void)object;
                 key.seen = false;
             }
@@ -140,7 +140,7 @@ public:
                 meshes.push_back(instance(slots[slot], key(mesh_keys_, item.component), false));
             }
             static_mesh_count_ = meshes.size();
-            std::erase_if(mesh_keys_, [](const auto& item) { return !item.second.seen; });
+            mesh_keys_.remove_if([](ObjectId, const Key& item) { return !item.seen; });
             generator_slices_.assign(gen_slots.size(), {});
         }
         if (generators_changed && (!gen_slots.empty() || meshes.size() > static_mesh_count_)) {
@@ -149,15 +149,17 @@ public:
             meshes.resize(static_mesh_count_);
             mesh_entities.resize(static_mesh_count_);
             mesh_surfaces_.resize(static_mesh_count_);
-            for (auto& [_, gk] : generator_keys_)
+            for (auto [object, gk] : generator_keys_) {
+                (void)object;
                 gk.seen = false;
+            }
             for (std::size_t g = 0; g < gen_slots.size(); ++g) {
                 const auto& gslot = gen_slots[g];
                 auto& slice = generator_slices_[g];
                 if (!relayout && gslot.changed <= since) {
                     if (slice.present) {
-                        if (auto it = generator_keys_.find(slice.component); it != generator_keys_.end())
-                            it->second.seen = true;
+                        if (auto* gk = generator_keys_.find(slice.component))
+                            gk->seen = true;
                         mesh_entities.insert(mesh_entities.end(), slice.meshes.size(), slice.entity);
                         mesh_surfaces_.insert(mesh_surfaces_.end(), slice.mesh_surfaces.begin(),
                                               slice.mesh_surfaces.end());
@@ -183,30 +185,32 @@ public:
                             return false;
                     return true;
                 }();
-                std::unordered_map<std::uint64_t, std::shared_ptr<const std::vector<std::uint32_t>>> prev_slots;
+                Map<std::uint64_t, std::shared_ptr<const std::vector<std::uint32_t>>> prev_slots;
                 if (same_surface_set) {
                     prev_slots.reserve(slice.meshes.size());
                     for (const auto& prev_m : slice.meshes)
                         if (prev_m.material_slots)
-                            prev_slots.emplace(prev_m.stable_key, prev_m.material_slots);
+                            prev_slots.try_emplace(prev_m.stable_key, prev_m.material_slots);
                 } else {
                     bindings_changed = true;
                 }
 
-                auto& gkeys = generator_keys_[gen.component];
+                auto& gkeys = *generator_keys_.try_emplace(gen.component).value;
                 gkeys.seen = true;
                 if (gkeys.surface_key == 0)
                     gkeys.surface_key = next_key_++;
-                for (auto& [_, ck] : gkeys.chunks)
+                for (auto [ptr, ck] : gkeys.chunks) {
+                    (void)ptr;
                     ck.seen = false;
+                }
 
                 std::vector<renderer::MeshInstance> next_meshes;
                 std::vector<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>> next_surfaces;
                 if (gen.surface_geometry && gen.surface_materials) {
                     ++built;
                     std::shared_ptr<const std::vector<std::uint32_t>> kept_slots;
-                    if (const auto it = prev_slots.find(gkeys.surface_key); it != prev_slots.end())
-                        kept_slots = it->second;
+                    if (const auto* kept = prev_slots.find(gkeys.surface_key))
+                        kept_slots = *kept;
                     else
                         bindings_changed = true;
                     next_surfaces.push_back(gen.surface_materials);
@@ -216,7 +220,7 @@ public:
                 for (const auto& col : gen.collections) {
                     if (!col.geometry || !col.transforms || !col.surfaces)
                         continue;
-                    auto& chunk_entry = gkeys.chunks[col.transforms.get()];
+                    auto& chunk_entry = *gkeys.chunks.try_emplace(col.transforms.get()).value;
                     std::vector<std::uint64_t> duplicate_keys;
                     const std::vector<std::uint64_t>* active_keys = nullptr;
                     if (chunk_entry.seen) {
@@ -242,15 +246,17 @@ public:
                         ++built;
                         const std::uint64_t inst_key = (*active_keys)[i];
                         std::shared_ptr<const std::vector<std::uint32_t>> kept_slots;
-                        if (const auto it = prev_slots.find(inst_key); it != prev_slots.end())
-                            kept_slots = it->second;
+                        if (const auto* kept = prev_slots.find(inst_key))
+                            kept_slots = *kept;
                         else
                             bindings_changed = true;
                         next_surfaces.push_back(col.surfaces);
                         next_meshes.push_back({*inst_world, false, col.geometry, inst_key, std::move(kept_slots)});
                     }
                 }
-                std::erase_if(gkeys.chunks, [](const auto& item) { return !item.second.seen; });
+                gkeys.chunks.remove_if([](const std::vector<procedural::Affine>*, const ChunkKeys& item) {
+                    return !item.seen;
+                });
                 if (same_surface_set && next_meshes.size() != slice.meshes.size())
                     bindings_changed = true;
 
@@ -266,21 +272,21 @@ public:
                 mesh_surfaces_.insert(mesh_surfaces_.end(), slice.mesh_surfaces.begin(), slice.mesh_surfaces.end());
                 meshes.insert(meshes.end(), slice.meshes.begin(), slice.meshes.end());
             }
-            std::erase_if(generator_keys_, [](const auto& item) { return !item.second.seen; });
+            generator_keys_.remove_if([](ObjectId, const GeneratorKeys& item) { return !item.seen; });
         }
         if (bindings_changed)
             ATELIER_TRY(bind_materials());
         if (relayout || generators_changed || reselect)
             ATELIER_TRY(highlight(document, selection, highlight_generators));
         if (!synced_ || scene.lights_changed() > since) {
-            for (auto& [object, key] : light_keys_) {
+            for (auto [object, key] : light_keys_) {
                 (void)object;
                 key.seen = false;
             }
             lights.clear();
             for (const auto& item : scene.light_snapshot())
                 lights.push_back(light(item, key(light_keys_, item.component)));
-            std::erase_if(light_keys_, [](const auto& item) { return !item.second.seen; });
+            light_keys_.remove_if([](ObjectId, const Key& item) { return !item.seen; });
         }
         auto locators = refresh_locators(
             document, relayout || reselect || !synced_ || synced_->world_revision != document.world().revision(),
@@ -440,7 +446,7 @@ private:
     struct GeneratorKeys {
         std::uint64_t surface_key{};
 
-        std::unordered_map<const void*, ChunkKeys> chunks;
+        Map<const std::vector<procedural::Affine>*, ChunkKeys> chunks;
 
         bool seen{};
     };
@@ -461,13 +467,13 @@ private:
         std::vector<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>> mesh_surfaces;
     };
 
-    std::unordered_map<ObjectId, Key> mesh_keys_;
+    Map<ObjectId, Key> mesh_keys_;
 
-    std::unordered_map<ObjectId, GeneratorKeys> generator_keys_;
+    Map<ObjectId, GeneratorKeys> generator_keys_;
 
     std::vector<GeneratorSlice> generator_slices_;
 
-    std::unordered_map<ObjectId, Key> light_keys_;
+    Map<ObjectId, Key> light_keys_;
 
     std::uint64_t next_key_{1};
 
@@ -483,7 +489,7 @@ private:
 
     std::vector<editor::ViewportScene::Locator> locators_;
 
-    std::unordered_set<ObjectId> locator_sources_;
+    Set<ObjectId> locator_sources_;
 
     std::uint64_t locator_cursor_{};
 
@@ -512,12 +518,12 @@ private:
         static_cast<void>(logging::submit(std::move(entry)));
     }
 
-    std::uint64_t key(std::unordered_map<ObjectId, Key>& keys, ObjectId object) {
+    std::uint64_t key(Map<ObjectId, Key>& keys, ObjectId object) {
         auto [at, added] = keys.try_emplace(object);
         if (added)
-            at->second.value = next_key_++;
-        at->second.seen = true;
-        return at->second.value;
+            at->value = next_key_++;
+        at->seen = true;
+        return at->value;
     }
 
     // A mesh is drawn at its presented matrix while a simulation interpolates it.
@@ -534,9 +540,9 @@ private:
 
     Result<void> bind_materials() {
         std::vector<material::ProgramSurfaceRef> surfaces;
-        std::unordered_map<const material::ProgramSurface*, std::uint32_t> indices;
-        std::unordered_map<const std::vector<material::ProgramSurfaceRef>*,
-                           std::shared_ptr<const std::vector<std::uint32_t>>>
+        Map<const material::ProgramSurface*, std::uint32_t> indices;
+        Map<const std::vector<material::ProgramSurfaceRef>*,
+            std::shared_ptr<const std::vector<std::uint32_t>>>
             slot_cache;
         for (std::size_t i = 0; i < meshes.size(); ++i) {
             const auto& source = mesh_surfaces_[i];
@@ -544,8 +550,8 @@ private:
                 return std::unexpected(
                     Error{ErrorCode::invalid_definition, "A scene mesh needs one captured Surface per material slot."});
             std::shared_ptr<const std::vector<std::uint32_t>> mapped;
-            if (const auto cached_it = slot_cache.find(source.get()); cached_it != slot_cache.end()) {
-                mapped = cached_it->second;
+            if (const auto* cached_it = slot_cache.find(source.get())) {
+                mapped = *cached_it;
             } else {
                 std::vector<std::uint32_t> slots;
                 slots.reserve(source->size());
@@ -556,13 +562,13 @@ private:
                         indices.try_emplace(surface.get(), static_cast<std::uint32_t>(surfaces.size()));
                     if (added)
                         surfaces.push_back(surface);
-                    slots.push_back(at->second);
+                    slots.push_back(*at);
                 }
                 if (meshes[i].material_slots && *meshes[i].material_slots == slots)
                     mapped = meshes[i].material_slots;
                 else
                     mapped = std::make_shared<const std::vector<std::uint32_t>>(std::move(slots));
-                slot_cache.emplace(source.get(), mapped);
+                slot_cache.try_emplace(source.get(), mapped);
             }
             if (!meshes[i].material_slots || *meshes[i].material_slots != *mapped)
                 meshes[i].material_slots = std::move(mapped);
@@ -589,8 +595,8 @@ private:
             const auto members = document.world().members();
             if (!members)
                 return std::unexpected(members.error());
-            const std::unordered_set<ObjectId> rendered(mesh_entities.begin(), mesh_entities.end());
-            const std::unordered_set<ObjectId> selected(selection.begin(), selection.end());
+            const Set<ObjectId> rendered(mesh_entities);
+            const Set<ObjectId> selected(selection);
             std::vector<editor::ViewportScene::Locator> locators;
             locator_sources_.clear();
             for (const auto& member : *members)
@@ -598,7 +604,7 @@ private:
                     // Include nonspatial members: a later transform write may make
                     // them visible without changing capability layout.
                     for (auto node = member.id(); node != ObjectId{};) {
-                        if (!locator_sources_.insert(node).second)
+                        if (!locator_sources_.add(node))
                             break;
                         const auto parent = world::spatial_parent(runtime, node);
                         if (!parent)
@@ -666,16 +672,17 @@ private:
         const auto members = document.world().members();
         if (!members)
             return std::unexpected(members.error());
-        std::unordered_set<ObjectId> selected(selection.begin(), selection.end());
-        std::unordered_map<ObjectId, bool> inherited;
+        const Set<ObjectId> selected(selection);
+        Map<ObjectId, bool> inherited;
         inherited.reserve(members->size());
         // The World directory is in composition preorder: each parent is already available.
         for (const auto& member : *members) {
             const auto parent = world::parent_entity(document.world().runtime(), member.id());
             if (!parent)
                 return std::unexpected(parent.error());
-            inherited.emplace(member.id(),
-                              selected.contains(member.id()) || (*parent != ObjectId{} && inherited.at(*parent)));
+            const bool is_selected =
+                selected.contains(member.id()) || (*parent != ObjectId{} && inherited.at(*parent));
+            inherited.try_emplace(member.id(), is_selected);
         }
         const std::size_t limit = highlight_generators ? meshes.size() : std::min(static_mesh_count_, meshes.size());
         for (std::size_t i = 0; i < limit; ++i)

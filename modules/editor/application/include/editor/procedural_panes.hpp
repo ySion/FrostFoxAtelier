@@ -2,6 +2,7 @@
 
 #include "editor/graph_view.hpp"
 #include "editor/session.hpp"
+#include "foundation/map.hpp"
 #include "procedural/geometry.hpp"
 #include "ui_language/live_document.hpp"
 #include <array>
@@ -10,7 +11,6 @@
 #include <optional>
 #include <span>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 namespace atelier::editor {
@@ -227,7 +227,7 @@ private:
 
     ui::TableKey selected_row_{};
 
-    std::unordered_map<std::wstring, float> column_widths_;
+    Map<std::wstring, float> column_widths_;
 
     const procedural::Geometry* cached_geometry_{};
 
@@ -588,7 +588,7 @@ private:
         bool framed{};
     };
 
-    ui::ControlKey node_base_key(std::string_view graph_key, std::string_view item_name);
+    ui::ControlKey node_base_key(std::string_view graph_key, std::string_view item_name, std::string_view prefix = {});
 
     std::string active_graph_;
 
@@ -602,9 +602,9 @@ private:
 
     ui_layout::Size last_canvas_dip_{640.f, 360.f};
 
-    std::unordered_map<std::string, SavedView> saved_views_;
+    Map<std::string, SavedView> saved_views_;
 
-    std::unordered_map<std::string, ui::ControlKey> node_keys_;
+    Map<std::string, ui::ControlKey> node_keys_;
 
     ui::ControlKey next_node_key_{network_control::node_key_base};
 
@@ -680,7 +680,7 @@ private:
 
     Popup popup_;
 
-    std::unordered_map<ui::ControlKey, std::shared_ptr<const ui::Tooltip>> visible_tooltips_;
+    Map<ui::ControlKey, std::shared_ptr<const ui::Tooltip>> visible_tooltips_;
 };
 
 } // namespace atelier::editor

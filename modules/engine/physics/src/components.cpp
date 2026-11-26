@@ -1,9 +1,8 @@
 #include "detail/components.hpp"
+#include "foundation/set.hpp"
 #include "runtime/native.hpp"
 #include <algorithm>
 #include <cmath>
-#include <set>
-#include <unordered_set>
 
 namespace atelier::physics {
 namespace {
@@ -256,13 +255,14 @@ Result<void> set_bindings(Runtime& runtime, ObjectId component, std::span<const 
     ATELIER_TRY_BIND(status, world::inspect_component(runtime, component));
     if (requires_inactive && status->active)
         return std::unexpected(Error{ErrorCode::invalid_member, "Stop the controller before rebinding its Entities."});
-    std::unordered_set<ObjectId> seen;
+    Set<ObjectId> seen;
+    seen.reserve(entities.size());
     std::vector<ObjectRoot> roots;
     std::vector<ObjectReference> references;
     roots.reserve(entities.size());
     references.reserve(entities.size());
     for (auto entity : entities) {
-        if (entity == ObjectId{} || !seen.insert(entity).second)
+        if (entity == ObjectId{} || !seen.add(entity))
             return std::unexpected(
                 Error{ErrorCode::invalid_member, "Physics bindings require distinct non-null Entities."});
         ATELIER_TRY(world::inspect_entity(runtime, entity));
@@ -327,7 +327,7 @@ void ComponentSimulation::release(const Entry& entry) noexcept {
 }
 
 void ComponentSimulation::clear() noexcept {
-    for (const auto& [id, entry] : entries_) {
+    for (const auto [id, entry] : entries_) {
         (void)id;
         release(entry);
     }
@@ -340,7 +340,7 @@ ObjectId ComponentSimulation::bound_pose_writer(ObjectId object) const {
     // Select the earliest live claim without allocating a traversal snapshot.
     ObjectId writer;
     std::uint64_t revision = UINT64_MAX;
-    for (const auto& [component, entry] : entries_) {
+    for (const auto [component, entry] : entries_) {
         if (entry.kind != Kind::ragdoll)
             continue;
         if (std::ranges::find(entry.targets, object) == entry.targets.end())
@@ -363,7 +363,7 @@ Result<void> ComponentSimulation::removed(ObjectId object, bool detached) {
             std::ranges::find(e.metadata, object) != e.metadata.end() ||
             (detached && std::ranges::find(e.ancestors, object) != e.ancestors.end())) {
             release(e);
-            entries_.erase(id);
+            entries_.remove(id);
             order_.invalidate();
         }
     }
@@ -401,9 +401,9 @@ Result<void> ComponentSimulation::removed(ObjectId object, bool detached) {
 Result<void> ComponentSimulation::reconcile() {
     contained_ = false;
     auto& runtime = world_.runtime();
-    std::unordered_set<ObjectId> seen;
-    std::unordered_set<ObjectId> owners;
-    std::unordered_map<ObjectId, ObjectId> writers;
+    Set<ObjectId> seen;
+    Set<ObjectId> owners;
+    Map<ObjectId, ObjectId> writers;
     std::vector<std::pair<Entry, bool>> desired_entries;
     const auto is = [&]<class T>(ObjectId id) -> Result<bool> {
         ATELIER_TRY_BIND(type, runtime.type_of(id));
@@ -417,7 +417,7 @@ Result<void> ComponentSimulation::reconcile() {
         ATELIER_TRY_BIND(components, world_.query(*type));
         for (auto component : *components) {
             ATELIER_TRY_BIND(status, world::inspect_component(runtime, component));
-            owners.insert(status->owner);
+            owners.add(status->owner);
         }
         return {};
     };
@@ -429,11 +429,13 @@ Result<void> ComponentSimulation::reconcile() {
     ATELIER_TRY(add_owners.template operator()<SceneQueryComponent>());
     // A member's existing body or special controller claims its pose before any desired claim.
     const auto claim = [&](ObjectId entity, ObjectId writer) -> Result<void> {
-        if (!writers.contains(entity) && membership(entity))
-            if (const auto current = scene_.pose_writer(entity); current != ObjectId{})
-                writers.emplace(entity, current);
         auto [at, added] = writers.try_emplace(entity, writer);
-        if (!added && at->second != writer)
+        if (added && membership(entity))
+            if (const auto current = scene_.pose_writer(entity); current != ObjectId{}) {
+                *at = current;
+                added = false;
+            }
+        if (!added && *at != writer)
             return std::unexpected(
                 Error{ErrorCode::invalid_member, "An Entity may have only one active physics pose writer."});
         return {};
@@ -456,7 +458,7 @@ Result<void> ComponentSimulation::reconcile() {
             if (!*spatial)
                 return {};
             ATELIER_TRY_BIND(group, world::components(runtime, member.id()));
-            std::set<Kind> unique;
+            Set<Kind> unique;
             for (const auto& item : *group) {
                 ATELIER_TRY_BIND(component, world::inspect_component(runtime, item.id()));
                 if (!component->active)
@@ -488,8 +490,7 @@ Result<void> ComponentSimulation::reconcile() {
                 const auto kind = **classification;
                 // Character and Ragdoll share one pose-writer slot.
                 const auto slot = kind == Kind::ragdoll ? Kind::character : kind;
-                if (kind != Kind::distance && kind != Kind::force && kind != Kind::query &&
-                    !unique.insert(slot).second) {
+                if (kind != Kind::distance && kind != Kind::force && kind != Kind::query && !unique.add(slot)) {
                     duplicate = Error{ErrorCode::invalid_member, "Duplicate physics controller on one Entity."};
                     continue;
                 }
@@ -510,9 +511,10 @@ Result<void> ComponentSimulation::reconcile() {
                     if (desired.targets.empty())
                         return std::unexpected(
                             Error{ErrorCode::invalid_member, "Ragdoll requires explicit part Entity bindings."});
-                    std::unordered_set<ObjectId> targets;
+                    Set<ObjectId> targets;
+                    targets.reserve(desired.targets.size());
                     for (auto target : desired.targets) {
-                        if (target == ObjectId{} || !targets.insert(target).second)
+                        if (target == ObjectId{} || !targets.add(target))
                             return std::unexpected(Error{ErrorCode::invalid_member,
                                                          "Physics bindings require distinct non-null Entities."});
                         ATELIER_TRY_BIND(target_status, world::inspect_entity(runtime, target));
@@ -609,9 +611,8 @@ Result<void> ComponentSimulation::reconcile() {
     for (auto& [desired, available] : desired_entries) {
         auto reconciled = [&]() -> Result<void> {
             const auto kind = desired.kind;
-            auto current = entries_.find(desired.component);
-            if (current != entries_.end()) {
-                auto& e = current->second;
+            if (auto* current = entries_.find(desired.component)) {
+                auto& e = *current;
                 bool valid = available && e.entity == desired.entity && e.target == desired.target &&
                              e.body == desired.body && e.other_body == desired.other_body &&
                              e.targets == desired.targets && e.metadata == desired.metadata;
@@ -625,11 +626,11 @@ Result<void> ComponentSimulation::reconcile() {
                 }
                 if (valid) {
                     e.ancestors = std::move(desired.ancestors);
-                    seen.insert(desired.component);
+                    seen.add(desired.component);
                     return {};
                 }
                 release(e);
-                entries_.erase(current);
+                entries_.remove(desired.component);
                 order_.invalidate();
             }
             if (!available)
@@ -678,9 +679,9 @@ Result<void> ComponentSimulation::reconcile() {
                 break;
             }
             desired.revision = next_revision_++;
-            entries_.emplace(desired.component, desired);
+            entries_.try_emplace(desired.component, desired);
             order_.invalidate();
-            seen.insert(desired.component);
+            seen.add(desired.component);
             return {};
         }();
         if (!reconciled) {
@@ -692,8 +693,8 @@ Result<void> ComponentSimulation::reconcile() {
     }
     for (const auto id : order_.get(entries_)) {
         if (!seen.contains(id)) {
-            release(entries_.at(id));
-            entries_.erase(id);
+            const auto removed = entries_.take(id);
+            release(*removed);
             order_.invalidate();
         }
     }
@@ -824,11 +825,11 @@ void ComponentSimulation::clear_query(ObjectId id, bool clear_request) noexcept 
 }
 
 Result<void> ComponentSimulation::sample_query(ObjectId id, QueryIgnore ignore) {
-    auto found = entries_.find(id);
-    if (found == entries_.end() || found->second.kind != Kind::query)
+    auto* found = entries_.find(id);
+    if (!found || found->kind != Kind::query)
         return std::unexpected(
             Error{ErrorCode::invalid_member, "Query component is inactive, foreign or has not been reconciled."});
-    auto& entry = found->second;
+    auto& entry = *found;
     entry.query.reset();
     clear_query(id, false);
     auto& runtime = world_.runtime();
@@ -870,10 +871,10 @@ Result<QueryResult> ComponentSimulation::execute_query(ObjectId id, QueryIgnore 
 }
 
 Result<QueryResult> ComponentSimulation::read_query_result(ObjectId id) const {
-    const auto found = entries_.find(id);
-    if (found == entries_.end() || !found->second.query)
+    const auto* found = entries_.find(id);
+    if (!found || !found->query)
         return std::unexpected(
             Error{ErrorCode::invalid_member, "Query component has no completed result in this scene."});
-    return *found->second.query;
+    return *found->query;
 }
 }

@@ -148,7 +148,7 @@ bool GeometrySpreadsheet::apply(const ui::Action& action) {
             resized && std::isfinite(resized->width) && table_) {
             const auto col = std::ranges::find(table_->columns, resized->column, &ui::TableColumn::key);
             if (col != table_->columns.end()) {
-                column_widths_[col->title] = std::clamp(resized->width, col->min_width, 4096.f);
+                column_widths_.insert_or_assign(col->title, std::clamp(resized->width, col->min_width, 4096.f));
                 dirty_ = true;
             }
         }
@@ -337,8 +337,8 @@ const std::shared_ptr<const ui::TableData>& GeometrySpreadsheet::build_table(con
     data->columns.reserve(extractors.size());
     for (std::size_t col_idx = 0; col_idx < extractors.size(); ++col_idx) {
         const auto& ext = extractors[col_idx];
-        const auto width_it = column_widths_.find(ext.title);
-        const float width = width_it == column_widths_.end() ? ext.default_width : width_it->second;
+        const auto* width_it = column_widths_.find(ext.title);
+        const float width = width_it ? *width_it : ext.default_width;
         data->columns.push_back(
             {spreadsheet_control::column_first + col_idx, ext.title, width, 42.f, ext.align, false});
     }
@@ -958,19 +958,18 @@ void NetworkCanvas::cancel_gesture() noexcept {
     snapped_port_.reset();
 }
 
-ui::ControlKey NetworkCanvas::node_base_key(std::string_view graph_key, std::string_view item_name) {
+ui::ControlKey NetworkCanvas::node_base_key(std::string_view graph_key, std::string_view item_name,
+                                            std::string_view prefix) {
     std::string combined;
-    combined.reserve(graph_key.size() + 1 + item_name.size());
+    combined.reserve(graph_key.size() + 1 + prefix.size() + item_name.size());
     combined.append(graph_key);
     combined.push_back('\n');
+    combined.append(prefix);
     combined.append(item_name);
-    if (const auto found = node_keys_.find(combined); found != node_keys_.end())
-        return found->second;
-    const auto allocated = next_node_key_;
-    if (next_node_key_ + 12 < network_control::batch_key_base)
+    const auto [slot, inserted] = node_keys_.try_emplace(std::move(combined), next_node_key_);
+    if (inserted && next_node_key_ + 12 < network_control::batch_key_base)
         next_node_key_ += 12;
-    node_keys_.emplace(std::move(combined), allocated);
-    return allocated;
+    return *slot;
 }
 
 std::array<float, 2> NetworkCanvas::to_world(float dip_x, float dip_y) const noexcept {
@@ -1053,7 +1052,7 @@ void NetworkCanvas::sync_graph(std::string_view graph_key, std::span<const Graph
         last_canvas_dip_ = canvas_dip;
     if (active_graph_ != graph_key) {
         if (!active_graph_.empty())
-            saved_views_[active_graph_] = {pan_x_, pan_y_, zoom_index_, framed_};
+            saved_views_.insert_or_assign(active_graph_, SavedView{pan_x_, pan_y_, zoom_index_, framed_});
         cancel_gesture();
         close_tab_search();
         close_popup();
@@ -1065,11 +1064,11 @@ void NetworkCanvas::sync_graph(std::string_view graph_key, std::span<const Graph
         hovered_flag_ = FlagZone::none;
         hovered_air_ = AirButton::none;
         active_graph_ = std::string(graph_key);
-        if (const auto found = saved_views_.find(active_graph_); found != saved_views_.end()) {
-            pan_x_ = found->second.pan_x;
-            pan_y_ = found->second.pan_y;
-            zoom_index_ = found->second.zoom_index;
-            framed_ = found->second.framed;
+        if (const auto* found = saved_views_.find(active_graph_)) {
+            pan_x_ = found->pan_x;
+            pan_y_ = found->pan_y;
+            zoom_index_ = found->zoom_index;
+            framed_ = found->framed;
         } else {
             pan_x_ = 160.f;
             pan_y_ = 56.f;
@@ -3032,11 +3031,9 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
     decltype(visible_tooltips_) tooltips;
 
     const auto intern_tooltip = [&](ui::ControlKey key, ui::Tooltip help) {
-        const auto previous = visible_tooltips_.find(key);
-        auto ptr = previous != visible_tooltips_.end() && *previous->second == help
-                       ? previous->second
-                       : std::make_shared<const ui::Tooltip>(std::move(help));
-        tooltips.emplace(key, ptr);
+        const auto* previous = visible_tooltips_.find(key);
+        auto ptr = previous && **previous == help ? *previous : std::make_shared<const ui::Tooltip>(std::move(help));
+        tooltips.try_emplace(key, ptr);
         return ptr;
     };
 
@@ -3067,7 +3064,7 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
         backdrop.stroke({bx + bw - g, by + bh - 2.f, bx + bw - 2.f, by + bh - g, 1.2f, hex_color(box.color, .75f)});
 
         if (z >= .45f) {
-            const ui::ControlKey bkey = node_base_key(graph_key, "box:" + box.name);
+            const ui::ControlKey bkey = node_base_key(graph_key, box.name, "box:");
             ui::Control title_ctrl;
             title_ctrl.key = bkey;
             title_ctrl.parent = canvas_parent;
@@ -3145,7 +3142,7 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
         bodies.box({{nx, ny, nw, std::min(nh, header_h)}, hex_color(note.color, .52f), {r, r, 0.f, 0.f}, 0.f, {}});
 
         if (z >= .45f) {
-            const ui::ControlKey nkey = node_base_key(graph_key, "note:" + note.name);
+            const ui::ControlKey nkey = node_base_key(graph_key, note.name, "note:");
             ui::Control h_ctrl;
             h_ctrl.key = nkey;
             h_ctrl.parent = canvas_parent;

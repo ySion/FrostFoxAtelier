@@ -1,7 +1,6 @@
 #pragma once
 
 #include "presentation/presentation.hpp"
-#include <unordered_map>
 
 namespace atelier::presentation::detail {
 
@@ -156,7 +155,7 @@ Result<void> check_value(Runtime& runtime, const T& value) {
 // Optional live dependencies come from these same captures, not the final sampled inputs;
 // discard the collection if capture or storage fails.
 Result<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>>
-material_surfaces(Runtime&, ObjectId, const StaticMeshComponent&, std::unordered_set<ObjectId>* dependencies = nullptr);
+material_surfaces(Runtime&, ObjectId, const StaticMeshComponent&, Set<ObjectId>* dependencies = nullptr);
 
 Result<void> store_surfaces(Runtime&, ObjectId, std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>);
 
@@ -169,7 +168,7 @@ struct GeneratorCapturedSurfaces {
 };
 
 Result<GeneratorCapturedSurfaces> generator_surfaces(Runtime&, ObjectId, const ProceduralGeneratorComponent&,
-                                                     std::unordered_set<ObjectId>* dependencies = nullptr);
+                                                     Set<ObjectId>* dependencies = nullptr);
 
 Result<void> store_generator_surfaces(Runtime&, ObjectId, const GeneratorCapturedSurfaces&);
 
@@ -206,7 +205,7 @@ public:
     [[nodiscard]] const Offset* find(std::span<const ObjectId> chain) const;
 
 private:
-    std::unordered_map<ObjectId, std::optional<Offset>> offsets_;
+    Map<ObjectId, std::optional<Offset>> offsets_;
 
     std::vector<ObjectId> entities_;
 };

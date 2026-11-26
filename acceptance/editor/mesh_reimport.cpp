@@ -3,9 +3,9 @@
 #include "editor/project.hpp"
 #include "assets/material_format.hpp"
 #include "assets/file.hpp"
+#include "foundation/map.hpp"
 #include <Windows.h>
 #include <chrono>
-#include <map>
 
 namespace {
 using namespace atelier;
@@ -49,11 +49,11 @@ std::string binding(const assets::MeshAsset& mesh, std::string_view slot) {
 // Include empty directories as well as every file's exact bytes and modification time.
 auto content_snapshot(const std::filesystem::path& root) {
     using File = std::pair<std::string, std::filesystem::file_time_type>;
-    std::map<std::filesystem::path, std::optional<File>> result;
+    Map<std::filesystem::path, std::optional<File>> result;
     std::error_code error;
     std::filesystem::recursive_directory_iterator entry(root / "Content", error), end;
     while (!error && entry != end) {
-        auto& file = result[entry->path().lexically_relative(root)];
+        auto& file = *result.try_emplace(entry->path().lexically_relative(root)).value;
         const auto status = entry->status(error);
         if (error)
             break;

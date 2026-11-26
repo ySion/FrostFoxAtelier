@@ -1,6 +1,7 @@
 #include "rhi/rhi.hpp"
 #include "detail/shader_compiler.hpp"
 #include "foundation/result.hpp"
+#include "foundation/ring_deque.hpp"
 #include "memory/fatal.hpp"
 #include "platform/utf.hpp"
 
@@ -12,7 +13,6 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>
-#include <deque>
 #include <fstream>
 #include <iterator>
 #include <mutex>
@@ -108,7 +108,7 @@ public:
         for (auto count = std::clamp(std::thread::hardware_concurrency(), 1u, 8u); threads_.size() < count;)
             threads_.emplace_back([this] { work(); });
         live_.push_back(job);
-        queue_.push_back(std::move(job));
+        queue_.emplace_back(std::move(job));
         wake_.notify_one();
     }
 
@@ -271,7 +271,7 @@ private:
 
     std::condition_variable wake_;
 
-    std::deque<std::shared_ptr<PreparationJob>> queue_;
+    RingDeque<std::shared_ptr<PreparationJob>> queue_;
 
     std::vector<std::shared_ptr<PreparationJob>> live_; // Submitted and not yet taken or cancelled.
 

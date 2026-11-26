@@ -1,9 +1,9 @@
 #pragma once
+#include "foundation/ring_deque.hpp"
+#include "foundation/set.hpp"
 #include "logging/logging.hpp"
 #include "ui_language/live_document.hpp"
 #include <array>
-#include <deque>
-#include <set>
 #include <tuple>
 
 namespace atelier::editor {
@@ -107,7 +107,7 @@ public:
 
     bool select(ui::TableKey);
 
-    const std::deque<Item>& records() const noexcept { return records_; }
+    const RingDeque<Item>& records() const noexcept { return records_; }
 
     const std::vector<Row>& rows() const;
 
@@ -149,11 +149,11 @@ private:
 
     using Identity = std::tuple<std::string, std::uint32_t, std::uint64_t, std::uint64_t>;
 
-    std::set<Identity> owned_identities_;
+    Set<Identity> owned_identities_;
 
-    std::deque<Identity> owned_order_;
+    RingDeque<Identity> owned_order_;
 
-    std::deque<Item> records_;
+    RingDeque<Item> records_;
 
     Statistics statistics_;
 

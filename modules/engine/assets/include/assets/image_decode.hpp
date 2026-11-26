@@ -1,11 +1,11 @@
 #pragma once
+#include "foundation/map.hpp"
 #include "material/image.hpp"
 #include "runtime/runtime.hpp"
 #include <cstdint>
 #include <span>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <vector>
 namespace atelier::assets {
 // Shared WIC decoding for project texture assets and model-import dependencies.
@@ -14,7 +14,7 @@ Result<material::ImageRef> decode_image(std::string_view bytes);
 // Reader-owned: source bytes with the same SHA-256 share immutable decoded pixels.
 // Weak ownership allows retired meshes and their images to leave independently.
 struct ImageCache {
-    std::unordered_map<std::string, std::weak_ptr<const material::Image>> entries; // Keyed by SHA-256 hex.
+    Map<std::string, std::weak_ptr<const material::Image>> entries; // Keyed by SHA-256 hex.
 };
 
 // Decodes on up to eight threads; thread startup failure is fatal, with no reduced pool.

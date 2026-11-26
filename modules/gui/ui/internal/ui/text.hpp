@@ -34,7 +34,7 @@ struct TextKey {
     TextKey(std::uint64_t owner_value, std::uint64_t value, bool is_header)
         : owner(owner_value), key(value), header(is_header) {}
 
-    auto operator<=>(const TextKey&) const = default;
+    auto operator<=>(const TextKey&) const noexcept = default;
 };
 
 struct TextStatistics {

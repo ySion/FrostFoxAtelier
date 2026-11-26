@@ -1,7 +1,9 @@
 #include "ui/session.hpp"
 #include "ui/detail/number_bits.hpp"
 #include "ui/text.hpp"
+#include "foundation/map.hpp"
 #include "foundation/result.hpp"
+#include "foundation/set.hpp"
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -9,10 +11,7 @@
 #include <cmath>
 #include <cwctype>
 #include <map>
-#include <set>
 #include <type_traits>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
 
 namespace atelier::ui {
@@ -459,7 +458,7 @@ const CodeGeometry* UiFrame::find_code(ControlKey key) const noexcept {
 }
 
 struct Session::Impl {
-    using TableIndex = std::unordered_map<TableKey, std::size_t>;
+    using TableIndex = Map<TableKey, std::size_t>;
 
     struct State {
         Control control;

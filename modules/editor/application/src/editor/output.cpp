@@ -1,5 +1,6 @@
 #include "editor/output.hpp"
 #include "application/diagnostics.hpp"
+#include "foundation/map.hpp"
 #include "foundation/string.hpp"
 #include "memory/fatal.hpp"
 #include "platform/utf.hpp"
@@ -9,8 +10,6 @@
 #include <cmath>
 #include <cwctype>
 #include <limits>
-#include <map>
-#include <set>
 #include <tuple>
 #include <utility>
 
@@ -164,7 +163,7 @@ void Output::retain(logging::Record record, std::filesystem::path directory,
     }
     statistics_.body_bytes += bytes;
     unpersisted_ += record.persistence == logging::Persistence::not_persisted;
-    records_.push_back({next_key_++, std::move(record), std::move(directory), rejection});
+    records_.emplace_back(next_key_++, std::move(record), std::move(directory), rejection);
     dirty_ = health_dirty_ = pending_change_ = true;
 }
 
@@ -201,11 +200,11 @@ bool Output::accept_owned(logging::Record record) {
         // A bound on recent identities, not a lifetime producer quota. The
         // logging host's concurrent admission budget does not belong here.
         if (owned_order_.size() == maximum_records) {
-            owned_identities_.erase(owned_order_.front());
+            owned_identities_.remove(owned_order_.front());
             owned_order_.pop_front();
         }
-        owned_identities_.insert(key);
-        owned_order_.push_back(std::move(key));
+        owned_identities_.add(key);
+        owned_order_.emplace_back(std::move(key));
     }
     if (!record.timestamp_unix_ns)
         record.timestamp_unix_ns = now_ns();
@@ -355,7 +354,7 @@ void Output::rebuild() const {
                       {5, L"Run / delivery", widths_[4], 80, ui::TextAlign::left, false}};
     rows_.clear();
     using Group = std::tuple<std::string, std::uint32_t, std::string, std::string, std::string>;
-    std::map<Group, std::size_t> groups;
+    Map<Group, std::size_t> groups;
     for (const auto& value : records_) {
         const auto& record = value.record;
         const auto& entry = record.entry;
@@ -366,9 +365,9 @@ void Output::rebuild() const {
             continue;
         if (entry.repeat) {
             Group group{record.run_id, record.process_id, entry.category, entry.event_code, entry.repeat->identity};
-            const auto [at, inserted] = groups.emplace(std::move(group), rows_.size());
+            const auto [at, inserted] = groups.try_emplace(std::move(group), rows_.size());
             if (!inserted) {
-                auto& row = rows_[at->second];
+                auto& row = rows_[*at];
                 row.count = std::numeric_limits<std::uint64_t>::max() - row.count < entry.repeat->count
                                 ? std::numeric_limits<std::uint64_t>::max()
                                 : row.count + entry.repeat->count;

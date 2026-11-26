@@ -153,9 +153,10 @@ struct SpaceNode {
 struct SpaceGraph {
     Runtime& runtime;
 
+    // SpaceGraph::node() borrows SpaceNode* across ancestor walks that insert more nodes.
     std::unordered_map<ObjectId, SpaceNode> nodes;
 
-    std::unordered_map<ObjectId, math::Matrix4> matrices;
+    Map<ObjectId, math::Matrix4> matrices;
 
     // Reused only inside this evaluation phase; no author data survives it.
     std::vector<ObjectId> matrix_path;
@@ -382,9 +383,9 @@ struct World::Impl {
     Result<std::uint32_t> capabilities_of(ObjectId component, TypeId type) const;
 
     // Tick prerequisite edges, both directions; only between current participants.
-    std::unordered_map<ObjectId, std::vector<ObjectId>> prerequisites;
+    Map<ObjectId, std::vector<ObjectId>> prerequisites;
 
-    std::unordered_map<ObjectId, std::vector<ObjectId>> dependents;
+    Map<ObjectId, std::vector<ObjectId>> dependents;
 
     void forget_prerequisites(ObjectId) noexcept;
 
@@ -481,6 +482,8 @@ struct World::Impl {
     };
 
     struct DiagnosticKeyHash {
+        using is_avalanching = void;
+
         std::size_t operator()(const DiagnosticKey&) const noexcept;
     };
 
@@ -490,7 +493,7 @@ struct World::Impl {
         std::uint64_t pass;
     };
 
-    std::unordered_map<DiagnosticKey, Recent, DiagnosticKeyHash> recent;
+    Map<DiagnosticKey, Recent, DiagnosticKeyHash> recent;
 
     std::array<std::uint64_t, std::size_t(DiagnosticPhase::lifecycle) + 1> passes{};
 

@@ -3,9 +3,7 @@
 #include "foundation/map.hpp"
 #include "ui/controls.hpp"
 #include <array>
-#include <map>
 #include <memory>
-#include <unordered_map>
 
 namespace atelier::ui_language {
 class LiveDocument;
@@ -170,7 +168,7 @@ private:
 
     std::vector<Item> items_;
 
-    std::unordered_map<ui::TableKey, std::size_t> row_indices_;
+    Map<ui::TableKey, std::size_t> row_indices_;
 
     ui::TableSort sort_{browser_control::name_column, ui::TableSortDirection::ascending};
 
@@ -198,7 +196,7 @@ private:
 
     std::uint64_t directory_revision_{};
 
-    std::map<std::filesystem::path, bool>
+    Map<std::filesystem::path, bool>
         expansion_; // Overrides; Project starts expanded, directories collapsed unless they first appear holding the current directory.
 
     std::uint64_t catalog_revision_{};

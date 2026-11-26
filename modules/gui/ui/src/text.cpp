@@ -1,6 +1,7 @@
 #include "ui/text.hpp"
 #include "ui/icons.hpp"
 #include "memory/fatal.hpp"
+#include "foundation/map.hpp"
 #include "foundation/result.hpp"
 #include <Windows.h>
 #include <dwrite_3.h>
@@ -8,11 +9,10 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cmath>
-#include <map>
 #include <optional>
 #include <string>
-#include <tuple>
 
 namespace atelier::ui::detail {
 using Microsoft::WRL::ComPtr;
@@ -53,10 +53,18 @@ struct TrackedCoverage final : Coverage {
     }
 };
 
-struct FontLess {
-    bool operator()(const Font& a, const Font& b) const {
-        return std::tie(a.family, a.locale, a.size, a.weight, a.style) <
-               std::tie(b.family, b.locale, b.size, b.weight, b.style);
+struct TextKeyHash {
+    using is_avalanching = void;
+
+    std::size_t operator()(const TextKey& k) const noexcept { return hash_fields(k.owner, k.key, k.header); }
+};
+
+struct FontHash {
+    using is_avalanching = void;
+
+    std::size_t operator()(const Font& f) const noexcept {
+        return hash_fields(f.family, f.locale, f.size == 0.f ? 0u : std::bit_cast<std::uint32_t>(f.size), f.weight,
+                           f.style);
     }
 };
 
@@ -229,11 +237,11 @@ struct TextStore::Impl {
 
     ComPtr<IDWriteFontCollection1> font_collection;
 
-    std::map<TextKey, Entry> entries;
+    Map<TextKey, Entry, TextKeyHash> entries;
 
-    std::map<Font, ComPtr<IDWriteTextFormat>, FontLess> formats;
+    Map<Font, ComPtr<IDWriteTextFormat>, FontHash> formats;
 
-    std::map<std::pair<TextStore::Symbol, std::uint32_t>, std::shared_ptr<const Coverage>> symbols;
+    Map<std::pair<TextStore::Symbol, std::uint32_t>, std::shared_ptr<const Coverage>> symbols;
 
     std::vector<DWRITE_LINE_METRICS> lines;
 
@@ -267,17 +275,17 @@ struct TextStore::Impl {
     }
 
     Result<Paragraph*> resolve(TextKey key, std::optional<float> width) {
-        auto found = entries.find(key);
-        if (found == entries.end())
+        auto* found = entries.find(key);
+        if (!found)
             fatal("UI text key is missing.");
-        auto& entry = found->second;
+        auto& entry = *found;
         auto& cached = entry.paragraphs[width ? 1 : 0];
         if (cached.layout && cached.valid && cached.width == width)
             return &cached;
         // Published snapshots can retain this native layout. Width changes create
         // a new layout instead of mutating geometry still used by an older frame.
         Paragraph paragraph;
-        auto& format = formats[entry.font];
+        auto& format = *formats.try_emplace(entry.font).value;
         if (!format) {
             const auto result = check(factory->CreateTextFormat(
                 entry.font.family.c_str(), font_collection.Get(), static_cast<DWRITE_FONT_WEIGHT>(entry.font.weight),
@@ -394,7 +402,7 @@ Result<void> TextStore::initialize(std::span<const std::wstring> files) {
 
 std::uint64_t TextStore::set(TextKey key, std::wstring_view text, const Font& font, bool wrap, TextAlign alignment,
                              bool ellipsis) {
-    auto& entry = impl_->entries[key];
+    auto& entry = *impl_->entries.try_emplace(key).value;
     if (entry.text != text || entry.font != font || entry.wrap != wrap || entry.alignment != alignment ||
         entry.ellipsis != ellipsis) {
         entry.text = text;
@@ -409,16 +417,16 @@ std::uint64_t TextStore::set(TextKey key, std::wstring_view text, const Font& fo
 }
 
 void TextStore::erase(TextKey key) {
-    impl_->entries.erase(key);
+    impl_->entries.remove(key);
 }
 
 std::shared_ptr<const Coverage> TextStore::symbol(Symbol symbol, std::uint32_t pixels) {
     if (!pixels || pixels > 256)
         fatal("UI symbol pixels must be in 1..256.");
     const auto key = std::pair{symbol, pixels};
-    if (const auto found = impl_->symbols.find(key); found != impl_->symbols.end()) {
+    if (const auto* found = impl_->symbols.find(key)) {
         ++impl_->statistics.coverage_cache_hits;
-        return found->second;
+        return *found;
     }
     auto coverage = std::make_shared<TrackedCoverage>(impl_->accounting, pixels, pixels);
     const auto bundled = [symbol]() -> std::optional<Icon> {
@@ -734,7 +742,7 @@ std::shared_ptr<const Coverage> TextStore::symbol(Symbol symbol, std::uint32_t p
     }
     ++impl_->statistics.rasterizations;
     impl_->statistics.raster_bytes += coverage->pixels.size();
-    impl_->symbols.emplace(key, coverage);
+    impl_->symbols.try_emplace(key, coverage);
     return coverage;
 }
 
@@ -745,7 +753,7 @@ std::uint64_t TextStore::provider_revision() const noexcept {
 void TextStore::set_provider_revision(std::uint64_t revision) noexcept {
     impl_->provider_revision = revision;
     impl_->formats.clear();
-    for (auto& [key, entry] : impl_->entries) {
+    for (auto [key, entry] : impl_->entries) {
         (void)key;
         entry.paragraphs = {};
     }
@@ -761,8 +769,8 @@ TextStatistics TextStore::statistics() const noexcept {
 ui_layout::MeasureResult TextStore::measure(void* context, const ui_layout::MeasureQuery& query) {
     auto& impl = *static_cast<TextStore*>(context)->impl_;
     ++impl.statistics.measure_calls;
-    const auto found = impl.entries.find(query.content_key);
-    if (found == impl.entries.end() || found->second.revision != query.content_revision ||
+    const auto* found = impl.entries.find(TextKey{query.content_key});
+    if (!found || found->revision != query.content_revision ||
         query.provider_revision != impl.provider_revision)
         return std::unexpected(ui_layout::MeasureError{static_cast<std::uint32_t>(E_INVALIDARG)});
     const auto paragraph = impl.resolve(query.content_key, query.width);
@@ -834,11 +842,12 @@ Result<std::shared_ptr<const TextSnapshot>> TextStore::snapshot(TextKey key, flo
     ATELIER_TRY_BIND(resolved, impl_->resolve(key, width));
     auto& paragraph = **resolved;
     if (!paragraph.snapshot) {
+        const auto& entry = impl_->entries.at(key);
         auto data = std::make_shared<TextSnapshot::Impl>();
         data->layout = paragraph.layout;
-        data->text = impl_->entries.at(key).text;
-        data->font = impl_->entries.at(key).font;
-        data->alignment = impl_->entries.at(key).alignment;
+        data->text = entry.text;
+        data->font = entry.font;
+        data->alignment = entry.alignment;
         data->width = width;
         paragraph.snapshot = std::shared_ptr<const TextSnapshot>(new TextSnapshot(std::move(data)));
     }

@@ -45,8 +45,8 @@
                 if (const auto* previous=self.published?self.published->find_table(key):nullptr;
                     previous && previous->columns_per_row!=columns_per_row) state.table_reveal=true;
                 if (state.table_reveal && body_height>0 && body_width>0) {
-                    if (const auto row=state.table_index.find(selection.row);row!=state.table_index.end()) {
-                        const auto top=(row->second/columns_per_row)*static_cast<double>(stride/scale);
+                    if (const auto* row=state.table_index.find(selection.row)) {
+                        const auto top=(*row/columns_per_row)*static_cast<double>(stride/scale);
                         if (top<state.scroll) state.scroll=top;
                         if (top+row_height/scale>state.scroll+body_height/scale) state.scroll=top+(row_height-body_height)/scale;
                     }

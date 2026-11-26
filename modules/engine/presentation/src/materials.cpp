@@ -1,5 +1,4 @@
 #include "detail/detail.hpp"
-#include <unordered_set>
 
 namespace atelier::presentation {
 using detail::Access;
@@ -35,8 +34,7 @@ Result<void> write_bindings_of(Runtime& runtime, ObjectId id, ComponentT& value,
 }
 
 Result<material::ProgramSurfaceRef> capture_slot_surface(Runtime& runtime, const ReferenceField& sequence,
-                                                         std::size_t index,
-                                                         std::unordered_set<ObjectId>* dependencies) {
+                                                         std::size_t index, Set<ObjectId>* dependencies) {
     ATELIER_TRY_BIND(reference, runtime.sequence_read(sequence, index));
     if (!dependencies)
         return material::capture_program(runtime, reference->id());
@@ -95,9 +93,10 @@ Result<void> set_material_bindings(Runtime& runtime, ObjectId id, std::span<cons
         names.reserve(bindings.size());
         flags.reserve(bindings.size());
         references.reserve(bindings.size());
-        std::unordered_set<std::string> unique;
+        Set<std::string_view> unique;
+        unique.reserve(bindings.size());
         for (const auto& binding : bindings) {
-            if (!unique.insert(binding.slot).second)
+            if (!unique.add(binding.slot))
                 return error(ErrorCode::argument_mismatch, "Duplicate material slot binding.");
             std::size_t matches{};
             for (std::size_t i = 0; i < mesh->materials().size(); ++i)
@@ -154,7 +153,7 @@ Result<void> detail::store_surfaces(Runtime& runtime, ObjectId id,
 
 Result<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>>
 detail::material_surfaces(Runtime& runtime, ObjectId id, const StaticMeshComponent& value,
-                          std::unordered_set<ObjectId>* dependencies) {
+                          Set<ObjectId>* dependencies) {
     using Snapshot = std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>;
     const auto& mesh = Access::geometry(value);
     if (!mesh)
@@ -210,7 +209,7 @@ detail::material_surfaces(Runtime& runtime, ObjectId id, const StaticMeshCompone
 
 Result<detail::GeneratorCapturedSurfaces> detail::generator_surfaces(Runtime& runtime, ObjectId id,
                                                                      const ProceduralGeneratorComponent& value,
-                                                                     std::unordered_set<ObjectId>* dependencies) {
+                                                                     Set<ObjectId>* dependencies) {
     GeneratorCapturedSurfaces result;
     const auto& output = Access::output(value);
     if (!output)

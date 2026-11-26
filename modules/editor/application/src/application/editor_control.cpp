@@ -13,13 +13,14 @@
 #include "platform/utf.hpp"
 #include "platform/windows_path.hpp"
 #include "atelier/build_info.hpp"
+#include "foundation/map.hpp"
+#include "foundation/ring_deque.hpp"
+#include "foundation/set.hpp"
 #include <Windows.h>
 #include <charconv>
-#include <deque>
 #include <future>
 #include <limits>
 #include <set>
-#include <unordered_set>
 
 namespace atelier::application {
 namespace {
@@ -800,9 +801,9 @@ struct EditorControl::Impl {
 
     std::array<ObservationChange, 16> observation_changes{};
 
-    std::unordered_map<ObjectId, std::string> handles;
+    Map<ObjectId, std::string> handles;
 
-    std::unordered_map<std::string, ObjectId> objects;
+    Map<std::string, ObjectId> objects;
 
     std::uint64_t pruned_revision{};
 
@@ -816,7 +817,7 @@ struct EditorControl::Impl {
         std::size_t bytes{};
     };
 
-    std::deque<Cached> cache;
+    RingDeque<Cached> cache;
 
     std::size_t cache_bytes{};
 
@@ -886,7 +887,7 @@ struct EditorControl::Impl {
         }
     };
 
-    std::deque<std::unique_ptr<Job>> jobs;
+    RingDeque<std::unique_ptr<Job>> jobs;
 
     struct AcceptedFrame {
         std::uint64_t id{};
@@ -1344,10 +1345,10 @@ struct EditorControl::Impl {
         }
         auto [found, added] = handles.try_emplace(object);
         if (added) {
-            found->second = std::to_string(document_generation) + "/" + std::to_string(next_handle++);
-            objects.emplace(found->second, object);
+            *found = std::to_string(document_generation) + "/" + std::to_string(next_handle++);
+            objects.try_emplace(*found, object);
         }
-        return found->second;
+        return *found;
     }
 
     std::expected<void, Failure> set_handle(json::Builder& output, json::Value parent, std::string_view key,
@@ -1387,15 +1388,15 @@ struct EditorControl::Impl {
 
     std::expected<void, Failure> prune_handles(std::span<const world::Member> entities) {
         if (!handles.empty()) {
-            std::unordered_set<ObjectId> live;
+            Set<ObjectId> live;
             ATELIER_TRY(operation(any_document_member(entities, [&](ObjectId id) {
-                live.insert(id);
+                live.add(id);
                 return false;
             })));
-            std::erase_if(handles, [&](const auto& entry) {
-                if (live.contains(entry.first))
+            handles.remove_if([&](ObjectId id, const std::string& handle_text) {
+                if (live.contains(id))
                     return false;
-                objects.erase(entry.second);
+                objects.remove(handle_text);
                 return true;
             });
         }
@@ -1405,13 +1406,12 @@ struct EditorControl::Impl {
 
     std::expected<ObjectId, Failure> object(json::Value value) const {
         ATELIER_TRY_BIND(name, text(value, 80));
-        const auto found = objects.find(*name);
-        if (found != objects.end()) {
+        if (const ObjectId* found = objects.find(*name)) {
             ATELIER_TRY_BIND(entities, operation(app.document_->world().members()));
             ATELIER_TRY_BIND(
-                member, operation(any_document_member(*entities, [&](ObjectId id) { return id == found->second; })));
+                member, operation(any_document_member(*entities, [&](ObjectId id) { return id == *found; })));
             if (*member)
-                return found->second;
+                return *found;
         }
         return std::unexpected(Failure("stale_object", "Object handle is no longer a document member"));
     }
@@ -2293,7 +2293,7 @@ struct EditorControl::Impl {
         record_completions();
         while (jobs.size() >= 16)
             jobs.pop_front();
-        jobs.push_back(std::move(job));
+        jobs.emplace_back(std::move(job));
     }
 
     std::expected<json::Document, Failure> start_export(const std::string& id,
@@ -2479,12 +2479,12 @@ struct EditorControl::Impl {
             ATELIER_TRY_BIND(items, input->array());
             if (!items->size() || items->size() > 8)
                 return std::unexpected(Failure("invalid_request", "Expected 1 to 8 cases"));
-            std::set<std::string> names;
+            Set<std::string> names;
             for (const auto item : *items) {
                 ATELIER_TRY(item.members({"name", "patch"}));
                 ATELIER_TRY_BIND(name_arg, item.at("name"));
                 ATELIER_TRY_BIND(name, text(*name_arg, 80));
-                if (name->empty() || !names.insert(*name).second)
+                if (name->empty() || !names.add(*name))
                     return std::unexpected(Failure("invalid_request", "Case names must be nonempty and unique"));
                 ATELIER_TRY_BIND(patch, item.at("patch"));
                 ATELIER_TRY_BIND(view, patched_view(app.workspace_.view, *patch, app.lighting_focus()));
@@ -3673,7 +3673,7 @@ struct EditorControl::Impl {
         if (remember) {
             const auto bytes = canonical.size() + json::write(response.root()).size();
             cache_bytes += bytes;
-            cache.push_back({id, std::move(canonical), response, bytes});
+            cache.emplace_back(id, std::move(canonical), response, bytes);
             trim_cache();
         }
         return response;

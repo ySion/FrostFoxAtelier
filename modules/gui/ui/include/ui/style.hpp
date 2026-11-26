@@ -143,7 +143,7 @@ struct Font {
 
     FontStyle style{FontStyle::normal};
 
-    bool operator==(const Font&) const = default;
+    bool operator==(const Font&) const noexcept = default;
 };
 
 struct Palette {

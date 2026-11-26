@@ -2,7 +2,6 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
-#include <unordered_set>
 
 namespace atelier::world {
 using detail::Access;
@@ -68,9 +67,9 @@ Result<bool> effective_enabled(Runtime& runtime, ObjectId object) {
             if (const auto* member = state.state_of(object))
                 return member->eligible;
     }
-    std::unordered_set<ObjectId> seen;
+    Set<ObjectId> seen;
     for (auto node = object; node != ObjectId{};) {
-        if (!seen.insert(node).second)
+        if (!seen.add(node))
             return error(ErrorCode::invalid_member, "Composition contains a cycle.");
         ATELIER_TRY_BIND(data, detail::entity_data(runtime, node));
         if (!data->enabled)
@@ -146,14 +145,14 @@ Result<ObjectId> SpaceGraph::parent(ObjectId object) {
 Result<math::Matrix4> SpaceGraph::matrix(ObjectId object) {
     if (object == ObjectId{})
         return math::Matrix4::identity();
-    if (auto found = matrices.find(object); found != matrices.end())
-        return found->second;
+    if (const auto* found = matrices.find(object))
+        return *found;
     matrix_path.clear();
     matrix_seen.clear();
     auto result = math::Matrix4::identity();
     for (auto id = object; id != ObjectId{};) {
-        if (auto found = matrices.find(id); found != matrices.end()) {
-            result = found->second;
+        if (const auto* found = matrices.find(id)) {
+            result = *found;
             break;
         }
         if (!matrix_seen.add(id))
@@ -169,7 +168,7 @@ Result<math::Matrix4> SpaceGraph::matrix(ObjectId object) {
         ATELIER_TRY_BIND(local, canonical_transform(nodes.at(*it).local));
         ATELIER_TRY_BIND(composed, multiply(transform_matrix(*local), result));
         result = *composed;
-        matrices.emplace(*it, result);
+        matrices.try_emplace(*it, result);
     }
     return result;
 }
@@ -306,11 +305,11 @@ Result<math::Matrix4> SpaceCache::matrix(ObjectId object) {
 Result<std::vector<ObjectRoot>> subtree(Runtime& runtime, ObjectId object) {
     std::vector<ObjectRoot> result;
     std::vector<ObjectId> pending{object};
-    std::unordered_set<ObjectId> seen;
+    Set<ObjectId> seen;
     while (!pending.empty()) {
         const auto id = pending.back();
         pending.pop_back();
-        if (!seen.insert(id).second)
+        if (!seen.add(id))
             return error(ErrorCode::invalid_member, "Composition contains a cycle or duplicate child.");
         ATELIER_TRY_BIND(type, runtime.native_type<Entity>());
         ATELIER_TRY_BIND(held, runtime.hold(id, *type));
@@ -340,9 +339,10 @@ Result<void> requires_space(Runtime& runtime, ObjectId entity, std::span<const O
 }
 
 Result<void> validate_tree(Runtime& runtime, ObjectId entity, std::span<const ObjectRoot> group) {
-    std::unordered_set<ObjectId> seen;
+    Set<ObjectId> seen;
+    seen.reserve(group.size());
     for (const auto& item : group) {
-        if (!seen.insert(item.id()).second)
+        if (!seen.add(item.id()))
             return error(ErrorCode::invalid_member, "Component appears twice in its Entity.");
         ATELIER_TRY_BIND(data, component_data(runtime, item.id()));
         if (data->owner != entity)
@@ -583,12 +583,12 @@ Result<void> World::remove_transform(ObjectId object) {
     }
     auto root = object;
     if (!data->world) {
-        std::unordered_set<ObjectId> seen{object};
+        Set<ObjectId> seen{object};
         for (;;) {
             ATELIER_TRY_BIND(parent, parent_entity(runtime(), root));
             if (*parent == ObjectId{})
                 break;
-            if (!seen.insert(*parent).second)
+            if (!seen.add(*parent))
                 return error(ErrorCode::invalid_member, "Composition contains a cycle.");
             root = *parent;
         }
@@ -745,7 +745,7 @@ Result<void> World::Impl::apply_poses(std::span<const SimulationPose> poses, Dia
                     // Desired world matrices make conversion independent of hash/container order.
                     candidate.emplace(runtime);
                     for (const auto [id, value] : desired)
-                        candidate->matrices.emplace(id, transform_matrix(value));
+                        candidate->matrices.try_emplace(id, transform_matrix(value));
                 }
                 ATELIER_TRY_BIND(origin, *parent == ObjectId{} ? Result<math::Matrix4>{math::Matrix4::identity()}
                                          : below_target        ? candidate->matrix(*parent)
@@ -954,12 +954,13 @@ Result<AttachmentGraph> prepare_attachment_graph(World& world, std::span<const E
     auto& state = Access::state(world);
     auto& runtime = world.runtime();
     AttachmentGraph result{runtime};
-    std::unordered_map<ObjectId, std::optional<ObjectId>> origins;
-    std::unordered_map<ObjectId, std::size_t> parent_sizes;
+    Map<ObjectId, std::optional<ObjectId>> origins;
+    origins.reserve(spaces.size());
+    Map<ObjectId, std::size_t> parent_sizes;
     for (const auto& plan : spaces)
-        if (!origins.emplace(plan.entity, plan.origin).second)
+        if (!origins.try_emplace(plan.entity, plan.origin).inserted)
             return error(ErrorCode::invalid_member, "Attachment has duplicate spatial reference plans.");
-    std::unordered_set<ObjectId> ids;
+    Set<ObjectId> ids;
     for (const auto& attachment : attachments) {
         if (attachment.parent == ObjectId{}) {
             const auto index = attachment.index == append ? state.members.size() : attachment.index;
@@ -969,12 +970,12 @@ Result<AttachmentGraph> prepare_attachment_graph(World& world, std::span<const E
                 return error(ErrorCode::argument_mismatch, "Root insertion index must be at a root boundary.");
         } else {
             ATELIER_TRY(state.member(attachment.parent));
-            auto count = parent_sizes.find(attachment.parent);
-            if (count == parent_sizes.end()) {
+            const auto* count = parent_sizes.find(attachment.parent);
+            if (!count) {
                 ATELIER_TRY_BIND(children, world::children(runtime, attachment.parent));
-                count = parent_sizes.emplace(attachment.parent, children->size()).first;
+                count = parent_sizes.try_emplace(attachment.parent, children->size()).value;
             }
-            if (attachment.index != append && attachment.index > count->second)
+            if (attachment.index != append && attachment.index > *count)
                 return error(ErrorCode::argument_mismatch, "Child insertion index is out of range.");
         }
         ATELIER_TRY_BIND(previous, parent_entity(runtime, attachment.entity));
@@ -983,7 +984,7 @@ Result<AttachmentGraph> prepare_attachment_graph(World& world, std::span<const E
         ATELIER_TRY_BIND(tree, detail::subtree(runtime, attachment.entity));
         result.ranges.emplace_back(result.incoming.size(), tree->size());
         for (auto& root : *tree) {
-            if (!ids.insert(root.id()).second)
+            if (!ids.add(root.id()))
                 return error(ErrorCode::invalid_member, "Attach contains overlapping subtrees.");
             ATELIER_TRY_BIND(data, state.composition_entity(root.id()));
             if (data->world)
@@ -994,9 +995,9 @@ Result<AttachmentGraph> prepare_attachment_graph(World& world, std::span<const E
                 result.capabilities.push_back(std::move(capability));
             ATELIER_TRY_BIND(parent, parent_entity(runtime, root.id()));
             std::optional<ObjectId> origin;
-            const auto planned = origins.find(root.id());
-            if (planned != origins.end())
-                origin = planned->second;
+            const auto* planned = origins.find(root.id());
+            if (planned)
+                origin = *planned;
             else {
                 ATELIER_TRY_BIND(existing, space_reference(runtime, root.id()));
                 origin = *existing;
@@ -1011,13 +1012,13 @@ Result<AttachmentGraph> prepare_attachment_graph(World& world, std::span<const E
                 });
             if (!node)
                 return std::unexpected(node.error());
-            if (planned != origins.end() && !node->spatial)
+            if (planned && !node->spatial)
                 return error(ErrorCode::invalid_member, "Spatial reference plan requires an Entity Transform.");
             result.space.nodes.emplace(root.id(), *node);
             result.incoming.push_back(std::move(root));
         }
     }
-    for (const auto& [object, origin] : origins) {
+    for (const auto [object, origin] : origins) {
         static_cast<void>(origin);
         if (!ids.contains(object))
             return error(ErrorCode::invalid_member,
@@ -1039,9 +1040,8 @@ World::attachment_world_matrices(std::span<const EntityAttachment> attachments,
     ATELIER_TRY_BIND(graph, prepare_attachment_graph(impl_->world, attachments, spaces));
     std::vector<std::pair<ObjectId, math::Matrix4>> matrices;
     for (const auto& root : graph->incoming) {
-        const auto at = graph->space.matrices.find(root.id());
-        if (at != graph->space.matrices.end())
-            matrices.emplace_back(root.id(), at->second);
+        if (const auto* at = graph->space.matrices.find(root.id()))
+            matrices.emplace_back(root.id(), *at);
     }
     return matrices;
 }
@@ -1065,26 +1065,26 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
         std::vector<ObjectReference> references;
     };
     std::vector<ParentPlan> parents;
-    std::unordered_map<ObjectId, std::size_t> parent_positions;
+    Map<ObjectId, std::size_t> parent_positions;
     for (std::size_t i = 0; i < attachments.size(); ++i) {
         const auto& attachment = attachments[i];
         const auto parent = attachment.parent;
         if (parent != ObjectId{}) {
-            auto at = parent_positions.find(parent);
-            if (at == parent_positions.end()) {
+            const auto* at = parent_positions.find(parent);
+            if (!at) {
                 ATELIER_TRY_BIND(existing, children(runtime(), parent));
                 const auto position = parents.size();
                 parents.push_back({parent, std::move(*existing), {}, {}});
-                at = parent_positions.emplace(parent, position).first;
+                at = parent_positions.try_emplace(parent, position).value;
             }
-            auto& plan = parents[at->second];
+            auto& plan = parents[*at];
             const auto index = attachment.index == append ? plan.existing.size() : attachment.index;
             plan.insertions.emplace_back(index, i);
         }
     }
     // Derive arriving member state and final preorder positions before any
     // relation commits; the commit itself only moves prepared values.
-    std::unordered_map<ObjectId, std::size_t> arriving_index;
+    Map<ObjectId, std::size_t> arriving_index;
     std::vector<Impl::MemberState> arriving;
     arriving.reserve(incoming.size());
     arriving_index.reserve(incoming.size());
@@ -1092,7 +1092,7 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
         const auto& node = candidate->space.nodes.at(incoming[i].id());
         ATELIER_TRY_BIND(derived, state.derive(incoming[i].id(), node.parent, node.origin.value_or(ObjectId{})));
         arriving.push_back(std::move(*derived));
-        arriving_index.emplace(incoming[i].id(), i);
+        arriving_index.try_emplace(incoming[i].id(), i);
     }
     // Each incoming tree is preorder, so subtree sizes accumulate from its back.
     for (const auto& [first, count] : tree_ranges)
@@ -1315,13 +1315,14 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
         ObjectId parent;
     };
     std::vector<ParentPlan> parents;
-    std::unordered_map<ObjectId, std::size_t> parent_positions;
+    Map<ObjectId, std::size_t> parent_positions;
     std::vector<EntityRemoval> removals;
     removals.reserve(roots.size());
     std::vector<Range> ranges;
     ranges.reserve(roots.size());
-    std::unordered_set<ObjectId> ids;
-    std::unordered_set<ObjectId> root_ids;
+    Set<ObjectId> ids;
+    Set<ObjectId> root_ids;
+    root_ids.reserve(roots.size());
     for (const auto object : roots) {
         ATELIER_TRY_BIND(at, state.member(object));
         const auto count = state.states[*at].size;
@@ -1334,14 +1335,14 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
         removal.member_count = count;
         removal.origin_ = state.lifetime;
         if (parent != ObjectId{}) {
-            auto plan = parent_positions.find(parent);
-            if (plan == parent_positions.end()) {
+            const auto* plan = parent_positions.find(parent);
+            if (!plan) {
                 ATELIER_TRY_BIND(existing, children(runtime(), parent));
                 const auto position = parents.size();
                 parents.push_back({parent, std::move(*existing), {}});
-                plan = parent_positions.emplace(parent, position).first;
+                plan = parent_positions.try_emplace(parent, position).value;
             }
-            const auto& siblings = parents[plan->second].existing;
+            const auto& siblings = parents[*plan].existing;
             auto found = std::ranges::find_if(siblings, [&](const auto& item) { return item.id() == object; });
             if (found == siblings.end())
                 return error(ErrorCode::invalid_member, "Entity is absent from its parent.");
@@ -1349,11 +1350,11 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
         }
         for (auto i = *at; i < *at + count; ++i) {
             const auto id = state.members[i].id();
-            if (!ids.insert(id).second)
+            if (!ids.add(id))
                 return error(ErrorCode::invalid_member, "Detach contains overlapping subtrees.");
             ATELIER_TRY(state.composition_entity(id));
         }
-        root_ids.insert(object);
+        root_ids.add(object);
         ranges.push_back({*at, count, parent});
         removals.push_back(std::move(removal));
     }

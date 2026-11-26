@@ -1,13 +1,13 @@
 #pragma once
+#include "foundation/map.hpp"
+#include "foundation/ring_deque.hpp"
 #include "runtime/runtime.hpp"
 #include <Windows.h>
 #include <chrono>
-#include <deque>
 #include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 namespace atelier::editor {
@@ -120,7 +120,7 @@ private:
 
     std::uint64_t next_mesh_{1};
 
-    std::deque<Pending> pending_;
+    RingDeque<Pending> pending_;
 
     std::size_t pending_bytes_{};
 
@@ -130,7 +130,7 @@ private:
 
     std::optional<std::chrono::steady_clock::time_point> closed_since_;
 
-    std::unordered_map<std::uint64_t, std::string> inspected_;
+    Map<std::uint64_t, std::string> inspected_;
 
     void send(std::string_view ops, Pending&&);
 };

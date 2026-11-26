@@ -1,8 +1,8 @@
 #pragma once
 #include "ui_language/component.hpp"
+#include "foundation/map.hpp"
 #include <chrono>
 #include <filesystem>
-#include <map>
 
 namespace atelier::ui_language {
 // Borrowed descriptor slice and producer revision from a LiveDocument region.
@@ -172,7 +172,7 @@ private:
 
     ui::ControlKey& next_key_;
 
-    std::map<std::string, Region, std::less<>> regions_;
+    Map<std::string, Region> regions_;
 
     std::shared_ptr<Module> active_;
 

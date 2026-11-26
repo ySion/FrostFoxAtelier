@@ -510,10 +510,10 @@ Reply Session::input(const Event& event) {
         if (!self.finish_edit(reply, true))
             return reply;
         std::vector<ControlKey> keys;
-        std::map<ControlKey, ControlKey> tree_stops;
+        Map<ControlKey, ControlKey> tree_stops;
         for (const auto& box : self.published->controls)
             if (box.kind == ControlKind::tree_item && self.current(box) && visible(box.bounds, box.clip)) {
-                auto& stop = tree_stops[box.parent];
+                auto& stop = *tree_stops.try_emplace(box.parent).value;
                 if (!stop || box.key == self.focus || (box.selected && stop != self.focus))
                     stop = box.key;
             }
@@ -521,9 +521,11 @@ Reply Session::input(const Event& event) {
             if (focusable(box.kind) && visible(box.bounds, box.clip) && self.current(box) &&
                 (!self.popup || self.popup_member(box.key))) {
                 const auto& control = self.states.at(box.key).control;
-                if ((!control.selection_group || box.selected) &&
-                    (box.kind != ControlKind::tree_item || tree_stops[box.parent] == box.key))
-                    keys.push_back(box.key);
+                if (!control.selection_group || box.selected) {
+                    const auto* stop = box.kind == ControlKind::tree_item ? tree_stops.find(box.parent) : nullptr;
+                    if (box.kind != ControlKind::tree_item || (stop && *stop == box.key))
+                        keys.push_back(box.key);
+                }
             }
         if (!keys.empty()) {
             const auto at = std::find(keys.begin(), keys.end(), self.focus);

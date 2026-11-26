@@ -173,7 +173,7 @@ void LiveDocument::install(InFlight& job) {
         sample->compilation = candidate_->compilation();
     candidate_source_ = attempted_source_;
     candidate_failed_ = false;
-    for (auto& [name, region] : regions_) {
+    for (auto [name, region] : regions_) {
         if (!region.accepted)
             continue;
         // An unmounted region can be rebound and committed without an intervening append.
@@ -212,28 +212,27 @@ Result<bool> LiveDocument::append(std::string_view name, ui::ControlKey parent, 
         return failure(diagnostic_.empty() ? "No compiled UI module." : diagnostic_);
     if (candidate_)
         output.require_full_submission();
-    auto at = regions_.find(name);
+    auto* found = regions_.find(name);
     bool blocked{};
     bool retried{};
-    if (at == regions_.end()) {
+    if (!found) {
         if (!module->find(name))
             return report(Error{ErrorCode::invalid_definition, "UI module is missing component: " + std::string(name)});
-        at = regions_.emplace(std::string(name), Region{parent, {keys.begin(), keys.end()}, {}, {}, false}).first;
+        found = regions_.try_emplace(std::string(name), Region{parent, {keys.begin(), keys.end()}, {}, {}, false}).value;
     }
-    {
-        auto& region = at->second;
-        if (region.parent != parent || !std::ranges::equal(region.keys, keys)) {
-            if (region.instance) {
-                region.instance->reject_controls(static_cast<bool>(candidate_));
-                const auto controls = region.instance->controls();
-                output.append(controls, 0);
-            }
-            return report(
-                Error{ErrorCode::invalid_definition, "A live region's parent and key aliases are immutable."});
+    auto& region = *found;
+    if (region.parent != parent || !std::ranges::equal(region.keys, keys)) {
+        if (region.instance) {
+            region.instance->reject_controls(static_cast<bool>(candidate_));
+            const auto controls = region.instance->controls();
+            output.append(controls, 0);
         }
-        blocked = !candidate_ && region.rejected_inputs &&
-                  std::ranges::equal(*region.rejected_inputs, inputs, detail::same_binding_value);
-        retried = region.rejected_inputs.has_value() && !blocked;
+        return report(Error{ErrorCode::invalid_definition, "A live region's parent and key aliases are immutable."});
+    }
+    blocked = !candidate_ && region.rejected_inputs &&
+              std::ranges::equal(*region.rejected_inputs, inputs, detail::same_binding_value);
+    retried = region.rejected_inputs.has_value() && !blocked;
+    {
         auto* sample = candidate_ && timing_ && timing_->compile_begin != Clock::time_point{} ? timing_.get() : nullptr;
         const auto start = sample ? Clock::now() : Clock::time_point{};
         if (!region.instance) {
@@ -262,8 +261,7 @@ Result<bool> LiveDocument::append(std::string_view name, ui::ControlKey parent, 
         if (!blocked)
             region.rejected_inputs.reset();
     }
-    pending_submission_ |= !at->second.accepted || at->second.instance->has_pending();
-    auto& region = at->second;
+    pending_submission_ |= !region.accepted || region.instance->has_pending();
     if (!region.accepted || candidate_ || region.instance->changes_controls()) {
         region.proposed_controls = ui::ControlList::new_region_revision();
     } else {
@@ -276,8 +274,13 @@ Result<bool> LiveDocument::append(std::string_view name, ui::ControlKey parent, 
         failed_region_.clear();
         diagnostic_.clear();
     }
-    if (submission_failed_ && (retried || at->second.instance->changes_controls()) &&
-        std::ranges::none_of(regions_, [](const auto& entry) { return entry.second.rejected_inputs.has_value(); })) {
+    const auto any_rejected = [&] {
+        for (const auto entry : regions_)
+            if (entry.value.rejected_inputs)
+                return true;
+        return false;
+    };
+    if (submission_failed_ && (retried || region.instance->changes_controls()) && !any_rejected()) {
         submission_failed_ = false;
         diagnostic_.clear();
     }
@@ -285,7 +288,7 @@ Result<bool> LiveDocument::append(std::string_view name, ui::ControlKey parent, 
 }
 
 Result<bool> LiveDocument::event(const ui::Action& action) {
-    for (auto& [name, region] : regions_)
+    for (auto [name, region] : regions_)
         if (region.accepted) {
             auto handled = region.instance->event(action);
             if (!handled || *handled)
@@ -301,7 +304,7 @@ bool LiveDocument::reject_controls(std::string message) {
     failed_region_.clear();
     submission_failed_ = !candidate_;
     const bool source = static_cast<bool>(candidate_);
-    for (auto& [name, region] : regions_) {
+    for (auto [name, region] : regions_) {
         if (!region.instance)
             continue;
         region.proposed_controls = 0;
@@ -336,7 +339,7 @@ void LiveDocument::commit_controls() {
     if (candidate_failed_)
         return;
     if (candidate_ || pending_submission_)
-        for (auto& [name, region] : regions_)
+        for (auto [name, region] : regions_)
             if (region.instance) {
                 if (candidate_ || !region.accepted || region.instance->changes_controls())
                     region.accepted_controls = region.proposed_controls;
@@ -358,8 +361,7 @@ void LiveDocument::commit_controls() {
 }
 
 std::optional<Statistics> LiveDocument::statistics(std::string_view name) const {
-    const auto at = regions_.find(name);
-    return at == regions_.end() || !at->second.instance ? std::nullopt
-                                                        : std::optional{at->second.instance->statistics()};
+    const auto* region = regions_.find(name);
+    return !region || !region->instance ? std::nullopt : std::optional{region->instance->statistics()};
 }
 }

@@ -90,7 +90,7 @@ names.squeeze();                    // 显式收紧容量；空数组释放缓�
 `RingDeque<T>` 用单块分配保存首尾相接的逻辑序列。`emplace_front/emplace_back` 在两端构造，`pop_front/pop_back` 只析构移除的元素。两端插入摊销 O(1)，删除、下标、`front/back` 访问均为 O(1)。文本编辑器用尾端保存和截断撤销历史，用首端淘汰最旧记录，用逻辑下标回放撤销和重做。历史预算由编辑器管理。
 
 - `reserve` 扩容时按逻辑顺序搬移活元素。插入触发扩容时先构造新元素，参数可以借用队列内原有元素。元素的复制、搬移和对齐分配复用 Array 的规则。默认空队列不分配。两种队列均可用 `size/capacity/empty` 查询，`clear` 保留容量，`release` 释放存储。
-- `segments()` 借出按逻辑顺序排列的两个 Span，第二段可以为空。只读队列借出只读元素，临时队列禁止借出。结构修改后须重新获取这对视图。元素引用在扩容时全部失效，容量内的两端操作保留其余元素的地址。JoinGroup 的闭包和 World 的行为绑定使用能跨追加保持地址的存储，见[消费者分析与任务组实测](research/foundation-stl-industrial-research.md#跨追加的元素地址)。
+- `segments()` 借出按逻辑顺序排列的两个 Span，第二段可以为空；`begin/end/cbegin/cend/rbegin/rend/crbegin/crend` 提供按逻辑下标推进的随机访问迭代器。只读队列借出只读元素，临时队列禁止借出视图与迭代器。结构修改后须重新获取视图与迭代器。元素引用在扩容时全部失效，容量内的两端操作保留其余元素的地址。JoinGroup 的闭包和 World 的行为绑定使用能跨追加保持地址的存储，见[消费者分析与任务组实测](research/foundation-stl-industrial-research.md#跨追加的元素地址)。
 
 `PriorityQueue<T,Compare>` 用 Array 保存二叉堆。`Compare(a,b)` 为真表示 b 的优先级高于 a。默认 `std::less<>` 使最大值先出，World 的 `std::greater<>` 使最小的组合顺序下标先出。调用方须提供严格弱序，元素在堆内期间排序依据须稳定。优先级相同的元素可以任意顺序出队。
 
@@ -142,16 +142,16 @@ seen.remove(7u);                            // 返回是否移除了成员
 
 ### 接口、拥有与失效
 
-- `size/empty` 查询状态；`find` 返回借用指针或空，查询缺失不插入。const Map 返回 `const V*`，Set 始终返回 `const T*`。Map 的 `try_emplace` 和 `insert_or_assign` 返回 `{value, inserted}`；Set 的 `add` 返回是否新增。
-- `try_emplace` 先查键，命中时不构造键/值，不消费转入的资源；C++ 实参表达式本身仍先求值。`insert_or_assign` 先构造完整替换值，再以不抛移动提交。支持 move-only 元素，此时容器复制接口不可用；复制赋值先构造副本再替换，不依赖元素复制赋值。
+- `size/empty` 查询状态；`find` 返回借用指针或空，查询缺失不插入；Map 的 `at` 借用已知存在的左值容器条目，缺失键在 dev/release 均为合同 fatal，禁止从临时容器借出。const Map 返回 `const V*` / `const V&`，Set 始终返回只读成员，另可通过 `Set::view()` 借用连续只读 `Span<const T>`（同样禁止临时容器）。Map 的 `try_emplace` 和 `insert_or_assign` 返回 `{value, inserted}`；Set 的 `add` 返回是否新增。两者均支持 `operator==`（顺序无关的集合/键值相等）以及初值列表、迭代器区间与输入范围构造（对 `sized_range` 自动预留容量）。
+- `try_emplace` 先查键，命中时不构造键/值，不消费转入的资源；C++ 实参表达式本身仍先求值。`insert_or_assign` 先构造完整替换值，再以不抛移动提交。`merge` 将来源表中目标尚未包含的条目按值移动接入目标，冲突条目原样留在来源表；自合并为空操作。`take` 单次探测移除并以 `Optional` 移交被删值（Map 移交 `V`，Set 移交 `T`）。`remove_if` 原地双向分划并尾元素填洞，返回删除数量，谓词对每个条目只读调用一次（Map 支持单参 `ConstEntry` 或双参 `(key, value)`），不额外分配待删缓冲。支持 move-only 元素，此时容器复制接口不可用；复制赋值先构造副本再替换，不依赖元素复制赋值。
 - Map 遍历返回只读键、可写值的借用代理；推荐示例中的结构化绑定。const Map 遍历的值也只读；Set 遍历仅只读成员。普通遍历期间不得结构修改容器。迭代器不暴露上游类型，也不承诺随机访问。
-- 插入、删除、预留容量、clear/release、赋值、移动和 swap 后，调用者重新取得迭代器、元素指针与引用；结构操作失败也可能已经搬动缓冲。即使部分操作在当前容量下没有搬移，也不额外保证借用稳定。删除会以尾元素填洞，遍历顺序和地址不作为业务身份。
+- 插入、合并、删除（`remove/take/remove_if`）、预留容量、clear/release、赋值、移动和 swap 后，调用者重新取得迭代器、视图、元素指针与引用；结构操作失败也可能已经搬动缓冲。即使部分操作在当前容量下没有搬移，也不额外保证借用稳定。删除会以尾元素填洞，遍历顺序和地址不作为业务身份。
 - `reserve(n)` 按总条目数准备存储，不构造元素，声明 noexcept。删除和 clear 不自动缩容，release 释放存储。超过底层 max_size 的内部容量为合同 fatal，不静默截断；外部输入的容量与预算拒绝仍由调用方显式返回错误。默认空表不动态分配索引；沿既有全局 new/delete 使用 mimalloc，CPU OOM 为 fatal。
 - 不提供并发保护；同一容器不能在读/遍历时被另一线程修改。复制指针或身份值不复制其目标，也不自动登记 Runtime 根。
 
 ### Hash/Equal 与失败合同
 
-[Hash/Equal](../modules/core/foundation/include/foundation/hash.hpp) 是共同入口。Foundation 自己实现字节、整数和复合键哈希。`hash_bytes(Span<const std::byte>)` 用于显式选择按位相等的原始字节，`String/StringView` 复用同一字节混合。Windows x64 上的数值与原 unordered_dense v5.3.0 兼容。字节实现沿用其 wyhash 派生算法，保留 [MIT 许可](../third_party/unordered_dense/LICENSE)。`hash_fields` 按字段顺序混合；TypeId 和 ObjectId 仍覆盖 Runtime 上下文、槽位以及 ObjectId 的代际。整数、枚举、指针使用一次 64 位乘法并折叠乘积的高低半部，其他类型沿用 `std::hash<T>`。哈希结果只服务进程内查询。[算法对照与 Renderer 实测](research/foundation-hash/README.md)
+[Hash/Equal](../modules/core/foundation/include/foundation/hash.hpp) 是共同入口。Foundation 自己实现字节、整数和复合键哈希。`hash_bytes(Span<const std::byte>)` 用于显式选择按位相等的原始字节，`String/StringView` 与 `std::string/std::string_view` 共用同一透明字节混合（`std::wstring/std::wstring_view` 同理按宽字符字节混合）。Windows x64 上的数值与原 unordered_dense v5.3.0 兼容。字节实现沿用其 wyhash 派生算法，保留 [MIT 许可](../third_party/unordered_dense/LICENSE)。`hash_fields` 从非零种子起按字段顺序单次折叠混合（整数、枚举、指针直接混入位表示，其余类型取 `Hash<T>`），另为 `std::pair`（任一成员透明时同步支持透明异构查询）、`std::tuple`、`std::array` 和 `Optional` 提供同规则的 `is_avalanching` 组合 `Hash/Equal` 特化；TypeId 和 ObjectId 仍覆盖 Runtime 上下文、槽位以及 ObjectId 的代际。整数、枚举、指针使用一次 64 位乘法并折叠乘积的高低半部，其他类型沿用 `std::hash<T>`。哈希结果只服务进程内查询。[算法对照与 Renderer 实测](research/foundation-hash/README.md)
 
 充分混合的策略声明 `using is_avalanching = void` 或 `std::true_type`，`std::false_type` 要求再次混合。`Hash<T>` 识别 `std::hash<T>` 上的类型标记。Map 默认构造策略；Set 也可通过 `Set(hash, equal)` 绑定具体策略实例。策略的复制、移动、交换、析构以及哈希和比较调用须不抛，结果转换也在检查范围内。需要外部上下文的策略可使用不可默认构造的引用包装器，调用方负责上下文的生命周期。Set 的复制携带绑定，release 释放缓冲并保留绑定。移动后，若两个策略均可不抛默认构造，源容器使用新的默认策略；若绑定是必需的，源容器保留策略副本，可继续使用。Map/Set 的元素须可不抛移动构造、移动赋值及析构。
 
@@ -249,7 +249,7 @@ Optional 不承载错误；内部采用 `union` 存储，空值不构造 T，也
 
 `has_value/bool` 查询状态；`try_get() &/const&` 缺席时返回 nullptr，`value_or(fallback)` 按 `const&` 或 `&&` 返回含值副本/移动值或转换后的默认值；`operator==` 支持与另一 `Optional<T>`、`T` 及 `std::nullopt` 比较。`operator*/operator->` 空访问为合同 fatal，所有指针/引用借用接口禁止临时对象。移动保留源 engaged；Optional<String> 的源含一个空 String，而不是空 Optional。不提供抛 bad_optional_access 的 value()。Runtime/Source 的接线由 Runtime 负责：通过回调访问，不读取 engaged 私有偏移，也不能自动把 Optional 中的引用作为 GC 根。
 
-原生操作集为默认/`nullopt`/值/`in_place` 构造、复制/移动构造和赋值、`nullopt` 赋值、`reset/emplace/swap`、`value_or`、`operator==`，以及上述查询和借用接口。普通操作均 noexcept；`emplace` 返回新值引用，不能保存临时 Optional 的该引用到完整表达式之后。该类型表示缺席而不是可恢复失败；业务失败使用 Result。尚未开放 Runtime/Source/反射/JIT 注册。
+原生操作集为默认/`nullopt`/值（对可隐式转换至 `T` 的实参支持隐式构造，保留 `T` 自身的 `explicit` 边界，便于承载 `Optional<FunctionRef<...>>` 等可选同步参数）/`in_place` 构造、复制/移动构造和赋值、`nullopt` 赋值、`reset/emplace/swap`、`value_or`、`operator==`，以及上述查询和借用接口。普通操作均 noexcept；`emplace` 返回新值引用，不能保存临时 Optional 的该引用到完整表达式之后。该类型表示缺席而不是可恢复失败；业务失败使用 Result。尚未开放 Runtime/Source/反射/JIT 注册。
 
 ## 共享反射与 Runtime
 
@@ -370,7 +370,7 @@ Recorder 已绑定时，未登记的标记、未在声明父项下打开的标�
 
 `foundation_acceptance` 保留两个代表，检查在 dev/release 中均有效，不依赖 assert：
 
-- [拥有资源消费者](../acceptance/foundation/main.cpp)覆盖 String 与 Array 的自身视图追加、环形队列回绕后的复制与自身借用扩容、优先队列对 move-only 资源的建堆与移交，以及 `String::join` / `Sha256` 桥接与 `Optional`/`StringView`/`Span` 的代表性编译期契约。
+- [拥有资源消费者](../acceptance/foundation/main.cpp)覆盖 String 与 Array 的自身视图追加、环形队列回绕后的复制与自身借用扩容及随机访问双向遍历、优先队列对 move-only 资源的建堆与移交、Map/Set 的范围构造/`at`/`take`/`merge`/`remove_if`/跨扩容自借用与异构复合键哈希，以及 `String::join` / `Sha256` 桥接与 `Optional`/`FunctionRef`/`StringView`/`Span` 的代表性契约。
 - [原生任务消费者](../acceptance/foundation/tasks.cpp)：任务返回 Failure 后 join 失败、用户闭包在提交线程释放，随后新的 JoinGroup 正常完成。只检查结果与生命周期，不以耗时或参与线程数判 PASS。
 
 设计依据与 UE/Qt 的取舍见[研究记录](research/shared-foundation-types.md#qtue-接口取舍)。

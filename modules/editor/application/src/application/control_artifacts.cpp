@@ -5,6 +5,8 @@
 #include "assets/json_format.hpp"
 #include "assets/material_format.hpp"
 #include "material/resources.hpp"
+#include "foundation/map.hpp"
+#include "foundation/set.hpp"
 #include "foundation/sha256.hpp"
 #include "foundation/result.hpp"
 #include "platform/error.hpp"
@@ -16,8 +18,6 @@
 #include <fstream>
 #include <map>
 #include <set>
-#include <unordered_map>
-#include <unordered_set>
 
 namespace atelier::application::control_artifacts {
 namespace {
@@ -108,13 +108,13 @@ std::expected<std::vector<assets::EngineDependency>, Failure> installed_assets(j
         return std::unexpected(Failure("invalid_request", "Unknown engine assets schema; export it again"));
     ATELIER_TRY_BIND(records_value, object.at("records"));
     ATELIER_TRY_BIND(records, records_value->array());
-    std::set<std::string> keys;
+    Set<std::string_view> keys;
     std::vector<assets::EngineDependency> result;
     for (const auto record : *records) {
         ATELIER_TRY(record.allowed_members({"key", "kind", "semantic_version", "digest_version", "content_sha256"}));
         ATELIER_TRY_BIND(key_text, record.string({"key"}));
         const std::string key{*key_text};
-        if (!keys.insert(key).second)
+        if (!keys.add(*key_text))
             return std::unexpected(Failure("invalid_request", "Duplicate engine asset: " + key));
         ATELIER_TRY_BIND(semantic_value, record.at("semantic_version"));
         ATELIER_TRY_BIND(semantic, version(*semantic_value));
@@ -198,10 +198,10 @@ std::expected<void, Failure> scene_references(json::Value scene, const Reference
 // inputs, never all copied files. The strict loader still owns project failures;
 // this preflight identifies invalid engine keys before it can reject the load.
 std::expected<void, Failure> preflight_resources(editor::Project& project, json::Value scene) {
-    std::set<std::pair<assets::AssetKind, std::string>> references;
+    Set<std::pair<assets::AssetKind, std::string>> references;
     std::vector<std::string> materials;
     const auto reference = [&](assets::AssetKind kind, const std::string& key) -> std::expected<void, Failure> {
-        if (key.empty() || !references.emplace(kind, key).second)
+        if (key.empty() || !references.add({kind, key}))
             return {};
         if (key.starts_with("builtin/"))
             ATELIER_TRY(installed_asset(key, kind));
@@ -220,7 +220,7 @@ std::expected<void, Failure> preflight_resources(editor::Project& project, json:
         if (auto mesh = project.assets().mesh(key))
             for (const auto& binding : mesh->materials)
                 ATELIER_TRY(reference(assets::AssetKind::material, binding.key));
-    std::map<std::string, assets::MaterialAsset, std::less<>> authors;
+    Map<std::string, assets::MaterialAsset> authors;
     for (std::size_t i = 0; i < materials.size(); ++i)
         if (auto asset = project.assets().material(materials[i])) {
             if (const auto* source = std::get_if<assets::MaterialSourceAsset>(&asset->author)) {
@@ -229,17 +229,18 @@ std::expected<void, Failure> preflight_resources(editor::Project& project, json:
             } else
                 ATELIER_TRY(reference(assets::AssetKind::material,
                                       std::get<assets::MaterialInstanceAsset>(asset->author).parent_key));
-            authors.emplace(asset->key, std::move(*asset));
+            auto material_key = asset->key;
+            authors.try_emplace(std::move(material_key), std::move(*asset));
         }
     const auto source_author = [&](std::string key) -> const assets::MaterialSourceAsset* {
-        std::set<std::string> visited;
-        while (!key.empty() && visited.insert(key).second) {
-            const auto at = authors.find(key);
-            if (at == authors.end())
+        Set<std::string> visited;
+        while (!key.empty() && visited.add(key)) {
+            const auto* at = authors.find(key);
+            if (!at)
                 break;
-            if (const auto* source = std::get_if<assets::MaterialSourceAsset>(&at->second.author))
+            if (const auto* source = std::get_if<assets::MaterialSourceAsset>(&at->author))
                 return source;
-            key = std::get<assets::MaterialInstanceAsset>(at->second.author).parent_key;
+            key = std::get<assets::MaterialInstanceAsset>(at->author).parent_key;
         }
         return nullptr; // Strict scene loading diagnoses broken/cyclic parents.
     };
@@ -261,19 +262,19 @@ std::expected<void, Failure> preflight_resources(editor::Project& project, json:
     ATELIER_TRY_BIND(definitions, scene.find("materials"));
     if (*definitions && (**definitions).kind() == json::Kind::array) {
         ATELIER_TRY_BIND(items, (**definitions).array());
-        std::map<std::string, json::Value, std::less<>> locals;
+        Map<std::string, json::Value> locals;
         for (const auto definition : *items) {
             ATELIER_TRY_BIND(id, definition.string({"id"}));
-            locals.emplace(*id, definition);
+            locals.try_emplace(*id, definition);
         }
         for (const auto definition : *items) {
             ATELIER_TRY_BIND(values, definition.find("entries"));
             if (*values) {
                 // Wrappers live for this walk; all views borrow the immutable scene.
                 const json::Value* current = &definition;
-                std::set<const json::Value*> visited;
+                Set<const json::Value*> visited;
                 const assets::MaterialSourceAsset* source{};
-                while (current && visited.insert(current).second) {
+                while (current && visited.add(current)) {
                     const auto key = string_field(*current, "source");
                     if (!key.empty()) {
                         source = source_author(key);
@@ -292,8 +293,7 @@ std::expected<void, Failure> preflight_resources(editor::Project& project, json:
                     if (!*ref)
                         break;
                     ATELIER_TRY_BIND(id, (**ref).string());
-                    const auto at = locals.find(*id);
-                    current = at == locals.end() ? nullptr : &at->second;
+                    current = locals.find(*id);
                 }
                 ATELIER_TRY_BIND(decoded, assets::material_format::decode_entries(**values));
                 ATELIER_TRY(entries(*decoded, source));
@@ -594,13 +594,13 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
     // material a browser happened to load. Ordinary properties are not references.
     ATELIER_TRY(scene_references(scene->root(), reference));
     auto& runtime = document.world().runtime();
-    std::map<std::string, json::Value> locals;
+    Map<std::string, json::Value> locals;
     ATELIER_TRY_BIND(materials, scene->root().at("materials"));
     ATELIER_TRY_BIND(definitions, materials->array());
     for (const auto definition : *definitions)
         if (string_field(definition, "source").empty()) {
             ATELIER_TRY_BIND(id, definition.string({"id"}));
-            locals.emplace(*id, definition);
+            locals.try_emplace(*id, definition);
         }
     if (!locals.empty()) {
         // local_object intentionally admits only Entities/Components. Enumerate
@@ -608,12 +608,12 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
         // (including retained definitions), not unrelated drafts or Undo roots.
         std::vector<ObjectId> live;
         runtime.changed_objects(0, live);
-        std::set<std::string> found;
+        Set<std::string> found;
         for (const auto object : live)
             if (const auto id = document.document_identity(object))
                 if (const auto key = std::to_string(*id); locals.contains(key)) {
                     pending.push_back(object);
-                    found.insert(key);
+                    found.add(key);
                 }
         if (found.size() != locals.size())
             return std::unexpected(Failure("dependency_mismatch", "A scene material has no live author resource"));
@@ -736,7 +736,7 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
             }
         }
     }
-    std::unordered_set<ObjectId> visited;
+    Set<ObjectId> visited;
     json::Builder resources;
     ATELIER_TRY(resources.set(resources.root(), "version", assets::json_format::json_bytes_version));
     ATELIER_TRY_BIND(records, resources.object(resources.root(), "records"));
@@ -779,7 +779,7 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
     };
     for (std::size_t i = 0; i < pending.size(); ++i) {
         const auto object = pending[i];
-        if (!visited.insert(object).second)
+        if (!visited.add(object))
             continue;
         ATELIER_TRY_BIND(key, material::material_key(runtime, object).transform_error(storage_error));
         ATELIER_TRY(reference(assets::AssetKind::material, *key));
@@ -1166,12 +1166,12 @@ std::expected<json::Document, Failure> export_repro(const std::filesystem::path&
     // Reproduce the code actually published into this Runtime. Drafts are separate.
     // Saved edits/additions may not have published. Keep them outside the
     // runnable Source tree, then materialize exactly the live inputs.
-    std::unordered_map<std::string, const language::SourceFile*> published;
+    Map<std::string, const language::SourceFile*> published;
     if (data.sources)
         for (const auto& file : data.sources->files)
-            published.emplace(file.path, &file);
+            published.try_emplace(file.path, &file);
     if (data.ui_source)
-        published.emplace(data.ui_source->path, &*data.ui_source);
+        published.try_emplace(data.ui_source->path, &*data.ui_source);
     std::vector<std::filesystem::path> copied_code;
     auto entry = std::filesystem::recursive_directory_iterator(project / "Source", error);
     if (error)
@@ -1192,14 +1192,13 @@ std::expected<json::Document, Failure> export_repro(const std::filesystem::path&
         const auto name = platform::utf16_to_utf8(relative.generic_wstring());
         if (!name)
             return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
-        const auto found = published.find(*name);
-        if (found != published.end()) {
+        if (const auto* found = published.find(*name)) {
             const auto bytes = std::filesystem::file_size(path, error);
             if (error)
                 return storage_failure(error);
-            if (bytes == found->second->source.size()) {
+            if (bytes == (*found)->source.size()) {
                 ATELIER_TRY_BIND(text, assets::read_file(path).transform_error(storage_error));
-                if (*text == found->second->source) {
+                if (*text == (*found)->source) {
                     std::filesystem::remove(path, error);
                     if (error)
                         return storage_failure(error);
@@ -1245,7 +1244,7 @@ std::expected<json::Document, Failure> export_repro(const std::filesystem::path&
         ATELIER_TRY(checkpoint(work));
         if (file.path.starts_with("builtin/"))
             continue;
-        if (const auto at = published.find(file.path); at != published.end() && at->second->source != file.source)
+        if (const auto* at = published.find(file.path); at && (*at)->source != file.source)
             return std::unexpected(
                 Failure("dependency_mismatch", "Gameplay and material Source captured different text at " + file.path));
         // Containment compares canonical paths, not the worker's extended Win32 spelling.
@@ -1321,7 +1320,7 @@ std::expected<json::Document, Failure> export_repro(const std::filesystem::path&
             return std::unexpected(
                 Failure("dependency_mismatch", "Exported texture differs from the loaded RGBA input: " + texture.key));
     }
-    std::set<std::string> recorded;
+    Set<std::string_view> recorded;
     for (const auto& mesh : data.meshes) {
         ATELIER_TRY(checkpoint(work));
         ATELIER_TRY_BIND(loaded, clone.assets().mesh(mesh.key).transform_error(storage_error));
@@ -1344,7 +1343,7 @@ std::expected<json::Document, Failure> export_repro(const std::filesystem::path&
             }
             return std::unexpected(
                 Failure("dependency_mismatch", "Frozen engine declaration differs from the loaded mesh: " + mesh.key));
-        } else if (recorded.insert(mesh.key).second) {
+        } else if (recorded.add(mesh.key)) {
             const auto resource = manifest.append_object(*resources);
             ATELIER_TRY(manifest.set(resource, "key", mesh.key));
             ATELIER_TRY(manifest.set(resource, "digest_version", assets::mesh_digest_version));
@@ -1362,7 +1361,7 @@ std::expected<json::Document, Failure> export_repro(const std::filesystem::path&
         if (*actual != *expected)
             return std::unexpected(
                 Failure("dependency_mismatch", "Copied dependency differs from the loaded sky map: " + key));
-        if (recorded.insert(key).second) {
+        if (recorded.add(key)) {
             const auto resource = manifest.append_object(*resources);
             ATELIER_TRY(manifest.set(resource, "key", key));
             ATELIER_TRY(manifest.set(resource, "digest_version", assets::json_format::json_bytes_version));
@@ -1424,7 +1423,7 @@ std::expected<ReproBundle, Failure> validate_repro(const std::filesystem::path& 
     ATELIER_TRY_BIND(files, files_value->array());
     if (files->size() > 11000)
         return std::unexpected(Failure("invalid_request", "Invalid repro file list"));
-    std::unordered_map<std::string, json::Value> expected;
+    Map<std::string, json::Value> expected;
     for (const auto file : *files) {
         ATELIER_TRY_BIND(name, file.string({"path"}));
         const std::filesystem::path path = platform::utf8_to_utf16_validated(*name);
@@ -1433,7 +1432,7 @@ std::expected<ReproBundle, Failure> validate_repro(const std::filesystem::path& 
             return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
         if (path.empty() || path.has_root_path() || path.lexically_normal() != path || *path.begin() == L".." ||
             name->find(':') != std::string::npos || path == L"manifest.json" || generated_cache(path) ||
-            !expected.emplace(*generic, file).second)
+            !expected.try_emplace(*generic, file).inserted)
             return std::unexpected(Failure("invalid_request", "Invalid or duplicate bundle path"));
     }
     // Reject additions as well as missing/modified inputs. Generated Cache is
@@ -1469,22 +1468,22 @@ std::expected<ReproBundle, Failure> validate_repro(const std::filesystem::path& 
         const auto name = platform::utf16_to_utf8(relative.generic_wstring());
         if (!name)
             return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
-        const auto found = expected.find(*name);
-        if (!std::filesystem::is_regular_file(status) || found == expected.end())
+        const auto* found = expected.find(*name);
+        if (!std::filesystem::is_regular_file(status) || !found)
             return file_changed();
         const auto bytes = it->file_size(error);
         if (error)
             return io_failure(error);
-        ATELIER_TRY_BIND(expected_bytes, found->second.u64({"bytes"}));
+        ATELIER_TRY_BIND(expected_bytes, found->u64({"bytes"}));
         if (bytes != *expected_bytes)
             return file_changed();
         const auto digest = foundation::sha256_file(it->path());
         if (!digest)
             return std::unexpected(Failure("storage_error", digest.error()));
-        ATELIER_TRY_BIND(expected_digest, found->second.string({"sha256"}));
+        ATELIER_TRY_BIND(expected_digest, found->string({"sha256"}));
         if (*digest != *expected_digest)
             return file_changed();
-        expected.erase(found);
+        expected.remove(*name);
     }
     if (error)
         return io_failure(error);
@@ -1577,8 +1576,8 @@ std::expected<json::Document, Failure> write_trace(const std::filesystem::path& 
     ATELIER_TRY(trace.set(observation, "closed", info.closed));
     ATELIER_TRY_BIND(commands, trace.array(trace.root(), "commands"));
     ATELIER_TRY_BIND(resource_records, trace.array(trace.root(), "resources"));
-    std::map<std::pair<int, std::uint64_t>, std::size_t> resources;
-    std::map<std::uint64_t, std::size_t> kernels;
+    Map<std::pair<int, std::uint64_t>, std::size_t> resources;
+    Map<std::uint64_t, std::size_t> kernels;
     constexpr std::array kinds{"unsupported", "texture_srv", "texture_uav",       "sampler",
                                "constants",   "cbv",         "indirect_arguments"};
     constexpr std::array statuses{"unknown", "valid", "dummy"};
@@ -1587,7 +1586,7 @@ std::expected<json::Document, Failure> write_trace(const std::filesystem::path& 
         const auto [kernel, inserted] = kernels.try_emplace(command.kernel_key, kernels.size() + 1);
         const auto record = trace.append_object(*commands);
         ATELIER_TRY(trace.set(record, "ordinal", commands->size()));
-        ATELIER_TRY(trace.set(record, "kernel", kernel->second));
+        ATELIER_TRY(trace.set(record, "kernel", *kernel));
         ATELIER_TRY(trace.set(record, "entry", std::string_view{command.entry.data()}));
         trace.set_validated(record, "kind", command.indirect ? "dispatch_indirect" : "dispatch");
         if (command.indirect)
@@ -1607,10 +1606,10 @@ std::expected<json::Document, Failure> write_trace(const std::filesystem::path& 
                 // allocations use separate namespaces. Native keys never escape.
                 const auto kind = binding.kind == kGfxObserved_TextureUAV ? kGfxObserved_TextureSRV : binding.kind;
                 const auto [item, added] = resources.try_emplace({kind, binding.resource_key}, resources.size() + 1);
-                ATELIER_TRY(trace.set(entry, "resource", item->second));
+                ATELIER_TRY(trace.set(entry, "resource", *item));
                 if (added) {
                     const auto resource = trace.append_object(*resource_records);
-                    ATELIER_TRY(trace.set(resource, "index", item->second));
+                    ATELIER_TRY(trace.set(resource, "index", *item));
                     trace.set_validated(resource, "kind", kind == kGfxObserved_TextureSRV ? "texture" : kinds[kind]);
                     ATELIER_TRY(trace.set(resource, "name", std::string_view{owned.resource_name.data()}));
                     ATELIER_TRY_BIND(extent, trace.array(resource, "extent"));

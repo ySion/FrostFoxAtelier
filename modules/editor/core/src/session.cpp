@@ -100,8 +100,8 @@ void Session::remember(Change change) {
 }
 
 std::wstring_view Session::name(ObjectId entity) const noexcept {
-    const auto at = names_.find(entity);
-    return at == names_.end() ? std::wstring_view{} : at->second;
+    const auto* at = names_.find(entity);
+    return at ? std::wstring_view{*at} : std::wstring_view{};
 }
 
 Result<void> Session::admit_entity_edit(ObjectId entity) const {
@@ -329,10 +329,10 @@ Result<void> Session::publish_environment(ObjectRoot root) {
     change.added = true;
     change.removals.emplace_back().root = std::move(root);
     const auto id = change.removals.front().id();
-    names_.emplace(id, L"Environment");
+    names_.try_emplace(id, L"Environment");
     auto attached = world_.attach(id);
     if (!attached) {
-        names_.erase(id);
+        names_.remove(id);
         return std::unexpected(attached.error());
     }
     remember(std::move(change));
@@ -360,15 +360,16 @@ Result<ObjectRoot> Session::create_environment(std::span<const world::FieldPath>
 Result<void> Session::rename(ObjectId entity, std::wstring name) {
     ATELIER_TRY(validate_name(name));
     ATELIER_TRY(admit_entity_edit(entity));
-    const auto at = names_.find(entity);
-    if (at == names_.end())
+    const auto* existing = names_.find(entity);
+    if (!existing)
         return invalid("The Entity does not belong to this document.");
-    if (at->second == name)
+    if (*existing == name)
         return {};
     ATELIER_TRY_BIND(root, runtime_.hold(entity));
     ATELIER_TRY_BIND(cancelled, cancel_edit());
-    NameChange change{std::move(*root), at->second, name};
-    at->second = std::move(name);
+    auto& slot = names_.at(entity);
+    NameChange change{std::move(*root), slot, name};
+    slot = std::move(name);
     remember(std::move(change));
     return {};
 }
@@ -714,10 +715,10 @@ Result<world::Commit> Session::attach_created(ObjectRoot root, std::wstring_view
     change.added = true;
     change.removals.emplace_back().root = std::move(root);
     const auto id = change.removals.front().id();
-    names_.emplace(id, std::wstring(label) + L" " + std::to_wstring(next_name_++));
+    names_.try_emplace(id, std::wstring(label) + L" " + std::to_wstring(next_name_++));
     auto attached = world_.attach(id);
     if (!attached) {
-        names_.erase(id);
+        names_.remove(id);
         return attached;
     }
     if (attached->changed) {
@@ -1504,9 +1505,9 @@ Result<world::Commit> Session::replay(Change& change, bool forward, Project* pro
                                                                  {forward ? item.after : item.before, nullptr, {}}));
                 const auto& ov = forward ? item.after_overrides : item.before_overrides;
                 if (ov.root().kind() == json::Kind::object && ov.root().size() > 0)
-                    generator_overrides_[item.root.id()] = ov;
+                    generator_overrides_.insert_or_assign(item.root.id(), ov);
                 else
-                    generator_overrides_.erase(item.root.id());
+                    generator_overrides_.remove(item.root.id());
                 set_selection({item.entity, item.root.id()});
                 return world::Commit{true, {}};
             } else if constexpr (std::is_same_v<T, BodyChange>) {
@@ -1677,10 +1678,10 @@ Result<void> Session::collect_step() {
     }
     ATELIER_TRY_BIND(progress, runtime_.collect_step({32}));
     if (runtime_.collection_phase() == CollectionPhase::idle) {
-        std::erase_if(names_, [&](const auto& item) { return !runtime_.type_of(item.first); });
-        std::erase_if(retained_, [&](const auto& item) { return !runtime_.type_of(item.first); });
-        std::erase_if(scene_material_parents_, [&](const auto& item) { return !runtime_.type_of(item.first); });
-        std::erase_if(generator_overrides_, [&](const auto& item) { return !runtime_.type_of(item.first); });
+        names_.remove_if([&](const ObjectId id, const auto&) { return !runtime_.type_of(id); });
+        retained_.remove_if([&](const ObjectId id, const auto&) { return !runtime_.type_of(id); });
+        scene_material_parents_.remove_if([&](const ObjectId id, const auto&) { return !runtime_.type_of(id); });
+        generator_overrides_.remove_if([&](const ObjectId id, const auto&) { return !runtime_.type_of(id); });
     }
     return {};
 }

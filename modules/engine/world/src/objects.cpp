@@ -2,8 +2,6 @@
 #include "runtime/native.hpp"
 #include <algorithm>
 #include <cmath>
-#include <unordered_map>
-#include <unordered_set>
 
 namespace atelier::world {
 using detail::Access;
@@ -261,7 +259,7 @@ Result<Commit> destroy_entity(Runtime& runtime, ObjectId object) {
     ATELIER_TRY_BIND(owned, detail::subtree(runtime, object));
     std::vector<std::vector<ObjectRoot>> groups;
     groups.reserve(owned->size());
-    std::unordered_map<ObjectId, bool> component_ids;
+    Set<ObjectId> component_ids;
     for (const auto& root : *owned) {
         ATELIER_TRY_BIND(entity, detail::entity_data(runtime, root.id()));
         if (entity->transitioning)
@@ -271,7 +269,7 @@ Result<Commit> destroy_entity(Runtime& runtime, ObjectId object) {
         ATELIER_TRY_BIND(group, components(runtime, root.id()));
         for (const auto& component : *group) {
             ATELIER_TRY_BIND(capability, detail::component_data(runtime, component.id()));
-            if (capability->owner != root.id() || !component_ids.emplace(component.id(), true).second)
+            if (capability->owner != root.id() || !component_ids.add(component.id()))
                 return error(ErrorCode::invalid_member, "Subtree has an inconsistent or duplicate component owner.");
         }
         groups.push_back(std::move(*group));

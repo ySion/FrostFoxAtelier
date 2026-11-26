@@ -3,7 +3,9 @@
 #include "foundation/detail/array_elements.hpp"
 #include "foundation/span.hpp"
 
+#include <compare>
 #include <concepts>
+#include <iterator>
 
 namespace atelier {
 
@@ -19,6 +21,132 @@ class RingDeque {
     static_assert(std::is_nothrow_move_constructible_v<T> || std::is_copy_constructible_v<T>);
 
 public:
+    template <bool Const>
+    class QueueIterator {
+        using Pointer = std::conditional_t<Const, const T*, T*>;
+
+        Pointer data_{};
+
+        std::size_t capacity_{};
+
+        std::size_t head_{};
+
+        std::size_t index_{};
+
+        constexpr QueueIterator(Pointer data, std::size_t capacity, std::size_t head, std::size_t index) noexcept
+            : data_(data), capacity_(capacity), head_(head), index_(index) {}
+
+        friend class RingDeque;
+
+        template <bool>
+        friend class QueueIterator;
+
+    public:
+        using value_type = T;
+
+        using reference = std::conditional_t<Const, const T&, T&>;
+
+        using pointer = Pointer;
+
+        using difference_type = std::ptrdiff_t;
+
+        using iterator_concept = std::random_access_iterator_tag;
+
+        using iterator_category = std::random_access_iterator_tag;
+
+        constexpr QueueIterator() noexcept = default;
+
+        template <bool Other>
+            requires(Const && !Other)
+        constexpr QueueIterator(const QueueIterator<Other>& other) noexcept
+            : data_(other.data_), capacity_(other.capacity_), head_(other.head_), index_(other.index_) {}
+
+        [[nodiscard]] constexpr reference operator*() const noexcept {
+            const auto until_end = capacity_ - head_;
+            const auto slot = index_ < until_end ? head_ + index_ : index_ - until_end;
+            return data_[slot];
+        }
+
+        [[nodiscard]] constexpr pointer operator->() const noexcept { return std::addressof(**this); }
+
+        [[nodiscard]] constexpr reference operator[](difference_type offset) const noexcept {
+            return *(*this + offset);
+        }
+
+        constexpr QueueIterator& operator++() noexcept {
+            ++index_;
+            return *this;
+        }
+
+        constexpr QueueIterator operator++(int) noexcept {
+            auto previous = *this;
+            ++index_;
+            return previous;
+        }
+
+        constexpr QueueIterator& operator--() noexcept {
+            --index_;
+            return *this;
+        }
+
+        constexpr QueueIterator operator--(int) noexcept {
+            auto previous = *this;
+            --index_;
+            return previous;
+        }
+
+        constexpr QueueIterator& operator+=(difference_type offset) noexcept {
+            index_ = static_cast<std::size_t>(static_cast<difference_type>(index_) + offset);
+            return *this;
+        }
+
+        constexpr QueueIterator& operator-=(difference_type offset) noexcept {
+            index_ = static_cast<std::size_t>(static_cast<difference_type>(index_) - offset);
+            return *this;
+        }
+
+        [[nodiscard]] friend constexpr QueueIterator operator+(QueueIterator it, difference_type offset) noexcept {
+            it += offset;
+            return it;
+        }
+
+        [[nodiscard]] friend constexpr QueueIterator operator+(difference_type offset, QueueIterator it) noexcept {
+            it += offset;
+            return it;
+        }
+
+        [[nodiscard]] friend constexpr QueueIterator operator-(QueueIterator it, difference_type offset) noexcept {
+            it -= offset;
+            return it;
+        }
+
+        template <bool Other>
+        [[nodiscard]] friend constexpr difference_type operator-(const QueueIterator& left,
+                                                                 const QueueIterator<Other>& right) noexcept {
+            return static_cast<difference_type>(left.index_) - static_cast<difference_type>(right.index_);
+        }
+
+        template <bool Other>
+        [[nodiscard]] friend constexpr bool operator==(const QueueIterator& left,
+                                                       const QueueIterator<Other>& right) noexcept {
+            return left.data_ == right.data_ && left.index_ == right.index_;
+        }
+
+        template <bool Other>
+        [[nodiscard]] friend constexpr std::strong_ordering operator<=>(const QueueIterator& left,
+                                                                        const QueueIterator<Other>& right) noexcept {
+            return left.index_ <=> right.index_;
+        }
+    };
+
+    using Iterator = QueueIterator<false>;
+
+    using ConstIterator = QueueIterator<true>;
+
+    using ReverseIterator = std::reverse_iterator<Iterator>;
+
+    using ConstReverseIterator = std::reverse_iterator<ConstIterator>;
+
     RingDeque() noexcept = default;
 
     RingDeque(const RingDeque& other) noexcept
@@ -90,6 +218,54 @@ public:
     }
 
     void segments() const&& = delete;
+
+    [[nodiscard]] Iterator begin() & noexcept [[clang::lifetimebound]] { return {data_, capacity_, head_, 0}; }
+
+    [[nodiscard]] Iterator end() & noexcept [[clang::lifetimebound]] { return {data_, capacity_, head_, size_}; }
+
+    [[nodiscard]] ConstIterator begin() const& noexcept [[clang::lifetimebound]] {
+        return {data_, capacity_, head_, 0};
+    }
+
+    [[nodiscard]] ConstIterator end() const& noexcept [[clang::lifetimebound]] {
+        return {data_, capacity_, head_, size_};
+    }
+
+    [[nodiscard]] ConstIterator cbegin() const& noexcept [[clang::lifetimebound]] { return begin(); }
+
+    [[nodiscard]] ConstIterator cend() const& noexcept [[clang::lifetimebound]] { return end(); }
+
+    [[nodiscard]] ReverseIterator rbegin() & noexcept [[clang::lifetimebound]] { return ReverseIterator{end()}; }
+
+    [[nodiscard]] ReverseIterator rend() & noexcept [[clang::lifetimebound]] { return ReverseIterator{begin()}; }
+
+    [[nodiscard]] ConstReverseIterator rbegin() const& noexcept [[clang::lifetimebound]] {
+        return ConstReverseIterator{end()};
+    }
+
+    [[nodiscard]] ConstReverseIterator rend() const& noexcept [[clang::lifetimebound]] {
+        return ConstReverseIterator{begin()};
+    }
+
+    [[nodiscard]] ConstReverseIterator crbegin() const& noexcept [[clang::lifetimebound]] { return rbegin(); }
+
+    [[nodiscard]] ConstReverseIterator crend() const& noexcept [[clang::lifetimebound]] { return rend(); }
+
+    ConstIterator begin() const&& = delete;
+
+    ConstIterator end() const&& = delete;
+
+    ConstIterator cbegin() const&& = delete;
+
+    ConstIterator cend() const&& = delete;
+
+    ConstReverseIterator rbegin() const&& = delete;
+
+    ConstReverseIterator rend() const&& = delete;
+
+    ConstReverseIterator crbegin() const&& = delete;
+
+    ConstReverseIterator crend() const&& = delete;
 
     void reserve(std::size_t capacity) noexcept {
         if (capacity > capacity_)

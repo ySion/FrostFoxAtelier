@@ -1,8 +1,8 @@
 #pragma once
 
+#include "foundation/map.hpp"
 #include "renderer/renderer.hpp"
 #include <limits>
-#include <unordered_map>
 
 namespace atelier::renderer::detail {
 
@@ -130,6 +130,8 @@ private:
     };
 
     struct KeyHash {
+        using is_avalanching = void;
+
         std::size_t operator()(const SourceKey&) const noexcept;
     };
 
@@ -147,7 +149,7 @@ private:
 
     std::vector<SourceKey> previous_keys_;
 
-    std::unordered_map<SourceKey, std::uint32_t, KeyHash> previous_lookup_;
+    Map<SourceKey, std::uint32_t, KeyHash> previous_lookup_;
 
     std::vector<double> powers_;
 

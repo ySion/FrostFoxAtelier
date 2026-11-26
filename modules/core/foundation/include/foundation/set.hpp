@@ -1,10 +1,17 @@
 #pragma once
 
 #include "foundation/hash.hpp"
+#include "foundation/optional.hpp"
+#include "foundation/span.hpp"
 #include "foundation/detail/dense_hash_table.hpp"
 #include "memory/fatal.hpp"
 
+#include <concepts>
+#include <functional>
+#include <initializer_list>
+#include <iterator>
 #include <memory>
+#include <ranges>
 #include <utility>
 
 namespace atelier {
@@ -29,6 +36,33 @@ public:
     = default;
 
     Set(const H& hash, const E& equal) noexcept : storage_(hash, equal) {}
+
+    Set(std::initializer_list<T> values)
+        requires(detail::HashPolicy<H> && detail::HashPolicy<E> && std::is_copy_constructible_v<T>)
+        : Set(values.begin(), values.end()) {}
+
+    template <std::input_iterator It, std::sentinel_for<It> Sentinel>
+        requires(detail::HashPolicy<H> && detail::HashPolicy<E> &&
+                 detail::HashQuery<T, std::iter_reference_t<It>, H, E> &&
+                 std::constructible_from<T, std::iter_reference_t<It>>)
+    Set(It first, Sentinel last) {
+        if constexpr (std::sized_sentinel_for<Sentinel, It>)
+            reserve(static_cast<std::size_t>(last - first));
+        for (; first != last; ++first)
+            add(*first);
+    }
+
+    template <std::ranges::input_range R>
+        requires(!std::same_as<std::remove_cvref_t<R>, Set> && !std::same_as<std::remove_cvref_t<R>, T> &&
+                 detail::HashPolicy<H> && detail::HashPolicy<E> &&
+                 detail::HashQuery<T, std::ranges::range_reference_t<R>, H, E> &&
+                 std::constructible_from<T, std::ranges::range_reference_t<R>>)
+    explicit Set(R&& values) {
+        if constexpr (std::ranges::sized_range<R>)
+            reserve(static_cast<std::size_t>(std::ranges::size(values)));
+        for (auto&& value : values)
+            add(std::forward<decltype(value)>(value));
+    }
 
     Set(const Set&)
         requires std::is_copy_constructible_v<T>
@@ -77,33 +111,64 @@ public:
             storage_.swap(other.storage_);
     }
 
-    template <class Q>
+    template <class Q = T>
         requires detail::HashQuery<T, Q, H, E>
     [[nodiscard]] const T* find(const Q& value) const noexcept [[clang::lifetimebound]] {
         return storage_.find(value);
     }
 
-    template <class Q>
+    template <class Q = T>
         requires detail::HashQuery<T, Q, H, E>
     [[nodiscard]] bool contains(const Q& value) const noexcept {
         return find(value) != nullptr;
     }
 
-    template <class Q>
+    template <class Q = T>
         requires detail::HashQuery<T, Q, H, E> && std::constructible_from<T, Q&&>
     bool add(Q&& value) {
         return storage_.try_emplace(std::forward<Q>(value)).second;
     }
 
-    template <class Q>
+    void merge(Set& source) { storage_.merge(source.storage_); }
+
+    void merge(Set&& source) { storage_.merge(source.storage_); }
+
+    template <class Q = T>
         requires detail::HashQuery<T, Q, H, E>
     bool remove(const Q& value) noexcept {
         return storage_.erase(value);
     }
 
+    template <class Q = T>
+        requires detail::HashQuery<T, Q, H, E>
+    [[nodiscard]] Optional<T> take(const Q& value) noexcept {
+        return storage_.extract(value);
+    }
+
+    template <class Predicate>
+        requires std::predicate<Predicate&, const T&>
+    std::size_t remove_if(Predicate&& predicate) noexcept {
+        return storage_.remove_if([&](const T& item) { return static_cast<bool>(std::invoke(predicate, item)); });
+    }
+
+    [[nodiscard]] Span<const T> view() const& noexcept [[clang::lifetimebound]] { return {begin(), size()}; }
+
+    Span<const T> view() const&& = delete;
+
     [[nodiscard]] Iterator begin() const noexcept [[clang::lifetimebound]] { return storage_.values().data(); }
 
     [[nodiscard]] Iterator end() const noexcept [[clang::lifetimebound]] { return begin() + size(); }
+
+    friend bool operator==(const Set& left, const Set& right) noexcept {
+        if (&left == &right)
+            return true;
+        if (left.size() != right.size())
+            return false;
+        for (const auto& item : left)
+            if (!right.contains(item))
+                return false;
+        return true;
+    }
 
 private:
     Storage empty_after_move() const noexcept {

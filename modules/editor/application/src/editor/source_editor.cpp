@@ -319,7 +319,7 @@ Result<void> SourceEditor::locate(const logging::SourceLocation& location) {
 
 Result<void> SourceEditor::append(ui_language::ControlOutput controls, ui::ControlKey parent,
                                   ui_language::LiveDocument& live,
-                                  const std::function<Result<ui_language::ActionBinding>(OperatorCall)>& action,
+                                  FunctionRef<Result<ui_language::ActionBinding>(OperatorCall)> action,
                                   const Project* project, const ProjectBuild* build, bool running) {
     using namespace ui_language;
     auto* file = active();

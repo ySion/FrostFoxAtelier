@@ -7,7 +7,6 @@
 #include <cassert>
 #include <cmath>
 #include <format>
-#include <unordered_set>
 
 namespace atelier::world {
 using detail::Access;
@@ -49,16 +48,13 @@ Diagnostic validation_diagnostic(const ValidationFailure& failure, DiagnosticPha
 }
 
 std::size_t World::Impl::DiagnosticKeyHash::operator()(const DiagnosticKey& key) const noexcept {
-    auto value = std::hash<ObjectId>{}(key.object);
-    value ^=
-        (std::size_t(key.kind) << 8 | std::size_t(key.phase)) + 0x9e3779b97f4a7c15ull + (value << 6) + (value >> 2);
-    return value ^ (std::hash<std::string>{}(key.field) + 0x9e3779b97f4a7c15ull + (value << 6) + (value >> 2));
+    return hash_fields(key.object, (std::uint32_t(key.kind) << 8) | std::uint32_t(key.phase), key.field);
 }
 
 void World::Impl::begin_pass(DiagnosticPhase phase) noexcept {
     const auto pass = ++passes[std::size_t(phase)];
-    std::erase_if(recent,
-                  [&](const auto& entry) { return entry.first.phase == phase && entry.second.pass + 1 < pass; });
+    recent.remove_if(
+        [&](const DiagnosticKey& key, const Recent& entry) { return key.phase == phase && entry.pass + 1 < pass; });
 }
 
 void World::Impl::report(Diagnostic diagnostic) {
@@ -81,13 +77,12 @@ void World::Impl::report(Diagnostic diagnostic) {
         key.emplace(DiagnosticKey{diagnostic.object, diagnostic.kind, phase, std::move(field)});
         const auto pass = passes[std::size_t(phase)];
         // `repeats` counts consecutive passes; dependents failing on one cause count once per pass.
-        if (auto found = recent.find(*key); found != recent.end() && found->second.pass + 1 >= pass) {
-            if (found->second.pass == pass)
+        if (auto* found = recent.find(*key); found && found->pass + 1 >= pass) {
+            if (found->pass == pass)
                 return;
-            found->second.pass = pass;
-            const auto pending = std::ranges::lower_bound(diagnostics, found->second.serial, {}, &Diagnostic::serial);
-            if (pending != diagnostics.end() && pending->serial == found->second.serial &&
-                pending->repeats != UINT32_MAX)
+            found->pass = pass;
+            const auto pending = std::ranges::lower_bound(diagnostics, found->serial, {}, &Diagnostic::serial);
+            if (pending != diagnostics.end() && pending->serial == found->serial && pending->repeats != UINT32_MAX)
                 ++pending->repeats;
             return;
         }
@@ -361,12 +356,12 @@ void World::Impl::rebuild_schedule() {
     }
     if (!prerequisites.empty()) {
         // Kahn's algorithm; ties keep composition preorder, so the result is deterministic.
-        std::unordered_map<ObjectId, std::size_t> index;
+        Map<ObjectId, std::size_t> index;
         index.reserve(order.size());
         for (std::size_t i = 0; i < order.size(); ++i)
-            index.emplace(order[i].item.object, i);
+            index.try_emplace(order[i].item.object, i);
         std::vector<std::size_t> pending(order.size());
-        for (const auto& [object, before] : prerequisites)
+        for (const auto [object, before] : prerequisites)
             pending[index.at(object)] = before.size();
         PriorityQueue<std::size_t, std::greater<>> ready;
         for (std::size_t i = 0; i < order.size(); ++i)
@@ -377,8 +372,8 @@ void World::Impl::rebuild_schedule() {
         while (!ready.empty()) {
             const auto next = ready.pop();
             sorted.push_back(order[next]);
-            if (const auto found = dependents.find(order[next].item.object); found != dependents.end())
-                for (const auto object : found->second) {
+            if (const auto* found = dependents.find(order[next].item.object))
+                for (const auto object : *found) {
                     const auto dependent = index.at(object);
                     if (!--pending[dependent])
                         ready.emplace(dependent);
@@ -401,16 +396,15 @@ void World::Impl::rebuild_schedule() {
 
 void World::Impl::forget_prerequisites(ObjectId object) noexcept {
     const auto unlink = [&](auto& from, auto& to) {
-        const auto found = from.find(object);
-        if (found == from.end())
+        const auto taken = from.take(object);
+        if (!taken)
             return;
-        for (const auto other : found->second) {
+        for (const auto other : *taken) {
             auto& back = to.at(other);
             std::erase(back, object);
             if (back.empty())
-                to.erase(other);
+                to.remove(other);
         }
-        from.erase(found);
         schedule_dirty = true;
     };
     unlink(prerequisites, dependents);

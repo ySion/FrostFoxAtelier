@@ -1,6 +1,8 @@
 #pragma once
 #include "rendering/scene_lighting.hpp"
 
+#include "foundation/map.hpp"
+#include "foundation/set.hpp"
 #include "world/world.hpp"
 #include "geometry/mesh.hpp"
 #include "material/program_resources.hpp"
@@ -8,8 +10,6 @@
 #include <cstring>
 #include <optional>
 #include <type_traits>
-#include <unordered_map>
-#include <unordered_set>
 #include "presentation/presentation.gen.hpp"
 
 // Meshes, procedural generators, lights, cameras and the Environment: component
@@ -692,14 +692,14 @@ class Presented;
 struct BucketTracker {
     std::vector<bool> materials_dirty; // Component/binding or resource changed, not just space.
 
-    std::vector<std::unordered_set<ObjectId>> material_dependencies;
+    std::vector<Set<ObjectId>> material_dependencies;
 
-    std::unordered_map<ObjectId, std::unordered_set<std::uint32_t>> material_dependents;
+    Map<ObjectId, Set<std::uint32_t>> material_dependents;
 
     // Each Entity on a slot's spatial chain leads to that slot; `components` maps its component to the slot.
-    std::unordered_map<ObjectId, std::vector<std::uint32_t>> dependents;
+    Map<ObjectId, std::vector<std::uint32_t>> dependents;
 
-    std::unordered_map<ObjectId, std::uint32_t> components;
+    Map<ObjectId, std::uint32_t> components;
 
     // Slot s's chain, its own Entity first, is chains[chain_starts[s], chain_starts[s + 1]).
     std::vector<ObjectId> chains;
@@ -724,7 +724,7 @@ struct BucketTracker {
 
     void mark(std::uint32_t slot, std::uint64_t serial, bool material = false);
 
-    void index_materials(std::size_t slot, std::unordered_set<ObjectId> dependencies);
+    void index_materials(std::size_t slot, Set<ObjectId> dependencies);
 };
 }
 
@@ -896,8 +896,7 @@ private:
 
     mutable detail::BucketTracker generator_tracker_;
 
-    mutable std::unordered_map<std::size_t, std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>>
-        fallback_surfaces_;
+    mutable Map<std::size_t, std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>> fallback_surfaces_;
 
     mutable std::vector<LightRenderItem> lights_cache_;
 
@@ -911,7 +910,7 @@ private:
     mutable std::vector<ObjectId> written_;
 
     // Light components and the Entities on their chains.
-    mutable std::unordered_set<ObjectId> light_sources_;
+    mutable Set<ObjectId> light_sources_;
 
     mutable bool lights_dirty_{true};
 

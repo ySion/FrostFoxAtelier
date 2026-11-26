@@ -1,12 +1,12 @@
 #include "ui/style_sheet.hpp"
 #include "ui/text.hpp"
+#include "foundation/map.hpp"
 #include "foundation/result.hpp"
 #include "platform/utf.hpp"
 #include <algorithm>
 #include <bit>
 #include <charconv>
 #include <cmath>
-#include <map>
 
 namespace atelier::ui {
 namespace {
@@ -74,9 +74,9 @@ class Parser {
 
     std::size_t at_{};
 
-    std::map<std::string, Value, std::less<>> tokens_;
+    Map<std::string, Value> tokens_;
 
-    std::map<std::string, std::shared_ptr<const ColorImage>, std::less<>> gradients_;
+    Map<std::string, std::shared_ptr<const ColorImage>> gradients_;
 
     std::vector<Block> blocks_;
 
@@ -230,10 +230,10 @@ class Parser {
         if (depth >= 32 || !input.text.ends_with(')'))
             return fail("Invalid or cyclic token reference", input.position);
         const auto key = trim(input.text.substr(6, input.text.size() - 7));
-        const auto found = tokens_.find(key);
-        if (found == tokens_.end())
+        const auto* found = tokens_.find(key);
+        if (!found)
             return fail("Unknown token: " + std::string(key), input.position);
-        return resolve(found->second, depth + 1);
+        return resolve(*found, depth + 1);
     }
 
     ParseResult<float> number(Value input, bool length = true) const {
@@ -306,9 +306,8 @@ class Parser {
 
     ParseResult<std::shared_ptr<const ColorImage>> gradient(Value value) {
         ATELIER_TRY_BIND(input, resolve(value));
-        const std::string key(input->text);
-        if (const auto found = gradients_.find(key); found != gradients_.end())
-            return found->second;
+        if (const auto* found = gradients_.find(input->text))
+            return *found;
         auto stops = trim(input->text.substr(16, input->text.size() - 17));
         bool horizontal = false;
         if (stops.starts_with("to right,")) {
@@ -339,7 +338,7 @@ class Parser {
                 image->pixels.push_back(encode(std::lerp(pair.first, pair.second, t)));
             image->pixels.push_back(static_cast<std::uint8_t>(std::lround(std::lerp(a->a, b->a, t) * 255)));
         }
-        gradients_.emplace(key, image);
+        gradients_.try_emplace(std::string(input->text), image);
         return image;
     }
 
@@ -606,7 +605,7 @@ public:
                     ATELIER_TRY_BIND(id, identifier());
                     ATELIER_TRY(expect(':'));
                     ATELIER_TRY_BIND(item, value());
-                    if (!tokens_.emplace(*id, *item).second)
+                    if (!tokens_.try_emplace(*id, *item).inserted)
                         return fail("Duplicate token: " + *id, item->position);
                 }
                 continue;
@@ -627,7 +626,7 @@ public:
             if (blocks_.size() > 1024)
                 return fail("Too many style blocks");
         }
-        for (const auto& [name, item] : tokens_) {
+        for (const auto [name, item] : tokens_) {
             (void)name;
             ATELIER_TRY(resolve(item));
         }

@@ -1,9 +1,9 @@
 #pragma once
 
+#include "foundation/map.hpp"
 #include "runtime/runtime.hpp"
 #include <algorithm>
 #include <span>
-#include <unordered_map>
 #include <vector>
 
 namespace atelier::physics::detail {
@@ -17,11 +17,11 @@ public:
     // Erasure may invalidate while a caller walks this snapshot; get() must not be
     // called again during that walk. No snapshot survives another get() after edits.
     template <class T>
-    std::span<const ObjectId> get(const std::unordered_map<ObjectId, T>& entries) {
+    std::span<const ObjectId> get(const Map<ObjectId, T>& entries) {
         if (stale_) {
             keys_.clear();
             keys_.reserve(entries.size());
-            for (const auto& [id, entry] : entries) {
+            for (const auto [id, entry] : entries) {
                 (void)entry;
                 keys_.push_back(id);
             }

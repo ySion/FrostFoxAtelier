@@ -1,8 +1,8 @@
 #pragma once
 #include "assets/assets.hpp"
 #include "assets/json_format.hpp"
+#include "foundation/set.hpp"
 #include "foundation/string.hpp"
-#include <unordered_set>
 
 namespace atelier::assets::material_format {
 inline constexpr std::uint32_t version = 2;
@@ -15,9 +15,14 @@ inline json::Result<void> text(std::string_view value, json::Value location, boo
     return {};
 }
 
-inline json::Result<std::string> text(json::Value value, bool allow_empty = true) {
+inline json::Result<std::string_view> text_view(json::Value value, bool allow_empty = true) {
     ATELIER_TRY_BIND(result, value.string());
     ATELIER_TRY(text(*result, value, allow_empty));
+    return *result;
+}
+
+inline json::Result<std::string> text(json::Value value, bool allow_empty = true) {
+    ATELIER_TRY_BIND(result, text_view(value, allow_empty));
     return std::string{*result};
 }
 
@@ -99,11 +104,12 @@ inline json::Result<material::Policy> policy(json::Value value) {
 
 inline json::Result<void> inputs(json::Builder& builder, json::Value target,
                                  std::span<const material::TextureDefault> values) {
-    std::unordered_set<std::string_view> paths;
+    Set<std::string_view> paths;
+    paths.reserve(values.size());
     for (const auto& value : values) {
         auto item = builder.append_object(target);
         ATELIER_TRY(text(value.path, item, false));
-        if (!paths.insert(value.path).second)
+        if (!paths.add(value.path))
             return std::unexpected(item.error(json::Fault::range, "Duplicate material input path."));
         if (value.color != material::TextureColor::linear && value.color != material::TextureColor::srgb)
             return std::unexpected(item.error(json::Fault::range, "Unknown material texture color space."));
@@ -120,12 +126,13 @@ inline json::Result<std::vector<material::TextureDefault>> inputs(json::Value va
     ATELIER_TRY_BIND(items, values.array());
     std::vector<material::TextureDefault> result;
     result.reserve(items->size());
-    std::unordered_set<std::string> paths;
+    Set<std::string_view> paths;
+    paths.reserve(items->size());
     for (auto value : *items) {
         ATELIER_TRY(value.allowed_members({"path", "binding", "color", "empty_value"}));
         ATELIER_TRY_BIND(path, value.at("path"));
-        ATELIER_TRY_BIND(name, text(*path, false));
-        if (!paths.insert(*name).second)
+        ATELIER_TRY_BIND(name, text_view(*path, false));
+        if (!paths.add(*name))
             return std::unexpected(path->error(json::Fault::range, "Duplicate material input path."));
         ATELIER_TRY_BIND(texture, value.at("binding"));
         ATELIER_TRY_BIND(bound, binding(*texture));
@@ -133,7 +140,7 @@ inline json::Result<std::vector<material::TextureDefault>> inputs(json::Value va
         ATELIER_TRY_BIND(default_value, vector<4>(*empty));
         ATELIER_TRY_BIND(color, value.string({"color"}));
         material::TextureDefault input;
-        input.path = std::move(*name);
+        input.path = std::string{*name};
         input.binding = std::move(*bound);
         input.empty_value = *default_value;
         if (*color == "linear")
@@ -152,11 +159,12 @@ inline json::Result<std::vector<material::TextureDefault>> inputs(json::Value va
 // no entry; disabled keeps its typed value; an empty texture key is a clear.
 inline json::Result<void> encode_entries(json::Builder& builder, json::Value target,
                                          std::span<const material::Override> entries) {
-    std::unordered_set<std::string_view> paths;
+    Set<std::string_view> paths;
+    paths.reserve(entries.size());
     for (const auto& entry : entries) {
         auto item = builder.append_object(target);
         ATELIER_TRY(detail::text(entry.path, item, false));
-        if (!paths.insert(entry.path).second)
+        if (!paths.add(entry.path))
             return std::unexpected(item.error(json::Fault::range, "Duplicate material override path."));
         ATELIER_TRY(builder.set(item, "path", entry.path));
         ATELIER_TRY(builder.set(item, "enabled", entry.enabled));
@@ -194,18 +202,19 @@ inline json::Result<std::vector<material::Override>> decode_entries(json::Value 
     ATELIER_TRY_BIND(items, entries.array());
     std::vector<material::Override> result;
     result.reserve(items->size());
-    std::unordered_set<std::string> paths;
+    Set<std::string_view> paths;
+    paths.reserve(items->size());
     for (auto item : *items) {
         ATELIER_TRY(item.allowed_members({"path", "type", "enabled", "value"}));
         ATELIER_TRY_BIND(path, item.at("path"));
-        ATELIER_TRY_BIND(name, detail::text(*path, false));
-        if (!paths.insert(*name).second)
+        ATELIER_TRY_BIND(name, detail::text_view(*path, false));
+        if (!paths.add(*name))
             return std::unexpected(path->error(json::Fault::range, "Duplicate material override path."));
         ATELIER_TRY_BIND(enabled, item.boolean({"enabled"}));
         ATELIER_TRY_BIND(type, item.string({"type"}));
         ATELIER_TRY_BIND(value, item.at("value"));
         material::Override entry;
-        entry.path = std::move(*name);
+        entry.path = std::string{*name};
         entry.enabled = *enabled;
         if (*type == "float") {
             ATELIER_TRY_BIND(number, value->f32());

@@ -1,10 +1,10 @@
 #pragma once
 #include "assets/assets.hpp"
 #include "assets/file.hpp"
+#include "foundation/map.hpp"
 #include "foundation/string.hpp"
 #include "platform/utf.hpp"
 #include <bit>
-#include <map>
 
 namespace atelier::assets::mesh_format {
 inline constexpr std::uint32_t version = 1;
@@ -41,23 +41,23 @@ inline Result<void> key(std::string_view value) {
 }
 
 inline Result<void> bindings(const MeshAsset& asset) {
-    std::map<std::string_view, unsigned, std::less<>> matches;
+    Map<std::string_view, unsigned> matches;
+    matches.reserve(asset.materials.size());
     for (const auto& binding : asset.materials) {
         ATELIER_TRY(text(binding.slot));
         ATELIER_TRY(key(binding.key));
-        if (binding.slot.empty() || !matches.emplace(binding.slot, 0).second)
+        if (binding.slot.empty() || !matches.try_emplace(binding.slot, 0u).inserted)
             return std::unexpected(
                 Error{ErrorCode::invalid_storage, "Mesh snapshot has an empty or duplicate default material slot."});
     }
     if (matches.empty())
         return {};
     for (std::size_t i = 0; i < asset.mesh->materials().size(); ++i) {
-        const auto at = matches.find(geometry::material_slot_name(*asset.mesh, i));
-        if (at != matches.end() && ++at->second > 1)
+        if (auto* count = matches.find(geometry::material_slot_name(*asset.mesh, i)); count && ++*count > 1)
             return std::unexpected(
                 Error{ErrorCode::invalid_storage, "Mesh snapshot default names an ambiguous material slot."});
     }
-    for (const auto& [slot, count] : matches) {
+    for (const auto [slot, count] : matches) {
         (void)slot;
         if (count != 1)
             return std::unexpected(

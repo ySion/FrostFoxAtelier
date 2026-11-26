@@ -2,6 +2,7 @@
 #include "assets/assets.hpp"
 #include "assets/file.hpp"
 #include "assets/mesh_import.hpp"
+#include "foundation/map.hpp"
 #include "source/snapshot.hpp"
 
 namespace atelier::assets {
@@ -81,7 +82,9 @@ public:
                                                            std::uint64_t pixel_budget);
 
 private:
-    void retain_import(std::string key, const std::filesystem::path& relative, MeshImport&);
+    struct CachedMesh;
+
+    CachedMesh& retain_import(std::string key, const std::filesystem::path& relative, MeshImport&);
 
     Result<std::filesystem::path> resolve(const std::filesystem::path& relative) const;
 
@@ -91,17 +94,11 @@ private:
 
     std::uint64_t revision_{};
 
-    struct KeyHash {
-        using is_transparent = void;
+    Map<std::string, std::size_t> entry_index_;
 
-        std::size_t operator()(std::string_view key) const noexcept { return std::hash<std::string_view>{}(key); }
-    };
+    Map<std::string, material::ImageRef> textures_;
 
-    std::unordered_map<std::string, std::size_t, KeyHash, std::equal_to<>> entry_index_;
-
-    std::unordered_map<std::string, material::ImageRef> textures_;
-
-    std::unordered_map<std::string, rendering::SkyMapRef> sky_maps_;
+    Map<std::string, rendering::SkyMapRef> sky_maps_;
 
     struct CachedMesh {
         geometry::MeshRef mesh;
@@ -113,7 +110,7 @@ private:
         bool exact_content{}; // Received publication, not a disk-derived cache entry.
     };
 
-    std::unordered_map<std::string, CachedMesh> meshes_;
+    Map<std::string, CachedMesh> meshes_;
 
     ImageCache images_;
 };

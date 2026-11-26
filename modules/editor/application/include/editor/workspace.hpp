@@ -19,7 +19,6 @@
 #include "ui/docking.hpp"
 #include "renderer/view_settings.hpp"
 #include "ui_language/live_document.hpp"
-#include <unordered_set>
 
 #include <algorithm>
 
@@ -458,7 +457,7 @@ struct Workspace {
 
     std::string dived_network_graph; // Active child asset graph when diving in while 3D Viewport stays in World.
 
-    std::unordered_map<std::string, bool> network_lock_overrides;
+    Map<std::string, bool> network_lock_overrides;
 
     bool is_network_graph_locked(const Session& session, std::string_view net_graph) const;
 
@@ -721,7 +720,7 @@ struct Workspace {
     Selection menu_selection() const noexcept { return menu_selection_; }
 
 private:
-    std::unordered_map<std::string, ui::ControlKey> category_keys_;
+    Map<std::string, ui::ControlKey> category_keys_;
 
     PropertyHelpCache property_help_;
 
@@ -765,7 +764,7 @@ private:
     };
 
     struct EntityTreeView {
-        std::unordered_map<ObjectId, bool> expansion;
+        Map<ObjectId, bool> expansion;
         std::vector<ObjectId> objects;
         std::vector<ui::TreeRow> rows;
         std::optional<std::pair<ObjectId, ObjectId>> primary;
@@ -784,8 +783,8 @@ private:
         bool expanded(ObjectId object, bool initial) const {
             if (const bool* edit = candidate.edits.find(object))
                 return *edit;
-            const auto at = expansion.find(object);
-            return at == expansion.end() ? initial : at->second;
+            const bool* at = expansion.find(object);
+            return at ? *at : initial;
         }
 
         Result<std::vector<std::uint32_t>> window(ObjectId selected, std::wstring_view filter, ui::TreeViewport,

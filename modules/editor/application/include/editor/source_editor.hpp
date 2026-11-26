@@ -1,6 +1,7 @@
 #pragma once
 #include "editor/project.hpp"
 #include "editor/operators.hpp"
+#include "foundation/function_ref.hpp"
 #include "ui_language/live_document.hpp"
 #include "logging/logging.hpp"
 #include <chrono>
@@ -78,7 +79,7 @@ public:
     void poll(bool composing = false);
 
     Result<void> append(ui_language::ControlOutput, ui::ControlKey, ui_language::LiveDocument&,
-                        const std::function<Result<ui_language::ActionBinding>(OperatorCall)>&,
+                        FunctionRef<Result<ui_language::ActionBinding>(OperatorCall)>,
                         const Project* = nullptr, const ProjectBuild* = nullptr, bool running = false);
 
     std::vector<ui::MenuItem> menu_items() const;

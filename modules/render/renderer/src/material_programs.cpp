@@ -1,11 +1,12 @@
 #include "detail/material_programs.hpp"
 #include "detail/result.hpp"
 #include "shader_source.hpp"
+#include "foundation/array.hpp"
+#include "foundation/map.hpp"
 #include "memory/fatal.hpp"
 
 #include <algorithm>
 #include <limits>
-#include <map>
 
 namespace atelier::renderer::detail {
 namespace {
@@ -109,20 +110,29 @@ Result<void> MaterialBatchState::submit(std::span<const material::ProgramSurface
         material::DefinitionRef definition;
 
         bool masked{};
+
+        std::uint32_t index{};
     };
-    std::map<const source::MaterialProgram*, ProgramUse> unique;
+    Map<const source::MaterialProgram*, ProgramUse> unique;
+    Array<const source::MaterialProgram*> ordered_programs;
     for (const auto& surface : surfaces) {
         ATELIER_TRY(invalid(bool(surface), "Material batch has a missing Surface"));
-        auto& use = unique.try_emplace(&surface->program(), ProgramUse{surface->definition()}).first->second;
+        const auto* program = &surface->program();
+        auto [use, inserted] = unique.try_emplace(program, ProgramUse{surface->definition()});
+        if (inserted)
+            ordered_programs.add(program);
         // Different definitions can share a program. Never let the first
         // (possibly Opaque) definition hide another instance's Mask policy.
-        use.masked |= surface->policy().coverage == material::Coverage::mask;
+        use->masked |= surface->policy().coverage == material::Coverage::mask;
     }
+    std::ranges::sort(ordered_programs);
     std::vector<material::DefinitionRef> definitions;
     std::vector<bool> masked_programs;
-    std::map<const source::MaterialProgram*, std::uint32_t> indices;
-    for (const auto& [program, use] : unique) {
-        indices.emplace(program, static_cast<std::uint32_t>(definitions.size()));
+    definitions.reserve(ordered_programs.size());
+    masked_programs.reserve(ordered_programs.size());
+    for (const auto* program : ordered_programs) {
+        auto& use = unique.at(program);
+        use.index = static_cast<std::uint32_t>(definitions.size());
         definitions.push_back(use.definition);
         masked_programs.push_back(use.masked);
     }
@@ -138,7 +148,7 @@ Result<void> MaterialBatchState::submit(std::span<const material::ProgramSurface
             code = std::move(existing);
         ++it;
     }
-    std::map<std::pair<const material::Image*, bool>, std::uint32_t> image_indices;
+    Map<std::pair<const material::Image*, bool>, std::uint32_t> image_indices;
     for (const auto& surface : surfaces) {
         const auto& policy = surface->policy();
         ATELIER_TRY(
@@ -147,7 +157,7 @@ Result<void> MaterialBatchState::submit(std::span<const material::ProgramSurface
         ATELIER_TRY(invalid(inputs.size() + surface->inputs().size() <=
                                 std::numeric_limits<std::uint32_t>::max() / sizeof(ProgramInputRecord),
                             "Material input table exceeds addressing"));
-        records.push_back({indices.at(&surface->program()),
+        records.push_back({unique.at(&surface->program()).index,
                            static_cast<std::uint32_t>(parameters.size()),
                            static_cast<std::uint32_t>(inputs.size()),
                            {policy.coverage == material::Coverage::mask ? 1u : 0u, policy.double_sided ? 1u : 0u,
@@ -161,11 +171,11 @@ Result<void> MaterialBatchState::submit(std::span<const material::ProgramSurface
                                       static_cast<std::uint32_t>(surface->inputs().size()), binding.empty_value};
             if (binding.image) {
                 const bool srgb = binding.color == material::TextureColor::srgb;
-                const auto [at, added] =
+                const auto [slot, added] =
                     image_indices.try_emplace({binding.image.get(), srgb}, static_cast<std::uint32_t>(images.size()));
                 if (added)
                     images.emplace_back(binding.image, srgb);
-                record.texture = at->second;
+                record.texture = *slot;
             }
             inputs.push_back(record);
         }

@@ -8,6 +8,7 @@
 #include "renderer/scene_visibility.hpp"
 #include "renderer/timing.hpp"
 #include "logging/native.hpp"
+#include "foundation/map.hpp"
 #include "foundation/result.hpp"
 #include "foundation/set.hpp"
 #include "memory/fatal.hpp"
@@ -23,7 +24,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
-#include <map>
 #include <optional>
 #include <string_view>
 #include <thread>
@@ -272,25 +272,25 @@ private:
     }
 
     void acquire(std::uint64_t key) {
-        if (key && ++uses_[key] == 2)
+        if (key && ++*uses_.try_emplace(key, 0u).value == 2)
             ++duplicates_;
     }
 
     void release(std::uint64_t key) {
         if (!key)
             return;
-        const auto at = uses_.find(key);
-        if (--at->second == 1)
+        auto* count = uses_.find(key);
+        if (--*count == 1)
             --duplicates_;
-        else if (at->second == 0)
-            uses_.erase(at);
+        else if (*count == 0)
+            uses_.remove(key);
     }
 
     std::vector<Entry> entries_;
 
     std::vector<std::uint32_t> changed_;
 
-    std::unordered_map<std::uint64_t, std::uint32_t> uses_;
+    Map<std::uint64_t, std::uint32_t> uses_;
 
     std::uint32_t duplicates_{};
 };
@@ -427,9 +427,10 @@ struct TextureKey {
 };
 
 struct TextureHash {
+    using is_avalanching = void;
+
     std::size_t operator()(const TextureKey& k) const noexcept {
-        return std::hash<std::uint64_t>{}(k.identity) ^ (std::hash<std::uint64_t>{}(k.revision) << 1) ^
-               (std::hash<bool>{}(k.color) << 2);
+        return hash_fields(k.identity, k.revision, k.color);
     }
 };
 
@@ -555,7 +556,7 @@ struct Renderer::State {
 
     GfxSamplerState sampler;
 
-    std::map<std::pair<const material::Image*, bool>, std::shared_ptr<detail::MaterialImageResource>> material_images;
+    Map<std::pair<const material::Image*, bool>, std::shared_ptr<detail::MaterialImageResource>> material_images;
 
     material::ImageRef white_image;
 
@@ -586,6 +587,7 @@ struct Renderer::State {
         std::uint32_t selected_count{};
     };
 
+    // Node-based: MeshGroup borrows CachedGeometry* across subsequent frame insertions.
     std::unordered_map<const geometry::Mesh*, CachedGeometry> geometries;
 
     std::vector<MeshGroup> mesh_groups;
@@ -623,7 +625,7 @@ struct Renderer::State {
 
     ui::PixelExtent depth_extent;
 
-    std::unordered_map<TextureKey, CachedImage, TextureHash> images;
+    Map<TextureKey, CachedImage, TextureHash> images;
 
     FrameStats stats;
 
@@ -689,14 +691,15 @@ struct Renderer::State {
             scene_lit->close();
             scene_lit.reset();
         }
-        for (auto& [key, image] : images) {
+        for (auto [key, image] : images) {
+            (void)key;
             const auto r = gfxDestroyTexture(gfx, image.texture);
             if (r != kGfxResult_NoError)
                 fatal("UI texture retirement failed");
             image.texture = {};
         }
         images.clear();
-        for (auto& [key, image] : material_images) {
+        for (auto [key, image] : material_images) {
             (void)key;
             const auto r = gfxDestroyTexture(gfx, image->texture);
             if (r)
@@ -839,11 +842,11 @@ struct Renderer::State {
             source = white_image;
         }
         const auto key = std::pair{source.get(), srgb};
-        if (const auto found = material_images.find(key); found != material_images.end())
-            return found->second->texture;
-        const auto found =
-            material_images.emplace(key, std::make_shared<detail::MaterialImageResource>(source, gfx)).first;
-        auto& image = *found->second;
+        const auto [slot, inserted] = material_images.try_emplace(key);
+        if (!inserted)
+            return (*slot)->texture;
+        *slot = std::make_shared<detail::MaterialImageResource>(source, gfx);
+        auto& image = **slot;
         image.texture = gfxCreateTexture2D(gfx, source->width(), source->height(),
                                            srgb ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM,
                                            gfxCalculateMipCount(source->width(), source->height()));
@@ -907,8 +910,8 @@ struct Renderer::State {
         constexpr bool color = std::is_same_v<Pixels, ui::ColorImage>;
         constexpr unsigned channels = color ? 4 : 1;
         const TextureKey key{owner->identity, owner->revision, color};
-        auto [it, inserted] = images.try_emplace(key);
-        auto& image = it->second;
+        auto [entry, inserted] = images.try_emplace(key);
+        auto& image = *entry;
         if (inserted) {
             image.owner = owner;
             image.texture = gfxCreateTexture2D(gfx, owner->width, owner->height,
@@ -1324,17 +1327,14 @@ struct Renderer::State {
                 ATELIER_TRY(draw_grid(frame, false));
             }
         }
-        for (auto it = material_images.begin(); it != material_images.end();) {
-            if (it->second.use_count() > 1) {
-                ++it;
-                continue;
-            }
-            auto& texture = it->second->texture;
-            if (gfxDestroyTexture(gfx, texture))
+        material_images.remove_if([&](const auto&, const auto& resource) {
+            if (resource.use_count() > 1)
+                return false;
+            if (gfxDestroyTexture(gfx, resource->texture))
                 fatal("Retire unused material texture");
-            texture = {};
-            it = material_images.erase(it);
-        }
+            resource->texture = {};
+            return true;
+        });
         stats.cached_material_images = material_images.size();
         for (auto it = geometries.begin(); it != geometries.end();) {
             if (it->second.used) {
@@ -1350,8 +1350,10 @@ struct Renderer::State {
         ATELIER_TRY(require(
             gfxCommandSetViewport(gfx, 0, 0, static_cast<float>(extent.width), static_cast<float>(extent.height)),
             "Set UI viewport"));
-        for (auto& [key, image] : images)
+        for (auto [key, image] : images) {
+            (void)key;
             image.used = false;
+        }
         std::optional<timing::Scope> ui_stage{std::in_place, phases::encode_ui};
         ui_texture_uploads.clear();
         upload_pixels.clear();
@@ -1407,15 +1409,13 @@ struct Renderer::State {
             ATELIER_TRY(draw_layer(overlay_instances, ui_instances.size() - overlay_instances, stats.ui_draw_calls));
         }
         ui_stage.reset();
-        for (auto it = images.begin(); it != images.end();) {
-            if (it->second.used) {
-                ++it;
-                continue;
-            }
-            if (gfxDestroyTexture(gfx, it->second.texture))
+        images.remove_if([&](const auto&, const CachedImage& cached) {
+            if (cached.used)
+                return false;
+            if (gfxDestroyTexture(gfx, cached.texture))
                 fatal("Retire unused UI texture");
-            it = images.erase(it);
-        }
+            return true;
+        });
         if (capture) {
             const std::uint32_t pitch = (extent.width * 4 + 255) & ~255u;
             BufferOwner color{gfx,

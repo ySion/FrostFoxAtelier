@@ -21,7 +21,6 @@
 #include <fstream>
 #include <format>
 #include <limits>
-#include <unordered_map>
 
 namespace atelier::application {
 Result<void> Application::completion(Result<void> result) {
@@ -544,7 +543,7 @@ Result<void> Application::action(const ui::Action& source) {
     if (event.kind == ui::ActionKind::activate && event.key == editor::network_control::lock_toggle) {
         if (!net_graph.empty() && !document_->is_scratch_graph(net_graph) && !document_->world().running()) {
             const bool next_locked = !net_locked;
-            workspace_.network_lock_overrides[net_graph] = next_locked;
+            workspace_.network_lock_overrides.insert_or_assign(net_graph, next_locked);
             if (next_locked) {
                 workspace_.network.cancel_gesture();
                 workspace_.network.close_tab_search();
@@ -1645,7 +1644,7 @@ Result<void> Application::dive_into_asset_node(std::string_view parent_graph, st
     workspace_.network.cancel_gesture();
     workspace_.network.close_tab_search();
     workspace_.network.close_popup();
-    workspace_.network_lock_overrides.erase(target_key);
+    workspace_.network_lock_overrides.remove(target_key);
     workspace_.graph_breadcrumbs.push_back({std::string(parent_graph), std::string(node_name)});
     if (!workspace_.active_graph.empty()) {
         workspace_.active_graph = target_key;

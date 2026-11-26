@@ -38,11 +38,11 @@
         if (controls.size()>10000) return std::unexpected(Error{ErrorCode::capacity_exceeded});
         // Sparse order has no meaning. Resolve references through the entire
         // proposed batch, then the retained state; full input validates preorder.
-        std::unordered_map<ControlKey,std::pair<const Control*,std::size_t>> proposed;
+        Map<ControlKey,std::pair<const Control*,std::size_t>> proposed;
         proposed.reserve(controls.size());
         for (std::size_t i=0;i<controls.size();++i) {
             const auto& control=controls[i];
-            if (!control.key || !proposed.emplace(control.key,std::pair{&control,i}).second)
+            if (!control.key || !proposed.try_emplace(control.key,std::pair{&control,i}).inserted)
                 return std::unexpected(Error{ErrorCode::invalid_control,control.key});
             if (sparse) {
                 const auto* previous=live(control.key);
@@ -51,17 +51,17 @@
             }
         }
         const auto lookup=[&](ControlKey key)->const Control* {
-            if (const auto found=proposed.find(key);found!=proposed.end()) return found->second.first;
+            if (const auto* found=proposed.find(key)) return found->first;
             const auto* state=sparse?live(key):nullptr;
             return state?&state->control:nullptr;
         };
         const auto precedes=[&](ControlKey earlier,std::size_t current_idx)->bool {
-            const auto found=proposed.find(earlier);
-            return found!=proposed.end() && found->second.second<current_idx;
+            const auto* found=proposed.find(earlier);
+            return found && found->second<current_idx;
         };
         std::vector<ControlKey> next_order;
-        std::map<ControlKey,TableIndex> table_indices;
-        std::unordered_map<ControlKey,const Control*> previous_rows; // Per tree: the last described row.
+        Map<ControlKey,TableIndex> table_indices;
+        Map<ControlKey,const Control*> previous_rows; // Per tree: the last described row.
         ControlKey next_popup=sparse?popup:0;
         bool check_commands=false,check_radio=false;
         if (!sparse) next_order.reserve(controls.size());
@@ -70,12 +70,12 @@
             ATELIER_TRY(validate_control(control,lookup));
             if (control.table) {
                 const auto* previous=live(control.key);
+                const TableIndex* changed=nullptr;
                 if (!previous || previous->control.table!=control.table) {
                     ATELIER_TRY_BIND(checked,validate_table(control));
-                    table_indices.emplace(control.key,std::move(*checked));
+                    changed=table_indices.try_emplace(control.key,std::move(*checked)).value;
                 }
-                const auto changed=table_indices.find(control.key);
-                const auto& index=changed!=table_indices.end()?changed->second:previous->table_index;
+                const auto& index=changed?*changed:previous->table_index;
                 if ((control.table_selection.row && !index.contains(control.table_selection.row)) ||
                     (control.table_selection.column && std::none_of(control.table->columns.begin(),control.table->columns.end(),
                         [&](const auto& column){return column.key==control.table_selection.column;})))
@@ -92,7 +92,7 @@
                 return std::unexpected(Error{ErrorCode::invalid_control,control.key});
             if (control.kind==ControlKind::tree_item) {
                 // Rows ascend; an adjacent row is at most one level deeper, under an expanded branch.
-                auto& previous=previous_rows[control.parent];
+                auto& previous=*previous_rows.try_emplace(control.parent,nullptr).value;
                 if ((!control.tree_index && control.tree_depth) || (previous && (control.tree_index<=previous->tree_index ||
                     (control.tree_index==previous->tree_index+1 && (control.tree_depth>previous->tree_depth+1 ||
                         (control.tree_depth==previous->tree_depth+1 && !previous->tree_expanded))))))
@@ -114,9 +114,9 @@
         if (check_commands) for (const auto& [key,state]:states) if (state.control.edit_command)
             ATELIER_TRY(validate_control(*lookup(key),lookup));
         if (check_radio) {
-            std::map<ControlKey,ControlKey> selected_groups;
+            Set<ControlKey> selected_groups;
             const auto admit=[&](const Control& control) {
-                return control.menu_behavior!=MenuBehavior::radio || !control.selected || selected_groups.emplace(control.radio_group,control.key).second;
+                return control.menu_behavior!=MenuBehavior::radio || !control.selected || selected_groups.add(control.radio_group);
             };
             if (sparse) {
                 for (auto key:order) if (!admit(*lookup(key))) return std::unexpected(Error{ErrorCode::invalid_control,key});
@@ -243,7 +243,7 @@
             text.erase(key);
             for (auto text_key:state.table_text) text.erase(text_key);
         }
-        for (auto& [key,index]:table_indices) {
+        for (auto [key,index]:table_indices) {
             auto& state=states.at(key);
             if (state.table_index!=index) {
                 if (!state.control.table_selection.row) state.scroll=state.scroll_x=0;

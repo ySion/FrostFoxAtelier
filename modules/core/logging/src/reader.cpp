@@ -1,10 +1,10 @@
 #include "detail/format.hpp"
 #include "detail/io.hpp"
+#include "foundation/ring_deque.hpp"
+#include "foundation/set.hpp"
 
 #include <algorithm>
 #include <array>
-#include <deque>
-#include <set>
 
 namespace atelier::logging {
 namespace {
@@ -90,7 +90,7 @@ struct Reader::Impl {
 
     std::optional<Segment> current;
 
-    std::deque<FileIdentity> completed;
+    RingDeque<FileIdentity> completed;
 
     std::vector<FileIdentity> pending;
 
@@ -120,9 +120,9 @@ struct Reader::Impl {
 
     using Key = std::pair<std::uint64_t, std::uint64_t>;
 
-    std::deque<Key> recent;
+    RingDeque<Key> recent;
 
-    std::set<Key> keys;
+    Set<Key> keys;
 
     void issue(ReaderFault fault, std::string message, const std::filesystem::path& file, std::uint64_t at = 0) {
         status.latest_issue = ReaderIssue{fault, std::move(message), file, at};
@@ -306,7 +306,7 @@ struct Reader::Impl {
         oversized = false;
         chunk.clear();
         chunk_cursor = 0;
-        completed.push_back(current->identity);
+        completed.emplace_back(current->identity);
         if (completed.size() > 32)
             completed.pop_front();
         current.reset();
@@ -346,10 +346,10 @@ struct Reader::Impl {
             issue(ReaderFault::sequence_gap, "Producer sequence discontinuity; cause is not inferred", current->path,
                   line_start);
         high_water = value.record_sequence;
-        recent.push_back(key);
-        keys.insert(key);
+        recent.emplace_back(key);
+        keys.add(key);
         if (recent.size() > 4096) {
-            keys.erase(recent.front());
+            keys.remove(recent.front());
             recent.pop_front();
         }
         records.push_back(std::move(value));

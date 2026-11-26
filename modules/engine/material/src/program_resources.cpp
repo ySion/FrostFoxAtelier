@@ -227,7 +227,7 @@ struct ProgramAccess {
     // Called under a const borrow. Without dependency collection, steady captures
     // allocate only when a texture publishes new content or is lost.
     static Result<std::optional<std::vector<ImageRef>>> current_images(Runtime& runtime, const Material& value,
-                                                                       std::unordered_set<ObjectId>* dependencies) {
+                                                                       Set<ObjectId>* dependencies) {
         ATELIER_TRY_BIND(size, runtime.sequence_size(value.texture_field_));
         if (*size != value.images_.size() || *size != value.texture_ids_.size())
             return failure("Material resource edges do not match its captured inputs.");
@@ -246,7 +246,7 @@ struct ProgramAccess {
             auto checked =
                 runtime.with_native<const TextureResource>(reference->id(), [&](const auto& texture) -> Result<void> {
                     if (dependencies)
-                        dependencies->insert(reference->id());
+                        dependencies->add(reference->id());
                     // Texture identity/key are immutable; update_texture is its sole
                     // content writer. Existing ProgramSurfaces retain the old pixels.
                     if (texture.image_ != value.images_[i]) {
@@ -444,8 +444,7 @@ struct ProgramAccess {
         });
     }
 
-    static Result<ProgramSurfaceRef> capture(Runtime& runtime, ObjectId id,
-                                             std::unordered_set<ObjectId>* dependencies = nullptr) {
+    static Result<ProgramSurfaceRef> capture(Runtime& runtime, ObjectId id, Set<ObjectId>* dependencies = nullptr) {
         ATELIER_TRY_BIND(source, source_role(runtime, id));
         ProgramSurfaceRef next_parent;
         ProgramSurfaceRef refreshed;
@@ -456,7 +455,7 @@ struct ProgramAccess {
                     if (!value.published_)
                         return failure("Material source is not initialized.");
                     if (dependencies)
-                        dependencies->insert(id);
+                        dependencies->add(id);
                     ATELIER_TRY_BIND(images, current_images(runtime, value, dependencies));
                     if (!*images)
                         return value.published_;
@@ -478,7 +477,7 @@ struct ProgramAccess {
                 if (!value.published_)
                     return failure("Material instance is not initialized.");
                 if (dependencies)
-                    dependencies->insert(id);
+                    dependencies->add(id);
                 ATELIER_TRY_BIND(reference, runtime.read_reference(value.parent_field_));
                 ATELIER_TRY_BIND(live, available(runtime, *reference, value.parent_id_));
                 ATELIER_TRY_BIND(parent_surface,

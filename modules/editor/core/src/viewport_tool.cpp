@@ -1,10 +1,10 @@
 #include "editor/viewport_tool.hpp"
+#include "foundation/set.hpp"
 #include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <limits>
 #include <numbers>
-#include <unordered_set>
 
 namespace atelier::editor {
 namespace {
@@ -660,13 +660,13 @@ std::vector<ObjectId> ViewportTool::pick_box(const Session& session, const Viewp
     const auto intersects = [&](float left, float top, float right, float bottom) {
         return left <= box.x + box.width && right >= box.x && top <= box.y + box.height && bottom >= box.y;
     };
-    std::unordered_set<ObjectId> selected_set;
+    Set<ObjectId> selected_set;
     for (const auto& item : view.scene->meshes) {
         if (selected_set.contains(item.entity))
             continue;
         const auto origin = view.project({item.world[12], item.world[13], item.world[14]});
         if (origin && intersects(origin->x, origin->y, origin->x, origin->y)) {
-            selected_set.insert(item.entity);
+            selected_set.add(item.entity);
             found.push_back(item.entity);
             continue;
         }
@@ -709,7 +709,7 @@ std::vector<ObjectId> ViewportTool::pick_box(const Session& session, const Viewp
             bottom = std::max(bottom, projected->y);
         }
         if (left <= right && intersects(left, top, right, bottom)) {
-            selected_set.insert(item.entity);
+            selected_set.add(item.entity);
             found.push_back(item.entity);
         }
     }

@@ -2,6 +2,7 @@
 #include "source/snapshot.hpp"
 #include "runtime/native.hpp"
 #include "runtime/foundation.hpp"
+#include "foundation/map.hpp"
 #include "foundation/result.hpp"
 #include "foundation/string.hpp"
 #include "memory/fatal.hpp"
@@ -11,7 +12,6 @@
 #include <charconv>
 #include <cmath>
 #include <limits>
-#include <map>
 #include <functional>
 #include <future>
 
@@ -213,7 +213,7 @@ struct NodeState {
 
     std::unique_ptr<Instance> child;
 
-    std::map<ui::ControlKey, std::unique_ptr<Instance>> repeated;
+    Map<ui::ControlKey, std::unique_ptr<Instance>> repeated;
 
     NodeState* previous{}; // Borrowed accepted owner; transferred only at commit.
 
@@ -1508,7 +1508,7 @@ Result<std::shared_ptr<Module::Build>> Module::start(Runtime& runtime, std::stri
         auto impl = std::make_unique<Component::Impl>(runtime, std::move(declaration), source_version);
         module->components_.emplace_back(new Component(std::move(impl)));
     }
-    std::function<Result<void>(std::size_t)> compile = [&](std::size_t index) -> Result<void> {
+    const auto compile = [&](this auto&& self, std::size_t index) -> Result<void> {
         if (states[index] == 2)
             return {};
         if (states[index] == 1)
@@ -1524,7 +1524,7 @@ Result<std::shared_ptr<Module::Build>> Module::start(Runtime& runtime, std::stri
                     module->components_, [&](const auto& item) { return item->declaration().name == child_name; });
                 if (at == module->components_.end())
                     return failure(std::string(name) + ": Unknown child component " + child_name);
-                ATELIER_TRY(compile(static_cast<std::size_t>(at - module->components_.begin())));
+                ATELIER_TRY(self(static_cast<std::size_t>(at - module->components_.begin())));
                 const auto& child = *at;
                 if (declaration.nodes[i].kind == NodeKind::repeat &&
                     (std::ranges::count_if(child->declaration().nodes,
@@ -1660,7 +1660,7 @@ struct detail::PreparedUpdate {
 
         std::unique_ptr<Instance> child;
 
-        std::map<ui::ControlKey, std::unique_ptr<Instance>> additions;
+        Map<ui::ControlKey, std::unique_ptr<Instance>> additions;
 
         std::vector<ui::ControlKey> removals;
 
@@ -1833,7 +1833,7 @@ struct detail::PreparedUpdate {
             if (change.child)
                 node.child = std::move(change.child);
             for (const auto key : change.removals)
-                node.repeated.erase(key);
+                node.repeated.remove(key);
             node.repeated.merge(change.additions);
             node.count = change.next_count;
             node.descendants = change.descendants;
@@ -2150,19 +2150,19 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
                     auto keys = item.keys;
                     keys.push_back({type->declaration().nodes.front().name, item.key});
                     const auto parent = item.parent.value_or(node.control.parent);
-                    const auto at = owners.repeated.find(item.key);
-                    if (at == owners.repeated.end()) {
+                    if (const auto* existing = owners.repeated.find(item.key)) {
+                        ATELIER_TRY(append_existing(**existing, item.inputs, keys, parent));
+                    } else {
                         ATELIER_TRY_BIND(child, Instance::create_bounded(type, parent, *next_key, keys, item.inputs,
                                                                          remaining, lifetime));
                         append_new(*child);
-                        change.additions.emplace(item.key, std::move(*child));
-                    } else
-                        ATELIER_TRY(append_existing(*at->second, item.inputs, keys, parent));
+                        change.additions.try_emplace(item.key, std::move(*child));
+                    }
                     if (output.size() > composition_limit)
                         return failure("UI composition exceeds 10000 controls.");
                 }
             }
-            for (const auto& [key, child] : owners.repeated)
+            for (const auto [key, child] : owners.repeated)
                 if (!std::binary_search(present.begin(), present.end(), key))
                     change.removals.push_back(key);
         } else if (button_node(kind)) {
@@ -2382,7 +2382,7 @@ Result<bool> Instance::event(const ui::Action& action) {
                 if (!handled || *handled)
                     return handled;
             }
-            for (auto& [key, child] : node.repeated) {
+            for (auto [key, child] : node.repeated) {
                 auto handled = dispatch(*child);
                 if (!handled || *handled)
                     return handled;
@@ -2435,7 +2435,7 @@ Statistics Instance::statistics() const noexcept {
         for (const auto& node : data_->value->nodes) {
             if (node.child)
                 add(*node.child);
-            for (const auto& [key, child] : node.repeated)
+            for (const auto [key, child] : node.repeated)
                 add(*child);
         }
     return result;
@@ -2475,7 +2475,7 @@ void Instance::reject_controls(bool retain_events) noexcept {
     for (auto& node : data.nodes) {
         if (node.child)
             node.child->reject_controls(retain_events);
-        for (auto& [key, child] : node.repeated)
+        for (auto [key, child] : node.repeated)
             child->reject_controls(retain_events);
     }
 }

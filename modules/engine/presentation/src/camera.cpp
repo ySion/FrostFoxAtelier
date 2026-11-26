@@ -40,10 +40,11 @@ world::World::Admission detail::unique_camera(world::CapabilityId cameras) {
     return [cameras](const world::World& world,
                      std::span<const world::World::AdmissionCandidate> candidates) -> Result<void> {
         ATELIER_TRY_BIND(members, world.members(cameras));
-        std::unordered_map<ObjectId, ObjectId> owners;
+        Map<ObjectId, ObjectId> owners;
+        owners.reserve(candidates.size() + members->size());
         const auto visit = [&](ObjectId owner, ObjectId component) -> Result<void> {
-            const auto [at, inserted] = owners.emplace(owner, component);
-            if (!inserted && at->second != component)
+            const auto [at, inserted] = owners.try_emplace(owner, component);
+            if (!inserted && *at != component)
                 return error(
                     ErrorCode::invalid_member,
                     "An Entity can contain only one CameraComponent, including disabled and derived components.");

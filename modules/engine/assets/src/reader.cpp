@@ -1,11 +1,10 @@
 #include "assets/reader.hpp"
 #include "assets/builtin_materials.hpp"
 #include "assets/material_format.hpp"
+#include "foundation/set.hpp"
 #include "platform/utf.hpp"
 #include <Windows.h>
 #include <cwctype>
-#include <map>
-#include <set>
 
 namespace atelier::assets {
 namespace {
@@ -66,8 +65,7 @@ Result<void> Reader::publish(std::vector<ProjectEntry> entries) {
     // content when Live refreshes the catalogue merely to discover another key.
     for (auto& item : entries)
         if (item.kind == AssetKind::mesh) {
-            const auto cached = meshes_.find(item.key);
-            if (cached != meshes_.end() && cached->second.exact_content)
+            if (const auto* cached = meshes_.find(item.key); cached && cached->exact_content)
                 if (const auto* previous = entry(item.key))
                     item.materials = previous->materials;
         }
@@ -81,9 +79,9 @@ Result<void> Reader::publish(std::vector<ProjectEntry> entries) {
         const auto& key = entries[i].key;
         if (key.starts_with("builtin/"))
             return failure("Reserved project resource identity: " + key);
-        const auto [previous, inserted] = index.emplace(key, i);
+        const auto [previous, inserted] = index.try_emplace(key, i);
         if (!inserted) {
-            const auto first = platform::utf16_to_utf8(entries[previous->second].path.generic_wstring());
+            const auto first = platform::utf16_to_utf8(entries[*previous].path.generic_wstring());
             const auto second = platform::utf16_to_utf8(entries[i].path.generic_wstring());
             if (!first || !second)
                 return failure("Duplicate project resource identity: " + key);
@@ -91,46 +89,51 @@ Result<void> Reader::publish(std::vector<ProjectEntry> entries) {
         }
     }
     const auto next_entry = [&](std::string_view key) -> const ProjectEntry* {
-        const auto at = index.find(key);
-        return at == index.end() ? nullptr : &entries[at->second];
+        const auto* at = index.find(key);
+        return at ? &entries[*at] : nullptr;
     };
-    std::map<std::filesystem::path, const ProjectEntry*> previous_files;
-    std::map<std::filesystem::path, const ProjectEntry*> next_files;
-    if (std::ranges::any_of(meshes_, [](const auto& mesh) {
-            return !mesh.second.exact_content && !mesh.second.dependencies.empty();
-        })) {
+    Map<std::filesystem::path, const ProjectEntry*> previous_files;
+    Map<std::filesystem::path, const ProjectEntry*> next_files;
+    const auto has_mesh_dependencies = [&] {
+        for (const auto mesh : meshes_)
+            if (!mesh.value.exact_content && !mesh.value.dependencies.empty())
+                return true;
+        return false;
+    };
+    if (has_mesh_dependencies()) {
+        previous_files.reserve(entries_.size());
         for (const auto& file : entries_)
-            previous_files.emplace(file.path, &file);
+            previous_files.try_emplace(file.path, &file);
+        next_files.reserve(entries.size());
         for (const auto& file : entries)
-            next_files.emplace(file.path, &file);
+            next_files.try_emplace(file.path, &file);
     }
-    const auto file_changed = [&](const auto& cached) {
-        const auto* before = entry(cached.first);
-        const auto* after = next_entry(cached.first);
+    const auto file_changed = [&](std::string_view key) {
+        const auto* before = entry(key);
+        const auto* after = next_entry(key);
         return !before || !after || before->kind != after->kind || before->bytes != after->bytes ||
                before->modified != after->modified;
     };
-    std::erase_if(textures_, file_changed);
-    std::erase_if(sky_maps_, file_changed);
-    std::erase_if(meshes_, [&](const auto& cached) {
-        const auto* next = next_entry(cached.first);
+    textures_.remove_if([&](std::string_view key, const auto&) { return file_changed(key); });
+    sky_maps_.remove_if([&](std::string_view key, const auto&) { return file_changed(key); });
+    meshes_.remove_if([&](std::string_view key, const CachedMesh& cached) {
+        const auto* next = next_entry(key);
         if (!next || next->kind != AssetKind::mesh)
             return true;
-        if (cached.second.exact_content)
+        if (cached.exact_content)
             return false;
-        const auto* old = entry(cached.first);
+        const auto* old = entry(key);
         if (old->bytes != next->bytes || old->modified != next->modified)
             return true;
-        for (const auto& path : cached.second.dependencies) {
-            const auto a = previous_files.find(path);
-            const auto b = next_files.find(path);
-            if (a == previous_files.end() || b == next_files.end() || a->second->bytes != b->second->bytes ||
-                a->second->modified != b->second->modified)
+        for (const auto& path : cached.dependencies) {
+            const auto* a = previous_files.find(path);
+            const auto* b = next_files.find(path);
+            if (!a || !b || (*a)->bytes != (*b)->bytes || (*a)->modified != (*b)->modified)
                 return true;
         }
         return false;
     });
-    std::erase_if(images_.entries, [](const auto& entry) { return entry.second.expired(); });
+    images_.entries.remove_if([](const std::string&, const auto& entry) { return entry.expired(); });
     entries_ = std::move(entries);
     entry_index_ = std::move(index);
     ++revision_;
@@ -141,7 +144,7 @@ Result<MeshAsset> Reader::publish_mesh(Reader candidate, std::vector<ProjectEntr
                                        const MeshImport& loaded, std::span<const TextureAsset> textures) {
     if (!loaded.mesh)
         return failure("Mesh publication requires prepared geometry.");
-    candidate.meshes_.erase(std::string(key)); // Explicit reimport supersedes received content/defaults.
+    candidate.meshes_.remove(key); // Explicit reimport supersedes received content/defaults.
     ATELIER_TRY(candidate.publish(std::move(entries)));
     ATELIER_TRY_BIND(found, listed(candidate, key, AssetKind::mesh));
     const auto& item = **found;
@@ -164,31 +167,26 @@ Result<MeshAsset> Reader::publish_mesh(Reader candidate, std::vector<ProjectEntr
     if (!touched(item.path))
         return failure("Prepared mesh bundle does not contain its published source file.");
     // Explicit author replacement must work even if size and timestamp match.
-    for (auto at = candidate.textures_.begin(); at != candidate.textures_.end();) {
-        ATELIER_TRY_BIND(entry, listed(candidate, at->first, AssetKind::texture));
-        if (touched((*entry)->path))
-            at = candidate.textures_.erase(at);
-        else
-            ++at;
+    for (const auto [cached_key, image] : candidate.textures_) {
+        (void)image;
+        ATELIER_TRY(listed(candidate, cached_key, AssetKind::texture));
     }
-    for (auto at = candidate.sky_maps_.begin(); at != candidate.sky_maps_.end();) {
-        ATELIER_TRY_BIND(entry, listed(candidate, at->first, AssetKind::sky));
-        if (touched((*entry)->path))
-            at = candidate.sky_maps_.erase(at);
-        else
-            ++at;
+    candidate.textures_.remove_if(
+        [&](std::string_view cached_key, const auto&) { return touched(candidate.entry(cached_key)->path); });
+    for (const auto [cached_key, map] : candidate.sky_maps_) {
+        (void)map;
+        ATELIER_TRY(listed(candidate, cached_key, AssetKind::sky));
     }
-    for (auto at = candidate.meshes_.begin(); at != candidate.meshes_.end();) {
-        if (at->second.exact_content) {
-            ++at;
-            continue;
-        }
-        ATELIER_TRY_BIND(entry, listed(candidate, at->first, AssetKind::mesh));
-        if (touched((*entry)->path) || std::ranges::any_of(at->second.dependencies, touched))
-            at = candidate.meshes_.erase(at);
-        else
-            ++at;
-    }
+    candidate.sky_maps_.remove_if(
+        [&](std::string_view cached_key, const auto&) { return touched(candidate.entry(cached_key)->path); });
+    for (const auto [cached_key, mesh] : candidate.meshes_)
+        if (!mesh.exact_content)
+            ATELIER_TRY(listed(candidate, cached_key, AssetKind::mesh));
+    candidate.meshes_.remove_if([&](std::string_view cached_key, const CachedMesh& mesh) {
+        if (mesh.exact_content)
+            return false;
+        return touched(candidate.entry(cached_key)->path) || std::ranges::any_of(mesh.dependencies, touched);
+    });
     for (const auto& texture : textures) {
         ATELIER_TRY_BIND(entry, listed(candidate, texture.key, AssetKind::texture));
         if (!texture.image || !touched((*entry)->path))
@@ -211,10 +209,9 @@ Result<void> Reader::publish_mesh_content(const MeshAsset& asset) {
     auto& item = candidate.entries_[candidate.entry_index_.at(asset.key)];
     item.materials = asset.materials;
     CachedMesh cached{asset.mesh, {}, {}, true};
-    if (const auto old = candidate.meshes_.find(asset.key);
-        old != candidate.meshes_.end() && old->second.mesh == asset.mesh) {
-        cached.dependencies = old->second.dependencies;
-        cached.notes = old->second.notes;
+    if (const auto* old = candidate.meshes_.find(asset.key); old && old->mesh == asset.mesh) {
+        cached.dependencies = old->dependencies;
+        cached.notes = old->notes;
     }
     candidate.meshes_.insert_or_assign(asset.key, std::move(cached));
     // Same named-slot validation as normal reads and file-transaction publication.
@@ -226,8 +223,8 @@ Result<void> Reader::publish_mesh_content(const MeshAsset& asset) {
 }
 
 const ProjectEntry* Reader::entry(std::string_view key) const {
-    const auto at = entry_index_.find(key);
-    return at == entry_index_.end() ? nullptr : &entries_[at->second];
+    const auto* at = entry_index_.find(key);
+    return at ? &entries_[*at] : nullptr;
 }
 
 Result<MeshImport> Reader::prepare_mesh(const std::filesystem::path& source) {
@@ -239,12 +236,12 @@ Result<std::vector<material::ImageRef>> Reader::prepare_images(std::span<const s
     return decode_images(sources, &images_, pixel_budget);
 }
 
-void Reader::retain_import(std::string key, const std::filesystem::path& relative, MeshImport& loaded) {
+Reader::CachedMesh& Reader::retain_import(std::string key, const std::filesystem::path& relative, MeshImport& loaded) {
     CachedMesh cached{loaded.mesh, {}, std::move(loaded.notes)};
     for (const auto& file : loaded.files)
         if (file.relative != relative.filename())
             cached.dependencies.push_back(relative.parent_path() / file.relative);
-    meshes_.emplace(std::move(key), std::move(cached));
+    return *meshes_.try_emplace(std::move(key), std::move(cached)).value;
 }
 
 Result<MeshAsset> Reader::mesh(std::string_view key) {
@@ -255,17 +252,17 @@ Result<MeshAsset> Reader::mesh(std::string_view key) {
     if (!item || item->kind != AssetKind::mesh)
         return failure("Missing mesh resource: " + std::string(key));
     const auto& entry = *item;
-    auto found_mesh = meshes_.find(entry.key);
-    if (found_mesh == meshes_.end()) {
+    auto* found_mesh = meshes_.find(entry.key);
+    if (!found_mesh) {
         ATELIER_TRY_BIND(path, resolve(entry.path));
         ATELIER_TRY_BIND(loaded, prepare_mesh(*path));
-        retain_import(entry.key, entry.path, *loaded);
-        found_mesh = meshes_.find(entry.key);
+        found_mesh = &retain_import(entry.key, entry.path, *loaded);
     }
     // In slot order, so every consumer lists the defaults as the mesh lists its slots.
-    const auto& mesh = *found_mesh->second.mesh;
+    const auto& mesh = *found_mesh->mesh;
     std::vector<std::pair<std::size_t, SlotMaterial>> ordered;
-    std::set<std::string> bound;
+    Set<std::string_view> bound;
+    bound.reserve(entry.materials.size());
     for (const auto& binding : entry.materials) {
         std::size_t matches{};
         std::size_t index{};
@@ -276,20 +273,20 @@ Result<MeshAsset> Reader::mesh(std::string_view key) {
             }
         if (matches != 1)
             return failure("Mesh metadata names a default material for a missing or ambiguous slot: " + binding.slot);
-        if (!bound.insert(binding.slot).second)
+        if (!bound.add(binding.slot))
             return failure("Mesh metadata repeats a default material slot: " + binding.slot);
         ordered.emplace_back(index, binding);
     }
     std::ranges::sort(ordered, {}, &std::pair<std::size_t, SlotMaterial>::first);
-    MeshAsset result{entry.key, entry.path.stem().wstring(), found_mesh->second.mesh};
+    MeshAsset result{entry.key, entry.path.stem().wstring(), found_mesh->mesh};
     for (auto& [index, binding] : ordered)
         result.materials.push_back(std::move(binding));
     return result;
 }
 
 std::span<const std::string> Reader::mesh_notes(std::string_view key) const {
-    const auto found = meshes_.find(std::string(key));
-    return found == meshes_.end() ? std::span<const std::string>{} : std::span<const std::string>(found->second.notes);
+    const auto* found = meshes_.find(key);
+    return found ? std::span<const std::string>(found->notes) : std::span<const std::string>{};
 }
 
 Result<std::vector<std::filesystem::path>> Reader::mesh_dependency_files(std::string_view key) {
@@ -298,14 +295,13 @@ Result<std::vector<std::filesystem::path>> Reader::mesh_dependency_files(std::st
             return std::vector<std::filesystem::path>{};
     ATELIER_TRY_BIND(found, listed(*this, key, AssetKind::mesh));
     const auto& item = **found;
-    auto cached = meshes_.find(item.key);
-    if (cached == meshes_.end()) {
+    auto* cached = meshes_.find(item.key);
+    if (!cached) {
         ATELIER_TRY_BIND(path, resolve(item.path));
         ATELIER_TRY_BIND(loaded, prepare_mesh(*path));
-        retain_import(item.key, item.path, *loaded);
-        cached = meshes_.find(item.key);
+        cached = &retain_import(item.key, item.path, *loaded);
     }
-    return cached->second.dependencies;
+    return cached->dependencies;
 }
 
 Result<SkyAsset> Reader::sky_map(std::string_view key) {
@@ -318,8 +314,8 @@ Result<SkyAsset> Reader::sky_map(std::string_view key) {
     if (at->kind != AssetKind::sky)
         return failure("Sky map key names " + *relative + ", which is not a Radiance .hdr asset.");
     SkyAsset asset{at->key, at->path.stem().wstring(), {}};
-    if (const auto cached = sky_maps_.find(at->key); cached != sky_maps_.end()) {
-        asset.map = cached->second;
+    if (const auto* cached = sky_maps_.find(at->key)) {
+        asset.map = *cached;
         return asset;
     }
     auto path = resolve(at->path);
@@ -330,37 +326,38 @@ Result<SkyAsset> Reader::sky_map(std::string_view key) {
     if (!decoded)
         return failure("Sky map " + *relative + " is not a valid Radiance HDR file: " + decoded.error().message);
     asset.map = std::move(*decoded);
-    sky_maps_.emplace(at->key, asset.map);
+    sky_maps_.try_emplace(at->key, asset.map);
     return asset;
 }
 
 Result<TextureAsset> Reader::texture(std::string_view key) {
     ATELIER_TRY_BIND(found, listed(*this, key, AssetKind::texture));
     const auto& item = **found;
-    auto at = textures_.find(item.key);
-    if (at == textures_.end()) {
+    const auto* at = textures_.find(item.key);
+    if (!at) {
         // Through the image cache: a mesh import that decoded the same bytes shares its pixels.
         ATELIER_TRY_BIND(path, resolve(item.path));
         ATELIER_TRY_BIND(bytes, read_file(*path, 128 * 1024 * 1024));
         const std::array<std::string_view, 1> source{*bytes};
         ATELIER_TRY_BIND(decoded, decode_images(source, &images_));
-        at = textures_.emplace(item.key, decoded->front()).first;
+        at = textures_.try_emplace(item.key, decoded->front()).value;
     }
-    return TextureAsset{item.key, item.path.stem().wstring(), at->second};
+    return TextureAsset{item.key, item.path.stem().wstring(), *at};
 }
 
 Result<void> Reader::publish_texture(ProjectEntry item, material::ImageRef image) {
-    const auto at = entry_index_.find(item.key);
-    if (at == entry_index_.end() || !image || item.kind != AssetKind::texture ||
-        entries_[at->second].kind != AssetKind::texture || entries_[at->second].path != item.path)
+    const auto* at = entry_index_.find(item.key);
+    if (!at || !image || item.kind != AssetKind::texture || entries_[*at].kind != AssetKind::texture ||
+        entries_[*at].path != item.path)
         return failure("Texture publication must replace an existing texture at its current location.");
+    const auto slot = *at;
     textures_.insert_or_assign(item.key, std::move(image));
     // A mesh may have decoded the same file into its imported default Surface.
-    std::erase_if(meshes_, [&](const auto& cached) {
-        return !cached.second.exact_content &&
-               std::ranges::find(cached.second.dependencies, item.path) != cached.second.dependencies.end();
+    meshes_.remove_if([&](const std::string&, const CachedMesh& cached) {
+        return !cached.exact_content &&
+               std::ranges::find(cached.dependencies, item.path) != cached.dependencies.end();
     });
-    entries_[at->second] = std::move(item);
+    entries_[slot] = std::move(item);
     ++revision_;
     return {};
 }

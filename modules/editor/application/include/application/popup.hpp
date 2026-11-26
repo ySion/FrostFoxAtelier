@@ -1,8 +1,8 @@
 #pragma once
 #include "application/window.hpp"
+#include "foundation/map.hpp"
 #include "renderer/renderer.hpp"
 #include "ui_language/component.hpp"
-#include <map>
 
 namespace atelier::application {
 // One reusable owned HWND. The owner retains keyboard focus and mouse capture;
@@ -55,7 +55,7 @@ private:
 
     ui::ControlKey next_key_{1ULL << 62};
 
-    std::map<ui::ControlKey, ui::ControlKey> row_keys_;
+    Map<ui::ControlKey, ui::ControlKey> row_keys_;
 
     std::shared_ptr<ui_language::Component> component_;
 

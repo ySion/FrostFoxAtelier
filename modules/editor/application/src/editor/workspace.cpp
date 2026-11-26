@@ -147,8 +147,8 @@ std::string Workspace::default_selected_graph_node(const Session& session, std::
 bool Workspace::is_network_graph_locked(const Session& session, std::string_view net_graph) const {
     if (net_graph.empty() || session.is_scratch_graph(net_graph))
         return false;
-    if (const auto it = network_lock_overrides.find(std::string(net_graph)); it != network_lock_overrides.end())
-        return it->second;
+    if (const bool* it = network_lock_overrides.find(net_graph))
+        return *it;
     if (!graph_breadcrumbs.empty())
         return true;
     return active_graph.empty();
@@ -749,16 +749,15 @@ Result<bool> Workspace::reveal_in_tree(const Session& session, ObjectId entity) 
 }
 
 void Workspace::EntityTreeView::commit(const Set<ObjectId>& live) {
-    std::erase_if(expansion,
-                  [&](const auto& entry) { return entry.first != ObjectId{} && !live.contains(entry.first); });
+    expansion.remove_if([&](ObjectId id, bool) { return id != ObjectId{} && !live.contains(id); });
     if (!pending)
         return;
     objects.swap(candidate.objects);
     rows.swap(candidate.rows);
     primary = candidate.primary;
-    for (const auto& [object, expanded] : candidate.edits)
+    for (const auto [object, expanded] : candidate.edits)
         if (object == ObjectId{} || live.contains(object))
-            expansion[object] = expanded;
+            expansion.insert_or_assign(object, expanded);
     pending = false;
 }
 
@@ -3720,7 +3719,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
         }
         for (auto& [category, rows] : category_rows)
             if (!rows->empty()) {
-                auto& key = category_keys_[category];
+                auto& key = *category_keys_.try_emplace(category, 0).value;
                 if (!key)
                     ATELIER_TRY_ASSIGN(key, allocate_binding_key());
                 groups->push_back(

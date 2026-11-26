@@ -60,10 +60,6 @@ double analytic_power(const GpuLightSource& source) {
     return std::max(0., luminance(source.radiance) * flux);
 }
 
-std::size_t mix_hash(std::size_t hash, std::size_t value) noexcept {
-    return hash ^ (value + std::size_t{0x9e3779b9u} + (hash << 6) + (hash >> 2));
-}
-
 bool light_grid_origin(math::Vector3 focus, std::array<float, 4>& origin) {
     origin = {0, 0, 0, light_grid_spacing};
     for (std::size_t axis = 0; axis < 3; ++axis) {
@@ -95,7 +91,7 @@ bool light_grid_origin(math::Vector3 focus, std::array<float, 4>& origin) {
 }
 
 std::size_t LightFrame::KeyHash::operator()(const SourceKey& key) const noexcept {
-    return mix_hash(std::hash<std::uint64_t>{}(key.owner), key.kind);
+    return hash_fields(key.owner, key.kind);
 }
 
 void LightFrame::clear() {
@@ -391,13 +387,12 @@ void LightFrame::map_previous() {
     // Frame validation keeps nonzero light identities unique; zero has none.
     for (std::size_t i = 0; i < previous_keys_.size(); ++i)
         if (previous_keys_[i].owner)
-            previous_lookup_.emplace(previous_keys_[i], static_cast<std::uint32_t>(i));
+            previous_lookup_.try_emplace(previous_keys_[i], static_cast<std::uint32_t>(i));
     for (std::size_t i = 0; i < keys_.size(); ++i) {
         if (!keys_[i].owner)
             continue;
-        const auto at = previous_lookup_.find(keys_[i]);
-        if (at != previous_lookup_.end())
-            current_to_previous[i] = at->second;
+        if (const auto* at = previous_lookup_.find(keys_[i]))
+            current_to_previous[i] = *at;
     }
 }
 

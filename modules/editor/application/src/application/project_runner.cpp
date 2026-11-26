@@ -259,8 +259,7 @@ Result<void> run_project(RunOptions& options) {
                 static_cast<void>(renderer->close());
         }
     } close_renderer{renderer};
-    std::function<void(const ui::Reply&)> effects;
-    effects = [&](const ui::Reply& reply) {
+    const auto effects = [&](this auto&& self, const ui::Reply& reply) -> void {
         if (reply.error)
             report_failure(ui_error(*reply.error), "runner.ui_input_failed", project.root());
         for (const auto& effect : reply.effects) {
@@ -279,12 +278,12 @@ Result<void> run_project(RunOptions& options) {
                         if constexpr (std::same_as<T, ui::ClipboardRequest>) {
                             if (reply.error)
                                 return;
-                            effects(ui.input(
+                            self(ui.input(
                                 {.kind = ui::EventKind::clipboard_result, .data = window->clipboard(request)}));
                         } else {
                             if (reply.error && request.kind != ui::ImeKind::cancel)
                                 return;
-                            effects(ui.input({.kind = ui::EventKind::ime_result, .data = window->ime(request)}));
+                            self(ui.input({.kind = ui::EventKind::ime_result, .data = window->ime(request)}));
                         }
                     },
                     std::get<ui::PlatformRequest>(effect));

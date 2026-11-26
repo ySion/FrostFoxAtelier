@@ -1,13 +1,13 @@
 #include "editor/graph_format.hpp"
 #include "editor/properties.hpp"
 #include "foundation/map.hpp"
+#include "foundation/set.hpp"
 #include "procedural/nodes.hpp"
 #include <algorithm>
 #include <cmath>
 #include <format>
 #include <map>
 #include <optional>
-#include <set>
 
 namespace atelier::editor {
 // "node.output", or nothing when malformed.
@@ -56,7 +56,7 @@ bool valid_graph_identifier(std::string_view text) noexcept {
 }
 
 std::string make_unique_graph_identifier(std::string_view preferred, std::string_view fallback,
-                                         const std::function<bool(std::string_view)>& is_taken) {
+                                         FunctionRef<bool(std::string_view)> is_taken) {
     std::string base;
     base.reserve(preferred.size());
     for (const char c : preferred) {
@@ -75,7 +75,7 @@ std::string make_unique_graph_identifier(std::string_view preferred, std::string
         base = safe_fb + "_" + base;
     if (base.size() > 128)
         base.resize(128);
-    if (!is_taken || !is_taken(base))
+    if (!is_taken(base))
         return base;
     for (std::uint32_t idx = 2;; ++idx) {
         const std::string suffix = "_" + std::to_string(idx);
@@ -394,9 +394,9 @@ Result<procedural::Ports> extract_graph_ports(Runtime& runtime, const GraphDocum
     std::ranges::sort(outputs_list, by_order_then_name);
 
     procedural::Ports ports;
-    std::set<std::string> seen_in;
+    Set<std::string_view> seen_in;
     for (const auto& entry : inputs_list) {
-        if (!seen_in.insert(entry.port_name).second)
+        if (!seen_in.add(entry.port_name))
             return std::unexpected(
                 Error{ErrorCode::invalid_definition, "Duplicate GraphInput port_name '" + entry.port_name + "'."});
         ports.inputs.push_back(entry.port_name);
@@ -406,9 +406,9 @@ Result<procedural::Ports> extract_graph_ports(Runtime& runtime, const GraphDocum
     }
 
     if (!outputs_list.empty()) {
-        std::set<std::string> seen_out;
+        Set<std::string_view> seen_out;
         for (const auto& entry : outputs_list) {
-            if (!seen_out.insert(entry.port_name).second)
+            if (!seen_out.add(entry.port_name))
                 return std::unexpected(
                     Error{ErrorCode::invalid_definition, "Duplicate GraphOutput port_name '" + entry.port_name + "'."});
             ports.outputs.push_back(entry.port_name);
@@ -733,14 +733,14 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
                 boxes_json.error(json::Fault::type, "Graph boxes must be a record keyed by box name."));
         if (parameters_opt) {
             ATELIER_TRY_BIND(param_items, parameters_opt->array());
-            std::set<std::string_view> seen_param_names;
+            Set<std::string_view> seen_param_names;
             std::vector<std::string_view> all_targets;
             for (const auto param : *param_items) {
                 ATELIER_TRY(param.allowed_members({"name", "targets", "label", "category", "description"}));
                 ATELIER_TRY_BIND(pname, param.string({"name"}));
                 if (!valid_graph_identifier(*pname))
                     return std::unexpected(param.error(json::Fault::range, "Invalid promoted parameter name."));
-                if (!seen_param_names.insert(*pname).second)
+                if (!seen_param_names.add(*pname))
                     return std::unexpected(
                         param.error(json::Fault::duplicate_key, "Duplicate promoted parameter name."));
                 const auto targets_val = *param.find("targets");
@@ -1198,10 +1198,10 @@ Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document) 
         return std::unexpected(
             Error{ErrorCode::argument_mismatch, "Graph template node must belong to the saved graph."});
 
-    std::set<std::string_view> seen_param_names;
+    Set<std::string_view> seen_param_names;
     std::vector<std::string_view> seen_targets;
     for (const auto& param : document.parameters) {
-        if (!valid_graph_identifier(param.name) || !seen_param_names.insert(param.name).second)
+        if (!valid_graph_identifier(param.name) || !seen_param_names.add(param.name))
             return std::unexpected(
                 Error{ErrorCode::argument_mismatch, "Invalid or duplicate promoted parameter name: " + param.name});
         if (param.targets.empty())

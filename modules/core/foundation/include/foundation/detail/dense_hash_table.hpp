@@ -1,6 +1,7 @@
 #pragma once
 
 #include "foundation/hash.hpp"
+#include "foundation/optional.hpp"
 #include "memory/fatal.hpp"
 
 #include <algorithm>
@@ -22,8 +23,11 @@ namespace atelier::detail {
 template <class Key, class Value, class H, class E>
 class DenseHashTable {
     using Tags = std::array<std::uint8_t, 16>;
-    static constexpr bool borrowed_names = std::is_same_v<Key, StringView> && std::is_same_v<H, Hash<StringView>> &&
-                                           std::is_same_v<E, Equal<StringView>>;
+    static constexpr bool borrowed_names =
+        (std::is_same_v<Key, StringView> && std::is_same_v<H, Hash<StringView>> &&
+         std::is_same_v<E, Equal<StringView>>) ||
+        (std::is_same_v<Key, std::string_view> && std::is_same_v<H, Hash<std::string_view>> &&
+         std::is_same_v<E, Equal<std::string_view>>);
     static constexpr unsigned slots = 15;
     static constexpr unsigned target = 10; // Grow at two thirds of the usable slots.
 
@@ -78,7 +82,7 @@ class DenseHashTable {
 
     // Sample both ends so edits to either end of a name can reject it before
     // full equality. The unaligned suffix load stays within the view.
-    static std::uint8_t name_tag(StringView name) noexcept {
+    static std::uint8_t name_tag(std::string_view name) noexcept {
         const auto n = name.size();
         if (n < 2)
             return n ? tag(static_cast<unsigned char>(name.data()[0])) : 1;
@@ -88,14 +92,13 @@ class DenseHashTable {
         const auto word = ((static_cast<std::uint32_t>(n) << 16) | suffix) + (first << 24);
         return tag(Hash<std::uint64_t>{}(word));
     }
-    static std::uint8_t name_tag(const char* name) noexcept { return name_tag(StringView{name}); }
 
-    static std::uint32_t length_bit(StringView name) noexcept { return 1u << (name.size() & 31u); }
+    static std::uint32_t length_bit(std::string_view name) noexcept { return 1u << (name.size() & 31u); }
 
     template <class Q>
     std::uint8_t local_tag(const Q& key) const noexcept {
         if constexpr (borrowed_names)
-            return name_tag(key);
+            return name_tag(as_std_string_view(key));
         else
             return tag(mixed_hash(key));
     }
@@ -120,6 +123,18 @@ class DenseHashTable {
     }
 
     template <class Q>
+    const Value* find_unindexed(const Q& key) const noexcept {
+        if constexpr (borrowed_names) {
+            const auto name = as_std_string_view(key);
+            if (!(mask_ & length_bit(name)))
+                return nullptr;
+            return find_local(key, name_tag(name));
+        } else {
+            return find_local(key, local_tag(key));
+        }
+    }
+
+    template <class Q>
     Slot probe(const Q& key, std::uint64_t hash) const noexcept {
         const auto first = home(hash);
         auto group = first;
@@ -137,6 +152,72 @@ class DenseHashTable {
             if (group == first)
                 return {group, slots};
         }
+    }
+
+    Slot find_entry(std::uint32_t target_index, std::uint64_t hash) const noexcept {
+        const auto first = home(hash);
+        auto group = first;
+        const auto needle = tag(hash);
+        for (;;) {
+            const auto& block = groups_[group];
+            for (auto hits = matching(controls_[group], needle); hits; hits &= hits - 1) {
+                const auto lane = static_cast<unsigned>(std::countr_zero(hits));
+                if (block.entries[lane] == target_index)
+                    return {group, lane};
+            }
+            group = next(group);
+            if (group == first)
+                fatal("Dense hash table index.");
+        }
+    }
+
+    void unplace_slot(Slot at, std::uint64_t hash) noexcept {
+        controls_[at.group][at.lane] = 0;
+        for (auto g = home(hash); g != at.group; g = next(g))
+            if (--groups_[g].displaced == 0)
+                controls_[g][slots] = 0;
+    }
+
+    void rebind_entry(std::uint32_t from_index, std::uint32_t to_index) noexcept {
+        const auto at = find_entry(from_index, mixed_hash(key_of(values_.data()[from_index])));
+        groups_[at.group].entries[at.lane] = to_index;
+    }
+
+    void unplace_index(std::size_t index) noexcept {
+        const auto last = size() - 1;
+        if (!groups_) {
+            local_[index] = local_[last];
+            local_[last] = 0;
+        } else {
+            const auto hash = mixed_hash(key_of(values_.data()[index]));
+            unplace_slot(find_entry(static_cast<std::uint32_t>(index), hash), hash);
+            if (index != last)
+                rebind_entry(static_cast<std::uint32_t>(last), static_cast<std::uint32_t>(index));
+        }
+    }
+
+    template <class Q>
+    bool find_erase_index(const Q& key, std::size_t& index) noexcept {
+        if (!groups_) {
+            const auto* found = find_unindexed(key);
+            if (!found)
+                return false;
+            const auto last = size() - 1;
+            index = static_cast<std::size_t>(found - values_.data());
+            local_[index] = local_[last];
+            local_[last] = 0;
+            return true;
+        }
+        const auto hash = mixed_hash(key);
+        const auto at = probe(key, hash);
+        if (at.lane == slots)
+            return false;
+        const auto last = size() - 1;
+        index = groups_[at.group].entries[at.lane];
+        unplace_slot(at, hash);
+        if (index != last)
+            rebind_entry(static_cast<std::uint32_t>(last), static_cast<std::uint32_t>(index));
+        return true;
     }
 
     // Each crossed group counts the live entries that had to pass it. Erase
@@ -231,16 +312,8 @@ public:
 
     template <class Q>
     const Value* find(const Q& key) const noexcept {
-        if (!groups_) {
-            if constexpr (borrowed_names) {
-                const StringView name{key};
-                if (!(mask_ & length_bit(name)))
-                    return nullptr;
-                return find_local(key, name_tag(name));
-            } else {
-                return find_local(key, local_tag(key));
-            }
-        }
+        if (!groups_)
+            return find_unindexed(key);
         const auto at = probe(key, mixed_hash(key));
         return at.lane == slots ? nullptr : values_.data() + groups_[at.group].entries[at.lane];
     }
@@ -249,11 +322,19 @@ public:
     std::pair<Value*, bool> try_emplace(Q&& key, Args&&... args) {
         std::uint64_t hash{};
         std::uint8_t needle{};
+        [[maybe_unused]] std::uint32_t bit{};
         if (groups_) {
             hash = mixed_hash(key);
             const auto at = probe(key, hash);
             if (at.lane != slots)
                 return {values_.data() + groups_[at.group].entries[at.lane], false};
+        } else if constexpr (borrowed_names) {
+            const auto name = as_std_string_view(key);
+            bit = length_bit(name);
+            needle = name_tag(name);
+            if (mask_ & bit)
+                if (const auto* found = find_local(key, needle))
+                    return {const_cast<Value*>(found), false};
         } else {
             needle = local_tag(key);
             if (const auto* found = find_local(key, needle))
@@ -277,42 +358,125 @@ public:
         else {
             local_[index] = needle;
             if constexpr (borrowed_names)
-                mask_ |= length_bit(key_of(values_.back()));
+                mask_ |= bit;
         }
         return {std::addressof(values_.back()), true};
     }
 
     template <class Q>
     bool erase(const Q& key) noexcept {
-        std::size_t index;
-        if (!groups_) {
-            const auto* found = find_local(key, local_tag(key));
-            if (!found)
-                return false;
-            index = static_cast<std::size_t>(found - values_.data());
-            local_[index] = local_[size() - 1];
-            local_[size() - 1] = 0;
-        } else {
-            const auto hash = mixed_hash(key);
-            const auto at = probe(key, hash);
-            if (at.lane == slots)
-                return false;
-            auto& block = groups_[at.group];
-            index = block.entries[at.lane];
-            controls_[at.group][at.lane] = 0;
-            for (auto g = home(hash); g != at.group; g = next(g))
-                if (--groups_[g].displaced == 0)
-                    controls_[g][slots] = 0;
-            if (index != size() - 1) {
-                const auto& last = key_of(values_.back());
-                const auto tail = probe(last, mixed_hash(last));
-                groups_[tail.group].entries[tail.lane] = static_cast<std::uint32_t>(index);
-            }
-        }
+        std::size_t index{};
+        if (!find_erase_index(key, index))
+            return false;
         if (index != size() - 1)
             values_[index] = std::move(values_.back());
         values_.pop_back();
+        if (!groups_ && values_.empty())
+            mask_ = 0;
         return true;
+    }
+
+    template <class Mapped = Value, class Q>
+    Optional<Mapped> extract(const Q& key) noexcept {
+        std::size_t index{};
+        if (!find_erase_index(key, index))
+            return std::nullopt;
+        Optional<Mapped> removed{std::in_place, [&]() noexcept -> decltype(auto) {
+                                     if constexpr (std::is_same_v<Key, Value>)
+                                         return std::move(values_[index]);
+                                     else
+                                         return std::move(values_[index].second);
+                                 }()};
+        if (index != size() - 1)
+            values_[index] = std::move(values_.back());
+        values_.pop_back();
+        if (!groups_ && values_.empty())
+            mask_ = 0;
+        return removed;
+    }
+
+    template <class Predicate>
+    std::size_t remove_if(Predicate&& should_remove) noexcept {
+        const auto original = size();
+        std::size_t i = 0;
+        while (i < size()) {
+            if (!should_remove(std::as_const(values_[i]))) {
+                ++i;
+                continue;
+            }
+            while (size() - 1 > i && should_remove(std::as_const(values_.back()))) {
+                const auto tail = size() - 1;
+                if (!groups_) {
+                    local_[tail] = 0;
+                } else {
+                    const auto hash = mixed_hash(key_of(values_.data()[tail]));
+                    unplace_slot(find_entry(static_cast<std::uint32_t>(tail), hash), hash);
+                }
+                values_.pop_back();
+            }
+            unplace_index(i);
+            const auto last = size() - 1;
+            if (i != last) {
+                values_[i] = std::move(values_[last]);
+                ++i;
+            }
+            values_.pop_back();
+        }
+        if (!groups_ && values_.empty())
+            mask_ = 0;
+        return original - size();
+    }
+
+    void merge(DenseHashTable& source) {
+        if (this == std::addressof(source) || source.size() == 0)
+            return;
+        if constexpr (HashPolicy<H> && HashPolicy<E> && std::is_empty_v<H> && std::is_empty_v<E>) {
+            if (size() == 0 && values_.capacity() <= source.values_.capacity() && capacity() <= source.capacity()) {
+                swap(source);
+                return;
+            }
+        }
+        for (std::size_t i = source.size(); i-- > 0;) {
+            const auto& key = key_of(source.values_[i]);
+            std::uint64_t hash{};
+            std::uint8_t needle{};
+            [[maybe_unused]] std::uint32_t bit{};
+            if (groups_) {
+                hash = mixed_hash(key);
+                if (probe(key, hash).lane != slots)
+                    continue;
+            } else if constexpr (borrowed_names) {
+                const auto name = as_std_string_view(key);
+                bit = length_bit(name);
+                needle = name_tag(name);
+                if ((mask_ & bit) && find_local(key, needle))
+                    continue;
+            } else {
+                needle = local_tag(key);
+                if (find_local(key, needle))
+                    continue;
+            }
+            const auto index = size();
+            if (index == max_size())
+                fatal("Dense hash table capacity.");
+            source.unplace_index(i);
+            values_.push_back(std::move(source.values_[i]));
+            const auto last = source.size() - 1;
+            if (i != last)
+                source.values_[i] = std::move(source.values_[last]);
+            source.values_.pop_back();
+            if (size() > capacity())
+                rebuild(size());
+            else if (groups_)
+                place(hash, static_cast<std::uint32_t>(index));
+            else {
+                local_[index] = needle;
+                if constexpr (borrowed_names)
+                    mask_ |= bit;
+            }
+        }
+        if (!source.groups_ && source.values_.empty())
+            source.mask_ = 0;
     }
 
     void clear() noexcept {

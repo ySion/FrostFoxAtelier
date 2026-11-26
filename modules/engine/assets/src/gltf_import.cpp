@@ -1,6 +1,9 @@
 #include "assets/mesh_import.hpp"
 #include "assets/assets.hpp"
 #include "assets/file.hpp"
+#include "foundation/array.hpp"
+#include "foundation/map.hpp"
+#include "foundation/set.hpp"
 #include "platform/error.hpp"
 #include "platform/utf.hpp"
 #include "json/json.hpp"
@@ -8,10 +11,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstring>
-#include <map>
 #include <optional>
-#include <unordered_map>
-#include <unordered_set>
 
 namespace atelier::assets {
 namespace {
@@ -60,22 +60,22 @@ json::Result<std::uint64_t> integer(json::Value value, std::uint64_t maximum = U
 
 // Build each top-level index only when it is actually consumed. Unused fields
 // remain unvalidated, and entries borrow the immutable import document.
-json::Result<json::Value> element(json::Value root, std::unordered_map<std::string_view, Array<json::Value>>& arrays,
+json::Result<json::Value> element(json::Value root, Map<std::string_view, Array<json::Value>>& arrays,
                                   std::string_view name, json::Value index) {
     ATELIER_TRY_BIND(position, integer(index));
-    auto found = arrays.find(name);
-    if (found == arrays.end()) {
+    const auto* found = arrays.find(name);
+    if (!found) {
         ATELIER_TRY_BIND(value, root.at(name));
         ATELIER_TRY_BIND(items, value->array());
         Array<json::Value> entries;
         entries.reserve(items->size());
         for (auto item : *items)
             entries.emplace(item);
-        found = arrays.emplace(name, std::move(entries)).first;
+        found = arrays.try_emplace(name, std::move(entries)).value;
     }
-    if (*position >= found->second.size())
+    if (*position >= found->size())
         return std::unexpected(index.error(json::Fault::range, "Array index out of range"));
-    return found->second[*position];
+    return (*found)[*position];
 }
 
 json::Result<double> number(json::Value object, std::string_view key, double fallback) {
@@ -184,7 +184,7 @@ std::size_t component_size(std::uint32_t type) {
     return type == 5121 ? 1 : type == 5123 ? 2 : 4;
 }
 
-json::Result<Accessor> accessor(json::Value gltf, std::unordered_map<std::string_view, Array<json::Value>>& indexed,
+json::Result<Accessor> accessor(json::Value gltf, Map<std::string_view, Array<json::Value>>& indexed,
                                 std::span<const std::string_view> buffers, json::Value index, std::string_view type,
                                 std::initializer_list<std::uint32_t> components) {
     ATELIER_TRY_BIND(a, element(gltf, indexed, "accessors", index));
@@ -278,12 +278,13 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
     const auto root = std::filesystem::canonical(source.parent_path(), error);
     if (error)
         return std::unexpected(Error{ErrorCode::invalid_storage, platform::error_message(error)});
-    std::unordered_map<std::wstring, std::size_t> read_files;
+    Map<std::wstring, std::size_t> read_files;
     const auto read = [&](const std::filesystem::path& relative, std::size_t maximum) -> json::Result<std::size_t> {
-        if (const auto found = read_files.find(relative.generic_wstring()); found != read_files.end()) {
+        auto key = relative.generic_wstring();
+        if (const auto* found = read_files.find(key)) {
             ATELIER_TRY(
-                require(result.files[found->second].bytes.size() <= maximum, "a dependency exceeds its size limit."));
-            return found->second;
+                require(result.files[*found].bytes.size() <= maximum, "a dependency exceeds its size limit."));
+            return *found;
         }
         const auto path = std::filesystem::weakly_canonical(root / relative, error);
         if (error)
@@ -294,7 +295,7 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
         auto bytes = read_file(path, maximum);
         if (!bytes)
             return std::unexpected(json::Error{json::Fault::range, bytes.error().message, {}, {}});
-        read_files.emplace(relative.generic_wstring(), result.files.size());
+        read_files.try_emplace(std::move(key), result.files.size());
         result.files.push_back({relative, std::move(*bytes)});
         return result.files.size() - 1;
     };
@@ -302,7 +303,7 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
         ATELIER_TRY_BIND(file, read(source.filename(), maximum_document));
         ATELIER_TRY_BIND(document, json::Document::parse_gltf(result.files[*file].bytes));
         const auto gltf = document->root();
-        std::unordered_map<std::string_view, Array<json::Value>> indexed;
+        Map<std::string_view, Array<json::Value>> indexed;
         const json::Builder array_default{json::Kind::array};
         const json::Builder object_default;
         const auto empty_array = array_default.root();
@@ -390,7 +391,7 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
 
             std::size_t triangles{};
         };
-        std::map<std::size_t, Skipped> skipped;
+        Array<Skipped> skipped;
         for (const auto& [index, world] : placed) {
             ATELIER_TRY_BIND(parts, primitives(index));
             for (auto primitive : *parts) {
@@ -404,6 +405,8 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
                     ATELIER_TRY(require(*m < materials.size(), "invalid material index."));
                     ATELIER_TRY_BIND(alpha, alpha_mode(materials[*m]));
                     if (*alpha == "BLEND") {
+                        if (skipped.empty())
+                            skipped.resize(materials.size());
                         auto& s = skipped[*m];
                         ++s.primitives;
                         s.triangles += *count / 3;
@@ -416,10 +419,12 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
                 corners += *count;
             }
         }
-        for (const auto& [m, count] : skipped) {
+        for (std::size_t m = 0; m < skipped.size(); ++m) {
+            if (!skipped[m].primitives)
+                continue;
             ATELIER_TRY_BIND(name, material_name(materials[m], m));
-            result.notes.push_back("BLEND material skipped: " + *name + " (" + std::to_string(count.primitives) +
-                                   " primitives, " + std::to_string(count.triangles) +
+            result.notes.push_back("BLEND material skipped: " + *name + " (" + std::to_string(skipped[m].primitives) +
+                                   " primitives, " + std::to_string(skipped[m].triangles) +
                                    " triangles); alpha blending is not supported.");
         }
         // Read every dependency before taking views: result.files grows while reading.
@@ -439,7 +444,7 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
         }
         ATELIER_TRY_BIND(images_value, field(gltf, "images", empty_array));
         ATELIER_TRY_BIND(image_items, images_value->array());
-        auto& images = indexed["images"];
+        Array<json::Value> images;
         images.reserve(image_items->size());
         for (auto image : *image_items)
             images.emplace(image);
@@ -586,10 +591,10 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
         // Slot names are unique: scenes bind materials to slots by name.
         std::vector<geometry::MaterialSlot> slots;
         std::vector<std::size_t> slot_of(materials.size(), no_slot);
-        std::unordered_set<std::string> names;
+        Set<std::string> names;
         const auto add_slot = [&](const std::string& name, const json::Value* source_material) -> json::Result<void> {
             auto unique = name;
-            for (std::size_t n = 2; !names.insert(unique).second; ++n)
+            for (std::size_t n = 2; !names.add(unique); ++n)
                 unique = name + " (" + std::to_string(n) + ")";
             slots.push_back({std::move(unique)});
             result.textures.emplace_back();

@@ -1,8 +1,8 @@
 #include "assets/reader.hpp"
+#include "foundation/map.hpp"
 #include "foundation/sha256.hpp"
 #include <bit>
 #include <cstring>
-#include <map>
 
 namespace atelier::assets {
 namespace {
@@ -81,17 +81,18 @@ Result<std::string> mesh_content_sha256(const MeshAsset& asset) {
     if (!asset.mesh)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Cannot digest an unresolved mesh."});
     const auto& mesh = *asset.mesh;
-    std::map<std::string, std::size_t, std::less<>> slots;
+    Map<std::string, std::size_t> slots;
+    slots.reserve(mesh.materials().size());
     for (std::size_t i = 0; i < mesh.materials().size(); ++i)
-        if (auto [at, inserted] = slots.emplace(geometry::material_slot_name(mesh, i), i); !inserted)
-            at->second = mesh.materials().size();
+        if (auto [at, inserted] = slots.try_emplace(geometry::material_slot_name(mesh, i), i); !inserted)
+            *at = mesh.materials().size();
     std::vector<const std::string*> defaults(mesh.materials().size());
     for (const auto& binding : asset.materials) {
-        const auto at = slots.find(binding.slot);
-        if (at == slots.end() || at->second == defaults.size() || defaults[at->second])
+        const auto* at = slots.find(binding.slot);
+        if (!at || *at == defaults.size() || defaults[*at])
             return std::unexpected(Error{ErrorCode::invalid_definition,
                                          "Mesh default names a missing, ambiguous or duplicate slot: " + binding.slot});
-        defaults[at->second] = &binding.key;
+        defaults[*at] = &binding.key;
     }
     Encoding out;
     constexpr std::string_view domain = "Atelier.Mesh";

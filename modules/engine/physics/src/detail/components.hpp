@@ -1,7 +1,7 @@
 #pragma once
+#include "foundation/map.hpp"
 #include "physics/physics.hpp"
 #include "order.hpp"
-#include <unordered_map>
 #include <optional>
 
 namespace atelier::physics::detail {
@@ -81,7 +81,7 @@ private:
 
     PhysicsScene& scene_;
 
-    std::unordered_map<ObjectId, Entry> entries_;
+    Map<ObjectId, Entry> entries_;
 
     InsertionOrder order_;
 

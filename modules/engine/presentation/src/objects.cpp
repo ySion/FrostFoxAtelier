@@ -2,7 +2,6 @@
 #include "runtime/foundation.hpp"
 #include <cmath>
 #include <exception>
-#include <unordered_set>
 
 namespace atelier::presentation {
 using detail::Access;
@@ -59,7 +58,8 @@ validate_procedural_assets(Runtime& runtime, std::span<const ProceduralInstanceA
     std::vector<ObjectReference> inst_defaults;
     ranges.reserve(resolved_assets.size());
     for (const auto& asset : resolved_assets) {
-        std::unordered_set<std::string> unique;
+        Set<std::string_view> unique;
+        unique.reserve(asset.defaults.size());
         ProceduralAssetSlotRange range;
         range.key = asset.key;
         range.mesh = asset.mesh;
@@ -69,7 +69,7 @@ validate_procedural_assets(Runtime& runtime, std::span<const ProceduralInstanceA
             if (asset.mesh)
                 for (std::size_t j = 0; j < asset.mesh->materials().size(); ++j)
                     matches += material_slot_name(*asset.mesh, j) == item.slot;
-            if (matches != 1 || !unique.insert(item.slot).second)
+            if (matches != 1 || !unique.add(item.slot))
                 return error(ErrorCode::argument_mismatch,
                              "Instance default material slot is missing, ambiguous or repeated: " + item.slot);
             ATELIER_TRY(material::capture_program(runtime, item.resource.id()));
@@ -210,13 +210,14 @@ Result<void> set_mesh_binding(Runtime& runtime, ObjectId object, MeshBinding bin
     // Each default names one slot of the new mesh exactly once and holds a material that captures.
     std::vector<std::string> default_slots;
     std::vector<ObjectReference> defaults;
-    std::unordered_set<std::string> unique;
+    Set<std::string_view> unique;
+    unique.reserve(binding.defaults.size());
     for (const auto& item : binding.defaults) {
         std::size_t matches{};
         if (binding.resolved)
             for (std::size_t j = 0; j < binding.resolved->materials().size(); ++j)
                 matches += material_slot_name(*binding.resolved, j) == item.slot;
-        if (matches != 1 || !unique.insert(item.slot).second)
+        if (matches != 1 || !unique.add(item.slot))
             return error(ErrorCode::argument_mismatch,
                          "Default material slot is missing, ambiguous or repeated: " + item.slot);
         ATELIER_TRY(material::capture_program(runtime, item.resource.id()));

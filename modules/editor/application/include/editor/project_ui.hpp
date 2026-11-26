@@ -1,7 +1,7 @@
 #pragma once
 #include "editor/project.hpp"
+#include "foundation/function_ref.hpp"
 #include "ui_language/live_document.hpp"
-#include <functional>
 
 namespace atelier::editor {
 // The same project UI module runs in isolated preview and game windows.
@@ -16,7 +16,7 @@ public:
     // suspends publication and returns no frame. The host routes cancellation
     // effects synchronously, then renders/accepts the returned valid frame.
     Result<std::shared_ptr<const ui::UiFrame>> prepare(ui::Session&, ui::Surface, double elapsed, std::size_t entities,
-                                                       const std::function<void(const ui::Reply&)>& effects);
+                                                       FunctionRef<void(const ui::Reply&)> effects);
 
     Result<bool> event(const ui::Action&);
 

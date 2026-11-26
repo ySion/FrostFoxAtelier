@@ -1,5 +1,7 @@
 #include "application/procedural_preview.hpp"
 #include "editor/procedural_panes.hpp"
+#include "foundation/map.hpp"
+#include "foundation/set.hpp"
 #include "material/resources.hpp"
 #include "platform/utf.hpp"
 #include <algorithm>
@@ -7,9 +9,7 @@
 #include <cmath>
 #include <format>
 #include <numbers>
-#include <set>
 #include <tuple>
-#include <unordered_map>
 
 namespace atelier::application {
 namespace {
@@ -265,13 +265,13 @@ void append_procedural_guides(const procedural::Geometry& geometry, const editor
 
         if (options.chunk_size > 0.f && std::isfinite(options.chunk_size) && !geometry.instance_transforms().empty()) {
             const float inv_chunk = 1.f / options.chunk_size;
-            std::set<std::tuple<int, int, int>> occupied_chunks;
+            Set<std::tuple<int, int, int>> occupied_chunks;
             for (const auto& m : geometry.instance_transforms()) {
                 if (!std::isfinite(m[12]) || !std::isfinite(m[13]) || !std::isfinite(m[14]))
                     continue;
-                occupied_chunks.emplace(static_cast<int>(std::floor(m[12] * inv_chunk)),
-                                        static_cast<int>(std::floor(m[13] * inv_chunk)),
-                                        static_cast<int>(std::floor(m[14] * inv_chunk)));
+                occupied_chunks.add({static_cast<int>(std::floor(m[12] * inv_chunk)),
+                                     static_cast<int>(std::floor(m[13] * inv_chunk)),
+                                     static_cast<int>(std::floor(m[14] * inv_chunk))});
                 if (occupied_chunks.size() >= 128)
                     break;
             }
@@ -671,7 +671,7 @@ Result<void> ProceduralPreview::refresh(editor::Session& session, editor::Projec
 
     meshes_.clear();
     surfaces_.clear();
-    std::unordered_map<const material::ProgramSurface*, std::uint32_t> surface_indices;
+    Map<const material::ProgramSurface*, std::uint32_t> surface_indices;
     const auto register_surfaces =
         [&](std::span<const material::ProgramSurfaceRef> list) -> std::shared_ptr<const std::vector<std::uint32_t>> {
         std::vector<std::uint32_t> slots;
@@ -681,7 +681,7 @@ Result<void> ProceduralPreview::refresh(editor::Session& session, editor::Projec
                 surface_indices.try_emplace(surf.get(), static_cast<std::uint32_t>(surfaces_.size()));
             if (added)
                 surfaces_.push_back(surf);
-            slots.push_back(it->second);
+            slots.push_back(*it);
         }
         return std::make_shared<const std::vector<std::uint32_t>>(std::move(slots));
     };

@@ -141,13 +141,13 @@ Result<void> profile_scene_cpu(const std::filesystem::path& root, std::string_vi
     application::SceneSnapshot snapshot;
     take(snapshot.refresh(*document));
     const auto geometry = take(document->presentation().render_items());
-    std::unordered_set<const geometry::Mesh*> unique;
-    std::unordered_set<ObjectId> materials;
-    std::unordered_map<const material::Image*, unsigned> image_modes;
+    Set<const geometry::Mesh*> unique;
+    Set<ObjectId> materials;
+    Map<const material::Image*, unsigned> image_modes;
     std::size_t triangles{};
     std::size_t material_bindings{};
     for (const auto& mesh : snapshot.picking()->meshes) {
-        unique.insert(mesh.geometry.get());
+        unique.add(mesh.geometry.get());
         triangles += mesh.geometry->vertices().size() / 3;
         require(mesh.material_slots && mesh.material_slots->size() == mesh.geometry->materials().size(),
                 "CPU profile received an unresolved material slot table.");
@@ -159,12 +159,13 @@ Result<void> profile_scene_cpu(const std::filesystem::path& root, std::string_vi
             require(surface != nullptr, "CPU profile received an empty resolved material.");
             for (const auto& input : surface->inputs()) {
                 if (input.image)
-                    image_modes[input.image.get()] |= input.color == material::TextureColor::srgb ? 2u : 1u;
+                    *image_modes.try_emplace(input.image.get(), 0u).value |=
+                        input.color == material::TextureColor::srgb ? 2u : 1u;
             }
         }
     }
     std::size_t sampled_images{};
-    for (const auto& [image, modes] : image_modes) {
+    for (const auto [image, modes] : image_modes) {
         (void)image;
         sampled_images += (modes & 1) != 0;
         sampled_images += (modes & 2) != 0;
@@ -172,7 +173,7 @@ Result<void> profile_scene_cpu(const std::filesystem::path& root, std::string_vi
     for (const auto& item : geometry)
         for (const auto& binding :
              take(presentation::read_material_bindings(document->world().runtime(), item.component))) {
-            materials.insert(binding.resource.id());
+            materials.add(binding.resource.id());
             ++material_bindings;
         }
     // MaterialBatch deduplicates by image and declared transfer function. Empty
@@ -208,7 +209,7 @@ Result<void> profile_scene_cpu(const std::filesystem::path& root, std::string_vi
             math::Matrix4{take(assets::json_format::vector<16>(take(camera.at("projection_matrix"))))}, width, height,
             take(camera.f32({"far_depth"})));
         // The Renderer draws each visible geometry once per surface pass; parts count its material slots in use.
-        std::unordered_set<const geometry::Mesh*> drawn;
+        Set<const geometry::Mesh*> drawn;
         std::size_t visible{};
         std::size_t visible_triangles{};
         std::size_t visible_geometry_parts{};
@@ -217,7 +218,7 @@ Result<void> profile_scene_cpu(const std::filesystem::path& root, std::string_vi
                 continue;
             ++visible;
             visible_triangles += mesh.geometry->vertices().size() / 3;
-            if (drawn.insert(mesh.geometry.get()).second)
+            if (drawn.add(mesh.geometry.get()))
                 visible_geometry_parts += mesh.geometry->parts().size();
         }
         const auto camera_report_text = platform::utf16_to_utf8(camera_report.native());

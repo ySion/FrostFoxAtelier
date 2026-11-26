@@ -8,6 +8,7 @@
 #include "assets/json_format.hpp"
 #include "assets/material_format.hpp"
 #include "physics/physics.hpp"
+#include "foundation/set.hpp"
 #include <Windows.h>
 #include <objbase.h>
 #include <algorithm>
@@ -16,9 +17,7 @@
 #include <cwctype>
 #include <fstream>
 #include <functional>
-#include <map>
 #include <optional>
-#include <set>
 #include <sstream>
 #include <array>
 
@@ -702,7 +701,7 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
     MeshImportFiles files{*this, !requested.empty(), std::move(dependency_error)};
     // Prepare exact input pixels and persistent texture keys before moving the
     // immutable file bytes into the common create/replace transaction.
-    std::map<std::filesystem::path, std::string> texture_keys;
+    Map<std::filesystem::path, std::string> texture_keys;
     std::vector<std::string_view> image_bytes;
     MeshImportPublication result;
     const auto prepare_texture = [&](const std::filesystem::path& file) -> Result<void> {
@@ -718,7 +717,7 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
             ATELIER_TRY_BIND(id, identity());
             key = "project/" + *id;
         }
-        texture_keys.emplace(file, key);
+        texture_keys.try_emplace(file, key);
         const auto bytes = std::ranges::find(loaded.files, file, &assets::ImportedFile::relative);
         if (bytes == loaded.files.end())
             return failure("Imported texture is absent from the prepared bundle.");
@@ -759,10 +758,9 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
         if (assets::is_texture_path(path) || assets::is_mesh_path(path) || assets::is_sky_path(path) ||
             path.extension() == L".material") {
             if (!file_entry(path)) {
-                const auto texture = texture_keys.find(file.relative);
                 std::string key;
-                if (texture != texture_keys.end())
-                    key = texture->second;
+                if (const auto* texture = texture_keys.find(file.relative))
+                    key = *texture;
                 else {
                     ATELIER_TRY_BIND(id, identity());
                     key = "project/" + *id;
@@ -771,8 +769,8 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
             }
         }
     }
-    std::set<std::string> returned_materials;
-    std::set<std::string> slots;
+    Set<std::string> returned_materials;
+    Set<std::string> slots;
     std::vector<std::wstring> names;
     for (const auto& entry : catalog)
         if (same_path(entry.path.parent_path(), relative / "Materials"))
@@ -782,7 +780,7 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
         return failure(mapping.error().describe());
     for (std::size_t i = 0; i < loaded.mesh->materials().size(); ++i) {
         const auto slot = geometry::material_slot_name(*loaded.mesh, i);
-        if (!slots.insert(slot).second)
+        if (!slots.add(slot))
             return failure("Reimport requires unique material slot names.");
         std::optional<json::Value> saved;
         if (*mapping) {
@@ -800,7 +798,7 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
                 return failure(written.error().describe());
             loaded.notes.push_back("Preserved material binding and author values for slot '" + slot +
                                    "'; source material changes were not merged.");
-            if (returned_materials.insert(key).second) {
+            if (returned_materials.add(key)) {
                 if (auto material = current.material(key))
                     result.materials.push_back(std::move(*material));
                 else
@@ -819,10 +817,10 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
                     entry == author.entries.end() ? nullptr : std::get_if<material::TextureBinding>(&entry->value);
                 if (!binding)
                     return failure("Imported texture has no typed MI override.");
-                const auto texture = texture_keys.find(file);
-                if (texture == texture_keys.end())
+                const auto* texture = texture_keys.find(file);
+                if (!texture)
                     return failure("Imported material references a texture outside the prepared bundle.");
-                binding->asset_key = texture->second;
+                binding->asset_key = *texture;
             }
         ATELIER_TRY_BIND(filename, material_file(slot, names));
         if (assets::is_material_source_path(*filename)) {

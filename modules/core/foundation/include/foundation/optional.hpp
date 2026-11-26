@@ -12,6 +12,17 @@
 
 namespace atelier {
 
+template <class T>
+class Optional;
+
+namespace detail {
+template <class T>
+inline constexpr bool is_atelier_optional_v = false;
+
+template <class T>
+inline constexpr bool is_atelier_optional_v<Optional<T>> = true;
+}
+
 // An inline value or absence, not an error channel. The payload is at offset zero,
 // followed by one byte of engagement; empty storage contains no live T.
 template <class T>
@@ -74,13 +85,13 @@ public:
     explicit constexpr Optional(std::in_place_t, Args&&... arguments) noexcept
         : storage_(std::in_place, std::forward<Args>(arguments)...), engaged_(1) {}
 
-    explicit constexpr Optional(const T& value) noexcept
-        requires std::is_nothrow_copy_constructible_v<T>
-        : Optional(std::in_place, value) {}
-
-    explicit constexpr Optional(T&& value) noexcept
-        requires std::is_nothrow_move_constructible_v<T>
-        : Optional(std::in_place, std::move(value)) {}
+    template <class U = T>
+        requires(!std::same_as<std::remove_cvref_t<U>, Optional> &&
+                 !std::same_as<std::remove_cvref_t<U>, std::in_place_t> &&
+                 !(std::same_as<T, bool> && detail::is_atelier_optional_v<std::remove_cvref_t<U>>) &&
+                 std::is_nothrow_constructible_v<T, U>)
+    explicit(!std::is_convertible_v<U, T>) constexpr Optional(U&& value) noexcept
+        : Optional(std::in_place, std::forward<U>(value)) {}
 
     constexpr Optional(const Optional&) noexcept
         requires std::is_trivially_copy_constructible_v<T>
@@ -261,11 +272,12 @@ public:
         return !left.engaged_ || static_cast<bool>(*left.pointer() == *right.pointer());
     }
 
-    friend constexpr bool operator==(const Optional& left, const T& right) noexcept
-        requires requires(const T& a, const T& b) {
-            { a == b } noexcept -> std::convertible_to<bool>;
-        }
-    {
+    template <class U = T>
+        requires(!detail::is_atelier_optional_v<std::remove_cvref_t<U>>) &&
+                requires(const T& a, const U& b) {
+                    { a == b } noexcept -> std::convertible_to<bool>;
+                }
+    friend constexpr bool operator==(const Optional& left, const U& right) noexcept {
         return left.engaged_ && static_cast<bool>(*left.pointer() == right);
     }
 

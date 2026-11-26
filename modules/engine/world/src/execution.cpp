@@ -2,7 +2,6 @@
 #include "world/timing.hpp"
 #include <algorithm>
 #include <cmath>
-#include <unordered_set>
 
 namespace atelier::world {
 using detail::Access;
@@ -366,24 +365,24 @@ Result<void> World::add_tick_prerequisite(ObjectId object, ObjectId prerequisite
         } else
             ATELIER_TRY(state.component_owner(id));
     }
-    if (const auto found = state.prerequisites.find(object);
-        found != state.prerequisites.end() && std::ranges::find(found->second, prerequisite) != found->second.end())
+    if (const auto* found = state.prerequisites.find(object);
+        found && std::ranges::find(*found, prerequisite) != found->end())
         return {};
     // The edge closes a cycle when `object` already precedes `prerequisite`.
     std::vector<ObjectId> stack{object};
-    std::unordered_set<ObjectId> seen{object};
+    Set<ObjectId> seen{object};
     while (!stack.empty()) {
         const auto next = stack.back();
         stack.pop_back();
         if (next == prerequisite)
             return error(ErrorCode::argument_mismatch, "Tick prerequisites would form a cycle.");
-        if (const auto found = state.dependents.find(next); found != state.dependents.end())
-            for (const auto later : found->second)
-                if (seen.insert(later).second)
+        if (const auto* found = state.dependents.find(next))
+            for (const auto later : *found)
+                if (seen.add(later))
                     stack.push_back(later);
     }
-    state.prerequisites[object].push_back(prerequisite);
-    state.dependents[prerequisite].push_back(object);
+    state.prerequisites.try_emplace(object).value->push_back(prerequisite);
+    state.dependents.try_emplace(prerequisite).value->push_back(object);
     state.schedule_dirty = true;
     return {};
 }

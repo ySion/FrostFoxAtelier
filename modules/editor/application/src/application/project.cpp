@@ -188,7 +188,7 @@ Result<bool> Application::confirm_discard(bool sources, bool interactive) {
 }
 
 Result<void> Application::publish_document(std::unique_ptr<editor::Session> next, editor::ProjectCode* code,
-                                           const std::function<void()>& commit_location, bool preserve_view) {
+                                           Optional<FunctionRef<void()>> commit_location, bool preserve_view) {
     const auto previous_document = document_->presentation().identity();
     const editor::Camera saved_camera = camera_;
     std::vector<std::uint64_t> saved_selected_entities;
@@ -234,7 +234,7 @@ Result<void> Application::publish_document(std::unique_ptr<editor::Session> next
     if (!closed)
         return std::unexpected(closed.error());
     if (commit_location)
-        commit_location();
+        (*commit_location)();
     if (control_)
         control_->document_replaced();
     workspace_.reset_document(preserve_view);

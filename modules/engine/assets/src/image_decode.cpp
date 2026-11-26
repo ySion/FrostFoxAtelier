@@ -108,8 +108,8 @@ Result<std::vector<material::ImageRef>> decode_images(std::span<const std::strin
                 if (cache) {
                     digest = foundation::sha256(std::as_bytes(std::span{sources[i]}));
                     std::scoped_lock lock(guard);
-                    if (const auto found = cache->entries.find(digest); found != cache->entries.end())
-                        result[i] = found->second.lock();
+                    if (const auto* found = cache->entries.find(digest))
+                        result[i] = found->lock();
                 }
                 if (result[i]) {
                     return budget.charge(result[i]->pixels().size());
@@ -117,7 +117,7 @@ Result<std::vector<material::ImageRef>> decode_images(std::span<const std::strin
                 ATELIER_TRY_BIND(decoded, decode(sources[i], &budget));
                 if (cache) {
                     std::scoped_lock lock(guard);
-                    auto& entry = cache->entries[digest];
+                    auto& entry = *cache->entries.try_emplace(digest).value;
                     if (auto shared = entry.lock())
                         *decoded = std::move(shared);
                     else

@@ -1,5 +1,7 @@
 #include "json/json.hpp"
 
+#include "foundation/map.hpp"
+#include "foundation/set.hpp"
 #include "foundation/string.hpp"
 #include "memory/fatal.hpp"
 #include <yyjson.h>
@@ -10,8 +12,6 @@
 #include <charconv>
 #include <cmath>
 #include <limits>
-#include <unordered_map>
-#include <unordered_set>
 
 namespace atelier::json {
 namespace {
@@ -467,13 +467,15 @@ Result<void> validate(Value value, std::size_t depth, ParseOptions options) {
 
         std::size_t next{};
 
-        std::unordered_set<std::string_view> keys;
+        Set<std::string_view> keys;
 
         explicit Frame(Value node) : value(node) {
-            if (node.kind() == Kind::object)
+            if (node.kind() == Kind::object) {
                 Access::object(node, [&](auto key, Value child) { children.emplace(key, child); });
-            else if (node.kind() == Kind::array)
+                keys.reserve(children.size());
+            } else if (node.kind() == Kind::array) {
                 Access::array(node, [&](auto, Value child) { children.emplace(std::string_view{}, child); });
+            }
         }
     };
     const bool events = options.depth_policy == DepthPolicy::events;
@@ -492,7 +494,7 @@ Result<void> validate(Value value, std::size_t depth, ParseOptions options) {
         if (frame.value.kind() == Kind::object) {
             if (events && child_depth > options.maximum_depth)
                 return std::unexpected(child.error(Fault::depth, "JSON key event depth exceeded"));
-            if (!frame.keys.insert(key).second)
+            if (!frame.keys.add(key))
                 return std::unexpected(child.error(Fault::duplicate_key, "Duplicate JSON key"));
         } else if (events && child_depth > options.maximum_depth)
             return std::unexpected(child.error(Fault::depth, "JSON event depth exceeded"));
@@ -541,21 +543,28 @@ Result<Document> Document::parse_gltf(std::string_view bytes) {
     Document result{doc, Value::Storage::readonly_mutable};
     Array<yyjson_mut_val*> pending;
     pending.emplace(yyjson_mut_doc_get_root(doc));
-    std::unordered_map<std::string_view, yyjson_mut_val*> last;
+    Map<std::string_view, yyjson_mut_val*> last;
     while (!pending.empty()) {
         auto* node = pending.back();
         pending.pop();
         if (yyjson_mut_is_obj(node)) {
-            last.clear();
-            auto scan = yyjson_mut_obj_iter_with(node);
-            while (auto* key = yyjson_mut_obj_iter_next(&scan))
-                last[{yyjson_mut_get_str(key), yyjson_mut_get_len(key)}] = key;
-            auto iter = yyjson_mut_obj_iter_with(node);
-            while (auto* key = yyjson_mut_obj_iter_next(&iter)) {
-                if (last.at({yyjson_mut_get_str(key), yyjson_mut_get_len(key)}) != key)
-                    yyjson_mut_obj_iter_remove(&iter);
-                else
-                    pending.emplace(yyjson_mut_obj_iter_get_val(key));
+            const auto count = yyjson_mut_obj_size(node);
+            if (count == 1) {
+                auto iter = yyjson_mut_obj_iter_with(node);
+                pending.emplace(yyjson_mut_obj_iter_get_val(yyjson_mut_obj_iter_next(&iter)));
+            } else if (count > 1) {
+                last.clear();
+                last.reserve(count);
+                auto scan = yyjson_mut_obj_iter_with(node);
+                while (auto* key = yyjson_mut_obj_iter_next(&scan))
+                    last.insert_or_assign(std::string_view{yyjson_mut_get_str(key), yyjson_mut_get_len(key)}, key);
+                auto iter = yyjson_mut_obj_iter_with(node);
+                while (auto* key = yyjson_mut_obj_iter_next(&iter)) {
+                    if (last.at(std::string_view{yyjson_mut_get_str(key), yyjson_mut_get_len(key)}) != key)
+                        yyjson_mut_obj_iter_remove(&iter);
+                    else
+                        pending.emplace(yyjson_mut_obj_iter_get_val(key));
+                }
             }
         } else if (yyjson_mut_is_arr(node)) {
             auto iter = yyjson_mut_arr_iter_with(node);

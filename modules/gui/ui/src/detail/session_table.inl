@@ -3,19 +3,21 @@
         const auto invalid=[&] { return std::unexpected(Error{ErrorCode::invalid_control,control.key}); };
         if (data.columns.empty() || data.columns.size()>128 || data.rows.size()>1000000 ||
             static_cast<unsigned>(data.sort.direction)>static_cast<unsigned>(TableSortDirection::descending)) return invalid();
-        std::unordered_set<TableKey> columns,cells;
+        Set<TableKey> columns,cells;
+        columns.reserve(data.columns.size());
+        cells.reserve(std::min<std::size_t>(data.rows.size()*data.columns.size(),65536));
         TableIndex rows; rows.reserve(data.rows.size());
         for (const auto& column:data.columns) {
-            if (!column.key || !columns.insert(column.key).second || column.title.size()>4096 || !detail::valid_text(column.title,false) ||
+            if (!column.key || !columns.add(column.key) || column.title.size()>4096 || !detail::valid_text(column.title,false) ||
                 !std::isfinite(column.width) || !std::isfinite(column.min_width) || column.min_width<12 ||
                 column.width<column.min_width || column.width>32768 ||
                 static_cast<unsigned>(column.alignment)>static_cast<unsigned>(TextAlign::right)) return invalid();
         }
         if (data.sort.column && !columns.contains(data.sort.column)) return invalid();
         for (const auto& row:data.rows) {
-            if (!row.key || !rows.emplace(row.key,rows.size()).second || row.cells.size()!=data.columns.size()) return invalid();
+            if (!row.key || !rows.try_emplace(row.key,rows.size()).inserted || row.cells.size()!=data.columns.size()) return invalid();
             for (const auto& cell:row.cells)
-                if (!cell.key || !cells.insert(cell.key).second || cell.text.size()>4096 || !detail::valid_text(cell.text,false) ||
+                if (!cell.key || !cells.add(cell.key) || cell.text.size()>4096 || !detail::valid_text(cell.text,false) ||
                     static_cast<unsigned>(cell.icon)>static_cast<unsigned>(last_control_icon)) return invalid();
         }
         return rows;
@@ -26,8 +28,8 @@
         return nullptr;
     }
     static bool table_row_enabled(const State& state,TableKey key) {
-        const auto row=state.table_index.find(key);
-        return row!=state.table_index.end() && state.control.table->rows[row->second].enabled;
+        const auto* row=state.table_index.find(key);
+        return row && state.control.table->rows[*row].enabled;
     }
     bool table_input(Reply& reply,const Event& event,const ControlBox* hit,ControlKey released_keyboard) {
         if (press && states.at(press->key).control.kind==ControlKind::table && !press->scrollbar) {
@@ -156,15 +158,15 @@
         reply.consumed=true;
         if (data.rows.empty()) return true;
         const auto& index=states.at(focus).table_index;
-        const auto row=index.find(selected.row);
+        const auto* row=index.find(selected.row);
         const auto column=std::find_if(data.columns.begin(),data.columns.end(),[&](const auto& column){return column.key==selected.column;});
-        auto r=row==index.end()?0:static_cast<int>(row->second);
+        auto r=!row?0:static_cast<int>(*row);
         auto c=!details || column==data.columns.end()?0:static_cast<int>(column-data.columns.begin());
         const auto direction=event.key==Key::left || event.key==Key::up || event.key==Key::page_up || event.key==Key::home?-1:1;
         if (horizontal && details) c=std::clamp(c+direction,0,static_cast<int>(data.columns.size())-1);
         else if (event.key==Key::home) r=0;
         else if (event.key==Key::end) r=static_cast<int>(data.rows.size())-1;
-        else if (row!=index.end()) {
+        else if (row) {
             const auto* geometry=published->find_table(focus);
             const auto columns=geometry?static_cast<int>(geometry->columns_per_row):1;
             const auto page=(event.key==Key::page_up || event.key==Key::page_down) && geometry?

@@ -9,6 +9,8 @@
 #include "renderer/raster_viewport.hpp"
 #include "detail/frame_slots.hpp"
 #include "math/math.hpp"
+#include "foundation/map.hpp"
+#include "foundation/set.hpp"
 #include "memory/fatal.hpp"
 
 #include <algorithm>
@@ -22,8 +24,6 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
-#include <map>
-#include <unordered_set>
 #include <utility>
 
 namespace atelier::renderer::detail {
@@ -81,27 +81,32 @@ static_assert(sizeof(ProbeContribution) == 96);
 // and shares the empty list at the end of the triangle words.
 std::vector<std::uint32_t> closure_words(const geometry::Mesh& mesh) {
     const auto volumes = triangle_volumes(mesh);
-    std::map<std::uint32_t, std::vector<std::uint32_t>> components;
+    struct ComponentInfo {
+        std::vector<std::uint32_t> slots;
+
+        std::uint32_t offset{};
+    };
+    Map<std::uint32_t, ComponentInfo> components;
     for (std::size_t i = 0; i < volumes.size(); ++i)
         if (volumes[i].closed)
-            components[volumes[i].closed].push_back(mesh.material_slot(i));
+            components.try_emplace(volumes[i].closed).value->slots.push_back(mesh.material_slot(i));
     std::vector<std::uint32_t> words(volumes.size() + 1);
     const auto empty = static_cast<std::uint32_t>(volumes.size());
-    std::map<std::uint32_t, std::uint32_t> lists;
-    for (auto& [component, slots] : components) {
-        std::sort(slots.begin(), slots.end());
-        slots.erase(std::unique(slots.begin(), slots.end()), slots.end());
-        if (slots.size() < 2) {
-            lists[component] = empty;
+    for (auto [component, info] : components) {
+        (void)component;
+        std::sort(info.slots.begin(), info.slots.end());
+        info.slots.erase(std::unique(info.slots.begin(), info.slots.end()), info.slots.end());
+        if (info.slots.size() < 2) {
+            info.offset = empty;
             continue;
         }
-        lists[component] = static_cast<std::uint32_t>(words.size());
-        words.push_back(static_cast<std::uint32_t>(slots.size()));
-        words.insert(words.end(), slots.begin(), slots.end());
+        info.offset = static_cast<std::uint32_t>(words.size());
+        words.push_back(static_cast<std::uint32_t>(info.slots.size()));
+        words.insert(words.end(), info.slots.begin(), info.slots.end());
     }
     for (std::size_t i = 0; i < volumes.size(); ++i)
         if (volumes[i].closed)
-            words[i] = lists[volumes[i].closed];
+            words[i] = components.at(volumes[i].closed).offset;
     return words;
 }
 
@@ -505,6 +510,7 @@ struct SceneLit::State {
         }
     };
 
+    // Slot caches raw entry pointers across insertions within and across frames.
     std::unordered_map<const geometry::Mesh*, Geometry> geometries;
 
     std::unordered_map<ObjectKey, Object, ObjectKeyHash> objects;
@@ -2862,7 +2868,8 @@ Result<void> SceneLit::validate(const Frame& frame, bool duplicate_mesh_keys) co
     if (const auto* error = probe_focus_error(s, frame.lighting_focus))
         return invalid(false, error);
     ATELIER_TRY(invalid(!duplicate_mesh_keys, "Duplicate stable mesh identity"));
-    std::unordered_set<std::uint64_t> light_keys;
+    Set<std::uint64_t> light_keys;
+    light_keys.reserve(frame.lights.size());
     for (const auto& l : frame.lights) {
         auto light = invalid(l.kind <= LightKind::directional && finite(l.intensity) && l.intensity >= 0 &&
                                  finite(l.range) && l.range >= 0 && finite(l.source_radius) && l.source_radius >= 0 &&
@@ -2894,7 +2901,7 @@ Result<void> SceneLit::validate(const Frame& frame, bool duplicate_mesh_keys) co
             ATELIER_TRY(invalid(double(l.source_radius) < std::numbers::pi_v<double> / 2,
                                 "Directional source angular radius is too large"));
         if (l.stable_key)
-            ATELIER_TRY(invalid(light_keys.insert(l.stable_key).second, "Duplicate stable light identity"));
+            ATELIER_TRY(invalid(light_keys.add(l.stable_key), "Duplicate stable light identity"));
     }
     return {};
 }

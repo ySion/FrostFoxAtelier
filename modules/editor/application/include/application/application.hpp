@@ -12,9 +12,10 @@
 #include "editor/camera.hpp"
 #include "editor/operators.hpp"
 #include "editor/workspace.hpp"
+#include "foundation/function_ref.hpp"
+#include "foundation/optional.hpp"
 #include "renderer/renderer.hpp"
 #include <chrono>
-#include <functional>
 #include <source_location>
 
 namespace atelier::application {
@@ -493,7 +494,7 @@ private:
     void publish_build(std::shared_ptr<const editor::ProjectBuild>);
 
     Result<void> publish_document(std::unique_ptr<editor::Session>, editor::ProjectCode* = nullptr,
-                                  const std::function<void()>& commit_location = {}, bool preserve_view = false);
+                                  Optional<FunctionRef<void()>> commit_location = {}, bool preserve_view = false);
 
     struct ProjectCandidate {
         // Procedural resource providers borrow this address during loading and after adoption.

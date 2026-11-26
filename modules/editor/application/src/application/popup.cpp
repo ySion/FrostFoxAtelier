@@ -102,16 +102,16 @@ Result<void> PopupHost::update(ui::ControlKey source, RECT anchor, bool below, s
     if (measure) {
         auto rows = std::make_shared<std::vector<ui_language::Item>>();
         rows->reserve(items.size());
-        std::erase_if(row_keys_, [&](const auto& entry) {
-            return std::ranges::none_of(items, [&](const auto& item) { return item.key == entry.first; });
+        row_keys_.remove_if([&](ui::ControlKey key, ui::ControlKey) {
+            return std::ranges::none_of(items, [&](const auto& item) { return item.key == key; });
         });
         for (const auto& item : items) {
             auto [at, inserted] = row_keys_.try_emplace(item.key, 0);
             if (inserted)
-                at->second = next_key_++;
+                *at = next_key_++;
             const bool branch = !item.children.empty();
             rows->push_back(
-                {at->second,
+                {*at,
                  {item.text, branch ? std::wstring{} : item.shortcut, item.enabled, item.selected, branch,
                   !rows->empty() && item.separator_before,
                   std::wstring(item.behavior == ui::MenuBehavior::radio      ? L"radio"

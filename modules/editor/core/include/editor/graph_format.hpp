@@ -1,6 +1,7 @@
 #pragma once
 #include "assets/json_format.hpp"
 #include "editor/fields.hpp"
+#include "foundation/function_ref.hpp"
 #include "procedural/graph.hpp"
 #include "runtime/runtime.hpp"
 #include "world/diagnostic.hpp"
@@ -40,7 +41,7 @@ enum class GraphNodeShape : std::uint8_t {
 [[nodiscard]] bool valid_graph_identifier(std::string_view text) noexcept;
 
 [[nodiscard]] std::string make_unique_graph_identifier(std::string_view preferred, std::string_view fallback,
-                                                       const std::function<bool(std::string_view)>& is_taken);
+                                                       FunctionRef<bool(std::string_view)> is_taken);
 
 [[nodiscard]] bool valid_graph_target_path(std::string_view text) noexcept;
 

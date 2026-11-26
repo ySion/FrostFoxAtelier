@@ -50,7 +50,7 @@ struct LiveLink::Impl {
 
     std::condition_variable wake;
 
-    std::deque<std::string> outbox;
+    RingDeque<std::string> outbox;
 
     std::vector<std::string> inbox;
 
@@ -132,7 +132,7 @@ void LiveLink::send(std::string text) {
         std::lock_guard lock(impl_->mutex);
         if (impl_->closed)
             return;
-        impl_->outbox.push_back(std::move(text));
+        impl_->outbox.emplace_back(std::move(text));
     }
     impl_->wake.notify_all();
 }
@@ -315,7 +315,7 @@ void PlayLink::send(std::string_view ops, Pending&& resources) {
     // files the peer may still be reading. Only ACK or closing this run releases them.
     resources.seq = seq;
     resources.bytes = bytes;
-    pending_.push_back(std::move(resources));
+    pending_.emplace_back(std::move(resources));
     pending_bytes_ += bytes;
     pending_resource_bytes_ += pending_.back().resource_bytes;
     resources.resource_bytes = 0;
@@ -342,10 +342,10 @@ void PlayLink::poll(bool running, bool stopping) {
                 ATELIER_TRY_BIND(graph, message_value(root.find("graph")));
                 if (*graph) {
                     ATELIER_TRY_BIND(value, message_value((**graph).string()));
-                    inspected_[*id] = *value;
+                    inspected_.insert_or_assign(*id, std::string(*value));
                 } else {
                     ATELIER_TRY_BIND(error, message_value(root.string({"error"})));
-                    inspected_[*id] = "error: " + std::string(*error);
+                    inspected_.insert_or_assign(*id, "error: " + std::string(*error));
                 }
             } else if (*type == "error") {
                 ATELIER_TRY_BIND(error, message_value(root.string({"message"})));
@@ -417,12 +417,8 @@ std::uint64_t PlayLink::inspect(std::uint64_t identity) {
 }
 
 std::optional<std::string> PlayLink::inspected(std::uint64_t request) {
-    const auto at = inspected_.find(request);
-    if (at == inspected_.end())
-        return {};
-    auto result = std::move(at->second);
-    inspected_.erase(at);
-    return result;
+    auto taken = inspected_.take(request);
+    return taken ? std::optional<std::string>{std::move(*taken)} : std::nullopt;
 }
 
 void PlayEnd::service(editor::Session& document, editor::Project& project) {

@@ -75,7 +75,7 @@ detail::Presented::Presented(std::span<const world::PresentedPose> poses) {
     entities_.reserve(poses.size());
     for (const auto& pose : poses) {
         entities_.push_back(pose.entity);
-        auto& offset = offsets_[pose.entity];
+        auto& offset = *offsets_.try_emplace(pose.entity).value;
         offset.reset();
         if (same_bytes(pose.position, pose.world_position) && same_bytes(pose.rotation, pose.world_rotation))
             continue;
@@ -96,8 +96,8 @@ Result<const detail::Presented::Offset*> detail::Presented::find(world::World::S
                                                                  ObjectId entity) const {
     // The chain was composed by this pass's matrix() of `entity`, so it ends at world space.
     for (auto node = entity; node != ObjectId{};) {
-        if (const auto found = offsets_.find(node); found != offsets_.end())
-            return found->second ? &*found->second : nullptr;
+        if (const auto* found = offsets_.find(node))
+            return *found ? &**found : nullptr;
         ATELIER_TRY_BIND(parent, pass.parent(node));
         node = *parent;
     }
@@ -106,8 +106,8 @@ Result<const detail::Presented::Offset*> detail::Presented::find(world::World::S
 
 const detail::Presented::Offset* detail::Presented::find(std::span<const ObjectId> chain) const {
     for (const auto node : chain)
-        if (const auto found = offsets_.find(node); found != offsets_.end())
-            return found->second ? &*found->second : nullptr;
+        if (const auto* found = offsets_.find(node))
+            return *found ? &**found : nullptr;
     return nullptr;
 }
 
@@ -136,19 +136,19 @@ void detail::BucketTracker::mark(std::uint32_t slot, std::uint64_t serial, bool 
         dirty.push_back(slot);
 }
 
-void detail::BucketTracker::index_materials(std::size_t slot, std::unordered_set<ObjectId> dependencies) {
+void detail::BucketTracker::index_materials(std::size_t slot, Set<ObjectId> dependencies) {
     auto& previous = material_dependencies[slot];
     const auto index = static_cast<std::uint32_t>(slot);
     for (const auto object : previous)
         if (!dependencies.contains(object)) {
-            const auto found = material_dependents.find(object);
-            found->second.erase(index);
-            if (found->second.empty())
-                material_dependents.erase(found);
+            auto* found = material_dependents.find(object);
+            found->remove(index);
+            if (found->empty())
+                material_dependents.remove(object);
         }
     for (const auto object : dependencies)
         if (!previous.contains(object))
-            material_dependents[object].insert(index);
+            material_dependents.try_emplace(object).value->add(index);
     previous = std::move(dependencies);
 }
 
@@ -158,32 +158,34 @@ template <class VisitChain>
 void index_bucket_chains(detail::BucketTracker& tracker, std::span<const world::CapabilityMember> members,
                          VisitChain&& chain) {
     tracker.clear_layout();
+    tracker.components.reserve(members.size());
+    tracker.chain_starts.reserve(members.size() + 1);
     for (std::size_t slot = 0; slot < members.size(); ++slot) {
         const auto index = static_cast<std::uint32_t>(slot);
-        tracker.components.emplace(members[slot].component, index);
+        tracker.components.try_emplace(members[slot].component, index);
         tracker.chain_starts.push_back(static_cast<std::uint32_t>(tracker.chains.size()));
         chain(members[slot].entity, [&](ObjectId node) {
             tracker.chains.push_back(node);
-            tracker.dependents[node].push_back(index);
+            tracker.dependents.try_emplace(node).value->push_back(index);
         });
     }
     tracker.chain_starts.push_back(static_cast<std::uint32_t>(tracker.chains.size()));
 }
 
 void mark_written_object(detail::BucketTracker& tracker, ObjectId object, std::uint64_t serial) {
-    if (const auto found = tracker.dependents.find(object); found != tracker.dependents.end())
-        for (const auto slot : found->second)
+    if (const auto* found = tracker.dependents.find(object))
+        for (const auto slot : *found)
             tracker.mark(slot, serial);
-    if (const auto found = tracker.components.find(object); found != tracker.components.end())
-        tracker.mark(found->second, serial, true);
-    if (const auto found = tracker.material_dependents.find(object); found != tracker.material_dependents.end())
-        for (const auto slot : found->second)
+    if (const auto* found = tracker.components.find(object))
+        tracker.mark(*found, serial, true);
+    if (const auto* found = tracker.material_dependents.find(object))
+        for (const auto slot : *found)
             tracker.mark(slot, serial, true);
 }
 
 void finalize_dirty_slots(Runtime& runtime, std::uint64_t cursor, detail::BucketTracker& tracker,
                           std::uint64_t serial) {
-    for (const auto& [object, slots] : tracker.material_dependents)
+    for (const auto [object, slots] : tracker.material_dependents)
         if (runtime.changed_since(object, cursor))
             for (const auto slot : slots)
                 tracker.mark(slot, serial, true);
@@ -204,8 +206,8 @@ void update_bucket_presented(detail::BucketTracker& tracker, std::vector<SlotT>&
             candidates.push_back(slot);
     };
     for (const auto entity : presented.entities())
-        if (const auto found = tracker.dependents.find(entity); found != tracker.dependents.end())
-            for (const auto slot : found->second)
+        if (const auto* found = tracker.dependents.find(entity))
+            for (const auto slot : *found)
                 mark(slot);
     for (const auto slot : tracker.presented_list)
         mark(slot);
@@ -254,7 +256,7 @@ Result<bool> Scene::update_mesh(world::World::SpatialPass& pass, std::size_t slo
         return moved;
     }
     std::optional<Error> unusable;
-    std::unordered_set<ObjectId> dependencies;
+    Set<ObjectId> dependencies;
     std::shared_ptr<const std::vector<material::ProgramSurfaceRef>> uncached;
     auto read =
         runtime.with_native<const StaticMeshComponent>(object, [&](const StaticMeshComponent& value) -> Result<bool> {
@@ -331,7 +333,7 @@ Result<bool> Scene::update_generator(world::World::SpatialPass& pass, std::size_
 
     std::optional<Error> invalid_component;
     std::optional<Error> unusable;
-    std::unordered_set<ObjectId> dependencies;
+    Set<ObjectId> dependencies;
     detail::GeneratorCapturedSurfaces captured_surfaces;
     GeneratorRenderItem candidate{owner, object, **matrix, 0, {}, {}, {}};
 
@@ -380,7 +382,7 @@ Result<bool> Scene::update_generator(world::World::SpatialPass& pass, std::size_
                         unusable = std::move(def.error());
                         return false;
                     }
-                    auto& cached_fallback = fallback_surfaces_[mat_count];
+                    auto& cached_fallback = *fallback_surfaces_.try_emplace(mat_count).value;
                     if (!cached_fallback || (mat_count > 0 && (*cached_fallback)[0] != *def)) {
                         cached_fallback =
                             std::make_shared<const std::vector<material::ProgramSurfaceRef>>(mat_count, *def);
@@ -464,8 +466,8 @@ Result<void> Scene::index_layout(world::World::SpatialPass& pass, std::span<cons
     index_bucket_chains(generator_tracker_, generators, chain);
     ATELIER_TRY_BIND(lights, world_->members(lights_));
     for (const auto& light : *lights) {
-        light_sources_.insert(light.component);
-        chain(light.entity, [&](ObjectId node) { light_sources_.insert(node); });
+        light_sources_.add(light.component);
+        chain(light.entity, [&](ObjectId node) { light_sources_.add(node); });
     }
     return {};
 }

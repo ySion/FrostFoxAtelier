@@ -1,10 +1,10 @@
 #pragma once
+#include "foundation/map.hpp"
 #include "platform/utf.hpp"
 #include "ui_language/component.hpp"
 #include <algorithm>
 #include <array>
 #include <optional>
-#include <unordered_map>
 
 namespace atelier::editor {
 
@@ -89,7 +89,7 @@ struct PropertyRow {
 class PropertyHelpCache {
 public:
     void begin() {
-        for (auto& [key, entry] : entries_) {
+        for (auto [key, entry] : entries_) {
             static_cast<void>(key);
             entry.used = false;
         }
@@ -97,15 +97,16 @@ public:
 
     void end() {
         // A retained panel can use its already decorated descriptor without calling get() again.
-        std::erase_if(entries_,
-                      [](const auto& entry) { return !entry.second.used && entry.second.help.use_count() == 1; });
+        entries_.remove_if([](ui::ControlKey, const Entry& entry) {
+            return !entry.used && entry.help.use_count() == 1;
+        });
     }
 
     void clear() { entries_.clear(); }
 
     ui_language::TooltipBinding get(ui::ControlKey key, std::wstring_view title, std::wstring_view identity,
                                     std::string_view description) {
-        auto& entry = entries_[key];
+        auto& entry = *entries_.try_emplace(key).value;
         entry.used = true;
         if (!entry.help || entry.help->title != title || entry.help->identity != identity ||
             entry.description != description) {
@@ -125,7 +126,7 @@ private:
         bool used{};
     };
 
-    std::unordered_map<ui::ControlKey, Entry> entries_;
+    Map<ui::ControlKey, Entry> entries_;
 };
 
 } // namespace atelier::editor

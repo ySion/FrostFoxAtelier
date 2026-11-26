@@ -2,11 +2,11 @@
 #include "editor/properties.hpp"
 #include "editor/project.hpp"
 #include "assets/builtin_materials.hpp"
+#include "foundation/set.hpp"
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <new>
-#include <unordered_set>
 
 namespace atelier::editor {
 std::string Context::focused_graph() const {
@@ -119,12 +119,14 @@ Result<void> admit(const Context& context, const ContextOverride& changes) {
     if (selection.entities.size() > Session::maximum_entities)
         return std::unexpected(rejected("The selection exceeds the Entity limit."));
     ATELIER_TRY_BIND(members, context.document.world().members());
-    std::unordered_set<ObjectId> entities;
-    std::unordered_set<ObjectId> seen;
+    Set<ObjectId> entities;
+    entities.reserve(members->size());
+    Set<ObjectId> seen;
+    seen.reserve(selection.entities.size());
     for (const auto& member : *members)
-        entities.insert(member.id());
+        entities.add(member.id());
     for (const auto entity : selection.entities) {
-        if (!seen.insert(entity).second)
+        if (!seen.add(entity))
             return std::unexpected(rejected("The selection repeats an Entity."));
         if (!entities.contains(entity))
             return std::unexpected(rejected("The selection names an object that is not an Entity of this document."));
@@ -176,12 +178,12 @@ std::span<const std::string_view> region_names() noexcept {
 }
 
 Result<void> OperatorRegistry::validate() const {
-    std::unordered_set<std::string_view> ids;
+    Set<std::string_view> ids;
     ids.reserve(operators_.size());
     for (const auto& info : operators_) {
         if (!valid_id(info.id))
             return std::unexpected(invalid("Operator ID must be lowercase <domain>.<action>: " + info.id));
-        if (!ids.insert(info.id).second)
+        if (!ids.add(info.id))
             return std::unexpected(invalid("Operator is already registered: " + info.id));
         if (!info.poll || !info.execute)
             return std::unexpected(invalid("Operator needs poll and execute: " + info.id));

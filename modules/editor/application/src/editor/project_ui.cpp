@@ -31,7 +31,7 @@ void ProjectUI::sync(const Project* project) {
 
 Result<std::shared_ptr<const ui::UiFrame>> ProjectUI::prepare(ui::Session& session, ui::Surface surface, double elapsed,
                                                               std::size_t entities,
-                                                              const std::function<void(const ui::Reply&)>& effects) {
+                                                              FunctionRef<void(const ui::Reply&)> effects) {
     const auto failed = [](std::string message) {
         return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)});
     };

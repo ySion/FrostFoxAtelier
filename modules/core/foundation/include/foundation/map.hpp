@@ -1,11 +1,16 @@
 #pragma once
 
 #include "foundation/hash.hpp"
+#include "foundation/optional.hpp"
 #include "foundation/detail/dense_hash_table.hpp"
 #include "memory/fatal.hpp"
 
+#include <concepts>
+#include <functional>
+#include <initializer_list>
 #include <iterator>
 #include <memory>
+#include <ranges>
 #include <utility>
 
 namespace atelier {
@@ -25,6 +30,31 @@ class Map {
     using Storage = detail::DenseHashTable<K, Pair, H, E>;
 
     static constexpr bool copyable = std::is_copy_constructible_v<K> && std::is_copy_constructible_v<V>;
+
+    template <class Entry>
+    static constexpr bool pair_entry = requires(Entry&& entry) {
+        requires detail::HashQuery<K, decltype((std::forward<Entry>(entry).first)), H, E>;
+        requires std::constructible_from<K, decltype((std::forward<Entry>(entry).first))>;
+        requires std::constructible_from<V, decltype((std::forward<Entry>(entry).second))>;
+    };
+
+    template <class Entry>
+    static constexpr bool key_value_entry = requires(Entry&& entry) {
+        requires detail::HashQuery<K, decltype((std::forward<Entry>(entry).key)), H, E>;
+        requires std::constructible_from<K, decltype((std::forward<Entry>(entry).key))>;
+        requires std::constructible_from<V, decltype((std::forward<Entry>(entry).value))>;
+    };
+
+    template <class Entry>
+    static constexpr bool map_entry = pair_entry<Entry> || key_value_entry<Entry>;
+
+    template <class Entry>
+    void insert_entry(Entry&& entry) {
+        if constexpr (pair_entry<Entry>)
+            try_emplace(std::forward<Entry>(entry).first, std::forward<Entry>(entry).second);
+        else
+            try_emplace(std::forward<Entry>(entry).key, std::forward<Entry>(entry).value);
+    }
 
 public:
     struct InsertResult {
@@ -97,7 +127,35 @@ public:
 
     using ConstIterator = EntryIterator<true>;
 
+    using ConstEntry = typename ConstIterator::Entry;
+
     Map() = default;
+
+    Map(std::initializer_list<std::pair<K, V>> values)
+        requires copyable
+    {
+        reserve(values.size());
+        for (const auto& [key, value] : values)
+            try_emplace(key, value);
+    }
+
+    template <std::input_iterator It, std::sentinel_for<It> Sentinel>
+        requires map_entry<std::iter_reference_t<It>>
+    Map(It first, Sentinel last) {
+        if constexpr (std::sized_sentinel_for<Sentinel, It>)
+            reserve(static_cast<std::size_t>(last - first));
+        for (; first != last; ++first)
+            insert_entry(*first);
+    }
+
+    template <std::ranges::input_range R>
+        requires(!std::same_as<std::remove_cvref_t<R>, Map>) && map_entry<std::ranges::range_reference_t<R>>
+    explicit Map(R&& values) {
+        if constexpr (std::ranges::sized_range<R>)
+            reserve(static_cast<std::size_t>(std::ranges::size(values)));
+        for (auto&& entry : values)
+            insert_entry(std::forward<decltype(entry)>(entry));
+    }
 
     Map(const Map&)
         requires copyable
@@ -149,48 +207,92 @@ public:
             storage_.swap(other.storage_);
     }
 
-    template <class Q>
+    template <class Q = K>
         requires detail::HashQuery<K, Q, H, E>
     [[nodiscard]] V* find(const Q& key) noexcept [[clang::lifetimebound]] {
         return const_cast<V*>(std::as_const(*this).find(key));
     }
 
-    template <class Q>
+    template <class Q = K>
         requires detail::HashQuery<K, Q, H, E>
     [[nodiscard]] const V* find(const Q& key) const noexcept [[clang::lifetimebound]] {
         const auto* at = storage_.find(key);
         return at ? std::addressof(at->second) : nullptr;
     }
 
-    template <class Q>
+    template <class Q = K>
+        requires detail::HashQuery<K, Q, H, E>
+    [[nodiscard]] V& at(const Q& key) & noexcept [[clang::lifetimebound]] {
+        auto* value = find(key);
+        if (!value)
+            fatal("Map key not found.");
+        return *value;
+    }
+
+    template <class Q = K>
+        requires detail::HashQuery<K, Q, H, E>
+    [[nodiscard]] const V& at(const Q& key) const& noexcept [[clang::lifetimebound]] {
+        const auto* value = find(key);
+        if (!value)
+            fatal("Map key not found.");
+        return *value;
+    }
+
+    template <class Q = K>
+        requires detail::HashQuery<K, Q, H, E>
+    const V& at(const Q&) const&& = delete;
+
+    template <class Q = K>
         requires detail::HashQuery<K, Q, H, E>
     [[nodiscard]] bool contains(const Q& key) const noexcept {
         return find(key) != nullptr;
     }
 
     // Lookup precedes construction: an existing key consumes neither argument.
-    template <class Q, class... A>
+    template <class Q = K, class... A>
         requires detail::HashQuery<K, Q, H, E> && std::constructible_from<K, Q&&> && std::constructible_from<V, A&&...>
     InsertResult try_emplace(Q&& key, A&&... arguments) [[clang::lifetimebound]] {
         const auto [at, inserted] = storage_.try_emplace(std::forward<Q>(key), std::forward<A>(arguments)...);
         return {std::addressof(at->second), inserted};
     }
 
-    template <class Q, class U>
+    template <class Q = K, class U>
         requires detail::HashQuery<K, Q, H, E> && std::constructible_from<K, Q&&> && std::constructible_from<V, U&&>
     InsertResult insert_or_assign(Q&& key, U&& value) [[clang::lifetimebound]] {
-        // Construct before replacing the old value; committing its move cannot throw.
-        V replacement(std::forward<U>(value));
-        auto result = try_emplace(std::forward<Q>(key), std::move(replacement));
-        if (!result.inserted)
+        auto result = try_emplace(std::forward<Q>(key), std::forward<U>(value));
+        if (!result.inserted) {
+            // Construct before replacing the old value so `value` may borrow `*result.value`.
+            V replacement(std::forward<U>(value));
             *result.value = std::move(replacement);
+        }
         return result;
     }
 
-    template <class Q>
+    void merge(Map& source) { storage_.merge(source.storage_); }
+
+    void merge(Map&& source) { storage_.merge(source.storage_); }
+
+    template <class Q = K>
         requires detail::HashQuery<K, Q, H, E>
     bool remove(const Q& key) noexcept {
         return storage_.erase(key);
+    }
+
+    template <class Q = K>
+        requires detail::HashQuery<K, Q, H, E>
+    [[nodiscard]] Optional<V> take(const Q& key) noexcept {
+        return storage_.template extract<V>(key);
+    }
+
+    template <class Predicate>
+        requires(std::predicate<Predicate&, ConstEntry> || std::predicate<Predicate&, const K&, const V&>)
+    std::size_t remove_if(Predicate&& predicate) noexcept {
+        return storage_.remove_if([&](const Pair& item) {
+            if constexpr (std::predicate<Predicate&, ConstEntry>)
+                return static_cast<bool>(std::invoke(predicate, ConstEntry{item.first, item.second}));
+            else
+                return static_cast<bool>(std::invoke(predicate, std::as_const(item.first), std::as_const(item.second)));
+        });
     }
 
     [[nodiscard]] Iterator begin() noexcept [[clang::lifetimebound]] { return Iterator{storage_.values().data()}; }
@@ -207,6 +309,21 @@ public:
     [[nodiscard]] ConstIterator end() const noexcept [[clang::lifetimebound]] {
         const auto& values = storage_.values();
         return ConstIterator{values.data() + values.size()};
+    }
+
+    friend bool operator==(const Map& left, const Map& right) noexcept
+        requires std::equality_comparable<V>
+    {
+        if (&left == &right)
+            return true;
+        if (left.size() != right.size())
+            return false;
+        for (const auto [key, value] : left) {
+            const auto* other = right.find(key);
+            if (!other || !static_cast<bool>(value == *other))
+                return false;
+        }
+        return true;
     }
 
 private:

@@ -1,6 +1,6 @@
 #pragma once
+#include "foundation/map.hpp"
 #include "geometry/mesh.hpp"
-#include <unordered_map>
 
 namespace atelier::renderer::detail {
 struct TriangleVolume {
@@ -14,15 +14,6 @@ struct TriangleVolume {
 inline std::vector<TriangleVolume> triangle_volumes(const geometry::Mesh& mesh) {
     using Position = std::array<float, 3>;
     using Vector = std::array<double, 3>;
-    struct PositionHash {
-        std::size_t operator()(const Position& p) const noexcept {
-            std::size_t hash = 0;
-            // std::hash<float> treats equal +0/-0 identically. Mesh rejects NaN.
-            for (float v : p)
-                hash ^= std::hash<float>{}(v) + 0x9e3779b9u + (hash << 6) + (hash >> 2);
-            return hash;
-        }
-    };
     struct Edge {
         std::uint32_t triangle{};
 
@@ -63,8 +54,8 @@ inline std::vector<TriangleVolume> triangle_volumes(const geometry::Mesh& mesh) 
         return Vector{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
     };
     const auto dot = [](Vector a, Vector b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
-    std::unordered_map<Position, std::uint32_t, PositionHash> positions;
-    std::unordered_map<std::uint64_t, Edge> edges;
+    Map<Position, std::uint32_t> positions;
+    Map<std::uint64_t, Edge> edges;
     positions.reserve(vertices.size());
     edges.reserve(vertices.size());
     for (std::uint32_t i = 0; i < count; ++i) {
@@ -80,7 +71,7 @@ inline std::vector<TriangleVolume> triangle_volumes(const geometry::Mesh& mesh) 
         std::array<std::uint32_t, 3> ids;
         for (std::size_t c = 0; c < 3; ++c) {
             Position p{v[c].position[0], v[c].position[1], v[c].position[2]};
-            ids[c] = positions.try_emplace(p, static_cast<std::uint32_t>(positions.size())).first->second;
+            ids[c] = *positions.try_emplace(p, static_cast<std::uint32_t>(positions.size())).value;
         }
         for (std::size_t c = 0; c < 3; ++c) {
             const auto a = ids[c];
@@ -88,7 +79,7 @@ inline std::vector<TriangleVolume> triangle_volumes(const geometry::Mesh& mesh) 
             if (a == b)
                 eligible[i] = false;
             const auto key = (std::uint64_t(std::min(a, b)) << 32) | std::max(a, b);
-            auto& edge = edges.try_emplace(key, Edge{i}).first->second;
+            auto& edge = *edges.try_emplace(key, Edge{i}).value;
             // Join every incident face, including a third nonmanifold face.
             connect(i, edge.triangle);
             ++edge.count;

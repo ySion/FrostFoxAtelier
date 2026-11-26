@@ -1,12 +1,12 @@
 #include "assets/mesh_import.hpp"
 #include "assets/file.hpp"
 #include "assets/image_decode.hpp"
+#include "foundation/map.hpp"
 #include "foundation/string.hpp"
 #include "platform/error.hpp"
 #include "platform/utf.hpp"
 #include <charconv>
 #include <sstream>
-#include <unordered_map>
 
 namespace atelier::assets {
 namespace {
@@ -116,16 +116,13 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
     const auto root = std::filesystem::canonical(source.parent_path(), error);
     if (error)
         return std::unexpected(Error{ErrorCode::invalid_storage, platform::error_message(error)});
-    std::unordered_map<std::string, std::size_t> files;
-    std::unordered_map<std::string, material::ImageRef> images;
+    Map<std::string, std::size_t> files;
+    Map<std::string, material::ImageRef> images;
     std::size_t total_bytes{};
     std::size_t image_bytes{};
-    const auto read = [&](const std::filesystem::path& relative) -> Result<std::size_t> {
-        const auto key = platform::utf16_to_utf8(relative.generic_wstring());
-        if (!key)
-            return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-16 text."});
-        if (const auto found = files.find(*key); found != files.end())
-            return found->second;
+    const auto read_with_key = [&](const std::filesystem::path& relative, std::string key) -> Result<std::size_t> {
+        if (const auto* found = files.find(key))
+            return *found;
         ATELIER_TRY(require(files.size() < 512, "OBJ has too many dependencies."));
         const auto path = std::filesystem::weakly_canonical(root / relative, error);
         if (error)
@@ -138,24 +135,30 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
             require(total_bytes + bytes->size() <= 512ull * 1024 * 1024, "OBJ dependency bytes exceed 512 MiB."));
         total_bytes += bytes->size();
         const auto slot = result.files.size();
-        files.emplace(*key, slot);
+        files.try_emplace(std::move(key), slot);
         result.files.push_back({relative, std::move(*bytes)});
         return slot;
     };
-    const auto image = [&](const std::filesystem::path& relative) -> Result<material::ImageRef> {
-        const auto key = platform::utf16_to_utf8(relative.generic_wstring());
+    const auto read = [&](const std::filesystem::path& relative) -> Result<std::size_t> {
+        auto key = platform::utf16_to_utf8(relative.generic_wstring());
         if (!key)
             return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-16 text."});
-        if (const auto found = images.find(*key); found != images.end())
-            return found->second;
-        ATELIER_TRY_BIND(slot, read(relative));
+        return read_with_key(relative, std::move(*key));
+    };
+    const auto image = [&](const std::filesystem::path& relative) -> Result<material::ImageRef> {
+        auto key = platform::utf16_to_utf8(relative.generic_wstring());
+        if (!key)
+            return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-16 text."});
+        if (const auto* found = images.find(*key))
+            return *found;
+        ATELIER_TRY_BIND(slot, read_with_key(relative, *key));
         const std::string_view bytes = result.files[*slot].bytes;
         ATELIER_TRY_BIND(decoded, decode_images(std::span(&bytes, 1), shared_images));
         auto loaded = decoded->front();
         ATELIER_TRY(require(image_bytes + loaded->pixels().size() <= 768ull * 1024 * 1024,
                             "Decoded OBJ textures exceed 768 MiB."));
         image_bytes += loaded->pixels().size();
-        images.emplace(*key, loaded);
+        images.try_emplace(std::move(*key), loaded);
         return loaded;
     };
     struct AuthorMaterial {
@@ -167,7 +170,7 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
     std::vector<AuthorMaterial> authors(1);
     result.materials.emplace_back();
     result.textures.emplace_back();
-    std::unordered_map<std::string, std::uint32_t> material_names;
+    Map<std::string, std::uint32_t> material_names;
     const auto mtl = [&](const std::filesystem::path& relative) -> Result<void> {
         ATELIER_TRY_BIND(slot, read(relative));
         std::istringstream input(result.files[*slot].bytes);
@@ -189,8 +192,9 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
                     require(!name.empty() && material_names.size() < 1024, "Invalid or excessive MTL material names."));
                 if (!StringView(name).is_valid_utf8())
                     return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-8 MTL material name."});
-                ATELIER_TRY(require(material_names.emplace(name, static_cast<std::uint32_t>(materials.size())).second,
-                                    "Duplicate MTL material name."));
+                ATELIER_TRY(
+                    require(material_names.try_emplace(name, static_cast<std::uint32_t>(materials.size())).inserted,
+                            "Duplicate MTL material name."));
                 current_slot = materials.size();
                 materials.push_back({std::move(name)});
                 authors.emplace_back();
@@ -270,9 +274,9 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
             ATELIER_TRY_BIND(relative, relative_path(std::move(*path)));
             ATELIER_TRY(mtl(*relative));
         } else if (kind == "usemtl") {
-            const auto found = material_names.find(rest(row));
-            ATELIER_TRY(require(found != material_names.end(), "OBJ references an unknown material."));
-            material = found->second;
+            const auto* found = material_names.find(rest(row));
+            ATELIER_TRY(require(found != nullptr, "OBJ references an unknown material."));
+            material = *found;
         } else if (kind == "f") {
             std::vector<geometry::Vertex> face;
             std::vector<bool> has_normal;

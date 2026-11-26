@@ -6,9 +6,9 @@
 #include "editor/project.hpp"
 #include "editor/view_options.hpp"
 #include "editor/viewport_tool.hpp"
+#include "foundation/set.hpp"
 #include "platform/utf.hpp"
 #include <limits>
-#include <unordered_set>
 
 namespace atelier::editor {
 namespace {
@@ -110,9 +110,9 @@ Result<void> frame(OperatorHost& host, const Context& context, bool selected_onl
     };
     ATELIER_TRY(context.document.sync_procedural_generators(context.project));
     ATELIER_TRY_BIND(items, context.document.presentation().render_items());
-    std::unordered_set<ObjectId> rendered;
+    Set<ObjectId> rendered;
     for (const auto& item : *items) {
-        rendered.insert(item.entity);
+        rendered.add(item.entity);
         if (!wanted(item.entity))
             continue;
         const auto world_b = math::transform_bounds(item.geometry->bounds(), item.world);
@@ -153,11 +153,11 @@ Result<void> frame_selected_poll(const Context& context) {
         return unavailable("Select an Entity with a Transform to frame.");
     auto& runtime = context.document.world().runtime();
     std::vector<ObjectId> pending = context.selection.entities;
-    std::unordered_set<ObjectId> seen;
+    Set<ObjectId> seen;
     while (!pending.empty()) {
         const auto object = pending.back();
         pending.pop_back();
-        if (!seen.insert(object).second)
+        if (!seen.add(object))
             continue;
         const auto state = world::inspect_entity(runtime, object);
         if (!state || !state->can_edit)

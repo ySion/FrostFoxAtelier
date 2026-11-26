@@ -1,10 +1,10 @@
 #pragma once
 
+#include "foundation/set.hpp"
 #include "material/program.hpp"
 #include "material/image.hpp"
 #include "source/material_program.hpp"
 
-#include <unordered_set>
 #include <variant>
 
 namespace atelier::material {
@@ -318,7 +318,7 @@ struct ProgramCapture {
     // Live identities read by this capture, including the root, ancestors and
     // empty/disabled/dormant textures, not merely the final sampled inputs.
     // These are observations, not roots or a promise of continued liveness.
-    std::unordered_set<ObjectId> dependencies;
+    Set<ObjectId> dependencies;
 };
 
 // Same resolution/errors as capture_program, with dependencies collected during
