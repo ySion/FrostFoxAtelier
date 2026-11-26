@@ -33,8 +33,9 @@ Scene Tree 的行选择/重命名/组合换父、Parameters 的实例编辑及�
 
 1. **顶栏、菜单栏与面板工具栏默认采用“空气态”（Air-State / Ghost Chrome）**：
    - 面板的路径栏尾端开关、二级动作栏（如 `SceneViewport` 的 `View / Select / Add / Object`、`NetworkPanel` 的 `Add / Edit / View / Layout` 与快捷图标组、`GeometrySpreadsheet` 翻页与跟随开关）、左右工具轨（Tool Rail / Display Bar）与浮窗标题栏工具，常态下必须透明无框、无凸起渐变（`background: transparent; background-image: none; border-width: 0dip;`），避免密集小方框造成视觉拥挤。
-   - 交互反馈仅在触发时浮现：`:hover` 使用轻量平底（`#484848`～`#4b4b4b`）并提亮图标/文字；下拉菜单展开态（`:selected` / `:pressed`）使用 `token(menu-active)`（`#b36600`），且同一横栏内的相邻菜单在展开后支持悬停平滑切换；持久布尔开关激活态（`:selected`）使用 `token(accent-active)`（`#56738c`）；`:disabled` 必须保持透明底面并仅降低图标/文字明度，绝不能回退为实体灰按钮框。
-   - 统一复用 [editor.ss](../../../assets/editor.ss) 中的空气态类：扁平文字菜单用 `viewport-header-menu`，纯图标工具/开关用 `ghost-tool` / `display-toggle` / `parameter-tool`，轻量文字动作（如缩放百分比复位、`+ Scratch Graph`）用 `ghost-button`，图标下拉用 `icon-menu`；组间优先用留白或 `1 DIP` 细竖线（`viewport-option-divider`）分隔，仅需表达紧密互斥组（如着色四连组）时才使用共边 `viewport-segment`。禁止在 C++ 中散写硬编码工具栏按钮背景或边框色。
+   - 交互与状态语义严格分离：**文字按钮（`Button` / `ghost-button`）专用于单次命令触发**，禁止将持久布尔状态做成常亮文字按钮；面板/工具栏中的持久状态项（如钉住目标 `pin`、资产防误改锁 `lock/unlock`、独显 `isolate`、网格吸附、搜索栏展开、内联组件显示）一律采用**语义矢量图标指示器**（`ghost-tool` / `display-toggle` / `parameter-tool`，默认空气态透明，仅在锁定/激活时点亮平底深钢蓝指示槽 `token(indicator-socket)` 与高亮图标，不使用凸起按钮渐变）或表单 `Checkbox`。
+   - **Switch Tab 互斥切换组分层规范**：严禁与停靠面板文件夹卡签（`.dock-tab-group`）堆叠同类方框，也避免消费级圆润胶囊；工具栏与行内互斥组（如 `GeometrySpreadsheet` 属性域、顶栏 `Create | View`、`Parameters` 的 `Object | Category`、`Color | Channels`）使用 `1.5–2 DIP` 微倒角工业深色凹槽 `.segmented-switch` 搭配冷岩灰微凸滑块 `button.segmented-item`；紧贴 Dock 栏下方的整行二级页面栏（如 `World`、`Controls`）使用平整去框的 `.subtab-bar` 搭配底部 `2 DIP` 钢蓝指示横条 `button.subtab-item`。
+   - 统一复用 [editor.ss](../../../assets/editor.ss) 中的工具栏类：扁平文字菜单用 `viewport-header-menu`（展开态使用 `token(menu-active)` `#b36600`），纯图标工具与状态指示器用 `ghost-tool` / `display-toggle` / `parameter-tool`，单次触发的紧凑文字命令（如 `Reset`、`Locate`、`+ Scratch Graph`、`100%`）用 `ghost-button`，过滤条件选择槽（如日志 `Level`）用凹陷槽 `filter-selector`，图标下拉用 `icon-menu`。禁止在 C++ 中散写硬编码工具栏按钮背景或边框色。
 2. **属性与表单区保留实体控件框（Framed Field / Action Chrome）**：
    - 凹陷输入槽（`token(field)`）与带细边的渐变按钮/下拉（`token(button-face)`、`pane-path`）专用于 `Parameters`、路径选择槽与表单提交动作，让“可编辑数据槽”与“面板导航/工具铬层”一眼可辨。
 3. **画布悬浮层与双语提示、悬浮焦点约定**：

@@ -67,8 +67,12 @@ target_link_libraries(atelier_foundation_headers INTERFACE atelier_memory_header
 add_library(atelier_math INTERFACE)
 target_include_directories(atelier_math INTERFACE modules/core/math/include)
 
-add_library(atelier_platform STATIC modules/core/platform/src/utf.cpp modules/core/platform/src/error.cpp)
+add_library(atelier_platform STATIC
+    modules/core/platform/src/utf.cpp
+    modules/core/platform/src/windows_path.cpp
+    modules/core/platform/src/error.cpp)
 target_include_directories(atelier_platform PUBLIC modules/core/platform/include)
+target_link_libraries(atelier_platform PUBLIC atelier_foundation_headers)
 atelier_target(atelier_platform)
 
 add_library(atelier_execution_contracts INTERFACE)

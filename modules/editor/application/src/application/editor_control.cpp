@@ -2330,10 +2330,9 @@ struct EditorControl::Impl {
         for (const auto& file : app.workspace_.source_editor.files())
             if (file->dirty()) {
                 ATELIER_TRY_BIND(path, utf8_text(file->path.generic_wstring()));
-                ATELIER_TRY_BIND(source, utf8_text(file->document->text()));
                 const auto draft = drafts.append_object(drafts.root());
                 drafts.set_validated(draft, "path", *path);
-                drafts.set_validated(draft, "text", *source);
+                drafts.set_validated(draft, "text", file->document->text().view().std_view());
                 ATELIER_TRY(drafts.set(draft, "conflict", file->conflict));
             }
         data.drafts = drafts.finish();

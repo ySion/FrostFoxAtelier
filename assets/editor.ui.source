@@ -232,14 +232,19 @@ ui ToolShelf(in bool collapsed, in bool create_selected,
             padding_right: 5;
             collapsed: input.collapsed;
             Row tabs {
-                classes: "section-tabs shelf-tabs";
+                classes: "segmented-switch";
                 content_width: 0;
                 height: 24;
+                gap: 1;
+                padding_left: 1.5;
+                padding_top: 1.5;
+                padding_right: 1.5;
+                padding_bottom: 1.5;
                 align_center: true;
                 ChoiceButton create {
                     text: "Create";
-                    classes: "section-tab shelf-tab";
-                    height: 22;
+                    classes: "segmented-item";
+                    height: 21;
                     content_width: 0;
                     selected: input.create_selected;
                     selection_group: node.tabs;
@@ -247,8 +252,8 @@ ui ToolShelf(in bool collapsed, in bool create_selected,
                 }
                 ChoiceButton view {
                     text: "View";
-                    classes: "section-tab joined shelf-tab";
-                    height: 22;
+                    classes: "segmented-item";
+                    height: 21;
                     content_width: 0;
                     selected: !input.create_selected;
                     selection_group: node.tabs;
@@ -314,9 +319,11 @@ ui Parameters(in Text type_name, in TextEditBinding name,
             classes: "object-header"; height: 30; gap: 4; align_center: true; padding_left: 6; padding_right: 4;
             Text type { text: input.type_name; icon: input.type_icon; content_width: 0; single_line: true; classes: "object-type"; tooltip: input.type_help; }
             TextField name { edit: input.name; context: input.name; min_width: 32; height: 22; classes: input.name_style; }
-            Row grouping { gap: 0; align_center: true; content_width: 0; collapsed: !input.has_selection;
-                ChoiceButton components { text: "Object"; action: input.components; selected: !input.by_category; selection_group: node.grouping; height: 22; classes: "section-tab header-tab"; }
-                ChoiceButton categories { text: "Category"; action: input.categories; selected: input.by_category; selection_group: node.grouping; height: 22; classes: "section-tab header-tab joined"; }
+            Row grouping {
+                gap: 1; height: 23; padding_left: 1.5; padding_top: 1.5; padding_right: 1.5; padding_bottom: 1.5;
+                align_center: true; content_width: 0; collapsed: !input.has_selection; classes: "segmented-switch";
+                ChoiceButton components { text: "Object"; action: input.components; selected: !input.by_category; selection_group: node.grouping; height: 20; classes: "segmented-item"; }
+                ChoiceButton categories { text: "Category"; action: input.categories; selected: input.by_category; selection_group: node.grouping; height: 20; classes: "segmented-item"; }
             }
             ToggleButton search_toggle { icon: "search"; width: 24; height: 22; selected: input.search_visible; action: input.search; classes: "parameter-tool"; }
         }
@@ -357,12 +364,12 @@ ui WorldPanel(in Text selected_volume, in Items<PropertyGroup> volume,
     state double page = 0.0d;
     state bool show_actual = true;
     Column pane { expand_height: true; panel: true; classes: "parameter-pane";
-        Row tabs { height: 26.667; padding_bottom: 0.667; classes: "section-tabs";
-            ChoiceButton lighting_tab { text: "Lighting"; height: 26; selected: state.page == 0.0d; selection_group: node.tabs; classes: "section-tab"; on activate { state.page = 0.0d; } }
-            ChoiceButton ddgi_tab { text: "DDGI"; height: 26; selected: state.page == 1.0d; selection_group: node.tabs; classes: "section-tab joined"; on activate { state.page = 1.0d; } }
-            ChoiceButton effects_tab { text: "Effects"; height: 26; selected: state.page == 2.0d; selection_group: node.tabs; classes: "section-tab joined"; on activate { state.page = 2.0d; } }
-            ChoiceButton diagnostics_tab { text: "Diagnostics"; height: 26; selected: state.page == 3.0d; selection_group: node.tabs; classes: "section-tab joined"; on activate { state.page = 3.0d; } }
-            ChoiceButton performance_tab { text: "Performance"; height: 26; selected: state.page == 4.0d; selection_group: node.tabs; classes: "section-tab joined"; on activate { state.page = 4.0d; } }
+        Row tabs { height: 26; gap: 2; padding_left: 4; padding_right: 4; classes: "subtab-bar";
+            ChoiceButton lighting_tab { text: "Lighting"; expand_height: true; selected: state.page == 0.0d; selection_group: node.tabs; classes: "subtab-item"; on activate { state.page = 0.0d; } }
+            ChoiceButton ddgi_tab { text: "DDGI"; expand_height: true; selected: state.page == 1.0d; selection_group: node.tabs; classes: "subtab-item"; on activate { state.page = 1.0d; } }
+            ChoiceButton effects_tab { text: "Effects"; expand_height: true; selected: state.page == 2.0d; selection_group: node.tabs; classes: "subtab-item"; on activate { state.page = 2.0d; } }
+            ChoiceButton diagnostics_tab { text: "Diagnostics"; expand_height: true; selected: state.page == 3.0d; selection_group: node.tabs; classes: "subtab-item"; on activate { state.page = 3.0d; } }
+            ChoiceButton performance_tab { text: "Performance"; expand_height: true; selected: state.page == 4.0d; selection_group: node.tabs; classes: "subtab-item"; on activate { state.page = 4.0d; } }
         }
         Row header { height: 28; align_center: true; gap: 5; padding_left: 6; padding_right: 6; collapsed: state.page != 1.0d && state.page != 3.0d;
             Combo slot { text: input.selected_volume; height: 22; min_width: 100; classes: "parameter-menu"; }
@@ -928,9 +935,9 @@ ui Controls(in TextEditBinding name, in bool name_modified, in bool disabled, in
     Column pages {
         expand_height: true;
         Row tabs {
-            height: 26.667; padding_bottom: 0.667; classes: "section-tabs";
-            ChoiceButton general { text: "Parameters"; selected: input.general; selection_group: node.tabs; height: 26; classes: "section-tab"; }
-            ChoiceButton appearance { text: "Appearance"; selected: !input.general; selection_group: node.tabs; height: 26; classes: "section-tab joined"; }
+            height: 26; gap: 2; padding_left: 4; padding_right: 4; classes: "subtab-bar";
+            ChoiceButton general { text: "Parameters"; selected: input.general; selection_group: node.tabs; expand_height: true; classes: "subtab-item"; }
+            ChoiceButton appearance { text: "Appearance"; selected: !input.general; selection_group: node.tabs; expand_height: true; classes: "subtab-item"; }
         }
         Column search_bar {
             classes: "parameter-search"; collapsed: !input.general;
@@ -979,10 +986,14 @@ ui Controls(in TextEditBinding name, in bool name_modified, in bool disabled, in
             }
             Column appearance_body {
                 collapsed: input.general; enabled: !input.disabled;
-                Row color_tabs {
-                    height: 26.667; padding_bottom: 0.667; classes: "section-tabs";
-                    ChoiceButton rgb { text: "Color"; selected: input.rgb_selected; selection_group: node.color_tabs; height: 26; classes: "section-tab"; }
-                    ChoiceButton channels { text: "Channels"; selected: !input.rgb_selected; selection_group: node.color_tabs; height: 26; classes: "section-tab joined"; }
+                Row color_tabs_bar {
+                    height: 28; padding_left: 6; padding_right: 6; align_center: true; classes: "path-bar";
+                    Row color_tabs {
+                        height: 22; gap: 1; padding_left: 1.5; padding_top: 1.5; padding_right: 1.5; padding_bottom: 1.5;
+                        align_center: true; content_width: 0; classes: "segmented-switch";
+                        ChoiceButton rgb { text: "Color"; selected: input.rgb_selected; selection_group: node.color_tabs; height: 19; classes: "segmented-item"; }
+                        ChoiceButton channels { text: "Channels"; selected: !input.rgb_selected; selection_group: node.color_tabs; height: 19; classes: "segmented-item"; }
+                    }
                 }
                 Column nested {
                     gap: 1; classes: "parameter-nested-body";
@@ -1034,51 +1045,154 @@ ui CodeFileTab(in Text title, in bool selected, in ActionBinding select_file, in
     }
 }
 
-ui CodePanel(in CodeBinding document, in Text title, in Text status, in Text diagnostic,
-             in bool has_diagnostic, in bool can_jump, in bool conflict, in Key file_menu,
-             in ActionBinding open, in ActionBinding save, in ActionBinding close, in ActionBinding reload,
-             in ActionBinding create, in ActionBinding build, in ActionBinding run, in ActionBinding stop,
-             in bool running, in bool has_files, in Items<CodeFileTab> open_tabs) {
-    Row toolbar {
-        height: 30; gap: 2; padding_left: 4; padding_right: 4; align_center: true; classes: "path-bar";
-        Combo files {
-            text: input.title; icon: "source_file"; context: input.file_menu;
-            flex_width: 1; min_width: 80; height: 22; classes: "pane-path";
-            tooltip_title: "Active Source File"; tooltip_identity: "Source Editor"; tooltip: "切换当前打开的源码文档。";
+ui CodeCompletionItem(in Text badge, in Text badge_style, in Text title, in Text detail,
+                      in bool active_row, in ActionBinding pick, in Text row_style) {
+    Row row {
+        height: 22; gap: 6; padding_left: 5; padding_right: 6; align_center: true; wrap: false; classes: input.row_style;
+        Text kind_badge { text: input.badge; width: 34; single_line: true; classes: input.badge_style; }
+        Button pick_btn { text: input.title; selected: input.active_row; action: input.pick; expand_width: true; height: 20; classes: "code-completion-btn"; }
+        Text sig_txt { text: input.detail; content_width: 0; single_line: true; caption: true; classes: "code-completion-detail"; }
+    }
+}
+
+ui CodePanel(in CodeBinding document, in bool conflict, in Key file_menu, in Key outline_menu,
+             in ActionBinding open, in ActionBinding save, in ActionBinding reload, in ActionBinding create,
+             in ActionBinding build, in ActionBinding run, in ActionBinding stop,
+             in bool running, in bool has_files, in Items<CodeFileTab> open_tabs,
+             in Text breadcrumb_path, in Text breadcrumb_symbol,
+             in ActionBinding nav_back, in ActionBinding nav_forward,
+             in bool find_open, in ActionBinding toggle_find,
+             in bool problems_open, in ActionBinding toggle_problems,
+             in bool search_bar_visible, in bool find_mode, in bool replace_mode, in bool goto_mode,
+             in TextEditBinding find_edit, in TextEditBinding replace_edit, in TextEditBinding goto_edit,
+             in Text match_count, in bool match_case, in ActionBinding toggle_case,
+             in bool whole_word, in ActionBinding toggle_word,
+             in ActionBinding prev_match, in ActionBinding next_match,
+             in ActionBinding replace_one, in ActionBinding replace_all,
+             in ActionBinding goto_commit, in ActionBinding close_search,
+             in bool comp_open, in double comp_x, in double comp_y, in Items<CodeCompletionItem> comp_items,
+             in bool comp_has_doc, in Text comp_doc,
+             in bool sig_open, in double sig_x, in double sig_y,
+             in Text sig_prefix, in Text sig_active, in Text sig_suffix,
+             in bool hover_open, in double hover_x, in double hover_y,
+             in Text hover_header, in Text hover_body,
+             in TableBinding problems_model, in ActionBinding problem_jump,
+             in Text diag_summary, in Text diag_badge_style,
+             in Text build_status, in Text cursor_status, in ActionBinding open_goto, in Text meta_status) {
+    Row doc_bar {
+        height: 28; gap: 2; padding_left: 2; padding_right: 4; align_center: true; wrap: false; classes: "code-tab-bar";
+        Row tabs_area {
+            flex_width: 0; expand_height: true; wrap: false; collapsed: !input.has_files;
+            Repeat tabs { items: input.open_tabs; }
         }
-        Button open {
-            text: "Open"; icon: "folder"; action: input.open; height: 22; content_width: 0; classes: "ghost-button";
-            tooltip_title: "Open Source File..."; tooltip_identity: "File I/O"; tooltip: "从工程或磁盘打开 UTF-8 源码与 UI 声明文件。";
+        Text empty_tab {
+            text: "No open source document"; collapsed: input.has_files;
+            content_width: 0; single_line: true; classes: "code-empty-tab";
         }
-        Button save {
-            text: "Save"; icon: "save"; action: input.save; height: 22; content_width: 0; classes: "ghost-button";
-            tooltip_title: "Save File [Ctrl+S]"; tooltip_identity: "File I/O"; tooltip: "保存当前活动源码文档到磁盘。";
+        Combo all_files {
+            icon: "down"; context: input.file_menu; collapsed: !input.has_files;
+            width: 22; height: 22; classes: "dock-menu";
+            tooltip_title: "Open Editors"; tooltip_identity: "Source Editor"; tooltip: "列出并快速切换当前打开的全部文档。";
         }
         Button create {
-            icon: "plus"; width: 24; height: 22; action: input.create; classes: "ghost-tool";
+            icon: "plus"; width: 23; height: 22; action: input.create; classes: "ghost-tool";
             tooltip_title: "New Component"; tooltip_identity: "Source Authoring"; tooltip: "在当前工程 Source 目录新建业务组件源码文件。";
         }
-        Button close {
-            icon: "close"; width: 24; height: 22; action: input.close; classes: "ghost-tool";
-            tooltip_title: "Close Active File"; tooltip_identity: "Source Editor"; tooltip: "关闭当前正在编辑的源码文档。";
+        Button open {
+            icon: "folder"; width: 23; height: 22; action: input.open; classes: "ghost-tool";
+            tooltip_title: "Open Source File..."; tooltip_identity: "File I/O"; tooltip: "从工程或磁盘打开 UTF-8 源码、UI 声明或样式表文件。";
         }
-        Column div { width: 1; height: 16; classes: "viewport-option-divider"; }
+        Button save {
+            icon: "save"; width: 23; height: 22; action: input.save; classes: "ghost-tool";
+            tooltip_title: "Save File [Ctrl+S]"; tooltip_identity: "File I/O"; tooltip: "保存当前活动源码文档到磁盘。";
+        }
+        Column top_spacer { expand_width: true; height: 1; }
         Button build {
             text: "Build"; icon: "build"; action: input.build; height: 22; content_width: 0; classes: "ghost-button";
-            tooltip_title: "Build Project Source"; tooltip_identity: "JIT Compiler"; tooltip: "编译并验证当前工程中的全部业务语言与 UI 模块。";
+            tooltip_title: "Build Project Source [F6]"; tooltip_identity: "JIT Compiler"; tooltip: "编译并验证当前工程中的全部业务语言与 UI 模块。";
         }
         Button run {
             text: "Run"; icon: "play"; action: input.run; collapsed: input.running; height: 22; content_width: 0; classes: "ghost-button";
-            tooltip_title: "Start Play"; tooltip_identity: "Project Runner"; tooltip: "启动独立子进程运行当前场景与工程代码。";
+            tooltip_title: "Start Play [F8]"; tooltip_identity: "Project Runner"; tooltip: "启动独立子进程运行当前场景与工程代码。";
         }
         Button stop {
             text: "Stop"; icon: "stop"; action: input.stop; collapsed: !input.running; height: 22; content_width: 0; classes: "ghost-button";
-            tooltip_title: "Stop Play"; tooltip_identity: "Project Runner"; tooltip: "终止正在运行的场景预览子进程。";
+            tooltip_title: "Stop Play [Shift+F8]"; tooltip_identity: "Project Runner"; tooltip: "终止正在运行的场景预览子进程。";
         }
     }
-    Row tab_strip {
-        height: 24; collapsed: !input.has_files; wrap: false; classes: "code-tab-bar";
-        Repeat tabs { items: input.open_tabs; }
+    Row breadcrumb_bar {
+        height: 24; gap: 3; padding_left: 4; padding_right: 4; align_center: true; wrap: false;
+        collapsed: !input.has_files; classes: "code-breadcrumb-bar";
+        Button back_btn {
+            icon: "back"; action: input.nav_back; width: 20; height: 20; classes: "ghost-tool";
+            tooltip_title: "Navigate Back"; tooltip_identity: "Code Navigation"; tooltip: "返回上一次定义跳转前的代码位置。";
+        }
+        Button fwd_btn {
+            icon: "forward"; action: input.nav_forward; width: 20; height: 20; classes: "ghost-tool";
+            tooltip_title: "Navigate Forward"; tooltip_identity: "Code Navigation"; tooltip: "前进到下一个历史代码位置。";
+        }
+        Text path_crumb { text: input.breadcrumb_path; content_width: 0; single_line: true; classes: "code-breadcrumb-path"; }
+        Text crumb_sep { text: "›"; content_width: 0; single_line: true; classes: "code-breadcrumb-sep"; }
+        Combo outline_combo {
+            text: input.breadcrumb_symbol; icon: "component"; context: input.outline_menu;
+            min_width: 64; shrink_width: 240; height: 20; classes: "pane-path code-outline-combo";
+            tooltip_title: "Document Symbol Outline"; tooltip_identity: "Code Intelligence";
+            tooltip: "显示当前光标所在的类/方法/组件，点击展开当前文件符号大纲直接跳转。";
+        }
+        Column crumb_spacer { expand_width: true; height: 1; }
+        ToggleButton find_btn {
+            icon: "search"; selected: input.find_open; action: input.toggle_find;
+            width: 22; height: 20; classes: "ghost-tool";
+            tooltip_title: "Find & Replace [Ctrl+F / Ctrl+H]"; tooltip_identity: "Code Search";
+            tooltip: "展开或收起内联查找与替换栏。";
+        }
+        ToggleButton problems_btn {
+            icon: "warning"; selected: input.problems_open; action: input.toggle_problems;
+            width: 22; height: 20; classes: "ghost-tool";
+            tooltip_title: "Problems Drawer"; tooltip_identity: "Live Diagnostics";
+            tooltip: "展开或收起实时诊断问题列表抽屉。";
+        }
+    }
+    Column find_bar {
+        collapsed: !input.search_bar_visible; padding_left: 6; padding_right: 6; padding_top: 3; padding_bottom: 3; gap: 3;
+        classes: "code-find-bar";
+        Row find_row {
+            height: 23; gap: 4; align_center: true; wrap: false; collapsed: !input.find_mode;
+            TextField find_box { edit: input.find_edit; context: input.find_edit; shrink_width: 210; min_width: 80; height: 21; }
+            ToggleButton case_btn {
+                text: "Aa"; selected: input.match_case; action: input.toggle_case; width: 24; height: 21; classes: "ghost-tool code-find-opt";
+                tooltip_title: "Match Case"; tooltip_identity: "Find Option"; tooltip: "区分大小写匹配。";
+            }
+            ToggleButton word_btn {
+                text: "ab"; selected: input.whole_word; action: input.toggle_word; width: 24; height: 21; classes: "ghost-tool code-find-opt";
+                tooltip_title: "Match Whole Word"; tooltip_identity: "Find Option"; tooltip: "全字匹配标识符边界。";
+            }
+            Button prev_btn {
+                icon: "up"; action: input.prev_match; width: 21; height: 21; classes: "ghost-tool";
+                tooltip_title: "Previous Match [Shift+F3]"; tooltip_identity: "Code Search"; tooltip: "跳转到上一个匹配项。";
+            }
+            Button next_btn {
+                icon: "down"; action: input.next_match; width: 21; height: 21; classes: "ghost-tool";
+                tooltip_title: "Next Match [F3]"; tooltip_identity: "Code Search"; tooltip: "跳转到下一个匹配项。";
+            }
+            Text match_lbl { text: input.match_count; content_width: 0; single_line: true; classes: "code-find-count"; }
+            Column find_spacer { expand_width: true; height: 1; }
+            Button close_find { icon: "close"; action: input.close_search; width: 21; height: 21; classes: "ghost-tool"; }
+        }
+        Row replace_row {
+            height: 23; gap: 4; align_center: true; wrap: false; collapsed: !input.replace_mode;
+            TextField replace_box { edit: input.replace_edit; context: input.replace_edit; shrink_width: 210; min_width: 80; height: 21; }
+            Button rep_one { text: "Replace"; action: input.replace_one; height: 21; content_width: 0; classes: "ghost-button"; }
+            Button rep_all { text: "Replace All"; action: input.replace_all; height: 21; content_width: 0; classes: "ghost-button"; }
+        }
+        Row goto_row {
+            height: 23; gap: 4; align_center: true; wrap: false; collapsed: !input.goto_mode;
+            Text goto_lbl { text: "Go to Line[:Col]"; content_width: 0; single_line: true; classes: "code-find-count"; }
+            TextField goto_box { edit: input.goto_edit; context: input.goto_edit; shrink_width: 140; min_width: 64; height: 21; }
+            Button goto_btn { text: "Jump"; action: input.goto_commit; height: 21; content_width: 0; classes: "ghost-button"; }
+            Column goto_spacer { expand_width: true; height: 1; }
+            Button close_goto { icon: "close"; action: input.close_search; width: 21; height: 21; classes: "ghost-tool"; }
+        }
     }
     Row conflict {
         height: 26; gap: 6; padding_left: 8; padding_right: 6; align_center: true;
@@ -1094,12 +1208,63 @@ ui CodePanel(in CodeBinding document, in Text title, in Text status, in Text dia
             tooltip: "丢弃当前未保存内存修改，重新加载磁盘最新文件内容。";
         }
     }
-    CodeEditor buffer { document: input.document; expand_height: true; classes: "source-code"; }
-    Button problem {
-        text: input.diagnostic; icon: "warning"; collapsed: !input.has_diagnostic; enabled: input.can_jump;
-        height: 24; expand_width: true; classes: "source-problem";
+    Overlay editor_stack {
+        expand_height: true; expand_width: true;
+        CodeEditor buffer { document: input.document; expand_height: true; expand_width: true; classes: "source-code"; }
+        Row sig_popup {
+            out_of_flow: true; offset_x: input.sig_x; offset_y: input.sig_y;
+            collapsed: !input.sig_open; enabled: false; content_width: 0; height: 23;
+            padding_left: 7; padding_right: 7; gap: 0; align_center: true; wrap: false;
+            classes: "code-signature-popup";
+            Text sig_pre { text: input.sig_prefix; content_width: 0; single_line: true; classes: "code-sig-text"; }
+            Text sig_act { text: input.sig_active; content_width: 0; single_line: true; classes: "code-sig-active"; }
+            Text sig_suf { text: input.sig_suffix; content_width: 0; single_line: true; classes: "code-sig-text"; }
+        }
+        Column comp_popup {
+            width: 344; out_of_flow: true; offset_x: input.comp_x; offset_y: input.comp_y;
+            collapsed: !input.comp_open; panel: true; padding_left: 2; padding_right: 2; padding_top: 2; padding_bottom: 2; gap: 1;
+            classes: "code-completion-popup";
+            Column comp_list { gap: 0; Repeat comp_rows { items: input.comp_items; } }
+            Text comp_doc_box {
+                text: input.comp_doc; collapsed: !input.comp_has_doc; content_height: 0;
+                padding_left: 6; padding_right: 6; padding_top: 4; padding_bottom: 4; caption: true;
+                classes: "code-completion-doc";
+            }
+        }
+        Column hover_popup {
+            width: 356; out_of_flow: true; offset_x: input.hover_x; offset_y: input.hover_y;
+            collapsed: !input.hover_open; enabled: false; content_height: 0;
+            padding_left: 8; padding_right: 8; padding_top: 5; padding_bottom: 6; gap: 3;
+            classes: "code-hover-card";
+            Text hover_hdr { text: input.hover_header; content_height: 0; classes: "code-hover-header"; }
+            Text hover_txt { text: input.hover_body; content_height: 0; caption: true; classes: "code-hover-body"; }
+        }
     }
-    Text status { text: input.status; height: 21; classes: "browser-status source-status"; }
+    Column problems_pane {
+        height: 118; collapsed: !input.problems_open; classes: "code-problems-pane";
+        Table problems_table {
+            model: input.problems_model; action: input.problem_jump; expand_height: true; view: "details";
+            empty_text: "No compiler or syntax problems in active buffer.";
+            row_height: 21; header_height: 22; classes: "data-table";
+        }
+    }
+    Row status_bar {
+        height: 22; gap: 8; padding_left: 4; padding_right: 6; align_center: true; wrap: false; classes: "code-status-bar";
+        Button problem {
+            text: input.diag_summary; icon: "warning"; action: input.toggle_problems;
+            height: 19; content_width: 0; classes: input.diag_badge_style;
+            tooltip_title: "Toggle Problems Drawer"; tooltip_identity: "Live Diagnostics";
+            tooltip: "查看或定位当前源码与工程的实时编译诊断信息。";
+        }
+        Text build_txt { text: input.build_status; content_width: 0; single_line: true; classes: "source-status"; }
+        Column status_spacer { expand_width: true; height: 1; }
+        Button cursor_btn {
+            text: input.cursor_status; action: input.open_goto; height: 19; content_width: 0; classes: "code-status-item";
+            tooltip_title: "Go to Line / Column [Ctrl+G]"; tooltip_identity: "Navigation";
+            tooltip: "点击打开行号快速跳转栏。";
+        }
+        Text meta_txt { text: input.meta_status; content_width: 0; single_line: true; classes: "code-status-meta"; }
+    }
 }
 
 ui ProjectOutput(in TableBinding output, in CodeBinding document, in TextEditBinding category, in TextEditBinding search,
@@ -1113,7 +1278,7 @@ ui ProjectOutput(in TableBinding output, in CodeBinding document, in TextEditBin
     Row filters {
         height: 30; gap: 4; padding_left: 4; padding_right: 4; align_center: true; classes: "output-toolbar";
         Button level {
-            text: input.level; icon: "filter"; action: input.next_level; content_width: 0; min_width: 84; height: 22; classes: "ghost-button";
+            text: input.level; icon: "filter"; action: input.next_level; content_width: 0; min_width: 84; height: 22; classes: "filter-selector";
             tooltip_title: "Cycle Minimum Severity"; tooltip_identity: "Output Filter"; tooltip: "按严重级别过滤日志（All / Debug+ / Info+ / Warn+ / Error+ / Critical）。";
         }
         Text errs { text: input.err_badge; content_width: 0; single_line: true; classes: "badge-error"; }
@@ -1186,19 +1351,23 @@ ui GeometrySpreadsheet(in TableBinding model, in TextEditBinding filter, in bool
     Column pane {
         expand_height: true;
         Row toolbar {
-            height: 28; gap: 3; padding_left: 4; padding_right: 4; align_center: true; classes: "path-bar";
-            ChoiceButton points { text: input.points_title; selected: input.points_sel; selection_group: node.toolbar; height: 22; content_width: 0; classes: "section-tab header-tab"; }
-            ChoiceButton vertices { text: input.vertices_title; selected: input.vertices_sel; selection_group: node.toolbar; height: 22; content_width: 0; classes: "section-tab header-tab joined"; }
-            ChoiceButton primitives { text: input.primitives_title; selected: input.primitives_sel; selection_group: node.toolbar; height: 22; content_width: 0; classes: "section-tab header-tab joined"; }
-            ChoiceButton detail { text: input.detail_title; selected: input.detail_sel; selection_group: node.toolbar; height: 22; content_width: 0; classes: "section-tab header-tab joined"; }
-            ChoiceButton instances { text: input.instances_title; selected: input.instances_sel; selection_group: node.toolbar; height: 22; content_width: 0; classes: "section-tab header-tab joined"; }
-            Column spacer { expand_width: true; height: 1; }
-            ToggleButton follow {
-                text: "Follow Selected"; selected: input.follow_selected; action: input.follow_action; height: 22; content_width: 0; classes: "ghost-button";
-                tooltip_title: "Follow Selected Node"; tooltip_identity: "Geometry Spreadsheet";
-                tooltip: "开启后跟随当前选中的节点检查几何属性；关闭时锁定检查 Display 节点输出。";
+            height: 28; gap: 5; padding_left: 5; padding_right: 5; align_center: true; classes: "path-bar";
+            Row layers {
+                height: 23; gap: 1; padding_left: 1.5; padding_top: 1.5; padding_right: 1.5; padding_bottom: 1.5;
+                align_center: true; content_width: 0; classes: "segmented-switch";
+                ChoiceButton points { text: input.points_title; selected: input.points_sel; selection_group: node.layers; height: 20; content_width: 0; classes: "segmented-item"; }
+                ChoiceButton vertices { text: input.vertices_title; selected: input.vertices_sel; selection_group: node.layers; height: 20; content_width: 0; classes: "segmented-item"; }
+                ChoiceButton primitives { text: input.primitives_title; selected: input.primitives_sel; selection_group: node.layers; height: 20; content_width: 0; classes: "segmented-item"; }
+                ChoiceButton detail { text: input.detail_title; selected: input.detail_sel; selection_group: node.layers; height: 20; content_width: 0; classes: "segmented-item"; }
+                ChoiceButton instances { text: input.instances_title; selected: input.instances_sel; selection_group: node.layers; height: 20; content_width: 0; classes: "segmented-item"; }
             }
+            Column spacer { expand_width: true; height: 1; }
             Text target_label { text: input.target; content_width: 0; single_line: true; caption: true; }
+            ToggleButton follow {
+                icon: "pin"; selected: !input.follow_selected; action: input.follow_action; width: 24; height: 22; classes: "ghost-tool";
+                tooltip_title: "Pin to Display Node"; tooltip_identity: "Geometry Spreadsheet";
+                tooltip: "锁定电子表格目标：默认未锁定时实时跟随画布中选中的节点；点击钉住后始终锁定检视 Display Flag 节点输出。";
+            }
         }
         Row filter_bar {
             height: 26; gap: 6; padding_left: 6; padding_right: 6; align_center: true; classes: "browser-toolbar";
@@ -1241,7 +1410,7 @@ ui NetworkTabItem(in Text title, in Text badge, in bool active_row, in ActionBin
 
 ui NetworkPanel(in Text graph_title, in double path_icon, in ActionBinding back, in ActionBinding forward,
                 in double back_icon, in double forward_icon,
-                in bool locked, in Text lock_text, in ActionBinding lock_action,
+                in bool locked, in double lock_icon, in ActionBinding lock_action,
                 in bool pinned, in double pin_icon, in ActionBinding pin_action,
                 in bool isolated, in double isolate_icon, in ActionBinding isolate_action,
                 in bool has_graph, in bool compact,
@@ -1271,7 +1440,7 @@ ui NetworkPanel(in Text graph_title, in double path_icon, in ActionBinding back,
             Button forward { icon: input.forward_icon; action: input.forward; width: 22; height: 24; classes: "path-navigation"; }
             Combo path { text: input.graph_title; icon: input.path_icon; expand_width: true; min_width: 40; height: 24; classes: "pane-path"; }
             Column path_gap { width: 2; height: 1; }
-            ToggleButton lock_btn { collapsed: !input.has_graph; text: input.lock_text; action: input.lock_action; selected: !input.locked; height: 24; content_width: 0; classes: "ghost-button"; }
+            ToggleButton lock_btn { collapsed: !input.has_graph; icon: input.lock_icon; action: input.lock_action; selected: input.locked; width: 26; height: 24; classes: "ghost-tool"; }
             ToggleButton pin_btn { icon: input.pin_icon; action: input.pin_action; selected: input.pinned; width: 26; height: 24; classes: "ghost-tool"; }
             ToggleButton isolate_btn { icon: input.isolate_icon; action: input.isolate_action; selected: input.isolated; width: 26; height: 24; classes: "ghost-tool"; }
         }

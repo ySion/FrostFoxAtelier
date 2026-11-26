@@ -2199,6 +2199,7 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
         } else if (kind == NodeKind::code_editor) {
             auto control = node.control;
             control.code = node.code.document;
+            control.code_annotations = node.code.annotations;
             control.enabled &= node.code.enabled;
             control.read_only = node.code.read_only;
             output.push_back(std::move(control));

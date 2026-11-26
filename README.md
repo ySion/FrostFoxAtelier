@@ -83,7 +83,7 @@ pwsh -NoProfile -File ./tools/acceptance-gate.ps1 -Targets editor_log_smoke_acce
 
 ## 编辑器内编写源码
 
-**File → Edit Editor UI Source** 打开正在使用的 UI DSL，编辑后 Ctrl+S 保存并进入原有同步热更新。**File → Open Source…** 或 Asset Browser 打开项目 Source 文件。Code 面板支持行号、选区、缩进、剪贴板、独立撤销、错误定位与外部修改冲突处理；工程 Source 已接入跨文件构建、真实组件和属性、场景保存、独立运行及兼容热更；项目 UI 可独立预览。F6 构建、F8 运行、Shift+F8 停止；类型变化使用 Project → Rebuild Types and Scene。Code 面板的补全和断点调试交互尚未接入，Runtime/JIT 调试核心已可通过正式接口使用。详见[源码工作流](docs/modules/editor/source-editor.md)。
+**File → Edit Editor UI Source** 打开正在使用的 UI DSL，编辑后 Ctrl+S 保存并进入原有同步热更新。**File → Open Source…** 或 Asset Browser 打开项目 Source 文件。Code 面板提供多色语法与语义高亮、未保存修改行色条、面包屑符号大纲、内联查找替换与行跳转、免落盘实时诊断（波浪线 + Error Lens + Problems 抽屉）、上下文自动补全、参数签名提示、悬停检视、跨文件 `F12` 定义跳转及外部修改冲突处理；工程 Source 已接入跨文件构建、真实组件和属性、场景保存、独立运行及兼容热更；项目 UI 可独立预览。F6 构建、F8 运行、Shift+F8 停止；类型变化使用 Project → Rebuild Types and Scene。编辑器内断点单步调试面板尚未接入，Runtime/JIT 调试核心已可通过正式接口使用。详见[源码工作流](docs/modules/editor/source-editor.md)。
 
 ## 构建与端到端验收
 

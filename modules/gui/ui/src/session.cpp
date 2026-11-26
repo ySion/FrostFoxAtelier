@@ -1,13 +1,15 @@
 #include "ui/session.hpp"
+#include "detail/code_syntax.hpp"
+#include "foundation/result.hpp"
+#include "memory/fatal.hpp"
+#include "platform/utf.hpp"
 #include "ui/detail/number_bits.hpp"
 #include "ui/text.hpp"
-#include "foundation/result.hpp"
 #include <algorithm>
 #include <array>
 #include <charconv>
 #include <chrono>
 #include <cmath>
-#include <cwctype>
 #include <map>
 #include <set>
 #include <type_traits>
@@ -19,7 +21,7 @@ namespace atelier::ui {
 namespace {
 constexpr std::array ladder_steps{100., 10., 1., .1, .01, .001, .0001};
 
-constexpr std::array ladder_labels{L"100", L"10", L"1", L".1", L".01", L".001", L".0001"};
+constexpr std::array<StringView, 7> ladder_labels{"100", "10", "1", ".1", ".01", ".001", ".0001"};
 
 constexpr float ladder_tick_distance = 4;
 
@@ -116,6 +118,8 @@ detail::TextStore::Symbol icon_symbol(ControlIcon icon) {
            : icon == Icon::build            ? Symbol::build
            : icon == Icon::reload           ? Symbol::reload
            : icon == Icon::warning          ? Symbol::warning
+           : icon == Icon::lock             ? Symbol::lock
+           : icon == Icon::unlock           ? Symbol::unlock
            : icon == Icon::left             ? Symbol::left
            : icon == Icon::right            ? Symbol::right
            : icon == Icon::up               ? Symbol::up
@@ -279,7 +283,33 @@ bool visible(Rect bounds, Clip clip) {
            bounds.y + bounds.height > clip.top;
 }
 
-std::wstring format(double value, bool single_precision = false, bool integral = false) {
+bool valid_wide_text(std::wstring_view text, bool single_line = true) noexcept {
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        const auto c = static_cast<std::uint16_t>(text[i]);
+        if (!c || (single_line && (c < 32 || c == 127 || c == 0x2028 || c == 0x2029)))
+            return false;
+        if (c >= 0xd800 && c <= 0xdbff) {
+            if (++i == text.size() || text[i] < 0xdc00 || text[i] > 0xdfff)
+                return false;
+        } else if (c >= 0xdc00 && c <= 0xdfff) {
+            return false;
+        }
+    }
+    return true;
+}
+
+String wide_to_utf8(std::wstring_view text) {
+    auto converted = platform::utf16_to_utf8_string(text);
+    if (!converted)
+        fatal("Validated UI wide text failed UTF-8 conversion.");
+    return std::move(*converted);
+}
+
+std::wstring utf8_to_wide(StringView text) {
+    return platform::utf8_to_utf16_validated(text.std_view());
+}
+
+String format(double value, bool single_precision = false, bool integral = false) {
     char buffer[64];
     std::to_chars_result result{};
     if (integral && value >= -9007199254740992.0 && value <= 9007199254740992.0 && std::trunc(value) == value) {
@@ -289,11 +319,11 @@ std::wstring format(double value, bool single_precision = false, bool integral =
                                   : std::to_chars(buffer, buffer + sizeof(buffer), value);
     }
     if (result.ec != std::errc{})
-        return L"0";
-    return std::wstring(buffer, result.ptr);
+        return String::literal<"0">();
+    return String::from_utf8_validated({buffer, static_cast<std::size_t>(result.ptr - buffer)});
 }
 
-std::wstring format(const Control& control, double value) {
+String format(const Control& control, double value) {
     return format(value, control.single_precision, control.integral);
 }
 
@@ -307,21 +337,19 @@ double quantize_control_value(const Control& control, double raw) {
     return res == 0.0 ? 0.0 : res;
 }
 
-std::optional<double> number(std::wstring_view text, const Control& control) {
+std::optional<double> number(StringView text, const Control& control) {
     if (text.empty() || text.size() > 64)
         return {};
-    char buffer[64];
-    for (std::size_t i = 0; i < text.size(); ++i) {
-        if (text[i] > 127)
+    for (std::size_t i = 0; i < text.size(); ++i)
+        if (static_cast<unsigned char>(text[i]) >= 128u)
             return {};
-        buffer[i] = static_cast<char>(text[i]);
-    }
-    const auto* begin = buffer;
+    const char* begin = text.data();
+    const char* end = text.data() + text.size();
     if (*begin == '+')
         ++begin;
     double value{};
-    const auto parsed = std::from_chars(begin, buffer + text.size(), value, std::chars_format::general);
-    if (parsed.ec != std::errc{} || parsed.ptr != buffer + text.size() || !std::isfinite(value))
+    const auto parsed = std::from_chars(begin, end, value, std::chars_format::general);
+    if (parsed.ec != std::errc{} || parsed.ptr != end || !std::isfinite(value))
         return {};
     if (control.integral && std::trunc(value) != value)
         return {};
@@ -355,7 +383,10 @@ bool Control::operator==(const Control& other) const {
            popup_owner == other.popup_owner && menu_branch == other.menu_branch && edit_command == other.edit_command &&
            button_behavior == other.button_behavior && menu_behavior == other.menu_behavior &&
            radio_group == other.radio_group && table == other.table && table_selection == other.table_selection &&
-           table_layout == other.table_layout && code == other.code && tooltip == other.tooltip &&
+           table_layout == other.table_layout && code == other.code &&
+           (code_annotations == other.code_annotations ||
+            (code_annotations && other.code_annotations && *code_annotations == *other.code_annotations)) &&
+           tooltip == other.tooltip &&
            (canvas == other.canvas || (canvas && other.canvas && *canvas == *other.canvas)) &&
            read_only == other.read_only && number_bits(color_hue) == number_bits(other.color_hue) &&
            number_bits(color_value) == number_bits(other.color_value);
@@ -396,6 +427,7 @@ Result<void> validate_control_properties(const Control& control) {
          control.kind != ControlKind::table) ||
         ((control.kind == ControlKind::table) != static_cast<bool>(control.table)) ||
         ((control.kind == ControlKind::code_editor) != static_cast<bool>(control.code)) ||
+        (control.code_annotations && control.kind != ControlKind::code_editor) ||
         (control.read_only && control.kind != ControlKind::code_editor && control.kind != ControlKind::text_edit) ||
         (control.integral &&
          ((control.kind != ControlKind::number && control.kind != ControlKind::slider) || control.single_precision ||
@@ -421,8 +453,8 @@ Result<void> validate_control_properties(const Control& control) {
          (control.minimum >= control.maximum || !std::isfinite(control.maximum - control.minimum) ||
           (control.integral && std::ceil(control.minimum) >= std::floor(control.maximum)))))
         return std::unexpected(Error{ErrorCode::invalid_control, control.key});
-    if (!detail::valid_text(control.text, control.kind == ControlKind::text_edit) ||
-        !detail::valid_text(control.placeholder, true))
+    if (!valid_wide_text(control.text, control.kind == ControlKind::text_edit) ||
+        !valid_wide_text(control.placeholder, true))
         return std::unexpected(Error{ErrorCode::invalid_control, control.key});
     if ((control.kind != ControlKind::tree && control.tree_row_count) || control.tree_row_count > maximum_tree_rows ||
         (control.kind != ControlKind::tree_item &&
@@ -436,11 +468,11 @@ Result<void> validate_control_properties(const Control& control) {
     if (control.tooltip) {
         const auto& help = *control.tooltip;
         const auto multiline = [](std::wstring_view value) {
-            return detail::valid_text(value, false) && std::ranges::all_of(value, [](wchar_t c) {
+            return valid_wide_text(value, false) && std::ranges::all_of(value, [](wchar_t c) {
                        return c >= 32 || c == L'\n' || c == L'\r' || c == L'\t';
                    });
         };
-        if (!detail::valid_text(help.title) || !detail::valid_text(help.identity) || !multiline(help.description))
+        if (!valid_wide_text(help.title) || !valid_wide_text(help.identity) || !multiline(help.description))
             return std::unexpected(Error{ErrorCode::invalid_control, control.key});
     }
     if (control.canvas) {
@@ -533,6 +565,24 @@ const CodeGeometry* UiFrame::find_code(ControlKey key) const noexcept {
     return at == code_editors.end() ? nullptr : &*at;
 }
 
+std::optional<std::uint32_t> UiFrame::code_offset_at(ControlKey key, float x, float y) const {
+    const auto* geometry = find_code(key);
+    if (!geometry || geometry->lines.empty() || x < geometry->body.x || x >= geometry->body.x + geometry->body.width ||
+        y < geometry->body.y || y >= geometry->body.y + geometry->body.height)
+        return std::nullopt;
+    for (const auto& line : geometry->lines) {
+        if (y >= line.y && y < line.y + geometry->line_height) {
+            if (!line.paragraph)
+                return std::nullopt;
+            const auto pos = line.paragraph->hit((x - line.x) / geometry->scale, (y - line.y) / geometry->scale);
+            if (!pos)
+                return std::nullopt;
+            return line.start + pos->offset;
+        }
+    }
+    return std::nullopt;
+}
+
 struct Session::Impl {
     using TableIndex = std::unordered_map<TableKey, std::size_t>;
 
@@ -577,6 +627,12 @@ struct Session::Impl {
         std::uint64_t code_selection_revision{};
 
         std::uint64_t code_revision{};
+
+        std::uint64_t code_comment_revision{};
+
+        CodeLanguage code_comment_lang{CodeLanguage::plain};
+
+        Array<std::uint8_t> code_block_comments;
 
         float code_width{};
 
@@ -683,6 +739,12 @@ struct Session::Impl {
         DragPoint color_sv_original{};
 
         DragPoint color_sv{};
+
+        std::uint8_t code_select_mode{}; // 0 = char, 1 = word, 2 = line.
+
+        std::uint32_t code_anchor_start{};
+
+        std::uint32_t code_anchor_end{};
     };
 
     struct Edit {
@@ -738,12 +800,12 @@ struct Session::Impl {
                 document_selection = buffer().selection_revision();
         }
 
-        static Result<Edit> create(const State& state, std::wstring value, double numeric, bool mode, bool select_all) {
+        static Result<Edit> create(const State& state, String value, double numeric, bool mode, bool select_all) {
             Edit result(state, numeric, mode);
             if (!result.document) {
-                ATELIER_TRY_BIND(buffer, detail::TextEdit::create(std::move(value),
-                                                                  state.control.kind == ControlKind::number ? 64 : 4096,
-                                                                  select_all));
+                ATELIER_TRY_BIND(
+                    buffer, detail::TextEdit::create(
+                                std::move(value), state.control.kind == ControlKind::number ? 64 : 16384, select_all));
                 result.field_buffer.emplace(std::move(*buffer));
             }
             return result;
@@ -1065,10 +1127,12 @@ struct Session::Impl {
         if (text_kind(state.control.kind)) {
             input.kind = ui_layout::Kind::measured;
             input.content_key = state.control.key;
+            const String content_u8 =
+                text_field(state.control.kind) ? display(state) : wide_to_utf8(state.control.text);
             input.content_revision =
                 text_field(state.control.kind)
-                    ? text.set(state.control.key, display(state), appearance.font, false, appearance.text_align)
-                    : text.set(state.control.key, state.control.text, appearance.font,
+                    ? text.set(state.control.key, content_u8.view(), appearance.font, false, appearance.text_align)
+                    : text.set(state.control.key, content_u8.view(), appearance.font,
                                state.control.kind == ControlKind::label && !state.control.single_line,
                                appearance.text_align,
                                (state.control.kind == ControlKind::label && state.control.single_line) ||
@@ -2262,8 +2326,8 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
                 if (kind == ControlKind::text_edit && !state.control.placeholder.empty() &&
                     self.display(state).empty() && !(editing && self.edit->composition)) {
                     const detail::TextKey ph_key{key, 0, true};
-                    self.text.set(ph_key, state.control.placeholder, appearance.font, false, appearance.text_align,
-                                  true);
+                    const String ph_u8 = wide_to_utf8(state.control.placeholder);
+                    self.text.set(ph_key, ph_u8.view(), appearance.font, false, appearance.text_align, true);
                     ATELIER_TRY_BIND(ph_raster, self.text.raster(ph_key, width, scale));
                     if (ph_raster->coverage) {
                         Color muted = appearance.foreground;

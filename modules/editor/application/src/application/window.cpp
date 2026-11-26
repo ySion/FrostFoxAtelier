@@ -1,4 +1,6 @@
 #include "application/window.hpp"
+#include "foundation/inline_array.hpp"
+#include "platform/utf.hpp"
 #include "ui/icons.hpp"
 #include <imm.h>
 #include <algorithm>
@@ -106,13 +108,14 @@ struct MemoryLock {
     }
 };
 
-std::expected<std::wstring, DWORD> composition_text(HIMC context, DWORD index) {
+std::expected<InlineArray<wchar_t, 128>, DWORD> composition_wide(HIMC context, DWORD index) {
     const auto bytes = ImmGetCompositionStringW(context, index, nullptr, 0);
     if (bytes < 0 || bytes % sizeof(wchar_t))
         return std::unexpected(ERROR_NO_UNICODE_TRANSLATION);
     if (static_cast<std::size_t>(bytes) > text_limit * sizeof(wchar_t))
         return std::unexpected(ERROR_BUFFER_OVERFLOW);
-    std::wstring value(static_cast<std::size_t>(bytes) / sizeof(wchar_t), L'\0');
+    InlineArray<wchar_t, 128> value;
+    value.resize(static_cast<std::size_t>(bytes) / sizeof(wchar_t));
     if (bytes && ImmGetCompositionStringW(context, index, value.data(), static_cast<DWORD>(bytes)) != bytes)
         return std::unexpected(ERROR_INVALID_DATA);
     return value;
@@ -348,24 +351,36 @@ void Window::poll(FunctionRef<void(NativeEvent&&)> consume) {
     const auto drain = [&] {
         for (std::size_t index = 0; index < events_.size(); ++index) {
             auto owned = std::move(events_[index]);
-            if (owned.message == WM_CHAR && !owned.text.empty()) {
-                const auto character = owned.text.front();
+            if (owned.message == WM_CHAR && owned.character) {
+                const auto character = owned.character;
                 if (character >= 0xd800 && character <= 0xdbff) {
                     high_surrogate_ = character;
                     continue;
                 }
+                wchar_t units[2]{};
+                std::size_t unit_count = 0;
                 if (character >= 0xdc00 && character <= 0xdfff) {
-                    if (high_surrogate_)
-                        owned.text.insert(owned.text.begin(), high_surrogate_);
-                    else {
-                        owned.text.clear();
+                    if (high_surrogate_) {
+                        units[0] = high_surrogate_;
+                        units[1] = character;
+                        unit_count = 2;
+                    } else {
                         owned.error = ERROR_NO_UNICODE_TRANSLATION;
                     }
                 } else if (high_surrogate_) {
-                    owned.text.clear();
                     owned.error = ERROR_NO_UNICODE_TRANSLATION;
+                } else {
+                    units[0] = character;
+                    unit_count = 1;
                 }
                 high_surrogate_ = 0;
+                if (!owned.error && unit_count > 0) {
+                    auto u8 = platform::utf16_to_utf8_string({units, unit_count});
+                    if (u8)
+                        owned.text = std::move(*u8);
+                    else
+                        owned.error = ERROR_NO_UNICODE_TRANSLATION;
+                }
             }
             if (owned.composition) {
                 auto& composition = *owned.composition;
@@ -544,7 +559,7 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
         const auto character = static_cast<wchar_t>(wparam);
         if (character < 0x20 || character == 0x7f)
             return 0; // Commands arrive as key events.
-        value.text.push_back(character); // Assemble surrogate pairs in ordered pump delivery.
+        value.character = character; // Assemble surrogate pairs in ordered pump delivery.
         events_.push_back(std::move(value));
         return 0;
     }
@@ -650,29 +665,61 @@ void Window::composition(UINT message, LPARAM flags) {
                 record.error = ERROR_INVALID_HANDLE;
             else {
                 if (flags & GCS_RESULTSTR) {
-                    auto text = composition_text(input.context, GCS_RESULTSTR);
-                    if (text)
-                        value.result = std::move(*text);
-                    else
-                        record.error = text.error();
+                    auto wide = composition_wide(input.context, GCS_RESULTSTR);
+                    if (!wide) {
+                        record.error = wide.error();
+                    } else {
+                        auto u8 = platform::utf16_to_utf8_string({wide->data(), wide->size()});
+                        if (u8)
+                            value.result = std::move(*u8);
+                        else
+                            record.error = ERROR_NO_UNICODE_TRANSLATION;
+                    }
                 }
-                if (flags & (GCS_COMPSTR | GCS_COMPATTR | GCS_CURSORPOS)) {
-                    auto text = composition_text(input.context, GCS_COMPSTR);
-                    if (text) {
-                        ui::Preedit preedit;
-                        preedit.text = std::move(*text);
-                        const auto cursor = ImmGetCompositionStringW(input.context, GCS_CURSORPOS, nullptr, 0);
-                        preedit.cursor = cursor < 0 ? 0 : static_cast<std::uint32_t>(cursor);
-                        const auto bytes = ImmGetCompositionStringW(input.context, GCS_COMPATTR, nullptr, 0);
-                        if (bytes > 0 && static_cast<std::size_t>(bytes) <= preedit.text.size()) {
-                            preedit.attributes.resize(static_cast<std::size_t>(bytes));
-                            if (ImmGetCompositionStringW(input.context, GCS_COMPATTR, preedit.attributes.data(),
-                                                         static_cast<DWORD>(bytes)) != bytes)
-                                record.error = ERROR_INVALID_DATA;
+                if (!record.error && (flags & (GCS_COMPSTR | GCS_COMPATTR | GCS_CURSORPOS))) {
+                    auto wide = composition_wide(input.context, GCS_COMPSTR);
+                    if (!wide) {
+                        record.error = wide.error();
+                    } else {
+                        auto u8 = platform::utf16_to_utf8_string({wide->data(), wide->size()});
+                        if (!u8) {
+                            record.error = ERROR_NO_UNICODE_TRANSLATION;
+                        } else {
+                            ui::Preedit preedit;
+                            preedit.text = std::move(*u8);
+                            const auto cursor = ImmGetCompositionStringW(input.context, GCS_CURSORPOS, nullptr, 0);
+                            const std::size_t u16_cursor =
+                                cursor < 0 ? 0 : std::min<std::size_t>(static_cast<std::size_t>(cursor), wide->size());
+                            preedit.cursor = static_cast<std::uint32_t>(
+                                platform::utf16_offset_to_utf8(preedit.text.view(), u16_cursor));
+                            const auto bytes = ImmGetCompositionStringW(input.context, GCS_COMPATTR, nullptr, 0);
+                            if (bytes > 0 && static_cast<std::size_t>(bytes) <= wide->size()) {
+                                InlineArray<std::uint8_t, 128> wide_attrs;
+                                wide_attrs.resize(static_cast<std::size_t>(bytes));
+                                if (ImmGetCompositionStringW(input.context, GCS_COMPATTR, wide_attrs.data(),
+                                                             static_cast<DWORD>(bytes)) != bytes) {
+                                    record.error = ERROR_INVALID_DATA;
+                                } else {
+                                    preedit.attributes.reserve(preedit.text.size());
+                                    std::size_t u16_i = 0;
+                                    for (std::size_t u8_i = 0; u8_i < preedit.text.size();) {
+                                        const auto lead = static_cast<unsigned char>(preedit.text[u8_i]);
+                                        const std::size_t u8_step = lead < 0x80u   ? 1
+                                                                    : lead < 0xe0u ? 2
+                                                                    : lead < 0xf0u ? 3
+                                                                                   : 4;
+                                        const std::size_t u16_step = u8_step == 4 ? 2 : 1;
+                                        const std::uint8_t attr = u16_i < wide_attrs.size() ? wide_attrs[u16_i] : 0;
+                                        for (std::size_t k = 0; k < u8_step && u8_i + k < preedit.text.size(); ++k)
+                                            preedit.attributes.push_back(attr);
+                                        u8_i += u8_step;
+                                        u16_i += u16_step;
+                                    }
+                                }
+                            }
+                            value.preedit = std::move(preedit);
                         }
-                        value.preedit = std::move(preedit);
-                    } else
-                        record.error = text.error();
+                    }
                 }
             }
             if (record.error) {
@@ -717,30 +764,45 @@ ui::ClipboardResult Window::clipboard(const ui::ClipboardRequest& request) {
         }
         const auto units = std::min<std::size_t>(bytes / sizeof(wchar_t), limit + 1);
         const auto end = std::find(text, text + units, L'\0');
-        if (end == text + units || static_cast<std::size_t>(end - text) > limit)
+        if (end == text + units || static_cast<std::size_t>(end - text) > limit) {
             result.native_error = ERROR_BUFFER_OVERFLOW;
-        else {
-            result.text.assign(text, end);
-            result.success = true;
+        } else {
+            auto u8 = platform::utf16_to_utf8_string({text, static_cast<std::size_t>(end - text)});
+            if (!u8) {
+                result.native_error = ERROR_NO_UNICODE_TRANSLATION;
+            } else if (u8->size() > limit) {
+                result.native_error = ERROR_BUFFER_OVERFLOW;
+            } else {
+                result.text = std::move(*u8);
+                result.success = true;
+            }
         }
     } else {
         if (request.text.size() > limit) {
             result.native_error = ERROR_BUFFER_OVERFLOW;
             return result;
         }
-        const auto bytes = (request.text.size() + 1) * sizeof(wchar_t);
+        InlineArray<wchar_t, 256> wide;
+        const auto converted = platform::utf8_to_utf16_into(request.text.view(), wide, 1024 * 1024);
+        if (!converted) {
+            result.native_error = ERROR_NO_UNICODE_TRANSLATION;
+            return result;
+        }
+        const auto bytes = (wide.size() + 1) * sizeof(wchar_t);
         const auto memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
         if (!memory) {
             result.native_error = native_error();
             return result;
         }
-        auto* text = GlobalLock(memory);
+        auto* text = static_cast<wchar_t*>(GlobalLock(memory));
         if (!text) {
             result.native_error = native_error();
             GlobalFree(memory);
             return result;
         }
-        std::memcpy(text, request.text.c_str(), bytes);
+        if (!wide.empty())
+            std::memcpy(text, wide.data(), wide.size() * sizeof(wchar_t));
+        text[wide.size()] = L'\0';
         GlobalUnlock(memory);
         if (!EmptyClipboard() || !SetClipboardData(CF_UNICODETEXT, memory)) {
             result.native_error = native_error();

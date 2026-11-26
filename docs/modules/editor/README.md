@@ -19,7 +19,7 @@ UI 作者层已将 Parameters 的查询、Position、属性组与统一的 Scene
 
 ## 源码编辑
 
-File → Edit Editor UI Source 可直接打开并修改当前 UI 声明；Code 面板支持持久文档、独立撤销、保存、编译诊断定位和失败恢复。用法、边界与验收见[源码工作流](source-editor.md)。
+File → Edit Editor UI Source 可直接打开并修改当前 UI 声明；Code 面板提供多色语法高亮、进程内实时免保存诊断、上下文补全与签名提示、符号大纲与跨文件定义跳转、内联查找替换及问题列表抽屉。用法、边界与验收见[源码工作流](source-editor.md)。
 
 ## 当前 UI 作者入口
 

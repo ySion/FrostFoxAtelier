@@ -264,6 +264,8 @@ private:
 
     std::optional<MenuProjection> menu_projection_;
 
+    std::shared_ptr<const ui::UiFrame> prepared_menu_frame_;
+
     bool menu_dirty_{};
 
     MenuProjection current_menu_projection() const noexcept;
@@ -281,6 +283,8 @@ private:
     ui::ControlKey pie_hot_{};
 
     bool pending_source_focus_{};
+
+    ui::ControlKey pending_code_bar_focus_{};
 
     bool pending_network_search_focus_{};
 

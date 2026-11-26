@@ -173,29 +173,60 @@
         // A collapsed popup can be re-opened through a sparse property update.
         if (sparse) for (const auto& control:controls) if (control.kind==ControlKind::popup)
             next_popup=control.layout.collapsed?0:control.key;
-        const auto table_changed=[&](ControlKey key,bool selection) {
-            const auto* future=lookup(key); const auto* previous=live(key);
-            return future && previous && (future->table!=previous->control.table || future->table_layout!=previous->control.table_layout ||
-                (selection && future->table_selection!=previous->control.table_selection));
+        const auto table_press_invalid = [&](const Press& held) {
+            const auto* future = lookup(held.key);
+            const auto* previous = live(held.key);
+            if (!future || !previous || previous->control.kind != ControlKind::table)
+                return false;
+            if (!future->table || future->table_layout != previous->control.table_layout)
+                return true;
+            if (future->table == previous->control.table || held.scrollbar)
+                return false;
+            const auto& data = *future->table;
+            if (held.table_column)
+                return std::ranges::find(data.columns, held.table_column, &TableColumn::key) == data.columns.end();
+            if (held.table_cell.row) {
+                const auto row = std::ranges::find(data.rows, held.table_cell.row, &TableRow::key);
+                return row == data.rows.end() || !row->enabled ||
+                       std::ranges::find(data.columns, held.table_cell.column, &TableColumn::key) == data.columns.end();
+            }
+            return false;
         };
-        const auto edit_policy_changed=[&](ControlKey key) {
-            const auto* future=lookup(key);const auto* previous=live(key);
+        const auto table_keyboard_invalid = [&](ControlKey key) {
+            const auto* future = lookup(key);
+            const auto* previous = live(key);
+            if (!future || !previous || previous->control.kind != ControlKind::table)
+                return false;
+            if (!future->table || future->table_layout != previous->control.table_layout ||
+                future->table_selection != previous->control.table_selection)
+                return true;
+            if (future->table == previous->control.table || !future->table_selection.row)
+                return false;
+            const auto row = std::ranges::find(future->table->rows, future->table_selection.row, &TableRow::key);
+            return row == future->table->rows.end() || !row->enabled;
+        };
+        const auto edit_policy_changed = [&](ControlKey key) {
+            const auto* future = lookup(key);
+            const auto* previous = live(key);
             return future && previous &&
-                (future->read_only!=previous->control.read_only || future->integral!=previous->control.integral ||
-                 future->drag_axis!=previous->control.drag_axis ||
-                 future->transient_edit!=previous->control.transient_edit ||
-                 future->rename_anchor!=previous->control.rename_anchor ||
-                 future->rename_cell!=previous->control.rename_cell);
+                   (future->read_only != previous->control.read_only ||
+                    future->integral != previous->control.integral ||
+                    future->drag_axis != previous->control.drag_axis ||
+                    future->transient_edit != previous->control.transient_edit ||
+                    future->rename_anchor != previous->control.rename_anchor ||
+                    future->rename_cell != previous->control.rename_cell);
         };
         // Retire pending clipboard/IME writes without clearing focus: forbidden
         // keys must remain owned by this field during the next-frame transition.
-        const bool cancelling=(press && (absent(press->key) || table_changed(press->key,false) || edit_policy_changed(press->key))) ||
+        const bool cancelling =
+            (press && (absent(press->key) || table_press_invalid(*press) || edit_policy_changed(press->key))) ||
             (edit && (absent(edit->key) || edit_policy_changed(edit->key)));
-        const bool clear_focus=absent(focus),clear_keyboard=absent(keyboard_pressed) || table_changed(keyboard_pressed,true);
+        const bool clear_focus = absent(focus),
+                   clear_keyboard = absent(keyboard_pressed) || table_keyboard_invalid(keyboard_pressed);
         const auto* future_edit=edit?lookup(edit->key):nullptr;
         const bool refresh_edit=edit && !edit->document && future_edit && !edit->buffer().active() && !edit->composition &&
             (future_edit->kind==ControlKind::number ? detail::number_bits(edit->original_value)!=detail::number_bits(future_edit->value)
-                                                    : edit->buffer().original()!=future_edit->text);
+                                                    : edit->buffer().original()!=wide_to_utf8(future_edit->text));
         const bool popup_invalid=next_popup && absent(lookup(next_popup)->popup_owner);
         const bool interaction_changes=cancelling || clear_focus || clear_keyboard || refresh_edit ||
             next_popup!=popup || popup_invalid;

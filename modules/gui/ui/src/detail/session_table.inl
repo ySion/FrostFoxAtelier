@@ -6,7 +6,7 @@
         std::unordered_set<TableKey> columns,cells;
         TableIndex rows; rows.reserve(data.rows.size());
         for (const auto& column:data.columns) {
-            if (!column.key || !columns.insert(column.key).second || column.title.size()>4096 || !detail::valid_text(column.title,false) ||
+            if (!column.key || !columns.insert(column.key).second || column.title.size()>4096 || !valid_wide_text(column.title,false) ||
                 !std::isfinite(column.width) || !std::isfinite(column.min_width) || column.min_width<12 ||
                 column.width<column.min_width || column.width>32768 ||
                 static_cast<unsigned>(column.alignment)>static_cast<unsigned>(TextAlign::right)) return invalid();
@@ -15,7 +15,7 @@
         for (const auto& row:data.rows) {
             if (!row.key || !rows.emplace(row.key,rows.size()).second || row.cells.size()!=data.columns.size()) return invalid();
             for (const auto& cell:row.cells)
-                if (!cell.key || !cells.insert(cell.key).second || cell.text.size()>4096 || !detail::valid_text(cell.text,false) ||
+                if (!cell.key || !cells.insert(cell.key).second || cell.text.size()>4096 || !valid_wide_text(cell.text,false) ||
                     static_cast<unsigned>(cell.icon)>static_cast<unsigned>(last_control_icon)) return invalid();
         }
         return rows;
@@ -41,6 +41,7 @@
                 if (held.table_resize) {
                     const auto& columns=box->table->columns;
                     const auto column=std::find_if(columns.begin(),columns.end(),[&](const auto& column){return column.key==held.table_column;});
+                    if (column==columns.end()) { reply=cancel(); return true; }
                     held.value=std::clamp(held.original+(event.x-held.x)/surface.dpi_scale,static_cast<double>(column->min_width),32768.0);
                     reply.cursor=Cursor::resize_horizontal; reply.redraw=true;
                 }
@@ -59,7 +60,7 @@
                     contains(header.bounds,event.x,event.y) && contains(header.clip,event.x,event.y)) {
                     const auto& data=*geometry->data;
                     const auto column=std::find_if(data.columns.begin(),data.columns.end(),[&](const auto& column){return column.key==header.column;});
-                    if (column->sortable) action(reply,ActionKind::table_sort,released.key,TableSort{header.column,
+                    if (column!=data.columns.end() && column->sortable) action(reply,ActionKind::table_sort,released.key,TableSort{header.column,
                         data.sort.column==header.column && data.sort.direction==TableSortDirection::ascending?
                             TableSortDirection::descending:TableSortDirection::ascending});
                     break;
@@ -121,7 +122,8 @@
                                 const auto& app_style=*state.resolved;
                                 const float pad_x=std::max(4.f,app_style.padding.left)+std::max(4.f,app_style.padding.right);
                                 float fitted=col_it->min_width;
-                                text.set(0,col_it->title,app_style.font,false,col_it->alignment);
+                                const String title_u8 = wide_to_utf8(col_it->title);
+                                text.set(0,title_u8.view(),app_style.font,false,col_it->alignment);
                                 const auto hm=text.metrics(0,32768.f);
                                 if (!text_ok(reply,hm,hit->key)) return true;
                                 fitted=std::max(fitted,std::ceil(hm->width+pad_x+(geometry->data->sort.column==col_it->key?16.f:4.f)));
@@ -132,7 +134,8 @@
                                     const auto& cell_val=all_rows[r].cells[col_idx];
                                     const float icon_extra=cell_val.icon!=ControlIcon::none?app_style.indicator_size+6.f:0.f;
                                     if (!cell_val.text.empty()) {
-                                        text.set(0,cell_val.text,app_style.font,false,col_it->alignment);
+                                        const String cell_u8 = wide_to_utf8(cell_val.text);
+                                        text.set(0,cell_u8.view(),app_style.font,false,col_it->alignment);
                                         const auto cm=text.metrics(0,32768.f);
                                         if (!text_ok(reply,cm,hit->key)) return true;
                                         fitted=std::max(fitted,std::ceil(cm->width+pad_x+icon_extra+4.f));
@@ -175,23 +178,21 @@
             const auto row_it=states.at(focus).table_index.find(selected.row);
             if (row_it!=states.at(focus).table_index.end()) {
                 const auto& row_data=data.rows[row_it->second];
-                std::wstring copied;
+                String copied;
                 if (details && !event.shift) {
                     const auto col_it=std::find_if(data.columns.begin(),data.columns.end(),[&](const auto& col){return col.key==selected_column;});
                     if (col_it!=data.columns.end())
-                        copied=row_data.cells[static_cast<std::size_t>(col_it-data.columns.begin())].text;
+                        copied=wide_to_utf8(row_data.cells[static_cast<std::size_t>(col_it-data.columns.begin())].text);
                 }
                 if (copied.empty()) {
                     for (std::size_t i=0;i<row_data.cells.size();++i) {
-                        if (i) copied+=L'\t';
-                        copied+=row_data.cells[i].text;
+                        if (i) (void)copied.append("\t");
+                        (void)copied.append(wide_to_utf8(row_data.cells[i].text));
                     }
                 }
                 if (!copied.empty()) {
-                    if (copied.size()>65536) {
-                        copied.resize(65536);
-                        if (copied.back()>=0xd800 && copied.back()<=0xdbff) copied.pop_back();
-                    }
+                    if (copied.size()>65536)
+                        copied=String::from_utf8_validated(copied.view().utf8_prefix(65536));
                     table_clipboard=ClipboardRequest{ClipboardKind::copy,detail::new_identity(),
                         EditToken{focus,box->incarnation,detail::new_identity(),detail::new_identity()},std::move(copied),65536u};
                     platform(reply,*table_clipboard);

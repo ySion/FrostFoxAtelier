@@ -1,6 +1,6 @@
 add_executable(atelier_foundation_acceptance acceptance/foundation/main.cpp acceptance/foundation/tasks.cpp)
 atelier_target(atelier_foundation_acceptance)
-target_link_libraries(atelier_foundation_acceptance PRIVATE atelier_foundation)
+target_link_libraries(atelier_foundation_acceptance PRIVATE atelier_foundation atelier_platform)
 atelier_headless_acceptance(foundation_acceptance
     COMMAND $<TARGET_FILE:atelier_foundation_acceptance>
     DEPENDS atelier_foundation_acceptance)

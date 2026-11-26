@@ -5,6 +5,7 @@
 #include "logging/native.hpp"
 #include "assets/file.hpp"
 #include "platform/utf.hpp"
+#include "platform/windows_path.hpp"
 #include <cstdio>
 #include <shobjidl.h>
 #include <wrl/client.h>
@@ -504,18 +505,16 @@ Result<void> Application::save_source(editor::SourceEditor::File& file, bool int
                 if (!author || author->source_path.starts_with("builtin/"))
                     continue;
                 const auto path = project_->resolve(platform::utf8_to_utf16_validated(author->source_path));
-                if (!path || _wcsicmp(path->lexically_normal().c_str(), file.path.lexically_normal().c_str()) != 0)
+                if (!path || !platform::paths_lexically_equal(*path, file.path))
                     continue;
                 // The saved editor buffer is authoritative; another disk write
                 // must not change the publication or the subsequent Live payload.
-                auto text = platform::utf16_to_utf8(file.document->text());
-                if (!text)
-                    return failed("Invalid UTF-16 text.");
-                auto disk_path = platform::utf16_to_utf8(file.path.generic_wstring());
+                std::string text(file.document->text().view().std_view());
+                auto disk_path = platform::generic_path_to_utf8(file.path);
                 if (!disk_path)
                     return failed("Invalid UTF-16 text.");
-                source::SourceFile exact{author->source_path, source::content_hash(*text), std::move(*text),
-                                         std::move(*disk_path)};
+                source::SourceFile exact{author->source_path, source::content_hash(text), std::move(text),
+                                         std::string(disk_path->view().std_view())};
                 std::vector<editor::MissingResource> missing;
                 ATELIER_TRY_BIND(published,
                                  document_->publish_material(project_->assets(), asset, std::move(exact), &missing));

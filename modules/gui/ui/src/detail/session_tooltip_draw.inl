@@ -15,9 +15,12 @@
                     candidate.content=hover.content;candidate.style_revision=self.style_revision;candidate.width=width;candidate.height=maximum_height;candidate.scale=scale;
                     auto title_font=self.style.font;title_font.weight=self.style.title_weight;
                     auto id_font=self.style.font;id_font.size=std::max(9.f,self.style.font.size*.90f);
-                    self.text.set(tooltip_title_key,help.title,title_font,true);
-                    self.text.set(tooltip_identity_key,help.identity,id_font,true);
-                    self.text.set(tooltip_body_key,help.description,self.style.font,true);
+                    const String title_u8 = wide_to_utf8(help.title);
+                    const String id_u8 = wide_to_utf8(help.identity);
+                    const String body_u8 = wide_to_utf8(help.description);
+                    self.text.set(tooltip_title_key,title_u8.view(),title_font,true);
+                    self.text.set(tooltip_identity_key,id_u8.view(),id_font,true);
+                    self.text.set(tooltip_body_key,body_u8.view(),self.style.font,true);
                     if (!help.title.empty()) {ATELIER_TRY_BIND(metrics,self.text.metrics(tooltip_title_key,width));candidate.title_size=*metrics;}
                     if (!help.identity.empty()) {ATELIER_TRY_BIND(metrics,self.text.metrics(tooltip_identity_key,badge_width));candidate.identity_size=*metrics;}
                     if (!help.description.empty()) {ATELIER_TRY_BIND(metrics,self.text.metrics(tooltip_body_key,width));candidate.body_size=*metrics;}

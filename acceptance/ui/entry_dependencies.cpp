@@ -108,12 +108,12 @@ void verify_number_row_sign(std::shared_ptr<Component> component, ui::ControlKey
                                     const auto* clipboard =
                                         platform ? std::get_if<ui::ClipboardRequest>(platform) : nullptr;
                                     return clipboard && clipboard->kind == ui::ClipboardKind::copy &&
-                                           clipboard->text == L"-0";
+                                           clipboard->text == "-0";
                                 }),
             "The focused editor number field did not expose the updated -0 text.");
     ui::Event typed{};
     typed.kind = ui::EventKind::text;
-    typed.data = std::wstring{L"0"};
+    typed.data = String::literal<"0">();
     const auto preview = session.input(typed);
     require(std::ranges::any_of(preview.effects,
                                 [&](const ui::Effect& effect) {
@@ -236,7 +236,7 @@ void verify_ui_entry_dependencies() {
     std::ifstream editor(ATELIER_EDITOR_UI_SOURCE, std::ios::binary);
     std::string source{std::istreambuf_iterator<char>{editor}, {}};
     const auto declarations = take(lower_module("editor.ui.source", source));
-    require(declarations.size() == 48, "Update the real-editor dependency workload when its component set changes.");
+    require(declarations.size() == 49, "Update the real-editor dependency workload when its component set changes.");
     const auto jit_components = std::ranges::count_if(declarations, [](const auto& item) { return item.needs_jit; });
     require(jit_components == 20, "Unexpected JIT component count for assets/editor.ui.source.");
     auto now = LiveDocument::Clock::now();

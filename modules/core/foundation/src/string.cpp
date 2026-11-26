@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <functional>
 #include <new>
 #include <utility>
 
@@ -200,12 +201,55 @@ std::expected<void, StringError> String::replace(std::size_t first, std::size_t 
     const auto kept = text.size() - count;
     if (replacement.size() > max_size - kept)
         fatal("String exceeds addressable storage.");
-    String candidate;
-    candidate.reserve(kept + replacement.size());
-    candidate.write_validated(text.slice(0, first), 0);
-    candidate.write_validated(replacement, candidate.size());
-    candidate.write_validated(text.slice(first + count), candidate.size());
-    swap(candidate);
+    const auto new_size = kept + replacement.size();
+    const auto tail_offset = first + count;
+    const auto tail_size = text.size() - tail_offset;
+    const bool aliases_self = !replacement.empty() &&
+                              std::greater_equal<const char*>{}(replacement.data(), text.data()) &&
+                              std::less<const char*>{}(replacement.data(), text.data() + text.size());
+    if (!aliases_self && tag() != literal_tag && new_size <= capacity()) {
+        char* destination = is_inline() ? bytes_ : const_cast<char*>(long_value().data);
+        if (replacement.size() != count && tail_size != 0)
+            std::memmove(destination + first + replacement.size(), destination + tail_offset, tail_size);
+        if (!replacement.empty())
+            std::memcpy(destination + first, replacement.data(), replacement.size());
+        destination[new_size] = '\0';
+        if (is_inline()) {
+            bytes_[31] = static_cast<char>(new_size);
+        } else {
+            auto value = long_value();
+            value.size = new_size;
+            set_long(value, heap_tag);
+        }
+        return {};
+    }
+    if (new_size <= inline_capacity) {
+        char local[inline_capacity + 1];
+        if (first)
+            std::memcpy(local, text.data(), first);
+        if (!replacement.empty())
+            std::memcpy(local + first, replacement.data(), replacement.size());
+        if (tail_size)
+            std::memcpy(local + first + replacement.size(), text.data() + tail_offset, tail_size);
+        local[new_size] = '\0';
+        if (tag() == heap_tag)
+            free_heap();
+        std::memcpy(bytes_, local, new_size + 1);
+        bytes_[31] = static_cast<char>(new_size);
+        return {};
+    }
+    const auto new_capacity = grown_capacity(new_size);
+    char* allocated = new char[new_capacity + 1];
+    if (first)
+        std::memcpy(allocated, text.data(), first);
+    if (!replacement.empty())
+        std::memcpy(allocated + first, replacement.data(), replacement.size());
+    if (tail_size)
+        std::memcpy(allocated + first + replacement.size(), text.data() + tail_offset, tail_size);
+    allocated[new_size] = '\0';
+    if (tag() == heap_tag)
+        free_heap();
+    set_long({allocated, new_size, new_capacity}, heap_tag);
     return {};
 }
 
@@ -240,7 +284,7 @@ std::expected<std::size_t, StringError> String::replace_all(StringView search, S
 }
 
 void String::change_ascii_case(bool upper) noexcept {
-    const auto convert = [upper](char byte) { return upper ? detail::ascii_upper(byte) : detail::ascii_lower(byte); };
+    const auto convert = [upper](char byte) { return upper ? ascii_upper(byte) : ascii_lower(byte); };
     const auto length = size();
     const char* current = c_str();
     std::size_t first{};

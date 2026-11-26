@@ -1,7 +1,9 @@
 #include "ui/text.hpp"
-#include "ui/icons.hpp"
-#include "memory/fatal.hpp"
+#include "foundation/inline_array.hpp"
 #include "foundation/result.hpp"
+#include "memory/fatal.hpp"
+#include "platform/utf.hpp"
+#include "ui/icons.hpp"
 #include <Windows.h>
 #include <dwrite_3.h>
 #include <wrl/client.h>
@@ -210,7 +212,9 @@ struct TextStore::Impl {
     };
 
     struct Entry {
-        std::wstring text;
+        String text;
+
+        InlineArray<wchar_t, 128> wide_text;
 
         Font font;
 
@@ -220,7 +224,7 @@ struct TextStore::Impl {
 
         TextAlign alignment{TextAlign::left};
 
-        std::uint64_t revision{1};
+        std::uint64_t revision{};
 
         std::array<Paragraph, 2> paragraphs;
     };
@@ -285,8 +289,9 @@ struct TextStore::Impl {
                 DWRITE_FONT_STRETCH_NORMAL, entry.font.size, entry.font.locale.c_str(), &format));
             ATELIER_TRY(result);
         }
-        ATELIER_TRY(check(factory->CreateTextLayout(entry.text.data(), static_cast<UINT32>(entry.text.size()),
-                                                    format.Get(), width.value_or(0), 0, &paragraph.layout)));
+        const wchar_t* wide_ptr = entry.wide_text.empty() ? L"" : entry.wide_text.data();
+        ATELIER_TRY(check(factory->CreateTextLayout(wide_ptr, static_cast<UINT32>(entry.wide_text.size()), format.Get(),
+                                                    width.value_or(0), 0, &paragraph.layout)));
         ++statistics.text_layouts;
         ATELIER_TRY(check(paragraph.layout->SetIncrementalTabStop(entry.font.size * 2.4f)));
         ATELIER_TRY(check(paragraph.layout->SetWordWrapping(width && entry.wrap ? DWRITE_WORD_WRAPPING_WRAP
@@ -335,7 +340,7 @@ struct TextSnapshot::Impl {
 
     ComPtr<IDWriteTextLayout> layout;
 
-    std::wstring text;
+    String text;
 
     Font font;
 
@@ -343,31 +348,41 @@ struct TextSnapshot::Impl {
 
     float width{};
 
-    mutable std::vector<Stop> stops; // Owner-thread query cache; paragraph geometry stays immutable.
+    mutable Array<Stop> stops; // Owner-thread query cache; paragraph geometry stays immutable.
 
     Result<Rect> caret_box(TextPosition position) const {
         FLOAT x{};
         FLOAT y{};
         DWRITE_HIT_TEST_METRICS metrics{};
-        const bool trailing = position.trailing && position.offset != 0;
-        ATELIER_TRY(
-            check(layout->HitTestTextPosition(position.offset - (trailing ? 1 : 0), trailing, &x, &y, &metrics)));
+        const std::size_t clamped_u8 = std::min<std::size_t>(position.offset, text.size());
+        const bool trailing = position.trailing && clamped_u8 != 0;
+        UINT32 dwrite_pos = 0;
+        if (trailing) {
+            std::size_t prev_u8 = clamped_u8 - 1;
+            while (prev_u8 > 0 && (static_cast<unsigned char>(text[prev_u8]) & 0xc0u) == 0x80u)
+                --prev_u8;
+            dwrite_pos = static_cast<UINT32>(platform::utf8_offset_to_utf16(text.view(), prev_u8));
+        } else {
+            dwrite_pos = static_cast<UINT32>(platform::utf8_offset_to_utf16(text.view(), clamped_u8));
+        }
+        ATELIER_TRY(check(layout->HitTestTextPosition(dwrite_pos, trailing ? TRUE : FALSE, &x, &y, &metrics)));
         return Rect{x, y, 1, metrics.height};
     }
 
     Result<void> resolve_stops() const {
         if (!stops.empty())
             return {};
-        ATELIER_TRY_BIND(boundaries, character_boundaries(text));
-        std::vector<Stop> candidate;
+        ATELIER_TRY_BIND(boundaries, character_boundaries(text.view()));
+        Array<Stop> candidate;
+        candidate.reserve(boundaries->size() * 2);
         for (auto offset : *boundaries) {
             const TextPosition leading{offset, false};
             const TextPosition trailing{offset, offset != 0};
             ATELIER_TRY_BIND(first, caret_box(leading));
             ATELIER_TRY_BIND(last, caret_box(trailing));
-            candidate.push_back({leading, first->x});
+            candidate.add({leading, first->x});
             if (std::abs(first->x - last->x) > .01f)
-                candidate.push_back({trailing, last->x});
+                candidate.add({trailing, last->x});
         }
         std::stable_sort(candidate.begin(), candidate.end(), [](auto a, auto b) { return a.x < b.x; });
         stops = std::move(candidate);
@@ -377,7 +392,7 @@ struct TextSnapshot::Impl {
 
 TextSnapshot::TextSnapshot(std::shared_ptr<const Impl> impl) : impl_(std::move(impl)) {}
 
-bool TextSnapshot::matches(std::wstring_view text) const noexcept {
+bool TextSnapshot::matches(StringView text) const noexcept {
     return impl_->text == text;
 }
 
@@ -392,12 +407,18 @@ Result<void> TextStore::initialize(std::span<const std::wstring> files) {
     return {};
 }
 
-std::uint64_t TextStore::set(TextKey key, std::wstring_view text, const Font& font, bool wrap, TextAlign alignment,
+std::uint64_t TextStore::set(TextKey key, StringView text, const Font& font, bool wrap, TextAlign alignment,
                              bool ellipsis) {
     auto& entry = impl_->entries[key];
-    if (entry.text != text || entry.font != font || entry.wrap != wrap || entry.alignment != alignment ||
-        entry.ellipsis != ellipsis) {
-        entry.text = text;
+    const bool text_changed = entry.text != text;
+    if (entry.revision == 0 || text_changed || entry.font != font || entry.wrap != wrap ||
+        entry.alignment != alignment || entry.ellipsis != ellipsis) {
+        if (text_changed) {
+            entry.text = String::from_utf8_validated(text);
+            const auto widened = platform::utf8_to_utf16_into(entry.text.view(), entry.wide_text);
+            if (!widened)
+                fatal("UI TextStore received invalid UTF-8 text.");
+        }
         entry.font = font;
         entry.wrap = wrap;
         entry.alignment = alignment;
@@ -782,6 +803,18 @@ std::shared_ptr<const Coverage> TextStore::symbol(Symbol symbol, std::uint32_t p
                                    segment(px, py, .13f, .82f, .50f, .15f) ||
                                    (std::abs(px - .50f) <= .042f && py >= .38f && py <= .61f) ||
                                    std::hypot(px - .50f, py - .71f) <= .052f)
+                            : symbol == Symbol::lock
+                                ? (outline(.23f, .46f, .77f, .85f) ||
+                                   (std::abs(px - .50f) <= .045f && py >= .58f && py <= .73f) ||
+                                   (std::abs(std::hypot(px - .50f, py - .33f) - .15f) <= .042f && py <= .33f) ||
+                                   (std::abs(px - .35f) <= .042f && py >= .33f && py <= .46f) ||
+                                   (std::abs(px - .65f) <= .042f && py >= .33f && py <= .46f))
+                            : symbol == Symbol::unlock
+                                ? (outline(.23f, .48f, .77f, .86f) ||
+                                   (std::abs(px - .50f) <= .045f && py >= .60f && py <= .74f) ||
+                                   (std::abs(std::hypot(px - .54f, py - .28f) - .15f) <= .042f && py <= .28f) ||
+                                   (std::abs(px - .39f) <= .042f && py >= .28f && py <= .48f) ||
+                                   (std::abs(px - .69f) <= .042f && py >= .28f && py <= .33f))
                             : symbol == Symbol::template_flag
                                 ? ((py >= .21f && py <= .36f &&
                                     std::abs(px - .50f) <= .30f - std::max(0.f, .28f - py) * 1.15f) ||
@@ -908,7 +941,7 @@ Result<std::shared_ptr<const TextSnapshot>> TextStore::snapshot(TextKey key, flo
 }
 
 Result<std::shared_ptr<const TextSnapshot>> TextStore::edited_snapshot(std::uint64_t key, const TextSnapshot& displayed,
-                                                                       std::wstring_view value) {
+                                                                       StringView value) {
     const auto& policy = *displayed.impl_;
     set(key, value, policy.font, false, policy.alignment);
     return snapshot(key, policy.width);
@@ -922,7 +955,8 @@ Result<Rect> TextSnapshot::character(std::uint32_t position) const {
     FLOAT x{};
     FLOAT y{};
     DWRITE_HIT_TEST_METRICS metrics{};
-    ATELIER_TRY(check(impl_->layout->HitTestTextPosition(position, FALSE, &x, &y, &metrics)));
+    const auto u16_pos = static_cast<UINT32>(platform::utf8_offset_to_utf16(impl_->text.view(), position));
+    ATELIER_TRY(check(impl_->layout->HitTestTextPosition(u16_pos, FALSE, &x, &y, &metrics)));
     // The leading caret of an RTL run is its right edge. Native character
     // position requests need the actual enclosing character's upper-left.
     return Rect{metrics.left, metrics.top, metrics.width, metrics.height};
@@ -935,7 +969,9 @@ Result<TextPosition> TextSnapshot::hit(float x, float y) const {
     DWRITE_HIT_TEST_METRICS metrics{};
     ATELIER_TRY(check(impl_->layout->HitTestPoint(x, y, &trailing, &inside, &metrics)));
     (void)inside;
-    const TextPosition candidate{metrics.textPosition + (trailing ? metrics.length : 0), trailing != FALSE};
+    const std::size_t u16_cand = static_cast<std::size_t>(metrics.textPosition) + (trailing ? metrics.length : 0);
+    const auto u8_cand = static_cast<std::uint32_t>(platform::utf16_offset_to_utf8(impl_->text.view(), u16_cand));
+    const TextPosition candidate{u8_cand, trailing != FALSE && u8_cand != 0};
     auto selected = impl_->stops.front();
     for (auto stop : impl_->stops) {
         const auto distance = std::abs(stop.x - x);
@@ -954,9 +990,9 @@ Result<TextPosition> TextSnapshot::move(TextPosition position, int direction, bo
     ATELIER_TRY_BIND(caret, impl_->caret_box(position));
     const float x = caret->x;
     if (direction < 0) {
-        for (auto at = stops.rbegin(); at != stops.rend(); ++at)
-            if (at->x < x - .01f)
-                return at->position;
+        for (std::size_t i = stops.size(); i-- > 0;)
+            if (stops[i].x < x - .01f)
+                return stops[i].position;
     } else
         for (auto stop : stops)
             if (stop.x > x + .01f)
@@ -964,19 +1000,25 @@ Result<TextPosition> TextSnapshot::move(TextPosition position, int direction, bo
     return position;
 }
 
-Result<std::vector<Rect>> TextSnapshot::selection(std::uint32_t first, std::uint32_t last) const {
-    if (first == last)
+Result<Array<Rect>> TextSnapshot::selection(std::uint32_t first, std::uint32_t last) const {
+    if (first >= last)
+        return {};
+    const auto u16_first = static_cast<UINT32>(platform::utf8_offset_to_utf16(impl_->text.view(), first));
+    const auto u16_last = static_cast<UINT32>(platform::utf8_offset_to_utf16(impl_->text.view(), last));
+    if (u16_first >= u16_last)
         return {};
     UINT32 count{};
-    const auto status = impl_->layout->HitTestTextRange(first, last - first, 0, 0, nullptr, 0, &count);
+    const auto status = impl_->layout->HitTestTextRange(u16_first, u16_last - u16_first, 0, 0, nullptr, 0, &count);
     if (status != HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER))
         ATELIER_TRY(check(status));
-    std::vector<DWRITE_HIT_TEST_METRICS> metrics(count);
-    ATELIER_TRY(check(impl_->layout->HitTestTextRange(first, last - first, 0, 0, metrics.data(), count, &count)));
-    std::vector<Rect> result;
+    InlineArray<DWRITE_HIT_TEST_METRICS, 8> metrics;
+    metrics.resize(count);
+    ATELIER_TRY(
+        check(impl_->layout->HitTestTextRange(u16_first, u16_last - u16_first, 0, 0, metrics.data(), count, &count)));
+    Array<Rect> result;
     result.reserve(count);
-    for (const auto& metric : metrics)
-        result.push_back({metric.left, metric.top, metric.width, metric.height});
+    for (std::uint32_t i = 0; i < count; ++i)
+        result.add({metrics[i].left, metrics[i].top, metrics[i].width, metrics[i].height});
     return result;
 }
 } // namespace atelier::ui::detail

@@ -166,8 +166,8 @@ bool GeometrySpreadsheet::apply(const ui::Action& action) {
         return true;
     }
     if (action.key == spreadsheet_control::follow_toggle) {
-        if (const auto* checked = std::get_if<bool>(&action.value))
-            set_follow_selected(*checked);
+        if (const auto* pinned = std::get_if<bool>(&action.value))
+            set_follow_selected(!*pinned);
         else
             set_follow_selected(!follow_selected_);
         return true;

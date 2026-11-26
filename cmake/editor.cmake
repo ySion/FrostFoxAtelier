@@ -65,6 +65,7 @@ function(atelier_add_editor)
         "${PROJECT_SOURCE_DIR}/modules/editor/application/src/editor/world_panel.cpp"
         "${PROJECT_SOURCE_DIR}/modules/editor/application/src/editor/performance.cpp"
         "${PROJECT_SOURCE_DIR}/modules/editor/application/src/editor/asset_browser.cpp"
+        "${PROJECT_SOURCE_DIR}/modules/editor/application/src/editor/code_intelligence.cpp"
         "${PROJECT_SOURCE_DIR}/modules/editor/application/src/editor/source_editor.cpp"
         "${PROJECT_SOURCE_DIR}/modules/editor/application/src/editor/project_ui.cpp"
         "${PROJECT_SOURCE_DIR}/modules/editor/application/src/application/project.cpp"

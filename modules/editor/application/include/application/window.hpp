@@ -23,7 +23,9 @@ struct NativeEvent {
 
     bool ime_owned{};
 
-    std::wstring text;
+    wchar_t character{};
+
+    String text;
 
     std::optional<ui::CompositionEvent> composition;
 

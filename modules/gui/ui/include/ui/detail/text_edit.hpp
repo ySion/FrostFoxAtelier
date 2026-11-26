@@ -1,28 +1,28 @@
 #pragma once
-#include "ui/error.hpp"
+#include "foundation/array.hpp"
 #include "foundation/ring_deque.hpp"
+#include "foundation/span.hpp"
+#include "foundation/string.hpp"
+#include "ui/error.hpp"
 #include <cstdint>
-#include <string>
-#include <string_view>
-#include <vector>
 
 namespace atelier::ui::detail {
 struct TextPosition {
     std::uint32_t offset{};
 
-    bool trailing{}; // Visual affinity at this logical UTF-16 boundary.
+    bool trailing{}; // Visual affinity at this logical UTF-8 grapheme boundary.
 
     bool operator==(const TextPosition&) const = default;
 };
 
-bool valid_text(std::wstring_view, bool single_line = true) noexcept;
+bool valid_text(StringView, bool single_line = true) noexcept;
 
-bool valid_document_text(std::wstring_view) noexcept;
+bool valid_document_text(StringView) noexcept;
 
-Result<std::vector<std::uint32_t>> character_boundaries(std::wstring_view);
+Result<Array<std::uint32_t>> character_boundaries(StringView);
 
 // Shared Unicode editing mechanics. Documents retain this buffer across views;
-// fields own a short-lived buffer. History stores splices, never whole documents.
+// fields own a short-lived buffer. History stores UTF-8 splices, never whole documents.
 class TextEdit {
 public:
     enum class Group { insert, backspace, delete_forward, isolated };
@@ -30,7 +30,7 @@ public:
     enum class Change { none, selection, text, rejected };
 
     struct Snapshot {
-        std::wstring text;
+        String text;
 
         TextPosition caret;
 
@@ -41,15 +41,18 @@ public:
 
     // Empty buffers need no system service. Nonempty creation segments with ICU.
     explicit TextEdit(std::size_t limit, bool single_line = true)
-        : current_{{}, {0, true}, {0, true}}, limit_(limit), single_line_(single_line) {}
+        : current_{{}, {0, true}, {0, true}}, limit_(limit), single_line_(single_line) {
+        boundaries_.add(0);
+        lines_.add(0);
+    }
 
-    static Result<TextEdit> create(std::wstring text, std::size_t limit, bool select_all, bool single_line = true);
+    static Result<TextEdit> create(String text, std::size_t limit, bool select_all, bool single_line = true);
 
     const Snapshot& current() const noexcept { return current_; }
 
-    const std::wstring& original() const noexcept { return original_; }
+    const String& original() const noexcept { return original_; }
 
-    const std::vector<std::uint32_t>& boundaries() const noexcept { return boundaries_; }
+    Span<const std::uint32_t> boundaries() const noexcept { return boundaries_.view(); }
 
     bool active() const noexcept { return active_; }
 
@@ -67,7 +70,7 @@ public:
 
     std::uint32_t line_start(std::size_t) const noexcept;
 
-    std::wstring_view line(std::size_t) const noexcept;
+    StringView line(std::size_t) const noexcept;
 
     bool select(TextPosition, bool extend);
 
@@ -75,7 +78,7 @@ public:
 
     TextPosition snap(std::uint32_t, bool trailing = false) const noexcept;
 
-    Result<Change> replace(std::wstring_view, Group = Group::isolated);
+    Result<Change> replace(StringView, Group = Group::isolated);
 
     Result<Change> erase(bool backwards);
 
@@ -95,9 +98,9 @@ private:
     struct Entry {
         std::uint32_t first;
 
-        std::wstring removed;
+        String removed;
 
-        std::wstring inserted;
+        String inserted;
 
         Selection before;
 
@@ -108,11 +111,11 @@ private:
 
     Snapshot current_;
 
-    std::wstring original_;
+    String original_;
 
-    std::vector<std::uint32_t> boundaries_{0};
+    Array<std::uint32_t> boundaries_;
 
-    std::vector<std::uint32_t> lines_{0};
+    Array<std::uint32_t> lines_;
 
     RingDeque<Entry> history_;
 
@@ -132,8 +135,8 @@ private:
 
     std::uint64_t selection_revision_{1};
 
-    Result<void> splice(std::uint32_t, std::uint32_t, std::wstring_view);
+    Result<void> splice(std::uint32_t, std::uint32_t, StringView);
 
-    Result<Change> replace_range(std::uint32_t, std::uint32_t, std::wstring_view, Group);
+    Result<Change> replace_range(std::uint32_t, std::uint32_t, StringView, Group);
 };
-}
+} // namespace atelier::ui::detail

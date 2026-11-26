@@ -71,7 +71,7 @@
                 const auto body_clip=intersect(table_clip,clip_rect(table.body));
                 if (paint) quad(table.header,header_clip,appearance.indicator_background);
                 std::vector<detail::TextKey> visible_text;
-                const auto paint_text=[&](TableKey id,bool header,std::wstring_view value,Rect cell,Clip cell_clip,
+                const auto paint_text=[&](TableKey id,bool header,const std::wstring& wide_value,Rect cell,Clip cell_clip,
                     TextAlign alignment,ControlIcon icon,bool row_enabled,float trailing=0.f,bool above=false) -> Result<void> {
                     float x=cell.x+std::max(4.f,appearance.padding.left)*scale;
                     auto width=std::max(0.f,cell.width-(std::max(4.f,appearance.padding.left)+std::max(4.f,appearance.padding.right)+trailing)*scale);
@@ -93,9 +93,10 @@
                             else {x+=size+4*scale; width=std::max(0.f,width-size-4*scale);}
                         }
                     }
-                    if (value.empty() || width<=0 || !visible({x,cell.y,width,cell.height},cell_clip)) return {};
+                    if (wide_value.empty() || width<=0 || !visible({x,cell.y,width,cell.height},cell_clip)) return {};
+                    const String u8_value = wide_to_utf8(wide_value);
                     const detail::TextKey text_key{key,id,header}; visible_text.push_back(text_key);
-                    self.text.set(text_key,value,appearance.font,false,alignment,true);
+                    self.text.set(text_key,u8_value.view(),appearance.font,false,alignment,true);
                     ATELIER_TRY_BIND(metrics,self.text.metrics(text_key,width/scale));
                     const auto y=cell.y+std::max(0.f,cell.height-metrics->height*scale)*.5f;
                     if (!paint) return {};

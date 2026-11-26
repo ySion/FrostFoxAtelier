@@ -593,11 +593,20 @@ Result<void> Application::action(const ui::Action& source) {
         pending_source_focus_ = true;
         return {};
     }
-    if (event.kind == ui::ActionKind::activate && event.key == editor::source_control::problem) {
-        ATELIER_TRY_BIND(located, workspace_.source_editor.locate_problem());
-        if (*located)
-            pending_source_focus_ = true;
-        return {};
+    {
+        bool focus_buffer = false;
+        ui::ControlKey focus_bar = 0;
+        ATELIER_TRY_BIND(code_handled, workspace_.source_editor.apply_action(event, focus_buffer, focus_bar));
+        if (*code_handled) {
+            close_menu(false);
+            if (focus_buffer) {
+                workspace_.dock.select(editor::source_control::tab);
+                pending_source_focus_ = true;
+            }
+            if (focus_bar)
+                pending_code_bar_focus_ = focus_bar;
+            return {};
+        }
     }
     if (event.kind == ui::ActionKind::activate && event.key == editor::network_control::new_scratch) {
         ATELIER_TRY(document_->create_scratch_graph());
@@ -2130,6 +2139,7 @@ void Application::cancel_interaction(const ui::Reply& reply, std::string_view in
 
 void Application::invalidate_surface() {
     ++surface_revision_;
+    prepared_menu_frame_.reset();
     cancel_interaction(ui_.cancel_interaction());
 }
 
@@ -2231,6 +2241,7 @@ void Application::close_menu(bool restore_focus, std::source_location caller, st
     menu_context_target_ = menu_context_group_ = 0;
     menu_table_layout_ = {};
     menu_projection_.reset();
+    prepared_menu_frame_.reset();
     menu_dirty_ = false;
 }
 
@@ -2241,10 +2252,12 @@ Result<void> Application::update_menu() {
     }
     const auto request = *workspace_.menu;
     const auto* source = ui_.presented()->find(request.source);
+    const auto& selection_frame = prepared_menu_frame_ ? *prepared_menu_frame_ : *ui_.presented();
     if (!source || source->incarnation != menu_incarnation_ || !source->enabled ||
         source->context_target != menu_context_target_ || source->context_group != menu_context_group_ ||
-        source->table_layout != menu_table_layout_ || !live_table_context(*ui_.presented(), request, true) ||
-        source->bounds.y >= source->clip.bottom || source->bounds.y + source->bounds.height <= source->clip.top) {
+        source->table_layout != menu_table_layout_ || !live_table_context(*ui_.presented(), request, false) ||
+        !live_table_context(selection_frame, request, true) || source->bounds.y >= source->clip.bottom ||
+        source->bounds.y + source->bounds.height <= source->clip.top) {
         close_menu();
         return {};
     }
@@ -2637,6 +2650,7 @@ Result<void> Application::input(const ui::Event& event, WPARAM native_key) {
     if (event.kind == ui::EventKind::key_up && (native_key == 'Y' || event.key == ui::Key::y))
         workspace_.network.set_cut_key(false);
     if (event.kind == ui::EventKind::pointer_leave) {
+        workspace_.source_editor.update_pointer(nullptr, 0.f, 0.f, false);
         effects(ui_.input(event));
         return {};
     }
@@ -2747,6 +2761,71 @@ Result<void> Application::input(const ui::Event& event, WPARAM native_key) {
         if (event.kind != ui::EventKind::pointer_move || workspace_.network.active_gesture())
             ui_.dismiss_tooltip();
         return {};
+    }
+    if ((event.kind == ui::EventKind::pointer_move || event.kind == ui::EventKind::key_down ||
+         event.kind == ui::EventKind::key_up) &&
+        workspace_.dock.visible(editor::source_control::tab)) {
+        workspace_.source_editor.update_pointer(ui_.presented().get(), pointer_position_.x, pointer_position_.y,
+                                                event.control);
+    }
+    if (event.kind == ui::EventKind::key_down) {
+        const auto focused_key = ui_.focused_control();
+        const bool in_code_buffer = focused_key == editor::source_control::buffer;
+        const bool in_code_bar = focused_key == editor::source_control::find_input ||
+                                 focused_key == editor::source_control::replace_input ||
+                                 focused_key == editor::source_control::goto_input;
+        if (in_code_buffer && workspace_.source_editor.completion_open()) {
+            if (!event.control && !event.alt && event.key == ui::Key::down) {
+                workspace_.source_editor.step_completion(1);
+                return {};
+            }
+            if (!event.control && !event.alt && event.key == ui::Key::up) {
+                workspace_.source_editor.step_completion(-1);
+                return {};
+            }
+            if (!event.control && !event.alt && !event.shift &&
+                (event.key == ui::Key::enter || event.key == ui::Key::tab)) {
+                if (workspace_.source_editor.accept_selected_completion())
+                    return {};
+            }
+            if (!event.control && !event.alt && !event.shift && event.key == ui::Key::escape) {
+                workspace_.source_editor.dismiss_completion();
+                return {};
+            }
+        }
+        if (in_code_buffer || in_code_bar) {
+            if (in_code_buffer && event.control && !event.alt && !event.shift && event.key == ui::Key::space) {
+                workspace_.source_editor.trigger_completion(true);
+                return {};
+            }
+            if (in_code_buffer && !event.control && !event.alt && !event.shift && event.key == ui::Key::f12) {
+                ATELIER_TRY_BIND(jumped, workspace_.source_editor.go_to_definition());
+                if (*jumped)
+                    pending_source_focus_ = true;
+                return {};
+            }
+            if (event.control && !event.alt && !event.shift && event.key == ui::Key::f) {
+                pending_code_bar_focus_ = workspace_.source_editor.open_search(editor::CodeSearchMode::find);
+                return {};
+            }
+            if (event.control && !event.alt && !event.shift && event.key == ui::Key::h) {
+                pending_code_bar_focus_ = workspace_.source_editor.open_search(editor::CodeSearchMode::replace);
+                return {};
+            }
+            if (event.control && !event.alt && !event.shift && event.key == ui::Key::g) {
+                pending_code_bar_focus_ = workspace_.source_editor.open_search(editor::CodeSearchMode::goto_line);
+                return {};
+            }
+            if (!event.control && !event.alt && event.key == ui::Key::f3) {
+                workspace_.source_editor.find_step(!event.shift);
+                return {};
+            }
+            if (in_code_buffer && !event.control && !event.alt && !event.shift && event.key == ui::Key::escape &&
+                workspace_.source_editor.search_open()) {
+                workspace_.source_editor.close_search();
+                return {};
+            }
+        }
     }
     const auto previous_focus = ui_.focused_control();
     auto reply = ui_.input(event);
@@ -3092,6 +3171,7 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
             }
         }
     }
+    prepared_menu_frame_ = *prepared;
     if (workspace_.menu) {
         menu_projection_ = current_menu_projection();
         menu_dirty_ = false;
@@ -3307,6 +3387,7 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
             times->accept_begin = Clock::now();
         if (!ui_.accept(*prepared))
             return std::unexpected(Error{ErrorCode::invalid_storage, "UI rejected an accepted renderer frame."});
+        prepared_menu_frame_.reset();
         if (times)
             times->accepted = Clock::now();
         if (scene)
@@ -3334,6 +3415,12 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
             if (workspace_.source_editor.active())
                 effects(ui_.focus(editor::source_control::buffer));
         }
+        if (pending_code_bar_focus_ && (!workspace_.source_editor.search_open() ||
+                                        (ui_.presented() && ui_.presented()->find(pending_code_bar_focus_)))) {
+            const auto target_key = std::exchange(pending_code_bar_focus_, 0);
+            if (workspace_.source_editor.search_open() && target_key)
+                effects(ui_.focus(target_key));
+        }
         if (pending_network_search_focus_ &&
             (!workspace_.network.tab_search().open ||
              (ui_.presented() && ui_.presented()->find(editor::network_control::tab_search_input)))) {
@@ -3346,16 +3433,19 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
             (!workspace_.row_rename || (ui_.presented() && ui_.presented()->find(editor::control::inline_rename)))) {
             pending_rename_focus_ = false;
             if (workspace_.row_rename) {
-                std::uint32_t stem_len = static_cast<std::uint32_t>(workspace_.row_rename->text.size());
+                std::size_t stem_w = workspace_.row_rename->text.size();
                 if (!workspace_.row_rename->invalid && !workspace_.row_rename->asset.empty()) {
                     const auto* sel = workspace_.assets.selected() ? &*workspace_.assets.selected() : nullptr;
                     const bool is_folder = sel && sel->kind == assets::AssetKind::folder;
                     if (!is_folder) {
                         const auto dot = workspace_.row_rename->text.find_last_of(L'.');
                         if (dot != std::wstring::npos && dot > 0)
-                            stem_len = static_cast<std::uint32_t>(dot);
+                            stem_w = dot;
                     }
                 }
+                const auto stem_u8 =
+                    platform::utf16_to_utf8_string(std::wstring_view(workspace_.row_rename->text).substr(0, stem_w));
+                const auto stem_len = static_cast<std::uint32_t>(stem_u8 ? stem_u8->size() : stem_w);
                 effects(ui_.focus(editor::control::inline_rename, stem_len));
             }
         }

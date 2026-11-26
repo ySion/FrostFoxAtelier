@@ -101,10 +101,12 @@ enum class ControlIcon {
     stop,
     build,
     reload,
-    warning
+    warning,
+    lock,
+    unlock
 };
 
-inline constexpr ControlIcon last_control_icon = ControlIcon::warning;
+inline constexpr ControlIcon last_control_icon = ControlIcon::unlock;
 
 constexpr std::optional<ControlIcon> parse_control_icon(std::string_view name) noexcept {
     using enum ControlIcon;
@@ -208,6 +210,8 @@ constexpr std::optional<ControlIcon> parse_control_icon(std::string_view name) n
         {"reload", reload},
         {"refresh", reload},
         {"warning", warning},
+        {"lock", lock},
+        {"unlock", unlock},
     };
     for (const auto& [key, value] : table)
         if (key == name)

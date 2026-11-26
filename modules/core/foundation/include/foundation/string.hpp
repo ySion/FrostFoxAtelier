@@ -35,14 +35,44 @@ concept TextInteger = std::integral<T> && requires(const char* input, char* outp
     std::from_chars(input, input, value, 10);
     std::to_chars(output, output, value, 10);
 };
+}
 
-constexpr char ascii_lower(char value) noexcept {
+[[nodiscard]] constexpr char ascii_lower(char value) noexcept {
     return value >= 'A' && value <= 'Z' ? static_cast<char>(value + ('a' - 'A')) : value;
 }
 
-constexpr char ascii_upper(char value) noexcept {
+[[nodiscard]] constexpr char ascii_upper(char value) noexcept {
     return value >= 'a' && value <= 'z' ? static_cast<char>(value - ('a' - 'A')) : value;
 }
+
+[[nodiscard]] constexpr bool is_ascii_alpha(char value) noexcept {
+    const auto lower = static_cast<unsigned char>(value) | 0x20u;
+    return lower >= 'a' && lower <= 'z';
+}
+
+[[nodiscard]] constexpr bool is_ascii_digit(char value) noexcept {
+    return value >= '0' && value <= '9';
+}
+
+[[nodiscard]] constexpr bool is_ascii_alnum(char value) noexcept {
+    return is_ascii_alpha(value) || is_ascii_digit(value);
+}
+
+[[nodiscard]] constexpr bool is_ascii_hex(char value) noexcept {
+    const auto lower = static_cast<unsigned char>(value) | 0x20u;
+    return is_ascii_digit(value) || (lower >= 'a' && lower <= 'f');
+}
+
+[[nodiscard]] constexpr bool is_ascii_space(char value) noexcept {
+    return value == ' ' || value == '\t' || value == '\r' || value == '\n' || value == '\v' || value == '\f';
+}
+
+[[nodiscard]] constexpr bool is_ascii_ident_start(char value) noexcept {
+    return is_ascii_alpha(value) || value == '_';
+}
+
+[[nodiscard]] constexpr bool is_ascii_ident_continue(char value) noexcept {
+    return is_ascii_alnum(value) || value == '_';
 }
 
 // A byte range interpreted as UTF-8 by text consumers. A view may cover external,
@@ -206,7 +236,7 @@ public:
         if (size_ != value.size_)
             return false;
         for (std::size_t i = 0; i != size_; ++i)
-            if (detail::ascii_lower(data_[i]) != detail::ascii_lower(value.data_[i]))
+            if (ascii_lower(data_[i]) != ascii_lower(value.data_[i]))
                 return false;
         return true;
     }
@@ -218,6 +248,30 @@ public:
     [[nodiscard]] constexpr bool ends_with_ascii_case_insensitive(StringView value) const noexcept {
         return size_ >= value.size_ &&
                StringView{Unchecked{}, data_ + size_ - value.size_, value.size_}.equals_ascii_case_insensitive(value);
+    }
+
+    [[nodiscard]] constexpr std::size_t find_ascii_case_insensitive(StringView value,
+                                                                    std::size_t from = 0) const noexcept {
+        if (from > size_)
+            return npos;
+        if (value.empty())
+            return from;
+        if (value.size_ > size_ - from)
+            return npos;
+        const char first_lower = ascii_lower(value.data_[0]);
+        const std::size_t last = size_ - value.size_;
+        for (std::size_t i = from; i <= last; ++i) {
+            if (ascii_lower(data_[i]) != first_lower)
+                continue;
+            if (StringView{Unchecked{}, data_ + i + 1, value.size_ - 1}.equals_ascii_case_insensitive(
+                    StringView{Unchecked{}, value.data_ + 1, value.size_ - 1}))
+                return i;
+        }
+        return npos;
+    }
+
+    [[nodiscard]] constexpr bool contains_ascii_case_insensitive(StringView value) const noexcept {
+        return find_ascii_case_insensitive(value) != npos;
     }
 
     // Whole-input parsing, without trimming, locale, leading '+' or base prefixes.
@@ -819,6 +873,22 @@ public:
 
     [[nodiscard]] bool equals_ascii_case_insensitive(StringView text) const noexcept {
         return view().equals_ascii_case_insensitive(text);
+    }
+
+    [[nodiscard]] bool starts_with_ascii_case_insensitive(StringView text) const noexcept {
+        return view().starts_with_ascii_case_insensitive(text);
+    }
+
+    [[nodiscard]] bool ends_with_ascii_case_insensitive(StringView text) const noexcept {
+        return view().ends_with_ascii_case_insensitive(text);
+    }
+
+    [[nodiscard]] std::size_t find_ascii_case_insensitive(StringView text, std::size_t from = 0) const noexcept {
+        return view().find_ascii_case_insensitive(text, from);
+    }
+
+    [[nodiscard]] bool contains_ascii_case_insensitive(StringView text) const noexcept {
+        return view().contains_ascii_case_insensitive(text);
     }
 
     [[nodiscard]] std::size_t find(StringView text, std::size_t from = 0) const noexcept {

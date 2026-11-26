@@ -3,6 +3,7 @@
 #include "foundation/string.hpp"
 #include "memory/fatal.hpp"
 #include "platform/utf.hpp"
+#include "platform/windows_path.hpp"
 #include <Windows.h>
 #include <algorithm>
 #include <atomic>
@@ -41,6 +42,32 @@ std::wstring visible_text(std::wstring_view input, bool one_line = false) {
 
 std::wstring visible_text(std::string_view text, bool one_line = false) {
     return visible_text(platform::utf8_to_utf16_validated(text), one_line);
+}
+
+String visible_utf8(std::string_view text) {
+    std::string out;
+    out.reserve(text.size());
+    constexpr char hex[] = "0123456789abcdef";
+    for (std::size_t i = 0; i < text.size();) {
+        const auto c = static_cast<unsigned char>(text[i]);
+        if ((c < 32u && c != '\n' && c != '\t') || c == 127u) {
+            out += "\\u00";
+            out += hex[(c >> 4) & 15u];
+            out += hex[c & 15u];
+            ++i;
+        } else if (c == 0xc2u && i + 1 < text.size() && static_cast<unsigned char>(text[i + 1]) >= 0x80u &&
+                   static_cast<unsigned char>(text[i + 1]) <= 0x9fu) {
+            const auto b = static_cast<unsigned char>(text[i + 1]);
+            out += "\\u00";
+            out += hex[(b >> 4) & 15u];
+            out += hex[b & 15u];
+            i += 2;
+        } else {
+            out += static_cast<char>(c);
+            ++i;
+        }
+    }
+    return String::from_utf8_validated(StringView{out});
 }
 
 std::wstring short_text(std::wstring text, std::size_t limit = 256) {
@@ -133,14 +160,14 @@ logging::Result<Output::Stream*> Output::add_run(std::filesystem::path directory
         attachment_error_ = application::diagnostic_text(opened.error().message);
         return std::unexpected(opened.error());
     }
-    auto text = platform::utf16_to_utf8(directory.generic_wstring());
+    auto text = platform::generic_path_to_utf8(directory);
     if (!text) {
         attachment_error_ = L"Cannot attach run: invalid UTF-16 directory.";
         return std::unexpected(logging::Error{logging::ErrorCode::io_failed, "Invalid UTF-16 text."});
     }
     auto stream = std::make_unique<Stream>();
     stream->directory = std::move(directory);
-    stream->directory_text = std::move(*text);
+    stream->directory_text.assign(text->c_str(), text->size());
     stream->reader = std::move(*opened);
     streams_.push_back(std::move(stream));
     attachment_error_.clear();
@@ -476,7 +503,7 @@ ui::Result<std::shared_ptr<ui::CodeDocument>> Output::body() const {
     const auto at = std::ranges::find(rows_, selected_, &Row::key);
     const auto key = at == rows_.end() ? 0 : at->record_key;
     if (key != body_key_) {
-        auto document = ui::CodeDocument::create(key ? visible_text(item(key)->record.entry.message) : L"");
+        auto document = ui::CodeDocument::create(key ? visible_utf8(item(key)->record.entry.message) : String{});
         if (!document) {
             if (document.error().code == ui::ErrorCode::invalid_text)
                 fatal(document.error().message); // Escaped, bounded log text must satisfy the document contract.

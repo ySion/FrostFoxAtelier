@@ -2142,8 +2142,9 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
             continue;
         }
         if (view.key == source_control::tab) {
-            if (auto staged = source_editor.append(result, view.content, *ui_document_, action, project,
-                                                   project_build.get(), project_running);
+            if (auto staged =
+                    source_editor.append(result, view.content, *ui_document_, action, project, project_build.get(),
+                                         project_running, &session.world().runtime(), frame);
                 !staged)
                 return composition_failed(std::move(staged).error());
             continue;
@@ -2363,7 +2364,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
             const std::wstring graph_title = network_path_title(session, project, net_graph);
             const std::wstring zoom_text = std::format(L"{}%", static_cast<int>(std::lround(network.zoom() * 100.f)));
             const bool is_scratch = has_graph && session.is_scratch_graph(net_graph);
-            const std::wstring lock_text = is_scratch ? L"Scratch" : net_locked ? L"Locked" : L"Unlocked";
+            const double lock_icon = double(net_locked ? ui::ControlIcon::lock : ui::ControlIcon::unlock);
             const auto& ts = network.tab_search();
             ATELIER_TRY_BIND(select_action, net_action({"graph.select", seed_args.finish()}));
             const std::array<ui_language::InputValue, 56> inputs{
@@ -2374,7 +2375,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                 double(ui::ControlIcon::back),
                 double(ui::ControlIcon::forward),
                 net_locked,
-                lock_text,
+                lock_icon,
                 ui_language::ActionBinding{
                     network_control::lock_toggle, has_graph && !is_scratch && !session.world().running(),
                     property_help_.get(
@@ -5114,6 +5115,8 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                 }
             } else if (source->key == source_control::files) {
                 items = source_editor.menu_items();
+            } else if (source->key == source_control::outline) {
+                items = source_editor.outline_menu_items();
             } else if (source->key == control::add_component) {
                 ATELIER_TRY(append_operator(items, {transform ? "scene.transform_remove" : "scene.transform_add"}));
                 ATELIER_TRY_ASSIGN(component_choices, session.component_types());
@@ -5753,9 +5756,10 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                      "查看 CopyToPoints 生成的网格实例资产引用与局部变换平移分量。");
             break;
         case spreadsheet_control::follow_toggle:
-            set_help(ctrl, L"Follow Selected Node",
-                     spreadsheet.follow_selected() ? L"Currently: Follow Selection" : L"Currently: Pin Display Node",
-                     "开启后电子表格实时检视画布中当前选中的节点输出；关闭后始终锁定检视 Display Flag 节点输出。");
+            set_help(
+                ctrl, L"Pin to Display Node",
+                spreadsheet.follow_selected() ? L"Currently: Follow Selection" : L"Currently: Pinned to Display Node",
+                "锁定电子表格目标：默认未锁定时实时跟随画布中选中的节点；点击钉住后始终锁定检视 Display Flag 节点输出。");
             break;
         case spreadsheet_control::page_prev:
             set_help(ctrl, L"Previous 512 Rows", L"Geometry Spreadsheet", "翻到电子表格的上一页（每页 512 行）。");

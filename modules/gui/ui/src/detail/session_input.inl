@@ -354,7 +354,25 @@ Reply Session::input(const Event& event) {
                 }
             }
             if (ctx_box && self.states.at(ctx_box->key).control.context_target) {
+                const ControlKey focus_target = focusable(hit->kind)       ? hit->key
+                                                : focusable(ctx_box->kind) ? ctx_box->key
+                                                                           : ControlKey{0};
+                if (!focus_target || self.focus != focus_target) {
+                    if (!self.finish_edit(reply, true))
+                        return reply;
+                    self.retire_keyboard(reply);
+                    if (focus_target) {
+                        self.set_focus(reply, focus_target);
+                        const auto& target_ctrl = self.states.at(focus_target).control;
+                        if (text_field(target_ctrl.kind) &&
+                            !self.begin_edit(reply, focus_target, target_ctrl.kind == ControlKind::text_edit, false))
+                            return reply;
+                    }
+                } else {
+                    self.retire_keyboard(reply);
+                }
                 self.context_request(reply, *ctx_box, event.x, event.y);
+                reply.redraw = true;
                 return reply;
             }
         }
@@ -687,13 +705,13 @@ Reply Session::input(const Event& event) {
         }
         reply.consumed = true;
         if (event.kind == EventKind::text && !event.control && !event.alt) {
-            if (const auto* value = std::get_if<std::wstring>(&event.data)) {
+            if (const auto* value = std::get_if<String>(&event.data)) {
                 // Enter/Tab/control WM_CHAR belong to their key command.
-                if (value->size() == 1 && (*value)[0] < 32)
+                if (value->size() == 1 && static_cast<unsigned char>((*value)[0]) < 32u)
                     return reply;
                 reply.redraw |= !edit.text_mode;
                 edit.text_mode = true;
-                self.insert(reply, *value, detail::TextEdit::Group::insert);
+                self.insert(reply, value->view(), detail::TextEdit::Group::insert);
             }
         } else if (event.kind == EventKind::key_down) {
             if (event.key == Key::enter) {
@@ -735,9 +753,10 @@ Reply Session::input(const Event& event) {
                     return reply;
                 }
                 const auto& selected = edit.buffer().current();
-                const auto paragraph = geometry->paragraph->matches(selected.text)
-                                           ? Result<std::shared_ptr<const detail::TextSnapshot>>{geometry->paragraph}
-                                           : self.text.edited_snapshot(edit.key, *geometry->paragraph, selected.text);
+                const auto paragraph =
+                    geometry->paragraph->matches(selected.text.view())
+                        ? Result<std::shared_ptr<const detail::TextSnapshot>>{geometry->paragraph}
+                        : self.text.edited_snapshot(edit.key, *geometry->paragraph, selected.text.view());
                 if (!self.text_ok(reply, paragraph, self.focus))
                     return reply;
                 const bool left = event.key == Key::left || event.key == Key::home;

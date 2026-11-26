@@ -279,6 +279,9 @@ struct Control {
 
     std::shared_ptr<CodeDocument> code; // CodeEditor only; document owns text and history.
 
+    std::shared_ptr<const CodeAnnotations>
+        code_annotations; // CodeEditor only; optional semantic/search/diagnostic overlay.
+
     std::shared_ptr<const Tooltip> tooltip; // Owned documentation, shared across a parameter row and its fields.
 
     std::shared_ptr<const CanvasData> canvas; // Container only: immutable 2D grid, boxes and capsule strokes.
@@ -686,6 +689,8 @@ struct UiFrame {
     const TableGeometry* find_table(ControlKey) const noexcept;
 
     const CodeGeometry* find_code(ControlKey) const noexcept;
+
+    std::optional<std::uint32_t> code_offset_at(ControlKey, float x, float y) const;
 };
 
 // expand: a tree row requests the bool expansion state; the host owns it.
@@ -758,9 +763,9 @@ struct ClipboardRequest {
 
     EditToken token;
 
-    std::wstring text; // Owned selected text for copy/cut.
+    String text; // Owned UTF-8 selected text for copy/cut.
 
-    std::size_t limit{4096}; // Bounded by the active editor; native adapters cap at 1 MiB UTF-16 units.
+    std::size_t limit{16384}; // Bounded by the active editor; native adapters cap at 1 MiB UTF-8 bytes.
 };
 
 struct ClipboardResult {
@@ -774,7 +779,7 @@ struct ClipboardResult {
 
     std::uint32_t native_error{};
 
-    std::wstring text; // Owned CF_UNICODETEXT payload for read.
+    String text; // Owned UTF-8 payload transcoded from CF_UNICODETEXT on read.
 };
 
 enum class ImeKind { complete, cancel };
@@ -802,11 +807,11 @@ struct ImeResult {
 enum class CompositionKind { start, update, end, cancel };
 
 struct Preedit {
-    std::wstring text;
+    String text;
 
-    std::uint32_t cursor{}; // UTF-16 offset, clamped to an editing boundary by UI.
+    std::uint32_t cursor{}; // UTF-8 byte offset, clamped to an editing boundary by UI.
 
-    std::vector<std::uint8_t> attributes; // IMM attributes per UTF-16 unit; empty if absent.
+    std::vector<std::uint8_t> attributes; // IMM attributes per UTF-8 byte; empty if absent.
 };
 
 struct CompositionEvent {
@@ -816,7 +821,7 @@ struct CompositionEvent {
 
     EditToken token; // Fixed start binding; advanced only after a confirmed segment.
 
-    std::optional<std::wstring> result;
+    std::optional<String> result;
 
     std::optional<Preedit> preedit; // Missing differs from an empty preedit.
 };
@@ -901,10 +906,19 @@ enum class Key {
     menu,
     f10,
     page_up,
-    page_down
+    page_down,
+    slash,
+    d,
+    f,
+    g,
+    h,
+    k,
+    f2,
+    f3,
+    f12
 };
 
-using InputData = std::variant<std::monostate, std::wstring, ClipboardResult, ImeResult, CompositionEvent>;
+using InputData = std::variant<std::monostate, String, ClipboardResult, ImeResult, CompositionEvent>;
 
 struct Event {
     EventKind kind{};
@@ -919,7 +933,7 @@ struct Event {
 
     Key key{Key::none};
 
-    InputData data{}; // Text is an owned, complete UTF-16 string, separate from key commands.
+    InputData data{}; // Text is an owned, complete UTF-8 String, separate from key commands.
 
     bool shift{};
 
