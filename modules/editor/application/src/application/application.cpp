@@ -133,10 +133,10 @@ Result<void> Application::initialize(std::unique_ptr<editor::Session> document, 
     ATELIER_TRY_BIND(renderer, renderer::Renderer::open(window_.handle(), options).transform_error(renderer_error));
     renderer_ = std::move(*renderer);
     auto popup = std::make_unique<PopupHost>();
-    ATELIER_TRY(popup->initialize(window(), *fonts, gpu_validation_));
+    ATELIER_TRY(popup->initialize(renderer_.device(), window(), *fonts, gpu_validation_));
     popup_ = std::move(popup);
     auto submenu = std::make_unique<PopupHost>();
-    ATELIER_TRY(submenu->initialize(window(), *fonts, gpu_validation_));
+    ATELIER_TRY(submenu->initialize(renderer_.device(), window(), *fonts, gpu_validation_));
     submenus_.push_back(std::move(submenu));
     closed_ = false;
     window_.show(activate);
@@ -230,9 +230,8 @@ void Application::status(Result<world::Commit> result, const wchar_t* success) {
 
 void Application::sync_world_view() {
     workspace_.sync_world(*document_);
-    // Undo/reopen may restore a finer follow-focus lattice. The scene remains
-    // authoritative; re-anchor this view if its old target cannot represent it.
-    if (rendering::scene_lighting_focus_error(workspace_.view.lit, lighting_focus())) {
+    const auto focus = lighting_focus();
+    if (!math::is_finite(focus) || math::max_component(math::cwise_abs(focus)) > 100000.f) {
         auto state = camera_.state();
         state.target = {};
         camera_.set_state(state);
@@ -245,8 +244,7 @@ math::Vector3 Application::lighting_focus() const {
 }
 
 Result<void> Application::set_camera(const editor::Camera& camera, bool cut) {
-    if (const auto* error = renderer::probe_focus_error(workspace_.view.lit, camera.state().target))
-        return std::unexpected(Error{ErrorCode::invalid_definition, error});
+    ATELIER_TRY(editor::validate_view_options(workspace_.view, camera.state().target));
     if (camera.state() != camera_.state()) {
         camera_ = camera;
         camera_cut_ |= cut;
@@ -359,42 +357,6 @@ Result<void> Application::set_view_settings(const renderer::ViewSettings& settin
     ATELIER_TRY(workspace_.set_view_settings(*document_, settings, lighting_focus()));
     workspace_.viewport_settings.grid_spacing = settings.grid_spacing;
     return {};
-}
-
-Result<renderer::ViewSettings> Application::fitted_probe_view(bool follow_focus) const {
-    ATELIER_TRY(document_->sync_procedural_generators(project_.get()));
-    ATELIER_TRY_BIND(items, document_->presentation().render_items());
-    if (items->empty())
-        return std::unexpected(Error{ErrorCode::invalid_definition, "DDGI volume fitting requires rendered geometry."});
-    auto world_bounds = math::Bounds::empty();
-    for (const auto& item : *items)
-        world_bounds = math::encapsulate(world_bounds, math::transform_bounds(item.geometry->bounds(), item.world));
-    if (math::is_empty(world_bounds) || !math::is_finite(world_bounds))
-        return std::unexpected(
-            Error{ErrorCode::invalid_definition, "DDGI volume fitting requires finite scene bounds."});
-    auto candidate = workspace_.view;
-    auto& lighting = candidate.lit;
-    lighting.probe_volumes = {};
-    auto& coarse = lighting.probe_volumes[follow_focus ? 1 : 0];
-    coarse.enabled = true;
-    for (unsigned axis = 0; axis < 3; ++axis) {
-        coarse.minimum[axis] = std::floor(world_bounds.minimum[axis] - .5f);
-        coarse.maximum[axis] = std::ceil(world_bounds.maximum[axis] + .5f);
-        const double span = double(coarse.maximum[axis]) - double(coarse.minimum[axis]);
-        coarse.counts[axis] =
-            static_cast<std::uint32_t>(std::clamp(std::ceil(span * .5) + 1., 2., follow_focus ? 12. : 16.));
-    }
-    if (follow_focus) {
-        auto& focused = lighting.probe_volumes[0];
-        focused.enabled = true;
-        focused.placement = renderer::ProbePlacement::follow_focus;
-        focused.minimum = {-6, -2, -6};
-        focused.maximum = {6, 4, 6};
-        focused.counts = {13, 7, 13};
-        focused.blend_cells = 1;
-    }
-    ATELIER_TRY(editor::validate_view_options(candidate, lighting_focus()));
-    return candidate;
 }
 
 Result<void> Application::configure_view(math::Vector3 eye, math::Vector3 target, renderer::Shading shading) {
@@ -1592,6 +1554,8 @@ Result<void> Application::open_graph_context(std::string_view key) {
     workspace_.material_inspection.clear();
     workspace_.graph_breadcrumbs.clear();
     workspace_.dived_network_graph.clear();
+    if (workspace_.active_graph.empty())
+        saved_world_camera_ = camera_;
     workspace_.active_graph = std::string(key);
     workspace_.set_single_graph_selection(workspace_.default_selected_graph_node(*document_, key));
     workspace_.dock.select(editor::network_control::tab);
@@ -1610,6 +1574,11 @@ void Application::exit_graph_context() {
     workspace_.graph_breadcrumbs.clear();
     workspace_.dived_network_graph.clear();
     workspace_.active_graph.clear();
+    if (saved_world_camera_) {
+        camera_ = *saved_world_camera_;
+        workspace_.camera_view = camera_.view();
+        saved_world_camera_.reset();
+    }
     workspace_.inspecting_network = false;
     workspace_.set_single_graph_selection({});
     workspace_.bump_view_revision();
@@ -1755,12 +1724,6 @@ void Application::toggle_view(editor::ViewToggleOption option) {
     auto& value = option == editor::ViewToggleOption::fps ? workspace_.show_fps : workspace_.viewport_options_collapsed;
     value = !value;
     workspace_.bump_view_revision();
-}
-
-Result<void> Application::fit_lighting(bool follow_focus) {
-    auto fitted = fitted_probe_view(follow_focus);
-    return fitted ? workspace_.set_view_settings(*document_, *fitted, lighting_focus())
-                  : Result<void>{std::unexpected(fitted.error())};
 }
 
 void Application::about() {
@@ -2113,7 +2076,7 @@ Result<void> Application::update_menu() {
         if (depth == submenus_.size()) {
             auto child = std::make_unique<PopupHost>();
             ATELIER_TRY_BIND(fonts, editor_fonts());
-            ATELIER_TRY(child->initialize(window(), *fonts, gpu_validation_));
+            ATELIER_TRY(child->initialize(renderer_.device(), window(), *fonts, gpu_validation_));
             submenus_.push_back(std::move(child));
         }
         POINT corners[2]{{static_cast<LONG>(box->bounds.x), static_cast<LONG>(box->bounds.y)},
@@ -2687,9 +2650,35 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
     // Keep the last committed scopes while minimized; an empty surface cannot
     // validate a new layout or make its controls available for interaction.
     if (!target->drawable) {
+        renderer_.release_transients(renderer::Dormancy::deep);
+        camera_cut_ = true;
+        play_idle_snapshot_.reset();
         lighting_clock_.reset();
-        MsgWaitForMultipleObjectsEx(0, nullptr, 20, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        MsgWaitForMultipleObjectsEx(0, nullptr, 50, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         return true;
+    }
+    if (saved_world_camera_ && (workspace_.active_graph.empty() || !document_->has_graph(workspace_.active_graph))) {
+        camera_ = *saved_world_camera_;
+        workspace_.camera_view = camera_.view();
+        camera_cut_ = true;
+        saved_world_camera_.reset();
+    }
+    if (play_.running() && GetForegroundWindow() != window()) {
+        POINT cursor_pt{};
+        const bool pointer_over = GetCursorPos(&cursor_pt) && WindowFromPoint(cursor_pt) == window();
+        const bool busy_or_dirty =
+            capture ||
+            (control_ && (control_->active_job() || control_->wants_capture() || control_->command_trace())) ||
+            menu_window() || pending_menu_ || workspace_.menu || workspace_.pie_menu() || camera_fly_ || camera_drag_ ||
+            viewport_tool_.active() || camera_cut_ || menu_dirty_ || fallback_presented_ || source_build_pending_ ||
+            pointer_over || !ui_.presented();
+        const PlayIdleSnapshot cur_idle{current_menu_projection(), camera_.state(), surface_revision_};
+        if (!busy_or_dirty && play_idle_snapshot_ && play_idle_snapshot_->matches(cur_idle)) {
+            renderer_.release_transients(renderer::Dormancy::transients);
+            lighting_clock_.reset();
+            MsgWaitForMultipleObjectsEx(0, nullptr, 8, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            return true;
+        }
     }
     // Only recoverable render failures enter this gate. Service work above
     // remains live, while input wakeups cannot turn a persistent error into
@@ -2855,10 +2844,18 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
     if (had_viewport_gesture && !viewport_tool_.active())
         window_.capture(false);
     const bool in_sop = !workspace_.active_graph.empty() && document_->has_graph(workspace_.active_graph);
+    if (!in_sop && saved_world_camera_) {
+        camera_ = *saved_world_camera_;
+        workspace_.camera_view = camera_.view();
+        camera_cut_ = true;
+        saved_world_camera_.reset();
+    }
     const procedural::Geometry* sop_template_geom = nullptr;
     renderer::Result<renderer::Preparation> material_preparation{renderer::Preparation{0, 0, true}};
     {
         timing::Scope snapshot{phases::scene};
+        if (!viewport && play_.running())
+            renderer_.release_transients(renderer::Dormancy::viewport_hidden);
         if (viewport) {
             if (in_sop) {
                 const auto eval = document_->evaluate_graph(workspace_.active_graph, project_.get());
@@ -2914,12 +2911,28 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
         return true;
     }
     const bool material_pending = viewport && (!material_preparation || !material_preparation->ready);
+    const auto effective_view = control_ ? control_->view() : workspace_.view;
     const auto camera = camera_.matrices(std::max(scene_bounds.width, 1.f) / std::max(scene_bounds.height, 1.f));
     auto viewport_view = editor::ViewportView::make(camera_, scene_bounds, window_.dpi_scale());
+    viewport_view.show_locators = effective_view.show_locators;
     if (sop_draw)
         viewport_view.scene = sop_draw->picking;
     else if (scene)
         viewport_view.scene = scene->picking;
+    if (viewport_view.scene) {
+        viewport_view.gpu_pick_pixel = [renderer = &renderer_](std::uint32_t px,
+                                                               std::uint32_t py) -> std::optional<editor::GpuPickSample> {
+            auto picked = renderer->pick_pixel(px, py);
+            if (!picked || !*picked)
+                return std::nullopt;
+            return editor::GpuPickSample{(*picked)->instance_index, (*picked)->global_triangle_id, (*picked)->depth};
+        };
+        viewport_view.gpu_pick_box = [renderer = &renderer_](std::uint32_t x0, std::uint32_t y0, std::uint32_t x1,
+                                                             std::uint32_t y1) -> std::vector<std::uint32_t> {
+            auto picked = renderer->pick_box(x0, y0, x1, y1);
+            return picked ? std::move(*picked) : std::vector<std::uint32_t>{};
+        };
+    }
     overlay_.clear();
     if (viewport) {
         if (in_sop) {
@@ -2974,7 +2987,6 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
     renderer::Capture control_capture;
     const bool capturing_control = control_ && control_->wants_capture();
     auto* frame_capture = capture ? capture : capturing_control ? &control_capture : nullptr;
-    const auto effective_view = control_ ? control_->view() : workspace_.view;
     const auto frame_meshes = sop_draw ? std::span<const renderer::MeshInstance>{sop_draw->meshes}
                               : scene  ? std::span<const renderer::MeshInstance>{scene->meshes}
                                        : std::span<const renderer::MeshInstance>{};
@@ -2994,13 +3006,17 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
                                  lighting_focus()};
     render_frame.materials = sop_draw ? sop_draw->materials.get() : scene ? scene->materials.get() : nullptr;
     render_frame.command_trace = control_ ? control_->command_trace() : nullptr;
+    render_frame.trace_scope = control_ ? control_->trace_scope() : std::string_view{};
     std::optional<renderer::Result<renderer::FrameResult>> traced_result;
     if (render_frame.command_trace)
         traced_result.emplace();
     const auto lighting_start = Clock::now();
     const bool lighting_active = scene_bounds.width > 0 && scene_bounds.height > 0 && !frame_meshes.empty() &&
                                  effective_view.shading == renderer::Shading::scene_lit &&
-                                 effective_view.wireframe != renderer::Wireframe::only && effective_view.lit.ddgi;
+                                 effective_view.wireframe != renderer::Wireframe::only &&
+                                 (effective_view.lit.indirect_lighting || effective_view.lit.reflections ||
+                                  effective_view.lit.antialiasing == renderer::Antialiasing::taa ||
+                                  effective_view.lit.fog_enabled);
     render_frame.render_delta_seconds = lighting_clock_.delta(lighting_start, lighting_active);
     auto drawn =
         lit_fallback_.render(renderer_, render_frame, frame_capture, traced_result ? &*traced_result : nullptr);
@@ -3054,6 +3070,10 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
         if (viewport)
             camera_cut_ = false;
         ++accepted_frames_;
+        if (!drawn->fallback && !material_pending)
+            play_idle_snapshot_ = PlayIdleSnapshot{current_menu_projection(), camera_.state(), surface_revision_};
+        else
+            play_idle_snapshot_.reset();
         if (!frame_capture)
             sampled_frame_ = rendered.accepted_id;
         if (control_ && !drawn->fallback && !material_pending) {
@@ -3106,7 +3126,9 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
         lighting_clock_.reset();
         if (control_ && !drawn->fallback && !material_pending)
             control_->rendered(render_frame, rendered, nullptr);
-        MsgWaitForMultipleObjectsEx(0, nullptr, 10, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        const DWORD wait_ms =
+            (rendered.status == renderer::FrameStatus::skipped && !(control_ && control_->active_job())) ? 50u : 10u;
+        MsgWaitForMultipleObjectsEx(0, nullptr, wait_ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     }
     return true;
 }

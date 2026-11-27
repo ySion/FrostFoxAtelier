@@ -8,6 +8,7 @@
 #include "logging/logging.hpp"
 #include <algorithm>
 #include <limits>
+#include <numbers>
 #include <optional>
 #include <tuple>
 #include <unordered_map>
@@ -289,15 +290,23 @@ public:
             return std::unexpected(locators.error());
         changed |= *locators;
         if (changed) {
-            auto picking = std::make_shared<editor::ViewportScene>();
-            picking->scene_identity = scene.identity();
-            picking->materials = surfaces_;
-            picking->locators = locators_;
-            picking->meshes.reserve(meshes.size());
-            for (std::size_t i = 0; i < meshes.size(); ++i)
-                picking->meshes.push_back(
-                    {mesh_entities[i], meshes[i].world, meshes[i].geometry, meshes[i].material_slots});
-            picking_ = std::move(picking);
+            const bool picking_meshes_changed =
+                !picking_ || relayout || *version != synced_->version || generators_changed || bindings_changed;
+            if (picking_meshes_changed || *locators) {
+                auto picking = std::make_shared<editor::ViewportScene>();
+                picking->scene_identity = scene.identity();
+                picking->materials = surfaces_;
+                picking->locators = locators_;
+                if (!picking_meshes_changed) {
+                    picking->meshes = picking_->meshes;
+                } else {
+                    picking->meshes.reserve(meshes.size());
+                    for (std::size_t i = 0; i < meshes.size(); ++i)
+                        picking->meshes.push_back(
+                            {mesh_entities[i], meshes[i].world, meshes[i].geometry, meshes[i].material_slots});
+                }
+                picking_ = std::move(picking);
+            }
             ++request_;
             synced_ = Synced{scene.identity(),
                              *version,
@@ -633,6 +642,9 @@ private:
         case presentation::LightKind::point:
             value.kind = renderer::LightKind::point;
             break;
+        case presentation::LightKind::spot:
+            value.kind = renderer::LightKind::spot;
+            break;
         case presentation::LightKind::rectangle:
             value.kind = renderer::LightKind::rectangle;
             break;
@@ -648,6 +660,8 @@ private:
         value.intensity = settings.intensity;
         value.range = settings.range;
         value.source_radius = settings.source_radius;
+        value.spot_inner_radians = settings.spot_inner_degrees * (std::numbers::pi_v<float> / 180.f);
+        value.spot_outer_radians = settings.spot_outer_degrees * (std::numbers::pi_v<float> / 180.f);
         value.width = settings.width;
         value.height = settings.height;
         value.two_sided = settings.two_sided;

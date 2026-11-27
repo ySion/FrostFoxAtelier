@@ -50,7 +50,7 @@ EnvironmentComponent 的 `sky_map` 是天空贴图的资产键。记录缺少 `s
 
 `sky_map` 是隐藏字段，没有公开 FieldId，`World::write` 和属性记录都碰不到它；只能经 `presentation::set_sky_map_binding` 与解析出的 `rendering::SkyMapRef` 成对设置。加载经 `project.assets().sky_map` 解析键：同一个键在 Project 刷新发布给 Reader 的目录看到文件变化之前返回同一个指针，所以重新打开或撤销都不会让 SceneSnapshot 误判天空变了。
 
-打开场景与 `--scene-lit-camera` 不创建 Environment，也不拟合 DDGI。没有 Environment 时使用默认 World 设置；显式编辑 World Settings 或 Coverage → Fit Scene 通过普通历史创建或修改 Environment。场景保存的设置属于作者，打开时不改动。
+打开场景与 `--scene-lit-camera` 不创建 Environment。没有 Environment 时使用默认 World 设置；显式编辑 World Settings 通过普通历史创建或修改 Environment。场景保存的设置属于作者，打开时不改动。
 
 诊断记录使用 `world::Diagnostic`（[modules/engine/world/include/world/diagnostic.hpp](../../../modules/engine/world/include/world/diagnostic.hpp)），`phase` 为 `load`，`Session::load_issues()` 返回本次加载的诊断，`Session::issues()` 返回当前仍未解决的数据。没有改名重定向表；字段改名前后的值以 `unknown_field` 保留，改回原名后恢复。
 

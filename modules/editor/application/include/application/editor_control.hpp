@@ -1,6 +1,7 @@
 #pragma once
 #include "renderer/renderer.hpp"
 #include "control/control.hpp"
+#include <windows.h>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -39,7 +40,9 @@ public:
     bool wants_capture();
 
     // Borrow after wants_capture()'s checkpoint, until this render returns.
-    rhi::CommandTrace* command_trace() const;
+    rdg::TraceSnapshot* command_trace() const;
+
+    std::string_view trace_scope() const;
 
     // Completes the requested-view attempt before fallback/not_ready rewriting.
     // A terminal host outcome (including fallback failure) preserves its file

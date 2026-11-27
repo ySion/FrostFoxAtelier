@@ -7,13 +7,17 @@
 #include <cmath>
 #include <cstdint>
 #include <expected>
+#include <filesystem>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <vector>
 
 namespace atelier::geometry {
+
+struct CookedMeshlets;
 
 struct MeshError {
     std::string message;
@@ -100,6 +104,8 @@ private:
             return std::unexpected(MeshError{"Published mesh requires explicit material slots and parts."});
         if (materials_.empty())
             materials_.push_back({});
+        if (materials_.size() > (1u << 27u))
+            return std::unexpected(MeshError{"Mesh exceeds 27-bit material slot limit."});
         if (parts_.empty())
             parts_.push_back({0, static_cast<std::uint32_t>(vertices_.size()), 0});
         std::uint64_t end = 0;
@@ -181,6 +187,18 @@ public:
         return edge_masks_.empty() ? std::uint8_t{7} : edge_masks_[triangle];
     }
 
+    [[nodiscard]] std::span<const std::uint8_t> edge_masks() const noexcept { return edge_masks_; }
+
+    [[nodiscard]] bool has_edge_masks() const noexcept { return !edge_masks_.empty(); }
+
+    [[nodiscard]] const std::shared_ptr<const CookedMeshlets>& cooked_meshlets() const;
+
+    [[nodiscard]] const std::shared_ptr<const CookedMeshlets>&
+    cooked_meshlets(const std::filesystem::path& cache_dir) const;
+
+    [[nodiscard]] bool cooked_triangle(std::uint32_t global_triangle_id, std::array<math::Vector3, 3>& positions,
+                                       std::array<math::Vector3, 3>& normals) const;
+
 private:
     std::vector<Vertex> vertices_;
 
@@ -191,6 +209,10 @@ private:
     std::vector<MeshPart> parts_;
 
     math::Bounds bounds_;
+
+    mutable std::mutex cooked_mutex_;
+
+    mutable std::shared_ptr<const CookedMeshlets> cooked_meshlets_;
 };
 
 using MeshRef = std::shared_ptr<const Mesh>;

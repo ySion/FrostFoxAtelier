@@ -60,7 +60,8 @@ class Coverage {
     bool overflowed_{};
 
     bool record(ValueType type) const {
-        return type.kind == ValueType::record && type.type_index != material_.texture_input;
+        return type.kind == ValueType::record && type.type_index != material_.texture_input &&
+               (material_.normal_texture_input == UINT32_MAX || type.type_index != material_.normal_texture_input);
     }
 
     std::size_t width(ValueType type) const {
@@ -286,6 +287,7 @@ class Coverage {
             return unpack(node.type, add(std::move(operation)));
         }
         case Kind::texture_sample:
+        case Kind::normal_sample:
         case Kind::texture_orientation: {
             auto sample = node;
             sample.left = pack(function.expressions[node.left].type, operand(node.left));
@@ -433,10 +435,15 @@ class Coverage {
         return result;
     }
 
-    NodeId emit(NodeId id, Function& function, std::vector<Statement>& statements,
-                std::vector<NodeId>& available) const {
+    NodeId emit(NodeId id, Function& function, std::vector<Statement>& statements, std::vector<NodeId>& available) {
+        if (overflowed_)
+            return 0;
         if (available[id] != no_node)
             return available[id];
+        if (function.expressions.size() >= max_nodes || function.statements.size() >= max_nodes) {
+            overflowed_ = true;
+            return 0;
+        }
         const auto& node = nodes_[id];
         auto expression = node.expression;
         const auto add_expression = [&](Expression value) {
@@ -536,7 +543,172 @@ public:
         std::vector<Statement> body;
         Statement returned{Statement::Kind::return_value, {}, no_node, no_node, no_node, no_node, {}};
         returned.expression = emit(root, result, body, available);
+        if (overflowed_)
+            return std::nullopt;
         body.push_back(std::move(returned));
+        Statement block{Statement::Kind::block, {}, no_node, no_node, no_node, no_node, {}};
+        for (auto& child : body) {
+            block.children.push_back(result.statements.size());
+            result.statements.push_back(std::move(child));
+        }
+        result.body = result.statements.size();
+        result.statements.push_back(std::move(block));
+        return result;
+    }
+
+    // Projects only GI-relevant surface roots (pruning normal_world, normal_texture, sample_orientation, and TBN).
+    std::optional<Function> generate_gi_hit(std::span<const ValueField> gi_fields) {
+        const auto& shade = program_.functions[program_.exports[0]];
+        std::vector<Value> arguments;
+        Function result;
+        result.function_name = "gi_hit";
+        result.result = shade.result;
+        result.parameters = shade.parameters;
+        result.locals.assign(shade.locals.begin(), shade.locals.begin() + shade.parameters.size());
+        for (std::size_t i = 0; i < shade.parameters.size(); ++i)
+            arguments.push_back(unpack(shade.parameters[i].type, add(Expression{Expression::Kind::local,
+                                                                                shade.parameters[i].type,
+                                                                                {},
+                                                                                no_node,
+                                                                                no_node,
+                                                                                static_cast<std::uint32_t>(i)})));
+        const auto value = invoke(shade, std::move(arguments));
+        if (overflowed_)
+            return std::nullopt;
+        required_.resize(nodes_.size());
+        std::vector<NodeId> lane_roots;
+        for (const auto& field : gi_fields) {
+            const std::size_t begin = field_begin(shade.result, field.offset);
+            const std::size_t w = width(field.type);
+            for (std::size_t k = 0; k < w; ++k) {
+                required(value[begin + k]);
+                lane_roots.push_back(value[begin + k]);
+            }
+        }
+        std::vector<NodeId> available(nodes_.size(), no_node);
+        std::vector<Statement> body;
+
+        const auto add_expr = [&](Expression expr) -> NodeId {
+            result.expressions.push_back(std::move(expr));
+            return result.expressions.size() - 1;
+        };
+        const auto add_block = [&](std::vector<Statement> children) {
+            Statement block{Statement::Kind::block, {}, no_node, no_node, no_node, no_node, {}};
+            for (auto& child : children) {
+                block.children.push_back(result.statements.size());
+                result.statements.push_back(std::move(child));
+            }
+            result.statements.push_back(std::move(block));
+            return result.statements.size() - 1;
+        };
+
+        // Group lane roots sharing the same top-level early-return condition so both arms share `scoped`
+        // (avoiding duplicate texture fetches across `.x/.y/.z` lanes after an early return!).
+        for (std::size_t idx = 0; idx < lane_roots.size() && !overflowed_; ++idx) {
+            const NodeId root_id = lane_roots[idx];
+            if (available[root_id] != no_node)
+                continue;
+            const NodeId cond_id = nodes_[root_id].condition;
+            if (cond_id == no_node) {
+                (void)emit(root_id, result, body, available);
+                continue;
+            }
+            std::vector<NodeId> group;
+            for (std::size_t j = idx; j < lane_roots.size(); ++j) {
+                const NodeId cand = lane_roots[j];
+                if (available[cand] == no_node && nodes_[cand].condition == cond_id &&
+                    std::ranges::find(group, cand) == group.end()) {
+                    group.push_back(cand);
+                }
+            }
+            const NodeId cond_expr = emit(cond_id, result, body, available);
+            for (const NodeId g : group) {
+                const auto& yes = required_[nodes_[g].expression.left];
+                const auto& no = required_[nodes_[g].expression.right];
+                for (std::size_t i = std::min(yes.size(), no.size()); i-- > 0;) {
+                    auto common = yes[i] & no[i];
+                    while (common) {
+                        const auto bit = static_cast<std::size_t>(std::bit_width(common) - 1);
+                        (void)emit(i * 64 + bit, result, body, available);
+                        common &= ~(std::uint64_t{1} << bit);
+                    }
+                }
+            }
+            std::vector<NodeId> refs;
+            refs.reserve(group.size());
+            for (const NodeId g : group) {
+                const auto vtype = nodes_[g].expression.type;
+                const auto local = static_cast<std::uint32_t>(result.locals.size());
+                result.locals.push_back({"coverage", vtype});
+                const NodeId ref = add_expr(Expression{Expression::Kind::local, vtype, {}, no_node, no_node, local});
+                Statement decl{Statement::Kind::declare, {}, no_node, no_node, no_node, no_node, {}};
+                decl.target = local;
+                body.push_back(std::move(decl));
+                refs.push_back(ref);
+            }
+            auto emit_shared_arm = [&](bool yes_side) {
+                auto scoped = available;
+                std::vector<Statement> arm_body;
+                for (std::size_t g_i = 0; g_i < group.size() && !overflowed_; ++g_i) {
+                    const NodeId arm_val =
+                        yes_side ? nodes_[group[g_i]].expression.left : nodes_[group[g_i]].expression.right;
+                    Statement assign{Statement::Kind::assign, {}, no_node, no_node, no_node, no_node, {}};
+                    assign.target = refs[g_i];
+                    assign.expression = emit(arm_val, result, arm_body, scoped);
+                    arm_body.push_back(std::move(assign));
+                }
+                return add_block(std::move(arm_body));
+            };
+            Statement branch{Statement::Kind::condition, {}, no_node, no_node, no_node, no_node, {}};
+            branch.expression = cond_expr;
+            branch.body = emit_shared_arm(true);
+            branch.alternative = emit_shared_arm(false);
+            body.push_back(std::move(branch));
+            for (std::size_t g_i = 0; g_i < group.size(); ++g_i)
+                available[group[g_i]] = refs[g_i];
+        }
+        if (overflowed_)
+            return std::nullopt;
+
+        const auto out_local = static_cast<std::uint32_t>(result.locals.size());
+        result.locals.push_back({"gi_out", shade.result});
+        Statement declare_out{Statement::Kind::declare, {}, no_node, no_node, no_node, no_node, {}};
+        declare_out.target = out_local;
+        body.push_back(std::move(declare_out));
+
+        for (const auto& field : gi_fields) {
+            const std::size_t begin = field_begin(shade.result, field.offset);
+            const std::size_t w = width(field.type);
+            NodeId rhs = no_node;
+            if (!record(field.type)) {
+                rhs = emit(value[begin], result, body, available);
+            } else {
+                Expression construct{Expression::Kind::math_construct, field.type, {}};
+                construct.arguments.reserve(w);
+                for (std::size_t k = 0; k < w; ++k)
+                    construct.arguments.push_back(emit(value[begin + k], result, body, available));
+                rhs = add_expr(std::move(construct));
+            }
+            if (overflowed_)
+                return std::nullopt;
+            const NodeId out_ref =
+                add_expr(Expression{Expression::Kind::local, shade.result, {}, no_node, no_node, out_local});
+            Expression field_ref{Expression::Kind::value_field, field.type, {}, out_ref};
+            field_ref.offset = field.offset;
+            const NodeId lhs = add_expr(std::move(field_ref));
+
+            Statement assign{Statement::Kind::assign, {}, no_node, no_node, no_node, no_node, {}};
+            assign.target = lhs;
+            assign.expression = rhs;
+            body.push_back(std::move(assign));
+        }
+
+        const NodeId ret_ref =
+            add_expr(Expression{Expression::Kind::local, shade.result, {}, no_node, no_node, out_local});
+        Statement returned{Statement::Kind::return_value, {}, no_node, no_node, no_node, no_node, {}};
+        returned.expression = ret_ref;
+        body.push_back(std::move(returned));
+
         Statement block{Statement::Kind::block, {}, no_node, no_node, no_node, no_node, {}};
         for (auto& child : body) {
             block.children.push_back(result.statements.size());
@@ -559,6 +731,129 @@ class Hlsl {
 
     std::size_t temporary_{};
 
+    bool has_chained_sample_uv_{false};
+
+    bool detect_chained_sample_uv() const {
+        const std::size_t fn_count = program_.functions.size();
+        std::vector<bool> fn_may_have_sample(fn_count, false);
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for (std::size_t fi = 0; fi < fn_count; ++fi) {
+                if (!program_.reachable[fi] || fn_may_have_sample[fi])
+                    continue;
+                for (const auto& e : program_.functions[fi].expressions) {
+                    if (e.kind == Expression::Kind::texture_sample || e.kind == Expression::Kind::normal_sample ||
+                        (e.kind == Expression::Kind::source_call && fn_may_have_sample[e.value])) {
+                        fn_may_have_sample[fi] = true;
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        for (std::size_t fi = 0; fi < fn_count; ++fi) {
+            if (!program_.reachable[fi])
+                continue;
+            const auto& fn = program_.functions[fi];
+            // Conservatively seed parameters as potentially carrying a sample if any caller passes one;
+            // first check with parameters = false, then propagate across calls.
+            std::vector<bool> local_sample(fn.locals.size(), false);
+            for (std::size_t caller_i = 0; caller_i < fn_count; ++caller_i) {
+                if (!program_.reachable[caller_i])
+                    continue;
+                for (const auto& ce : program_.functions[caller_i].expressions) {
+                    if (ce.kind == Expression::Kind::source_call && ce.value == fi && fn_may_have_sample[caller_i]) {
+                        for (std::size_t p = 0; p < fn.parameters.size(); ++p)
+                            local_sample[p] = true;
+                    }
+                }
+            }
+
+            std::function<bool(NodeId)> expr_sample = [&](NodeId id) -> bool {
+                if (id == no_node)
+                    return false;
+                const auto& e = fn.expressions[id];
+                using Kind = Expression::Kind;
+                switch (e.kind) {
+                case Kind::texture_sample:
+                case Kind::normal_sample:
+                    return true;
+                case Kind::local:
+                    return local_sample[e.value];
+                case Kind::source_call:
+                    if (fn_may_have_sample[e.value])
+                        return true;
+                    return std::ranges::any_of(e.arguments, expr_sample);
+                case Kind::scalar_cast:
+                    return fn.expressions[e.left].type == ValueType::f32 && expr_sample(e.left);
+                case Kind::texture_orientation:
+                    return false;
+                case Kind::math_intrinsic:
+                    if (e.math_operation == MathOperation::floor || e.math_operation == MathOperation::ceil ||
+                        e.math_operation == MathOperation::trunc || e.math_operation == MathOperation::round ||
+                        e.math_operation == MathOperation::step) {
+                        return false;
+                    }
+                    return std::ranges::any_of(e.arguments, expr_sample);
+                default:
+                    if (!continuous(e.type))
+                        return false;
+                    return expr_sample(e.left) || expr_sample(e.right) || std::ranges::any_of(e.arguments, expr_sample);
+                }
+            };
+
+            std::function<std::uint32_t(NodeId)> target_local = [&](NodeId id) -> std::uint32_t {
+                const auto& e = fn.expressions[id];
+                return e.kind == Expression::Kind::local ? e.value : target_local(e.left);
+            };
+
+            std::function<void(NodeId)> walk_stmt = [&](NodeId sid) {
+                if (sid == no_node)
+                    return;
+                const auto& st = fn.statements[sid];
+                switch (st.kind) {
+                case Statement::Kind::block:
+                    for (const auto c : st.children)
+                        walk_stmt(c);
+                    break;
+                case Statement::Kind::declare:
+                    if (st.expression != no_node && expr_sample(st.expression))
+                        local_sample[st.target] = true;
+                    break;
+                case Statement::Kind::assign:
+                    if (expr_sample(st.expression))
+                        local_sample[target_local(st.target)] = true;
+                    break;
+                case Statement::Kind::condition:
+                    walk_stmt(st.body);
+                    walk_stmt(st.alternative);
+                    break;
+                default:
+                    break;
+                }
+            };
+            walk_stmt(fn.body);
+
+            for (const auto& e : fn.expressions) {
+                if ((e.kind == Expression::Kind::texture_sample || e.kind == Expression::Kind::normal_sample) &&
+                    expr_sample(e.left))
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    bool is_texture_type(std::uint32_t type_index) const noexcept {
+        return type_index == material_.texture_input ||
+               (material_.normal_texture_input != UINT32_MAX && type_index == material_.normal_texture_input);
+    }
+
+    bool is_texture_value(ValueType value) const noexcept {
+        return value.kind == ValueType::record && is_texture_type(value.type_index);
+    }
+
     std::string type(ValueType value) const {
         switch (value.kind) {
         case ValueType::f32:
@@ -570,7 +865,7 @@ class Hlsl {
         case ValueType::void_value:
             return "void";
         case ValueType::record: {
-            if (value.type_index == material_.texture_input)
+            if (is_texture_type(value.type_index))
                 return "uint";
             const auto& layout = program_.value_layouts[value.type_index];
             if (layout.math)
@@ -589,7 +884,7 @@ class Hlsl {
     }
 
     std::string initial(ValueType value, const std::byte* bytes) const {
-        if (value == ValueType{ValueType::record, material_.texture_input})
+        if (is_texture_value(value))
             return "0u";
         if (value.kind == ValueType::boolean)
             return bytes && *bytes != std::byte{} ? "true" : "false";
@@ -612,7 +907,7 @@ class Hlsl {
     }
 
     void initialize_fields(ValueType value, const std::string& path, const std::byte* bytes) {
-        if (value.kind != ValueType::record || value.type_index == material_.texture_input ||
+        if (value.kind != ValueType::record || is_texture_type(value.type_index) ||
             program_.value_layouts[value.type_index].math) {
             text_ += path + " = " + initial(value, bytes) + ";\n";
             return;
@@ -626,7 +921,7 @@ class Hlsl {
             return;
         emitted_[value.type_index] = true;
         const auto& layout = program_.value_layouts[value.type_index];
-        if (layout.math || value.type_index == material_.texture_input)
+        if (layout.math || is_texture_type(value.type_index))
             return;
         for (const auto& field : layout.fields)
             declare_type(field.type);
@@ -798,6 +1093,9 @@ class Hlsl {
         }
         case Kind::texture_sample:
             return "::atelier_material_sample(ms_environment," + operand(node.right) + "," + operand(node.left) + ")";
+        case Kind::normal_sample:
+            return "::atelier_material_sample_normal(ms_environment," + operand(node.right) + "," +
+                   operand(node.left) + ")";
         case Kind::texture_orientation:
             return "::atelier_material_sample_orientation(ms_environment," + operand(node.right) + "," +
                    operand(node.left) + ")";
@@ -890,8 +1188,7 @@ class Hlsl {
     }
 
     bool continuous(ValueType value) const {
-        return value.kind == ValueType::f32 ||
-               (value.kind == ValueType::record && value.type_index != material_.texture_input);
+        return value.kind == ValueType::f32 || (value.kind == ValueType::record && !is_texture_type(value.type_index));
     }
 
     std::string differential_type(ValueType value) const { return (continuous(value) ? "ms_D" : "") + type(value); }
@@ -919,7 +1216,7 @@ class Hlsl {
         for (std::size_t n = 1; n <= 4; ++n)
             declare("float" + (n == 1 ? std::string{} : std::to_string(n)), true);
         for (std::size_t i = 0; i < emitted_.size(); ++i) {
-            if (emitted_[i] && !program_.value_layouts[i].math && i != material_.texture_input)
+            if (emitted_[i] && !program_.value_layouts[i].math && !is_texture_type(static_cast<std::uint32_t>(i)))
                 declare(type({ValueType::record, static_cast<std::uint32_t>(i)}), false);
         }
         for (const auto* scalar : {"bool", "uint"}) {
@@ -1101,13 +1398,18 @@ class Hlsl {
                        : emit("ms_constant(float(ms_value(" + value + ")))");
         }
         case Kind::texture_sample:
+        case Kind::normal_sample:
         case Kind::texture_orientation: {
             const auto input = operand(node.right); // Same author argument order as CPU sample(input,uv).
             const auto uv = operand(node.left);
             if (node.kind == Kind::texture_orientation)
                 return emit("ms_constant(::atelier_material_sample_orientation(ms_environment," + input + ",ms_value(" +
                             uv + ")))");
-            return emit("ms_dsample(ms_environment," + input + "," + uv + ")");
+            if (node.kind == Kind::normal_sample)
+                return emit(std::string(has_chained_sample_uv_ ? "ms_dsample_normal(" : "ms_dsample_normal_value(") +
+                            "ms_environment," + input + "," + uv + ")");
+            return emit(std::string(has_chained_sample_uv_ ? "ms_dsample(" : "ms_dsample_value(") + "ms_environment," +
+                        input + "," + uv + ")");
         }
         case Kind::math_construct:
         case Kind::math_intrinsic:
@@ -1273,7 +1575,13 @@ public:
 
     static bool supports(MathOperation operation) { return !intrinsic(operation).empty(); }
 
-    std::string generate(bool footprint = false, bool coverage = false) {
+    enum class SliceMode : std::uint8_t { shade, footprint, coverage, gi_hit };
+
+    std::string generate(SliceMode mode = SliceMode::shade) {
+        const bool footprint = (mode == SliceMode::footprint);
+        const bool coverage = (mode == SliceMode::coverage);
+        const bool gi_hit = (mode == SliceMode::gi_hit);
+        has_chained_sample_uv_ = footprint && detect_chained_sample_uv();
         text_ = footprint ? "// Typed Source: center values and two local changes; no implicit derivatives.\n"
                           : "// Generated from typed Source. Sampling is linear-float4, explicit LOD-0.\n";
         std::set<std::pair<MathOperation, std::string>> helpers;
@@ -1341,11 +1649,22 @@ public:
             else
                 statement(program_.functions[i], program_.functions[i].body);
         }
-        text_ +=
-            coverage ? "float ms_coverage(uint environment, ms_Context context, ms_Parameters parameters) {\n"
-            : footprint
-                ? "ms_Output ms_shade_footprint(uint environment, ms_Context context, ms_Context d0, ms_Context d1, ms_Parameters parameters) {\n"
-                : "ms_Output ms_shade(uint environment, ms_Context context, ms_Parameters parameters) {\n";
+        if (gi_hit) {
+            text_ += "struct ms_GiHit {\n"
+                     "float3 ms_effective_albedo;\n"
+                     "float ms_roughness;\n"
+                     "float3 ms_emissive;\n"
+                     "float ms_metallic;\n"
+                     "float3 ms_transmission;\n"
+                     "};\n"
+                     "ms_GiHit ms_shade_gi_hit(uint environment, ms_Context context, ms_Parameters parameters) {\n";
+        } else {
+            text_ +=
+                coverage ? "float ms_coverage(uint environment, ms_Context context, ms_Parameters parameters) {\n"
+                : footprint
+                    ? "ms_Output ms_shade_footprint(uint environment, ms_Context context, ms_Context d0, ms_Context d1, ms_Parameters parameters) {\n"
+                    : "ms_Output ms_shade(uint environment, ms_Context context, ms_Parameters parameters) {\n";
+        }
         if (material_.resources != UINT32_MAX) {
             const auto resource_type = type({ValueType::record, material_.resources});
             text_ += resource_type + " resources = (" + resource_type + ")0;\n";
@@ -1356,13 +1675,80 @@ public:
                 text_ += path + " = " + std::to_string(input.slot) + "u;\n";
             }
         }
-        text_ += "return " + std::string(footprint ? "ms_value(" : "") + "ms_f" + std::to_string(program_.exports[0]) +
-                 (footprint ? "(environment,ms_seed(context,d0,d1),ms_constant(parameters)"
-                            : "(environment,context,parameters");
-        if (material_.resources != UINT32_MAX)
-            text_ += footprint ? ",ms_constant(resources)" : ",resources";
-        text_ += footprint ? ")); }\n" : "); }\n";
-        if (!coverage)
+        if (gi_hit) {
+            text_ += "ms_Output raw = ms_f" + std::to_string(program_.exports[0]) + "(environment,context,parameters";
+            if (material_.resources != UINT32_MAX)
+                text_ += ",resources";
+            text_ += ");\n";
+            const auto& out_fields = program_.value_layouts[material_.output].fields;
+            const auto has_out_field = [&](std::string_view fname) {
+                return std::ranges::any_of(out_fields, [&](const ValueField& f) { return f.name == fname; });
+            };
+            text_ += "ms_GiHit hit = (ms_GiHit)0;\n";
+            text_ += "float3 base = " +
+                     std::string(has_out_field("base_color") ? "saturate(raw.ms_base_color)" : "float3(1.0,1.0,1.0)") +
+                     ";\n";
+            text_ +=
+                "float rough = " + std::string(has_out_field("roughness") ? "saturate(raw.ms_roughness)" : "0.65") +
+                ";\n";
+            text_ +=
+                "float metal = " + std::string(has_out_field("metallic") ? "saturate(raw.ms_metallic)" : "0.0") + ";\n";
+            text_ += "float spec_w = " +
+                     std::string(has_out_field("specular_weight") ? "saturate(raw.ms_specular_weight)" : "1.0") + ";\n";
+            text_ += "float spec_ior = " +
+                     std::string(has_out_field("specular_ior") ? "clamp(raw.ms_specular_ior, 1.0, 3.0)" : "1.5") +
+                     ";\n";
+            text_ += "float f0_d = (spec_ior - 1.0) / (spec_ior + 1.0);\n";
+            text_ += "f0_d = f0_d * f0_d * spec_w;\n";
+            // OpenPBR v1.1 §3.10 directional-hemispherical albedo folding across dielectric/conductor/coat/fuzz/foliage:
+            text_ += "float e_diel = saturate(1.0 - f0_d * (1.125 - 0.25 * rough));\n";
+            text_ += "float3 cond_col = base" +
+                     std::string(has_out_field("specular_color")
+                                     ? " * lerp(float3(1.0,1.0,1.0), saturate(raw.ms_specular_color), 0.15)"
+                                     : "") +
+                     ";\n";
+            if (has_out_field("subsurface_weight") && has_out_field("subsurface_color")) {
+                text_ += "float ssw = saturate(raw.ms_subsurface_weight) * (1.0 - metal) * 0.35;\n";
+                text_ += "base = lerp(base, saturate(raw.ms_subsurface_color), ssw);\n";
+            }
+            text_ += "float3 rho = lerp(base * e_diel, cond_col * (0.92 + 0.08 * rough), metal);\n";
+            if (has_out_field("thin_film_weight")) {
+                text_ += "rho *= lerp(1.0, 0.94, saturate(raw.ms_thin_film_weight) * (1.0 - metal));\n";
+            }
+            if (has_out_field("coat_weight") && has_out_field("coat_darkening")) {
+                text_ += "float cw = saturate(raw.ms_coat_weight);\n";
+                text_ += "rho *= lerp(1.0, lerp(1.0, 0.82, saturate(raw.ms_coat_darkening)), cw);\n";
+            }
+            if (has_out_field("fuzz_weight") && has_out_field("fuzz_color")) {
+                text_ += "float fw = saturate(raw.ms_fuzz_weight) * 0.25;\n";
+                text_ += "rho = lerp(rho, saturate(raw.ms_fuzz_color), fw);\n";
+            }
+            if (has_out_field("transmission_scatter") && has_out_field("transmission_color")) {
+                text_ += "float ts = saturate(raw.ms_transmission_scatter) * (1.0 - metal);\n";
+                text_ += "hit.ms_transmission = rho * saturate(raw.ms_transmission_color) * (0.5 * ts);\n";
+                text_ += "rho *= (1.0 - 0.5 * ts);\n";
+            }
+            text_ += "hit.ms_effective_albedo = rho;\n";
+            text_ +=
+                "hit.ms_emissive = " +
+                std::string(
+                    has_out_field("emissive")
+                        ? "((all((asuint(raw.ms_emissive) & 0x7f800000u) != 0x7f800000u)) ? max(raw.ms_emissive, 0.0) : float3(0.0,0.0,0.0))"
+                        : "float3(0.0,0.0,0.0)") +
+                ";\n";
+            text_ += "hit.ms_roughness = rough;\n";
+            text_ += "hit.ms_metallic = metal;\n";
+            text_ += "return hit;\n}\n";
+        } else {
+            text_ += "return " + std::string(footprint ? "ms_value(" : "") + "ms_f" +
+                     std::to_string(program_.exports[0]) +
+                     (footprint ? "(environment,ms_seed(context,d0,d1),ms_constant(parameters)"
+                                : "(environment,context,parameters");
+            if (material_.resources != UINT32_MAX)
+                text_ += footprint ? ",ms_constant(resources)" : ",resources";
+            text_ += footprint ? ")); }\n" : "); }\n";
+        }
+        if (!coverage && !gi_hit)
             text_ += "ms_Parameters ms_defaults() { return " + std::string(footprint ? "ms_value(" : "") + "ms_f" +
                      std::to_string(program_.exports[1]) + (footprint ? "(0u)); }\n" : "(0u); }\n");
         text_ +=
@@ -1376,14 +1762,32 @@ public:
 
 std::expected<MaterialModule, Diagnostic> compile_material(std::string_view name, std::string_view source,
                                                            std::span<const ValueLayout> values, std::uint32_t context,
-                                                           std::uint32_t output, std::uint32_t texture_input) {
+                                                           std::uint32_t output, std::uint32_t texture_input,
+                                                           std::uint32_t normal_texture_input) {
     const ValueType token{ValueType::record, texture_input};
     const auto& token_layout = values[texture_input];
     if (!token_layout.plain_value || !token_layout.can_own || token_layout.math || token_layout.fields.size() != 1 ||
         token_layout.fields[0].name != "slot" || token_layout.fields[0].type != ValueType::u32)
         return reject({}, "Material TextureInput requires its registered plain uint slot field.");
     const auto slot_offset = token_layout.fields[0].offset;
-    ATELIER_TRY_BIND(tree, compile_source(name, source, {{}, {}, {}, {}, values, true, token}, "shade"));
+
+    ValueType normal_token{};
+    std::size_t normal_slot_offset = slot_offset;
+    if (normal_texture_input != UINT32_MAX) {
+        if (normal_texture_input == texture_input)
+            return reject({}, "Material NormalTextureInput must be distinct from TextureInput.");
+        normal_token = {ValueType::record, normal_texture_input};
+        const auto& n_layout = values[normal_texture_input];
+        if (!n_layout.plain_value || !n_layout.can_own || n_layout.math || n_layout.fields.size() != 1 ||
+            n_layout.fields[0].name != "slot" || n_layout.fields[0].type != ValueType::u32)
+            return reject({}, "Material NormalTextureInput requires its registered plain uint slot field.");
+        normal_slot_offset = n_layout.fields[0].offset;
+    }
+    const auto is_any_token = [&](ValueType t) noexcept {
+        return t == token || (normal_texture_input != UINT32_MAX && t == normal_token);
+    };
+
+    ATELIER_TRY_BIND(tree, compile_source(name, source, {{}, {}, {}, {}, values, true, token, normal_token}, "shade"));
     const std::string_view entries[]{"shade", "defaults"};
     ATELIER_TRY(export_functions(*tree, entries, false));
     const auto& shade = tree->functions[tree->exports[0]];
@@ -1401,7 +1805,7 @@ std::expected<MaterialModule, Diagnostic> compile_material(std::string_view name
     if (!defaults.parameters.empty() || defaults.result != params)
         return reject(defaults.position, "Material requires Params defaults() with no arguments.");
     std::function<bool(ValueType)> contains_texture = [&](ValueType type) {
-        if (type == token)
+        if (is_any_token(type))
             return true;
         if (type.kind != ValueType::record)
             return false;
@@ -1413,7 +1817,7 @@ std::expected<MaterialModule, Diagnostic> compile_material(std::string_view name
     std::vector<bool> checked(values.size());
     std::function<std::expected<void, Diagnostic>(ValueType, SourcePosition)> check_type =
         [&](ValueType type, SourcePosition position) -> std::expected<void, Diagnostic> {
-        if (type == ValueType::f32 || type == ValueType::boolean || type == ValueType::void_value || type == token)
+        if (type == ValueType::f32 || type == ValueType::boolean || type == ValueType::void_value || is_any_token(type))
             return {};
         if (type.kind != ValueType::record)
             return reject(position, "Material values require float, bool, float vectors or plain structs.");
@@ -1440,7 +1844,7 @@ std::expected<MaterialModule, Diagnostic> compile_material(std::string_view name
             keys.insert(std::move(path));
             return {};
         }
-        if (type.kind != ValueType::record || type == token)
+        if (type.kind != ValueType::record || is_any_token(type))
             return reject(shade.position,
                           "Material parameters require float scalars, vectors or nested structs, not texture inputs.");
         for (const auto& field : values[type.type_index].fields) {
@@ -1453,22 +1857,24 @@ std::expected<MaterialModule, Diagnostic> compile_material(std::string_view name
     std::vector<MaterialTextureInput> textures;
     if (shade.parameters.size() == 3) {
         const auto type = shade.parameters[2].type;
-        if (type.kind != ValueType::record || type == token || values[type.type_index].math)
-            return reject(shade.position, "Material Resources must be a struct of TextureInput leaves.");
+        if (type.kind != ValueType::record || is_any_token(type) || values[type.type_index].math)
+            return reject(shade.position,
+                          "Material Resources must be a struct of TextureInput/NormalTextureInput leaves.");
         resources = type.type_index;
         ATELIER_TRY(check_type(type, shade.position));
         std::function<std::expected<void, Diagnostic>(ValueType, std::string, std::size_t)> collect =
             [&](ValueType value, std::string path, std::size_t offset) -> std::expected<void, Diagnostic> {
-            if (value == token) {
+            if (is_any_token(value)) {
                 if (!keys.insert(path).second)
                     return reject(shade.position, "Material numeric/resource parameter key conflict: " + path);
-                textures.push_back(
-                    {std::move(path), static_cast<std::uint32_t>(textures.size()), offset + slot_offset});
+                const bool is_norm = (normal_texture_input != UINT32_MAX && value == normal_token);
+                textures.push_back({std::move(path), static_cast<std::uint32_t>(textures.size()),
+                                    offset + (is_norm ? normal_slot_offset : slot_offset), is_norm});
                 return {};
             }
             if (value.kind != ValueType::record || values[value.type_index].math)
                 return reject(shade.position,
-                              "Material Resources require TextureInput leaves, not numeric parameters.");
+                              "Material Resources require TextureInput or NormalTextureInput leaves, not numeric parameters.");
             for (const auto& field : values[value.type_index].fields) {
                 ATELIER_TRY(
                     collect(field.type, path.empty() ? field.name : path + "." + field.name, offset + field.offset));
@@ -1488,7 +1894,7 @@ std::expected<MaterialModule, Diagnostic> compile_material(std::string_view name
             std::ranges::any_of(function.locals, [&](const auto& local) { return contains_texture(local.type); }))
             return reject(function.position, "Material defaults cannot contain texture inputs.");
         for (const auto& node : function.expressions) {
-            if (node.kind == Expression::Kind::texture_sample)
+            if (node.kind == Expression::Kind::texture_sample || node.kind == Expression::Kind::normal_sample)
                 return reject(node.position, "Material defaults cannot sample textures.");
             if (node.kind == Expression::Kind::texture_orientation)
                 return reject(node.position, "Material defaults cannot query texture orientation.");
@@ -1523,7 +1929,7 @@ std::expected<MaterialModule, Diagnostic> compile_material(std::string_view name
         }
         for (auto& node : function.expressions) {
             using Kind = Expression::Kind;
-            if (node.kind == Kind::value_field && function.expressions[node.left].type == token)
+            if (node.kind == Kind::value_field && is_any_token(function.expressions[node.left].type))
                 return reject(node.position,
                               "TextureInput members are compiler-owned, not accessible to material Source.");
             if (!(node.kind == Kind::literal && node.type == ValueType::u32)) {
@@ -1552,9 +1958,13 @@ std::expected<MaterialModule, Diagnostic> compile_material(std::string_view name
                     return reject(node.position, "This math operation is not in the material subset.");
                 break;
             case Kind::texture_sample:
-            case Kind::texture_orientation:
-                node.offset = slot_offset;
+            case Kind::normal_sample:
+            case Kind::texture_orientation: {
+                const auto in_type = function.expressions[node.right].type;
+                node.offset = (normal_texture_input != UINT32_MAX && in_type == normal_token) ? normal_slot_offset
+                                                                                              : slot_offset;
                 break;
+            }
             case Kind::constant_data:
                 return reject(node.position, "Material constants require scalar or float vector types.");
             default:
@@ -1563,36 +1973,75 @@ std::expected<MaterialModule, Diagnostic> compile_material(std::string_view name
         }
     }
     tree->material = true;
-    return MaterialModule{std::move(*tree), context,   params.type_index,  output,
-                          texture_input,    resources, std::move(textures)};
+    return MaterialModule{std::move(*tree),   context,   params.type_index,  output,
+                          texture_input,      normal_texture_input, resources, std::move(textures)};
 }
 
 MaterialHlsl material_hlsl(const MaterialModule& material) {
-    MaterialHlsl result{
-        Hlsl(material).generate(), Hlsl(material).generate(true), {}, MaterialCoverageStatus::missing_field};
+    MaterialHlsl result{Hlsl(material).generate(Hlsl::SliceMode::shade),
+                        Hlsl(material).generate(Hlsl::SliceMode::footprint),
+                        {},
+                        {},
+                        MaterialCoverageStatus::missing_field,
+                        MaterialCoverageStatus::missing_field};
     const auto& fields = material.program.value_layouts[material.output].fields;
-    const auto field = std::ranges::find_if(
+
+    // 1. Pruned scalar coverage slice for Masked VisBuffer PSOs:
+    const auto cov_field = std::ranges::find_if(
         fields, [](const auto& value) { return value.name == "coverage" && value.type == ValueType::f32; });
-    if (field == fields.end())
-        return result;
-    auto generated = Coverage(material).generate(field->offset);
-    if (!generated) {
-        result.coverage_status = MaterialCoverageStatus::node_budget_exceeded;
-        return result;
+    if (cov_field != fields.end()) {
+        auto generated = Coverage(material).generate(cov_field->offset);
+        if (!generated) {
+            result.coverage_status = MaterialCoverageStatus::node_budget_exceeded;
+        } else {
+            MaterialModule projected;
+            projected.context = material.context;
+            projected.parameters = material.parameters;
+            projected.output = material.output;
+            projected.texture_input = material.texture_input;
+            projected.normal_texture_input = material.normal_texture_input;
+            projected.resources = material.resources;
+            projected.textures = material.textures;
+            projected.program.value_layouts = material.program.value_layouts;
+            projected.program.functions.push_back(std::move(*generated));
+            projected.program.reachable = {true};
+            projected.program.exports = {0};
+            result.coverage = Hlsl(projected).generate(Hlsl::SliceMode::coverage);
+            result.coverage_status = MaterialCoverageStatus::available;
+        }
     }
-    MaterialModule projected;
-    projected.context = material.context;
-    projected.parameters = material.parameters;
-    projected.output = material.output;
-    projected.texture_input = material.texture_input;
-    projected.resources = material.resources;
-    projected.textures = material.textures;
-    projected.program.value_layouts = material.program.value_layouts;
-    projected.program.functions.push_back(std::move(*generated));
-    projected.program.reachable = {true};
-    projected.program.exports = {0};
-    result.coverage = Hlsl(projected).generate(false, true);
-    result.coverage_status = MaterialCoverageStatus::available;
+
+    // 2. Pruned GI hit slice (excludes coverage & normal_world/normal_texture/TBN, folds OpenPBR §3.10 effective albedo):
+    constexpr std::string_view gi_names[] = {
+        "base_color",         "emissive",         "roughness",         "metallic",
+        "specular_weight",    "specular_ior",     "specular_color",    "coat_weight",
+        "coat_darkening",     "fuzz_weight",      "fuzz_color",        "transmission_scatter",
+        "transmission_color", "thin_film_weight", "subsurface_weight", "subsurface_color"};
+    std::vector<ValueField> gi_fields;
+    for (const auto& f : fields) {
+        if (std::ranges::find(gi_names, f.name) != std::end(gi_names))
+            gi_fields.push_back(f);
+    }
+    if (!gi_fields.empty()) {
+        if (auto gi_fn = Coverage(material).generate_gi_hit(gi_fields)) {
+            MaterialModule projected;
+            projected.context = material.context;
+            projected.parameters = material.parameters;
+            projected.output = material.output;
+            projected.texture_input = material.texture_input;
+            projected.normal_texture_input = material.normal_texture_input;
+            projected.resources = material.resources;
+            projected.textures = material.textures;
+            projected.program.value_layouts = material.program.value_layouts;
+            projected.program.functions.push_back(std::move(*gi_fn));
+            projected.program.reachable = {true};
+            projected.program.exports = {0};
+            result.gi_hit = Hlsl(projected).generate(Hlsl::SliceMode::gi_hit);
+        } else {
+            result.gi_hit = Hlsl(material).generate(Hlsl::SliceMode::gi_hit);
+        }
+        result.gi_hit_status = MaterialCoverageStatus::available;
+    }
     return result;
 }
 }

@@ -1,23 +1,29 @@
 #pragma once
 namespace atelier::renderer::shaders {
-inline constexpr char scene_vs[] = R"shader(@scene_vs@)shader";
-inline constexpr char scene_ps[] = R"shader(@scene_ps@)shader";
-inline constexpr char cavity_surface_ps[] = R"shader(#define CAVITY_SURFACE 1
-@scene_ps@)shader";
+inline constexpr char visbuffer_cull_cs[] = R"shader(@visbuffer_cull_cs@)shader";
+inline constexpr char visbuffer_mesh[] = R"shader(@visbuffer_mesh@)shader";
+inline constexpr char visbuffer_masked_ps[] = R"shader(@visbuffer_masked_ps@)shader";
+inline constexpr char vsm_cull_cs[] = R"shader(@vsm_cull_cs@)shader";
+inline constexpr char vsm_mesh[] = R"shader(@vsm_mesh@)shader";
+inline constexpr char vis_unpack_classify_cs[] = R"shader(@vis_unpack_classify_cs@)shader";
+inline constexpr char material_shade_bin_cs[] = R"shader(@material_shade_bin_cs@)shader";
+inline constexpr char shadow_ray_query_cs[] = R"shader(@shadow_ray_query_cs@)shader";
+inline constexpr char direct_light_cs[] = R"shader(@direct_light_cs@)shader";
+inline constexpr char secondary_gi_hit_cs[] = R"shader(@secondary_gi_hit_cs@)shader";
+inline constexpr char gi_four_layer_cs[] = R"shader(@gi_four_layer_cs@)shader";
+inline constexpr char reflections_atmosphere_cs[] = R"shader(@reflections_atmosphere_cs@)shader";
+inline constexpr char post_taau_unjitter_cs[] = R"shader(@post_taau_unjitter_cs@)shader";
+inline constexpr char wireframe_mesh[] = R"shader(#define WIRE_BLIT_ONLY 0
+@wireframe_mesh@)shader";
+inline constexpr char present_blit_ps[] = R"shader(#define WIRE_BLIT_ONLY 1
+@wireframe_mesh@)shader";
 inline constexpr char cavity_ps[] = R"shader(@cavity_ps@)shader";
 inline constexpr char ui_vs[] = R"shader(@ui_vs@)shader";
 inline constexpr char ui_ps[] = R"shader(@ui_ps@)shader";
 inline constexpr char viewport_vs[] = R"shader(@viewport_vs@)shader";
 inline constexpr char background_ps[] = R"shader(@background_ps@)shader";
-inline constexpr char lit_gbuffer[] = R"shader(@lit_gbuffer@)shader";
-inline constexpr char lit_shadow[] = R"shader(@lit_shadow@)shader";
-inline constexpr char lit_clustered[] = R"shader(@lit_clustered@)shader";
-inline constexpr char lit_ddgi_debug[] = R"shader(@lit_ddgi_debug@)shader";
-inline constexpr char lit_ddgi[] = R"shader(@lit_ddgi@)shader";
-inline constexpr char lit_post[] = R"shader(@lit_post@)shader";
-inline constexpr char lit_smaa[] = R"shader(@lit_smaa@)shader";
 inline constexpr char grid_ps[] = R"shader(#define GRID_DEPTH 1
 @grid_ps@)shader";
 inline constexpr char grid_empty_ps[] = R"shader(#define GRID_DEPTH 0
 @grid_ps@)shader";
-}
+} // namespace atelier::renderer::shaders

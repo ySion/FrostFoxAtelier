@@ -11,8 +11,9 @@ class PopupHost final {
 public:
     PopupHost() = default;
 
-    // Initialize once at a stable address. On failure the owner destroys this unpublished host.
-    Result<void> initialize(HWND owner, std::span<const std::wstring> fonts, bool validation);
+    // Initialize once at a stable address sharing the process-wide Device.
+    Result<void> initialize(std::shared_ptr<rhi::Device> device, HWND owner, std::span<const std::wstring> fonts,
+                            bool validation);
 
     ~PopupHost() = default; // Renderer member retires before the Window member.
 

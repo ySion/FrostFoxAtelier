@@ -1,5 +1,8 @@
 #pragma once
+
 #include "math/vector.hpp"
+
+#include <array>
 #include <cstdint>
 #include <expected>
 #include <memory>
@@ -29,15 +32,25 @@ using SkyMapRef = std::shared_ptr<const SkyMap>;
 // Map space: row 0 is +Y and rows run to -Y; u = 0.5 faces +Z and u = 0.75 faces +X.
 class SkyMap final {
 public:
-    // A 4^2 cube keeps DDGI probes stable under an unextracted sun at 64 rays; 16^2 and 8^2 flickered.
     static constexpr std::uint32_t source_width_limit = 8192;
 
     static constexpr std::uint32_t width_limit = 4096;
 
-    static constexpr std::uint32_t cube_size = 4;
+    static constexpr std::uint32_t cdf_width = 256;
+
+    static constexpr std::uint32_t cdf_height = 128;
+
+    struct MipLevel {
+        std::uint32_t width{};
+
+        std::uint32_t height{};
+
+        // RGBA16F texels, alpha 1, scaled by 2^-scale_exponent so the peak stays within FP16.
+        std::vector<std::uint16_t> pixels;
+    };
 
     // width * height RGB floats from row 0; width must be 2 * height. Sources wider than
-    // width_limit are box-downsampled 2x2 once; mean and cube use the full source.
+    // width_limit are box-downsampled 2x2 once; mean, SH3, and importance CDF use the full source.
     // Invalid dimensions or radiance return an error without publishing a resource.
     [[nodiscard]] static Result<SkyMapRef> create(std::uint32_t width, std::uint32_t height,
                                                   std::span<const float> rgb);
@@ -50,17 +63,26 @@ public:
 
     std::uint32_t height() const noexcept { return height_; }
 
-    // RGBA16F texels, alpha 1, scaled by 2^-scale_exponent so the peak stays within FP16.
-    std::span<const std::uint16_t> pixels() const noexcept { return pixels_; }
+    // Mip 0 RGBA16F texels, alpha 1, scaled by 2^-scale_exponent so the peak stays within FP16.
+    std::span<const std::uint16_t> pixels() const noexcept { return mip_chain_.front().pixels; }
+
+    // Full GGX roughness-prefiltered mip chain (Mip 0 = mirror, Mip M-1 = roughness 1.0).
+    std::span<const MipLevel> mip_chain() const noexcept { return mip_chain_; }
 
     int scale_exponent() const noexcept { return scale_exponent_; }
 
     // Solid-angle mean radiance of the source.
     const math::Vector3& mean() const noexcept { return mean_; }
 
-    // Solid-angle box-filtered source radiance, unscaled RGBA float, cube_size^2 per face in
-    // D3D face order +X -X +Y -Y +Z -Z.
-    std::span<const float> cube() const noexcept { return cube_; }
+    // Pre-convolved 3-band (L0..L2, 9 coefficients) Ramamoorthi diffuse irradiance E(n)/pi (unscaled linear RGB):
+    // [0]=1, [1]=n.y, [2]=n.z, [3]=n.x, [4]=n.x*n.y, [5]=n.y*n.z, [6]=3*n.z^2-1, [7]=n.x*n.z, [8]=n.x^2-n.y^2.
+    const std::array<math::Vector3, 9>& sh3() const noexcept { return sh3_; }
+
+    // Precomputed 2D importance-sampling CDF: [0..cdf_height-1] marginal row CDF + [cdf_height..] 256x128 conditional row CDFs.
+    std::span<const float> importance_cdf() const noexcept { return importance_cdf_; }
+
+    // SHA-256 hex digest of the canonical precomputed SkyMap payload.
+    std::string_view content_sha256() const noexcept { return content_sha256_; }
 
 private:
     SkyMap(std::uint32_t width, std::uint32_t height, std::span<const float> rgb);
@@ -69,13 +91,17 @@ private:
 
     std::uint32_t height_{};
 
-    std::vector<std::uint16_t> pixels_;
+    std::vector<MipLevel> mip_chain_;
 
     int scale_exponent_{};
 
     math::Vector3 mean_{};
 
-    std::vector<float> cube_;
+    std::array<math::Vector3, 9> sh3_{};
+
+    std::vector<float> importance_cdf_;
+
+    std::string content_sha256_;
 };
 
 // Radiance RGBE (.hdr) with flat, old or new run-length scanlines in -Y H +X W order.

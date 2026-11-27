@@ -186,7 +186,11 @@ PlaneResponse plane_response(const Rgb3& v, const Rgb3& l, const Rgb3& base, dou
 
 double display_code(double radiance) {
     const double x = std::max(radiance, 0.);
-    const double mapped = std::clamp(x * (2.51 * x + .03) / (x * (2.43 * x + .59) + .14), 0., 1.);
+    const double offset = x < .08 ? (x - 6.25 * x * x) : .04;
+    const double c = std::max(x - offset, 0.);
+    constexpr double start_compression = .76;
+    constexpr double d = 1. - start_compression;
+    const double mapped = c < start_compression ? c : std::clamp(1. - (d * d) / (c + d - start_compression), 0., 1.);
     return 255 * (mapped <= .0031308 ? mapped * 12.92 : 1.055 * std::pow(mapped, 1 / 2.4) - .055);
 }
 
@@ -415,11 +419,7 @@ struct Fixture {
             drawing.draws.push_back({{4, 4, 16, 16}, {4, 4, 20, 20}, {0, 1, 0, 1}, {0, 0, 1, 1}, {}});
         }
         frame.view.shading = render::Shading::scene_lit;
-        frame.view.lit.probe_volumes[0].minimum = {-5, -1, -1};
-        frame.view.lit.probe_volumes[0].maximum = {5, 5, 8};
-        frame.view.lit.probe_volumes[0].counts = {11, 7, 10};
-        frame.view.lit.probe_update_budget = 96;
-        frame.view.lit.probe_rays = 64;
+        frame.view.lit.gi_quality = atelier::rendering::GiQuality::ultra;
         if (!benchmark)
             metrics << "scenario,mean_rgb_delta,p95_rgb_delta,changed_pixels,darker_pixels\n";
         initial_extent = drawing.extent;
@@ -500,12 +500,12 @@ void benchmark(Fixture& f) {
         f.step();
     std::ofstream samples(f.output / "benchmark-gpu.csv");
     samples
-        << "submission,completed_sequence,completed_frame_id,gbuffer_ms,as_ms,direct_ms,ddgi_ms,gtao_ms,sssr_ms,temporal_ms,composite_ms,sum_gpu_ms,current_logical_resource_bytes,completed_shadow_queries,completed_probe_queries,ddgi_update_ms,ddgi_gather_ms,ddgi_update_visibility_queries,ddgi_gather_visibility_queries,direct_cluster_ms,shadow_update_ms,direct_shading_ms,ddgi_primary_ms,ddgi_hit_lighting_ms,completed_pass_mask\n";
+        << "submission,completed_sequence,completed_frame_id,gbuffer_ms,as_ms,direct_ms,gi_ms,ssilvb_ms,reflections_ms,temporal_ms,composite_ms,sum_gpu_ms,union_gpu_ms,current_logical_resource_bytes,completed_shadow_queries,completed_gi_primary_queries,gi_update_ms,gi_resolve_ms,gi_nee_visibility_queries,gi_probe_visibility_queries,direct_cluster_ms,vsm_ms,direct_shading_ms,gi_primary_ms,gi_hit_lighting_ms,completed_pass_mask\n";
     std::vector<double> totals;
     std::array<std::vector<double>, 8> passes;
-    std::array<std::vector<double>, 2> ddgi_passes;
+    std::array<std::vector<double>, 2> gi_passes;
     std::array<std::vector<double>, 3> direct_passes;
-    std::array<std::vector<double>, 2> ddgi_update_passes;
+    std::array<std::vector<double>, 2> gi_update_passes;
     std::uint64_t resource_peak = 0;
     std::uint64_t previous_sequence = 0;
     const auto first_measured_frame = f.drawing.id;
@@ -526,27 +526,29 @@ void benchmark(Fixture& f) {
             sum += value;
             samples << ',' << value;
         }
-        totals.push_back(sum);
+        check(std::isfinite(stats.scene_lit_gpu_union_ms) && stats.scene_lit_gpu_union_ms >= 0.f,
+              "SceneLit GPU union timestamp span is finite nonnegative milliseconds");
+        totals.push_back(stats.scene_lit_gpu_union_ms > 0.f ? double(stats.scene_lit_gpu_union_ms) : sum);
         resource_peak = std::max(resource_peak, stats.scene_lit_resource_bytes);
-        samples << ',' << sum << ',' << stats.scene_lit_resource_bytes << ',' << stats.scene_lit_shadow_rays << ','
-                << stats.scene_lit_probe_rays;
-        double ddgi_sum = 0;
-        for (std::size_t pass = 0; pass < ddgi_passes.size(); ++pass) {
-            const double value = stats.scene_lit_ddgi_gpu_ms[pass];
-            check(std::isfinite(value) && value >= 0, "DDGI subpass timestamps are finite nonnegative milliseconds");
-            ddgi_passes[pass].push_back(value);
-            ddgi_sum += value;
+        samples << ',' << sum << ',' << stats.scene_lit_gpu_union_ms << ',' << stats.scene_lit_resource_bytes << ','
+                << stats.scene_lit_shadow_rays << ',' << stats.scene_lit_gi_primary_rays;
+        double gi_sum = 0;
+        for (std::size_t pass = 0; pass < gi_passes.size(); ++pass) {
+            const double value = stats.scene_lit_gi_gpu_ms[pass];
+            check(std::isfinite(value) && value >= 0, "GI subpass timestamps are finite nonnegative milliseconds");
+            gi_passes[pass].push_back(value);
+            gi_sum += value;
             samples << ',' << value;
         }
-        check(ddgi_sum <= stats.scene_lit_gpu_ms[3] + .01,
-              "DDGI subpass timestamps belong to the enclosing completed DDGI stage");
-        std::uint64_t ddgi_visibility = 0;
-        for (auto queries : stats.scene_lit_ddgi_visibility_rays) {
+        check(gi_sum <= stats.scene_lit_gpu_ms[3] + .01,
+              "GI subpass timestamps belong to the enclosing completed GI stage");
+        std::uint64_t gi_visibility = 0;
+        for (auto queries : stats.scene_lit_gi_visibility_rays) {
             samples << ',' << queries;
-            ddgi_visibility += queries;
+            gi_visibility += queries;
         }
-        check(ddgi_visibility <= stats.scene_lit_shadow_rays,
-              "DDGI classified queries are a subset of all visibility queries");
+        check(gi_visibility <= stats.scene_lit_shadow_rays,
+              "GI classified queries are a subset of all visibility queries");
         const auto subpasses = [&](auto& series, const auto& values, double parent) {
             double sum = 0;
             for (std::size_t i = 0; i < values.size(); ++i) {
@@ -559,11 +561,11 @@ void benchmark(Fixture& f) {
             check(sum <= parent + .01, "GPU subpass timestamps belong to their enclosing completed stage");
         };
         subpasses(direct_passes,
-                  std::array{stats.scene_lit_direct_cluster_gpu_ms, stats.scene_lit_shadow_cache_gpu_ms,
+                  std::array{stats.scene_lit_direct_cluster_gpu_ms, stats.scene_lit_vsm_gpu_ms,
                              stats.scene_lit_direct_shading_gpu_ms},
                   stats.scene_lit_gpu_ms[2]);
-        subpasses(ddgi_update_passes, stats.scene_lit_ddgi_update_gpu_ms, stats.scene_lit_ddgi_gpu_ms[0]);
-        // Shadow atlas updates (bit 13) run only when the static room changes.
+        subpasses(gi_update_passes, stats.scene_lit_gi_update_gpu_ms, stats.scene_lit_gi_gpu_ms[0]);
+        // VSM static/dynamic page updates (bit 13) run only when shadowed geometry/lights change.
         check((stats.scene_lit_gpu_pass_mask & 0x5fffu) == 0x5fffu,
               "fixed room executes every measured GPU scope in the same completed sample");
         samples << ',' << stats.scene_lit_gpu_pass_mask << '\n';
@@ -571,31 +573,30 @@ void benchmark(Fixture& f) {
     check(totals.size() >= 120 && percentile(totals, 95) > 0,
           "SceneLit benchmark obtains completed GPU timestamp samples");
     f.metrics
-        << "fixed_scene=2560x1440, 8 shared-cube instances, 1 directional + 2 point + 1 rectangle plus DDGI mesh emission\n"
+        << "fixed_scene=2560x1440, 8 shared-cube instances, 1 directional + 2 point + 1 rectangle plus GI mesh emission\n"
         << "warmup_frames=" << warmup_frames << " gpu_samples=" << totals.size() << "\n"
         << "GPU timestamps exclude capture/readback, CPU Present duration and display scanout.\n"
-        << "sum_of_measured_passes_ms p50=" << percentile(totals, 50) << " p95=" << percentile(totals, 95)
+        << "union_gpu_ms p50=" << percentile(totals, 50) << " p95=" << percentile(totals, 95)
         << " p99=" << percentile(totals, 99) << "\nlogical_resource_peak_bytes=" << resource_peak
         << " (logical current allocations, not physical VRAM peak)\n";
-    constexpr const char* names[]{"GBuffer", "AS", "direct", "DDGI", "GTAO", "SSSR", "temporal", "composite"};
+    constexpr const char* names[]{"GBuffer", "AS", "direct", "GI", "SSILVB", "Reflections", "temporal", "composite"};
     for (std::size_t pass = 0; pass < passes.size(); ++pass)
         f.metrics << names[pass] << "_ms p50=" << percentile(passes[pass], 50)
                   << " p95=" << percentile(passes[pass], 95) << " p99=" << percentile(passes[pass], 99) << '\n';
-    constexpr const char* ddgi_names[]{"DDGI_update", "DDGI_gather"};
-    for (std::size_t pass = 0; pass < ddgi_passes.size(); ++pass)
-        f.metrics << ddgi_names[pass] << "_ms p50=" << percentile(ddgi_passes[pass], 50)
-                  << " p95=" << percentile(ddgi_passes[pass], 95) << " p99=" << percentile(ddgi_passes[pass], 99)
-                  << '\n';
-    constexpr const char* direct_names[]{"direct_cluster", "shadow_update", "direct_shading"};
+    constexpr const char* gi_names[]{"GI_update", "GI_resolve"};
+    for (std::size_t pass = 0; pass < gi_passes.size(); ++pass)
+        f.metrics << gi_names[pass] << "_ms p50=" << percentile(gi_passes[pass], 50)
+                  << " p95=" << percentile(gi_passes[pass], 95) << " p99=" << percentile(gi_passes[pass], 99) << '\n';
+    constexpr const char* direct_names[]{"direct_cluster", "vsm", "direct_shading"};
     for (std::size_t pass = 0; pass < direct_passes.size(); ++pass)
         f.metrics << direct_names[pass] << "_ms p50=" << percentile(direct_passes[pass], 50)
                   << " p95=" << percentile(direct_passes[pass], 95) << " p99=" << percentile(direct_passes[pass], 99)
                   << '\n';
-    constexpr const char* update_names[]{"DDGI_primary", "DDGI_hit_lighting"};
-    for (std::size_t pass = 0; pass < ddgi_update_passes.size(); ++pass)
-        f.metrics << update_names[pass] << "_ms p50=" << percentile(ddgi_update_passes[pass], 50)
-                  << " p95=" << percentile(ddgi_update_passes[pass], 95)
-                  << " p99=" << percentile(ddgi_update_passes[pass], 99) << '\n';
+    constexpr const char* update_names[]{"GI_primary", "GI_hit_lighting"};
+    for (std::size_t pass = 0; pass < gi_update_passes.size(); ++pass)
+        f.metrics << update_names[pass] << "_ms p50=" << percentile(gi_update_passes[pass], 50)
+                  << " p95=" << percentile(gi_update_passes[pass], 95)
+                  << " p99=" << percentile(gi_update_passes[pass], 99) << '\n';
     check(samples.good() && f.metrics.good(), "SceneLit GPU benchmark evidence written");
     // Evidence capture happens only after the timestamp sample loop.
     f.capture("benchmark-1440p");
@@ -618,7 +619,7 @@ int scene_lit_acceptance(bool benchmark_mode, const std::filesystem::path& outpu
         scene_lit_e2e::shadow_cases(fixture);
         scene_lit_e2e::sky_background_geometry(fixture);
         fixture.restore();
-        scene_lit_e2e::probe_debug_cases(fixture);
+        scene_lit_e2e::spot_sky_tonemap_and_pick_cases(fixture);
     }
     fixture.close();
     return 0;

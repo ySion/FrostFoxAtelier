@@ -12,15 +12,21 @@ using world::DiagnosticPhase;
 
 // Single-field bounds are AFIELD hard bounds, checked before this runs.
 Result<void> LightSettings::validate() const {
-    if (kind != LightKind::point && kind != LightKind::rectangle && kind != LightKind::directional)
+    if (kind != LightKind::point && kind != LightKind::rectangle && kind != LightKind::directional &&
+        kind != LightKind::spot)
         return error(ErrorCode::argument_mismatch, "Unknown LightKind.");
-    if ((kind == LightKind::point || kind == LightKind::rectangle) && range == 0.f)
+    if ((kind == LightKind::point || kind == LightKind::rectangle || kind == LightKind::spot) && range == 0.f)
         return error(ErrorCode::argument_mismatch,
                      "Local light range must be positive; directional range may be zero.");
     if (kind == LightKind::directional && double(source_radius) >= std::numbers::pi_v<double> / 2)
         return error(ErrorCode::argument_mismatch, "Directional angular radius must be below pi/2 radians.");
     if (kind == LightKind::rectangle && (width == 0.f || height == 0.f))
         return error(ErrorCode::argument_mismatch, "Rectangle width and height must be positive.");
+    if (kind == LightKind::spot && (!std::isfinite(spot_inner_degrees) || !std::isfinite(spot_outer_degrees) ||
+                                    spot_inner_degrees < 0.f || spot_outer_degrees < .1f ||
+                                    spot_outer_degrees > 89.9f || spot_inner_degrees > spot_outer_degrees))
+        return error(ErrorCode::argument_mismatch,
+                     "Spot inner/outer cone half-angles must satisfy 0 <= inner <= outer <= 89.9 degrees.");
     if (const auto* message = rendering::analytic_light_range_error(
             color, intensity, kind == LightKind::rectangle ? double(width) * height : 1))
         return error(ErrorCode::argument_mismatch, message);
@@ -35,36 +41,29 @@ namespace {
 rendering::SceneLightingSettings environment_settings(const EnvironmentComponent& value) noexcept {
     rendering::SceneLightingSettings result;
     result.shadows = value.shadows;
-    result.ddgi = value.ddgi;
-    result.gtao = value.gtao;
-    result.sssr = value.sssr;
-    result.bloom = value.bloom;
-    result.antialiasing = static_cast<rendering::Antialiasing>(value.antialiasing);
-    result.exposure_ev = value.exposure_ev;
+    result.contact_shadow_length = value.contact_shadow_length;
     result.direct_candidates = value.direct_candidates;
+    result.indirect_lighting = value.indirect_lighting;
+    result.gi_quality = static_cast<rendering::GiQuality>(value.gi_quality);
+    result.indirect_gain = value.indirect_gain;
+    result.ssilvb = value.ssilvb;
     result.ao_radius = value.ao_radius;
+    result.reflections = value.reflections;
     result.reflection_distance = value.reflection_distance;
     result.reflection_roughness = value.reflection_roughness;
-    const std::array volumes{&value.volume0, &value.volume1, &value.volume2, &value.volume3};
-    for (std::size_t slot = 0; slot < volumes.size(); ++slot) {
-        const auto& from = *volumes[slot];
-        auto& to = result.probe_volumes[slot];
-        to.enabled = from.enabled;
-        to.placement = static_cast<rendering::ProbePlacement>(from.placement);
-        to.minimum = from.minimum;
-        to.maximum = from.maximum;
-        to.counts = {from.count_x, from.count_y, from.count_z};
-        to.blend_cells = from.blend_cells;
-    }
-    result.probe_update_budget = value.probe_update_budget;
-    result.probe_rays = value.probe_rays;
-    result.probe_bounce = value.probe_bounce;
-    result.indirect_gain = value.indirect_gain;
-    result.sky_enabled = value.sky_enabled;
+    result.sky_mode = static_cast<rendering::SkyMode>(value.sky_mode);
     result.sky_color = value.sky_color;
     result.sky_intensity = value.sky_intensity;
     result.sky_map = detail::Access::sky_map_resolved(value);
     result.sky_rotation = value.sky_rotation;
+    result.fog_enabled = value.fog_enabled;
+    result.fog_density = value.fog_density;
+    result.fog_height_falloff = value.fog_height_falloff;
+    result.fog_anisotropy = value.fog_anisotropy;
+    result.exposure_ev = value.exposure_ev;
+    result.bloom = value.bloom;
+    result.tonemapper = static_cast<rendering::Tonemapper>(value.tonemapper);
+    result.antialiasing = static_cast<rendering::Antialiasing>(value.antialiasing);
     return result;
 }
 }

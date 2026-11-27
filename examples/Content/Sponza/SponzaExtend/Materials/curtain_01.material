@@ -25,6 +25,12 @@
     },
     {
       "enabled": true,
+      "path": "diffuse_roughness",
+      "type": "float",
+      "value": 0.45
+    },
+    {
+      "enabled": true,
       "path": "normal_scale",
       "type": "float",
       "value": 1.0
@@ -37,19 +43,31 @@
     },
     {
       "enabled": true,
-      "path": "emissive",
-      "type": "vector3",
-      "value": [
-        0.0,
-        0.0,
-        0.0
-      ]
+      "path": "fuzz_weight",
+      "type": "float",
+      "value": 0.22
     },
     {
       "enabled": true,
-      "path": "alpha_cutoff",
+      "path": "fuzz_roughness",
       "type": "float",
-      "value": 0.5
+      "value": 0.55
+    },
+    {
+      "enabled": true,
+      "path": "transmission_scatter",
+      "type": "float",
+      "value": 0.32
+    },
+    {
+      "enabled": true,
+      "path": "transmission_color",
+      "type": "vector3",
+      "value": [
+        0.95,
+        0.42,
+        0.35
+      ]
     },
     {
       "enabled": true,
@@ -62,66 +80,12 @@
     },
     {
       "enabled": true,
-      "path": "base_color_uv.scale",
-      "type": "vector2",
-      "value": [
-        1.0,
-        1.0
-      ]
-    },
-    {
-      "enabled": true,
-      "path": "base_color_uv.offset",
-      "type": "vector2",
-      "value": [
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "enabled": true,
-      "path": "base_color_uv.rotation",
-      "type": "float",
-      "value": 0.0
-    },
-    {
-      "enabled": true,
       "path": "roughness_texture",
       "type": "texture",
       "value": {
         "address": "repeat",
         "asset_key": "project/{36317EE6-30AA-4BB0-A979-061E709A74B0}"
       }
-    },
-    {
-      "enabled": true,
-      "path": "roughness_uv.scale",
-      "type": "vector2",
-      "value": [
-        1.0,
-        1.0
-      ]
-    },
-    {
-      "enabled": true,
-      "path": "roughness_uv.offset",
-      "type": "vector2",
-      "value": [
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "enabled": true,
-      "path": "roughness_uv.rotation",
-      "type": "float",
-      "value": 0.0
-    },
-    {
-      "enabled": true,
-      "path": "roughness_channel",
-      "type": "float",
-      "value": 1
     },
     {
       "enabled": true,
@@ -134,141 +98,15 @@
     },
     {
       "enabled": true,
-      "path": "metallic_uv.scale",
-      "type": "vector2",
-      "value": [
-        1.0,
-        1.0
-      ]
-    },
-    {
-      "enabled": true,
-      "path": "metallic_uv.offset",
-      "type": "vector2",
-      "value": [
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "enabled": true,
-      "path": "metallic_uv.rotation",
-      "type": "float",
-      "value": 0.0
-    },
-    {
-      "enabled": true,
-      "path": "metallic_channel",
-      "type": "float",
-      "value": 2
-    },
-    {
-      "enabled": true,
       "path": "normal_texture",
       "type": "texture",
       "value": {
         "address": "repeat",
         "asset_key": "project/{4BC7A80C-227D-4B5D-90F4-FFAE69B6A69C}"
       }
-    },
-    {
-      "enabled": true,
-      "path": "normal_uv.scale",
-      "type": "vector2",
-      "value": [
-        1.0,
-        1.0
-      ]
-    },
-    {
-      "enabled": true,
-      "path": "normal_uv.offset",
-      "type": "vector2",
-      "value": [
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "enabled": true,
-      "path": "normal_uv.rotation",
-      "type": "float",
-      "value": 0.0
-    },
-    {
-      "enabled": true,
-      "path": "emissive_texture",
-      "type": "texture",
-      "value": {
-        "address": "repeat",
-        "asset_key": ""
-      }
-    },
-    {
-      "enabled": true,
-      "path": "emissive_uv.scale",
-      "type": "vector2",
-      "value": [
-        1.0,
-        1.0
-      ]
-    },
-    {
-      "enabled": true,
-      "path": "emissive_uv.offset",
-      "type": "vector2",
-      "value": [
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "enabled": true,
-      "path": "emissive_uv.rotation",
-      "type": "float",
-      "value": 0.0
-    },
-    {
-      "enabled": true,
-      "path": "opacity_texture",
-      "type": "texture",
-      "value": {
-        "address": "repeat",
-        "asset_key": ""
-      }
-    },
-    {
-      "enabled": true,
-      "path": "opacity_uv.scale",
-      "type": "vector2",
-      "value": [
-        1.0,
-        1.0
-      ]
-    },
-    {
-      "enabled": true,
-      "path": "opacity_uv.offset",
-      "type": "vector2",
-      "value": [
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "enabled": true,
-      "path": "opacity_uv.rotation",
-      "type": "float",
-      "value": 0.0
-    },
-    {
-      "enabled": true,
-      "path": "opacity_channel",
-      "type": "float",
-      "value": 0
     }
   ],
-  "parent_key": "builtin/material/standard-opaque-double",
+  "parent_key": "builtin/material/open-pbr-opaque-double",
   "role": "instance",
   "version": 2
 }

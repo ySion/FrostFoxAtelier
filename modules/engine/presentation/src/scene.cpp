@@ -482,8 +482,36 @@ Result<void> Scene::update_meshes(std::uint64_t serial, const detail::Presented*
     mesh_tracker_.dirty.clear();
     generator_tracker_.dirty.clear();
     // The bucket keeps its components and order until World::revision advances.
-    if (!tracked || layout_revision_ != world_->revision()) {
+    const auto same_capability_members = [](std::span<const world::CapabilityMember> a,
+                                            std::span<const world::CapabilityMember> b) noexcept {
+        if (a.size() != b.size())
+            return false;
+        for (std::size_t i = 0; i < a.size(); ++i)
+            if (a[i].entity != b[i].entity || a[i].component != b[i].component || a[i].active != b[i].active)
+                return false;
+        return true;
+    };
+    const auto mark_reparented_chains = [&](detail::BucketTracker& tracker, std::span<const ObjectId> prev_chains,
+                                            std::span<const std::uint32_t> prev_starts) {
+        for (std::size_t slot = 0; slot + 1 < tracker.chain_starts.size() && slot + 1 < prev_starts.size(); ++slot) {
+            const auto p0 = prev_starts[slot];
+            const auto p1 = prev_starts[slot + 1];
+            const auto n0 = tracker.chain_starts[slot];
+            const auto n1 = tracker.chain_starts[slot + 1];
+            if ((p1 - p0) != (n1 - n0) ||
+                !std::ranges::equal(prev_chains.subspan(p0, p1 - p0),
+                                    std::span<const ObjectId>{tracker.chains}.subspan(n0, n1 - n0))) {
+                tracker.mark(static_cast<std::uint32_t>(slot), serial, false);
+            }
+        }
+    };
+    const bool same_renderable_buckets =
+        tracked && same_capability_members(*meshes, mesh_members_) &&
+        same_capability_members(*generators, generator_members_);
+    if (!same_renderable_buckets) {
         layout_revision_ = world_->revision();
+        mesh_members_.assign(meshes->begin(), meshes->end());
+        generator_members_.assign(generators->begin(), generators->end());
         mesh_slots_.assign(count, {});
         mesh_tracker_.reset(count);
         generator_slots_.assign(gen_count, {});
@@ -497,6 +525,18 @@ Result<void> Scene::update_meshes(std::uint64_t serial, const detail::Presented*
         for (std::size_t slot = 0; slot < gen_count; ++slot)
             generator_tracker_.dirty.push_back(static_cast<std::uint32_t>(slot));
     } else {
+        if (layout_revision_ != world_->revision()) {
+            layout_revision_ = world_->revision();
+            lights_dirty_ = true;
+            const auto prev_mesh_chains = mesh_tracker_.chains;
+            const auto prev_mesh_starts = mesh_tracker_.chain_starts;
+            const auto prev_gen_chains = generator_tracker_.chains;
+            const auto prev_gen_starts = generator_tracker_.chain_starts;
+            ATELIER_TRY(index_layout(*pass, *meshes, *generators));
+            mark_reparented_chains(mesh_tracker_, prev_mesh_chains, prev_mesh_starts);
+            if (gen_count > 0)
+                mark_reparented_chains(generator_tracker_, prev_gen_chains, prev_gen_starts);
+        }
         runtime.changed_objects(cursor_, written_);
         for (const auto object : written_) {
             mark_written_object(mesh_tracker_, object, serial);

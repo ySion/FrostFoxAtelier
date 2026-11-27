@@ -869,101 +869,33 @@
             "antialiasing": "smaa",
             "ao_radius": 0.35,
             "bloom": true,
-            "ddgi": true,
+            "contact_shadow_length": 0.15,
             "direct_candidates": 8,
             "exposure_ev": 0.0,
-            "gtao": true,
+            "fog_anisotropy": 0.3,
+            "fog_density": 0.01,
+            "fog_enabled": false,
+            "fog_height_falloff": 0.2,
+            "gi_quality": "high",
             "indirect_gain": 1.0,
+            "indirect_lighting": true,
             "main_camera": {
               "$ref": "33"
             },
-            "probe_bounce": 0.85,
-            "probe_rays": 128,
-            "probe_update_budget": 49,
             "reflection_distance": 30.0,
             "reflection_roughness": 0.6,
+            "reflections": true,
             "shadows": true,
             "sky_color": {
               "x": 0.025,
               "y": 0.035,
               "z": 0.055
             },
-            "sky_enabled": true,
             "sky_intensity": 1.0,
+            "sky_mode": "hdri_sky_map",
             "sky_rotation": 0.0,
-            "sssr": true,
-            "volume0": {
-              "blend_cells": 0.0,
-              "count_x": 7,
-              "count_y": 4,
-              "count_z": 7,
-              "enabled": true,
-              "maximum": {
-                "x": 6.0,
-                "y": 4.0,
-                "z": 7.0
-              },
-              "minimum": {
-                "x": -6.0,
-                "y": -1.0,
-                "z": -5.0
-              },
-              "placement": "fixed"
-            },
-            "volume1": {
-              "blend_cells": 0.0,
-              "count_x": 8,
-              "count_y": 4,
-              "count_z": 8,
-              "enabled": false,
-              "maximum": {
-                "x": 6.0,
-                "y": 5.0,
-                "z": 6.0
-              },
-              "minimum": {
-                "x": -6.0,
-                "y": -1.0,
-                "z": -6.0
-              },
-              "placement": "fixed"
-            },
-            "volume2": {
-              "blend_cells": 0.0,
-              "count_x": 8,
-              "count_y": 4,
-              "count_z": 8,
-              "enabled": false,
-              "maximum": {
-                "x": 6.0,
-                "y": 5.0,
-                "z": 6.0
-              },
-              "minimum": {
-                "x": -6.0,
-                "y": -1.0,
-                "z": -6.0
-              },
-              "placement": "fixed"
-            },
-            "volume3": {
-              "blend_cells": 0.0,
-              "count_x": 8,
-              "count_y": 4,
-              "count_z": 8,
-              "enabled": false,
-              "maximum": {
-                "x": 6.0,
-                "y": 5.0,
-                "z": 6.0
-              },
-              "minimum": {
-                "x": -6.0,
-                "y": -1.0,
-                "z": -6.0
-              },
-              "placement": "fixed"
-            }
+            "ssilvb": true,
+            "tonemapper": "pbr_neutral"
           },
           "sky_map": "",
           "type": "world.EnvironmentComponent"

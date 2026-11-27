@@ -51,14 +51,17 @@ auto window_failure(const char* message) {
 }
 }
 
-Result<void> PopupHost::initialize(HWND owner, std::span<const std::wstring> fonts, bool validation) {
+Result<void> PopupHost::initialize(std::shared_ptr<rhi::Device> device, HWND owner, std::span<const std::wstring> fonts,
+                                   bool validation) {
     ATELIER_TRY(window_.initialize(owner));
     ATELIER_TRY(ui_.initialize(fonts).transform_error(ui_error));
     ATELIER_TRY(measurement_.initialize(fonts).transform_error(ui_error));
     renderer::Options options;
     options.validation = validation ? rhi::Validation::gpu : rhi::Validation::disabled;
     options.vsync = false; // The main surface owns frame pacing.
-    ATELIER_TRY_BIND(opened, renderer::Renderer::open(window_.handle(), options).transform_error(renderer_error));
+    options.ui_only = true;
+    ATELIER_TRY_BIND(
+        opened, renderer::Renderer::open(std::move(device), window_.handle(), options).transform_error(renderer_error));
     renderer_ = std::move(*opened);
     return {};
 }

@@ -76,7 +76,8 @@ atelier::material::ProgramSurfaceRef capture(const Description& value) {
         check(bool(file), "StandardPBR source belongs to the real builtin catalog");
         return take(atelier::source::compile_material(
             compiler, take(compiler.native_type<m::Context>()), take(compiler.native_type<m::Output>()),
-            take(compiler.native_type<m::TextureInput>()), file->path, file->source));
+            take(compiler.native_type<m::TextureInput>()), file->path, file->source,
+            take(compiler.native_type<m::NormalTextureInput>())));
     }();
     const auto& p = value.parameters;
     const auto catalog = atelier::assets::material_assets();

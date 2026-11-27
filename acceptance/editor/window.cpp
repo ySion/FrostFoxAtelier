@@ -12,6 +12,7 @@
 #include "platform/utf.hpp"
 #include "foundation/sha256.hpp"
 #include <Windows.h>
+#include <objbase.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -23,8 +24,11 @@
 
 namespace {
 using atelier::application::Application;
+
 using atelier::Error;
+
 using atelier::ErrorCode;
+
 using atelier::Result;
 
 std::unexpected<Error> command_error(std::string message, ErrorCode code = ErrorCode::invalid_definition) {

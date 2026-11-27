@@ -12,6 +12,7 @@
 #include "platform/windows_path.hpp"
 #include "source/snapshot.hpp"
 #include <Windows.h>
+#include <objbase.h>
 #include "assets/png.hpp"
 #include <fstream>
 #include <map>
@@ -309,7 +310,7 @@ json::Result<json::Document> image_content(const material::ImageRef& image) {
     json::Builder content;
     ATELIER_TRY(content.set(content.root(), "width", image->width()));
     ATELIER_TRY(content.set(content.root(), "height", image->height()));
-    content.set_validated(content.root(), "rgba_sha256", foundation::sha256(std::as_bytes(image->pixels())));
+    content.set_validated(content.root(), "rgba_sha256", image->rgba_sha256());
     return content.finish();
 }
 
@@ -340,17 +341,18 @@ json::Result<std::string> sky_hash(const rendering::SkyMap& map) {
     ATELIER_TRY_BIND(mean, content.array(content.root(), "mean"));
     for (const auto value : {map.mean().x, map.mean().y, map.mean().z})
         ATELIER_TRY(content.append(*mean, value));
-    content.set_validated(content.root(), "pixels", foundation::sha256(std::as_bytes(map.pixels())));
-    content.set_validated(content.root(), "cube", foundation::sha256(std::as_bytes(map.cube())));
+    content.set_validated(content.root(), "pixels", map.content_sha256());
     return json_hash(content.root());
 }
 
 struct ComApartment {
     HRESULT status = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+
     ~ComApartment() {
         if (SUCCEEDED(status))
             CoUninitialize();
     }
+
     std::expected<void, Failure> ready() const {
         if (FAILED(status))
             return std::unexpected(Failure("storage_error", "Cannot initialize image encoder"));
@@ -447,7 +449,7 @@ std::string trace_html(json::Value trace) {
     std::string html = R"HTML(<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
-<title>Recorded post-processing commands</title><style>
+<title>Recorded RDG graph trace</title><style>
 :root{color-scheme:dark;font:14px/1.5 'Segoe UI',sans-serif;background:#2e2e2e;color:#ccc}
 body{margin:0}main{max-width:1200px;margin:auto;padding:24px}h1{font-size:24px;line-height:1.2;margin:0 0 12px;color:#eee}
 h2{font-size:18px;margin:28px 0 10px;color:#eee}p{max-width:80ch}code,pre,svg text{font:13px/1.5 Consolas,monospace}
@@ -456,16 +458,13 @@ summary{cursor:pointer;padding:12px 4px;color:#eee}summary:hover{background:#3d3
 details{border-bottom:1px solid #666}details[open]{padding-bottom:16px}pre{white-space:pre-wrap;overflow-wrap:anywhere}
 .scroll{overflow:auto;margin:12px 0}.facts{padding:12px 16px;background:#191919}.notice{color:#f0d4a2}
 svg{display:block;width:100%;min-width:850px}svg rect{fill:#191919;stroke:#888}svg text{fill:#ddd}
-svg path{fill:none;stroke:#aaa}svg .binding{stroke-dasharray:3 4}svg .arrow{fill:#aaa}
+svg path{fill:none;stroke:#aaa}svg .culled{stroke-dasharray:4 4;opacity:0.65}
 table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}td,th{text-align:left;padding:8px;border-bottom:1px solid #555;vertical-align:top}
 th{color:#eee}td code{overflow-wrap:anywhere}caption{text-align:left;margin-bottom:8px}
 @media(max-width:600px){main{padding:16px}h1{font-size:22px}}
-</style><main><h1>Recorded post-processing commands</h1>
-<p>CPU command recording only. This is not GPU completion or proof of display.
-Solid arrows show recording order; dashed lines show bindings, not dependencies.</p>
+</style><main><h1>Recorded RDG render graph</h1>
+<p>CPU RDG DAG compilation and transient aliasing snapshot. No GPU readback or pixel capture.</p>
 )HTML";
-    // The trace writer supplies every field below; this is its presentation,
-    // not a second schema decoder or an external JSON entry point.
     const auto text = [](json::Value value) {
         if (value.kind() == json::Kind::string)
             return html_text(*value.string());
@@ -476,82 +475,53 @@ Solid arrows show recording order; dashed lines show bindings, not dependencies.
             "</code><br>Recording sequence: " + text(*trace.at("recording_sequence")) +
             " · UI frame: " + text(*trace.at("ui_frame_id")) + "<br>Attempt: " + text(*trace.at("attempt")) +
             " · Frame result: <strong>" + text(*trace.at("frame_status")) + "</strong> · Observation: <strong>" +
-            text(*trace.path({"observation", "status"})) + "</strong></div>";
+            text(*trace.path({"observation", "status"})) + "</strong> · Transient heap: <code>" +
+            text(*trace.path({"transient_aliasing", "heap_bytes"})) + " B</code> (unaliased <code>" +
+            text(*trace.path({"transient_aliasing", "unaliased_bytes"})) + " B</code>)</div>";
     if (const auto error = *trace.find("error")) {
         const auto bytes = json::write(*error, {true});
         html += "<pre class=\"notice\">" + html_text({bytes.data(), bytes.size()}) + "</pre>";
     }
     if (*trace.string({"observation", "status"}) != "complete")
-        html += "<p class=\"notice\">This observation is not complete. Missing commands or bindings are not inferred. "
-                "See observation flags in the snapshot metadata below.</p>";
-    const auto commands = *trace.at("commands")->array();
-    html += "<h2>Recording order</h2>";
-    if (commands.size() == 0)
-        html += "<p>No dispatch was observed in this scope for this render attempt. No pipeline template is shown.</p>";
+        html += "<p class=\"notice\">This observation is not complete. See observation flags in snapshot metadata.</p>";
+    const auto passes = *trace.at("passes")->array();
+    html += "<h2>Three-queue RDG swimlane</h2>";
+    if (passes.size() == 0)
+        html += "<p>No RDG pass was recorded in this scope for this render attempt.</p>";
     else {
-        html +=
-            "<div class=\"scroll\"><svg role=\"img\" aria-label=\"Actual dispatch recording order\" viewBox=\"0 0 1000 " +
-            std::to_string(commands.size() * 60) + "\">";
+        html += "<div class=\"scroll\"><svg role=\"img\" aria-label=\"RDG queue swimlane\" viewBox=\"0 0 1000 " +
+                std::to_string(passes.size() * 52 + 36) + "\">";
+        html += "<text x=\"40\" y=\"22\">Graphics</text><text x=\"360\" y=\"22\">Async Compute</text>"
+                "<text x=\"680\" y=\"22\">Copy</text>";
         std::size_t i = 0;
-        for (const auto command : commands) {
-            const auto y = std::to_string(i * 60);
-            html += "<g transform=\"translate(0 " + y + ")\" id=\"command-" + text(*command.at("ordinal")) +
-                    "\"><rect x=\"40\" y=\"2\" width=\"510\" height=\"40\"/>";
-            html += "<text x=\"54\" y=\"28\">" + text(*command.at("ordinal")) + " · " + text(*command.at("entry")) +
-                    "</text><text x=\"580\" y=\"28\">" + text(*command.at("kind")) + " · groups " +
-                    text(*command.at("groups")) + "</text>";
-            if (i + 1 < commands.size())
-                html += "<path d=\"M56 42 V55\"/><path class=\"arrow\" d=\"M52 52 L56 58 L60 52 Z\"/>";
-            html += "</g>";
+        for (const auto pass : passes) {
+            const auto q = *pass.string({"queue"});
+            const unsigned lane_x = (q == "compute") ? 360u : (q == "copy") ? 680u : 40u;
+            const auto y = std::to_string(i * 52 + 34);
+            const bool culled = pass.boolean({"culled"}).value_or(false);
+            html += "<g transform=\"translate(" + std::to_string(lane_x) + " " + y + ")\"><rect x=\"0\" y=\"0\"" +
+                    std::string(culled ? " class=\"culled\"" : "") + " width=\"290\" height=\"38\"/>";
+            html += "<text x=\"12\" y=\"24\">" + text(*pass.at("ordinal")) + " · " + text(*pass.at("name")) +
+                    (culled ? " (culled)" : "") + "</text></g>";
             ++i;
         }
-        html += "</svg></div><h2>Actual bindings</h2><p>Expand a command to inspect its binding ports and view ranges. "
-                "R numbers identify resources only within this snapshot. Resource origins are not inferred.</p>";
+        html += "</svg></div>";
     }
-    for (const auto command : commands) {
-        const auto bindings = *command.at("bindings")->array();
-        html += "<details><summary><code>" + text(*command.at("ordinal")) + " · " + text(*command.at("entry")) +
-                "</code> — " + std::to_string(bindings.size()) + " bindings</summary>";
-        html += "<div class=\"scroll\"><svg role=\"img\" aria-label=\"Actual resource bindings\" viewBox=\"0 0 1000 " +
-                std::to_string(std::max<std::size_t>(80, bindings.size() * 36 + 12)) + "\">";
-        html += "<rect x=\"8\" y=\"8\" width=\"110\" height=\"40\"/><text x=\"20\" y=\"34\">Command " +
-                text(*command.at("ordinal")) + "</text>";
-        std::size_t i = 0;
-        for (const auto binding : bindings) {
-            const auto y = std::to_string(i * 36 + 28);
-            const auto label =
-                binding.at("resource")->is_null() ? text(*binding.at("status")) : "R" + text(*binding.at("resource"));
-            html += "<g id=\"binding-" + text(*command.at("ordinal")) + "-" + text(*binding.at("root_parameter")) +
-                    "-" + text(*binding.at("array_index")) + "\">";
-            html += "<path class=\"binding\" d=\"M118 28 H140 V" + y + " H170 M720 " + y + " H760\"/>";
-            html += "<text x=\"178\" y=\"" + std::to_string(i * 36 + 33) + "\">root " +
-                    text(*binding.at("root_parameter")) + ", " + text(*binding.at("kind")) + " · " +
-                    text(*binding.at("name")) + "[" + text(*binding.at("array_index")) + "]</text>";
-            html += "<rect x=\"760\" y=\"" + std::to_string(i * 36 + 12) +
-                    "\" width=\"220\" height=\"30\"/><text x=\"774\" y=\"" + std::to_string(i * 36 + 33) + "\">" +
-                    label + "</text></g>";
-            ++i;
-        }
-        html +=
-            "</svg></div><div class=\"scroll\"><table><caption>Installed binding details</caption>"
-            "<thead><tr><th>Root / element</th><th>Name</th><th>Kind / status</th><th>Resource</th><th>View</th></tr></thead><tbody>";
-        for (const auto binding : bindings)
-            html += "<tr><td>" + text(*binding.at("root_parameter")) + " / " + text(*binding.at("array_index")) +
-                    "</td><td><code>" + text(*binding.at("name")) + "</code></td><td>" + text(*binding.at("kind")) +
-                    " / " + text(*binding.at("status")) + "</td><td>" + text(*binding.at("resource")) +
-                    "</td><td><code>" + text(*binding.at("view")) + "</code></td></tr>";
-        html += "</tbody></table></div></details>";
-    }
-    html +=
-        "<h2>Resources</h2><div class=\"scroll\"><table><thead><tr><th>ID</th><th>Kind / name</th><th>Extent / DXGI format</th></tr></thead><tbody>";
-    for (const auto resource : *trace.at("resources")->array())
+    html += "<h2>Resources &amp; transient aliasing</h2><div class=\"scroll\"><table><thead><tr>"
+            "<th>ID</th><th>Kind / name</th><th>Extent / DXGI</th><th>Heap / [Offset, Size]</th><th>Lifetime</th>"
+            "</tr></thead><tbody>";
+    for (const auto resource : *trace.at("resources")->array()) {
         html += "<tr><td>R" + text(*resource.at("index")) + "</td><td>" + text(*resource.at("kind")) + " / <code>" +
                 text(*resource.at("name")) + "</code></td><td>" + text(*resource.at("extent")) + " / " +
-                text(*resource.at("format")) + "</td></tr>";
+                text(*resource.at("format")) + "</td><td>" + text(*resource.at("heap_index")) + " / [" +
+                text(*resource.at("byte_offset")) + ", " + text(*resource.at("byte_size")) + "]</td><td>[" +
+                text(*resource.at("first_pass")) + " .. " + text(*resource.at("last_pass")) + "]</td></tr>";
+    }
     html += "</tbody></table></div><details><summary>Snapshot metadata</summary><pre>";
     json::Builder metadata{trace};
-    metadata.erase(metadata.root(), "commands");
+    metadata.erase(metadata.root(), "passes");
     metadata.erase(metadata.root(), "resources");
+    metadata.erase(metadata.root(), "edges");
     const auto bytes = json::write(metadata.root(), {true});
     return html + html_text({bytes.data(), bytes.size()}) + "</pre></details></main></html>\n";
 }
@@ -1029,10 +999,13 @@ std::expected<json::Document, Failure> export_repro(const std::filesystem::path&
                     return storage_failure(error);
                 // The asset key/path and sidecar stay unchanged. WIC detects the
                 // lossless PNG container even when the original suffix was JPEG.
-                if (image)
-                    ATELIER_TRY(assets::write_png(image->width(), image->height(), image->pixels(), target)
+                if (image) {
+                    const auto pinned = image->acquire_pixels();
+                    if (!pinned || pinned->size() != image->byte_size())
+                        return std::unexpected(Failure("storage_error", "Material image pixels unavailable"));
+                    ATELIER_TRY(assets::write_png(image->width(), image->height(), *pinned, target)
                                     .transform_error(storage_error));
-                else
+                } else
                     ATELIER_TRY(write(target, source->source));
                 // This is a file budget, not the decoded in-memory RGBA size.
                 const auto length = std::filesystem::file_size(target, error);
@@ -1550,7 +1523,7 @@ std::expected<json::Document, Failure> write_samples(const std::filesystem::path
     return finish(output, directory, manifest, result, work);
 }
 
-std::expected<json::Document, Failure> write_trace(const std::filesystem::path& output, rhi::CommandTrace snapshot,
+std::expected<json::Document, Failure> write_trace(const std::filesystem::path& output, rdg::TraceSnapshot snapshot,
                                                    json::Document metadata, WriteState& work) {
     ATELIER_TRY(checkpoint(work));
     const auto native = platform::windows_file_path(output);
@@ -1563,76 +1536,81 @@ std::expected<json::Document, Failure> write_trace(const std::filesystem::path& 
         return storage_failure(error);
     json::Builder trace{metadata};
     trace.set_validated(trace.root(), "schema", "atelier.render.trace");
-    ATELIER_TRY(trace.set(trace.root(), "version", 1u));
-    const auto& info = snapshot.info();
-    const auto status = !info.entered                                                                   ? "not_entered"
-                        : !info.closed || info.truncated || info.unobserved_binding || info.interrupted ? "incomplete"
-                                                                                                        : "complete";
-    ATELIER_TRY(trace.set(trace.root(), "recording_sequence", info.recording_sequence));
+    ATELIER_TRY(trace.set(trace.root(), "version", 2u));
+    const auto status = !snapshot.entered                          ? "not_entered"
+                        : !snapshot.closed || snapshot.interrupted ? "incomplete"
+                                                                   : "complete";
+    ATELIER_TRY(trace.set(trace.root(), "recording_sequence", snapshot.recording_sequence));
     const auto observation = trace.object_validated(trace.root(), "observation");
     trace.set_validated(observation, "status", status);
-    ATELIER_TRY(trace.set(observation, "truncated", info.truncated));
-    ATELIER_TRY(trace.set(observation, "unobserved_binding", info.unobserved_binding));
-    ATELIER_TRY(trace.set(observation, "interrupted", info.interrupted));
-    ATELIER_TRY(trace.set(observation, "closed", info.closed));
-    ATELIER_TRY_BIND(commands, trace.array(trace.root(), "commands"));
+    ATELIER_TRY(trace.set(observation, "interrupted", snapshot.interrupted));
+    ATELIER_TRY(trace.set(observation, "closed", snapshot.closed));
+    const auto aliasing = trace.object_validated(trace.root(), "transient_aliasing");
+    ATELIER_TRY(trace.set(aliasing, "heap_bytes", snapshot.transient_heap_bytes));
+    ATELIER_TRY(trace.set(aliasing, "unaliased_bytes", snapshot.unaliased_transient_bytes));
+    ATELIER_TRY_BIND(pass_records, trace.array(trace.root(), "passes"));
     ATELIER_TRY_BIND(resource_records, trace.array(trace.root(), "resources"));
-    std::map<std::pair<int, std::uint64_t>, std::size_t> resources;
-    std::map<std::uint64_t, std::size_t> kernels;
-    constexpr std::array kinds{"unsupported", "texture_srv", "texture_uav",       "sampler",
-                               "constants",   "cbv",         "indirect_arguments"};
-    constexpr std::array statuses{"unknown", "valid", "dummy"};
-    for (const auto& command : snapshot.commands()) {
+    ATELIER_TRY_BIND(edge_records, trace.array(trace.root(), "edges"));
+    constexpr std::array queue_names{"graphics", "compute", "copy"};
+    std::size_t scoped_pass_count = 0;
+    for (const auto& pass : snapshot.passes) {
         ATELIER_TRY(checkpoint(work));
-        const auto [kernel, inserted] = kernels.try_emplace(command.kernel_key, kernels.size() + 1);
-        const auto record = trace.append_object(*commands);
-        ATELIER_TRY(trace.set(record, "ordinal", commands->size()));
-        ATELIER_TRY(trace.set(record, "kernel", kernel->second));
-        ATELIER_TRY(trace.set(record, "entry", std::string_view{command.entry.data()}));
-        trace.set_validated(record, "kind", command.indirect ? "dispatch_indirect" : "dispatch");
-        if (command.indirect)
-            ATELIER_TRY(trace.set_null(record, "groups"));
-        else {
-            ATELIER_TRY_BIND(groups, trace.array(record, "groups"));
-            for (const auto count : command.groups)
-                trace.append(*groups, std::uint64_t{count});
+        if (!pass.in_requested_scope)
+            continue;
+        ++scoped_pass_count;
+        const auto record = trace.append_object(*pass_records);
+        ATELIER_TRY(trace.set(record, "ordinal", pass.ordinal));
+        ATELIER_TRY(trace.set(record, "name", std::string_view{pass.name}));
+        ATELIER_TRY(trace.set(record, "scope", std::string_view{pass.scope}));
+        const auto q_idx = std::min<std::size_t>(static_cast<std::size_t>(pass.queue), 2u);
+        trace.set_validated(record, "queue", queue_names[q_idx]);
+        ATELIER_TRY(trace.set(record, "culled", pass.culled));
+        ATELIER_TRY(trace.set(record, "cull_reason", std::string_view{pass.cull_reason}));
+        ATELIER_TRY_BIND(accesses, trace.array(record, "accesses"));
+        for (const auto& acc : pass.accesses) {
+            const auto entry = trace.append_object(*accesses);
+            ATELIER_TRY(trace.set(entry, "resource", acc.resource_index));
+            ATELIER_TRY(trace.set(entry, "write", acc.is_write));
+            ATELIER_TRY(trace.set(entry, "access_bits", acc.access_bits));
+            ATELIER_TRY(trace.set(entry, "stage_bits", acc.stage_bits));
+            ATELIER_TRY(trace.set(entry, "layout", acc.layout));
+            if (acc.bindless_index == 0xFFFFFFFFu)
+                ATELIER_TRY(trace.set_null(entry, "bindless_index"));
+            else
+                ATELIER_TRY(trace.set(entry, "bindless_index", acc.bindless_index));
         }
-        ATELIER_TRY_BIND(bindings, trace.array(record, "bindings"));
-        for (const auto& owned : snapshot.bindings().subspan(command.first_binding, command.binding_count)) {
-            const auto& binding = owned.detail;
-            const auto entry = trace.append_object(*bindings);
-            ATELIER_TRY(trace.set_null(entry, "resource"));
-            if (binding.resource_key && binding.status == kGfxObserved_Valid) {
-                // SRV and UAV views share texture identity; sampler slots and GPU
-                // allocations use separate namespaces. Native keys never escape.
-                const auto kind = binding.kind == kGfxObserved_TextureUAV ? kGfxObserved_TextureSRV : binding.kind;
-                const auto [item, added] = resources.try_emplace({kind, binding.resource_key}, resources.size() + 1);
-                ATELIER_TRY(trace.set(entry, "resource", item->second));
-                if (added) {
-                    const auto resource = trace.append_object(*resource_records);
-                    ATELIER_TRY(trace.set(resource, "index", item->second));
-                    trace.set_validated(resource, "kind", kind == kGfxObserved_TextureSRV ? "texture" : kinds[kind]);
-                    ATELIER_TRY(trace.set(resource, "name", std::string_view{owned.resource_name.data()}));
-                    ATELIER_TRY_BIND(extent, trace.array(resource, "extent"));
-                    for (const auto size : std::array<std::uint64_t, 3>{binding.width, binding.height, binding.depth})
-                        trace.append(*extent, size);
-                    ATELIER_TRY(trace.set(resource, "format", static_cast<std::uint32_t>(binding.resource_format)));
-                }
-            }
-            ATELIER_TRY(trace.set(entry, "name", std::string_view{owned.name.data()}));
-            ATELIER_TRY(trace.set(entry, "root_parameter", binding.root_parameter));
-            ATELIER_TRY(trace.set(entry, "array_index", binding.array_index));
-            trace.set_validated(entry, "kind", kinds[binding.kind]);
-            trace.set_validated(entry, "status", statuses[binding.status]);
-            const auto view = trace.object_validated(entry, "view");
-            ATELIER_TRY(trace.set(view, "format", static_cast<std::uint32_t>(binding.format)));
-            ATELIER_TRY(trace.set(view, "first_mip", binding.first_mip));
-            ATELIER_TRY(trace.set(view, "mip_count", binding.mip_count));
-            ATELIER_TRY(trace.set(view, "first_slice", binding.first_slice));
-            ATELIER_TRY(trace.set(view, "slice_count", binding.slice_count));
-            ATELIER_TRY(trace.set(view, "byte_offset", binding.byte_offset));
-            ATELIER_TRY(trace.set(view, "byte_size", binding.byte_size));
+    }
+    for (const auto& res : snapshot.resources) {
+        ATELIER_TRY(checkpoint(work));
+        const auto record = trace.append_object(*resource_records);
+        ATELIER_TRY(trace.set(record, "index", res.index));
+        trace.set_validated(record, "kind", res.is_texture ? "texture" : "buffer");
+        ATELIER_TRY(trace.set(record, "name", std::string_view{res.name}));
+        ATELIER_TRY(trace.set(record, "imported", res.imported));
+        ATELIER_TRY_BIND(extent, trace.array(record, "extent"));
+        for (const auto dim : res.extent)
+            trace.append(*extent, std::uint64_t{dim});
+        ATELIER_TRY(trace.set(record, "format", res.dxgi_format));
+        if (res.heap_index == 0xFFFFFFFFu)
+            ATELIER_TRY(trace.set_null(record, "heap_index"));
+        else
+            ATELIER_TRY(trace.set(record, "heap_index", res.heap_index));
+        ATELIER_TRY(trace.set(record, "byte_offset", res.byte_offset));
+        ATELIER_TRY(trace.set(record, "byte_size", res.byte_size));
+        if (res.first_pass == 0xFFFFFFFFu) {
+            ATELIER_TRY(trace.set_null(record, "first_pass"));
+            ATELIER_TRY(trace.set_null(record, "last_pass"));
+        } else {
+            ATELIER_TRY(trace.set(record, "first_pass", res.first_pass));
+            ATELIER_TRY(trace.set(record, "last_pass", res.last_pass));
         }
+    }
+    for (const auto& edge : snapshot.edges) {
+        const auto record = trace.append_object(*edge_records);
+        ATELIER_TRY(trace.set(record, "from_pass", edge.from_pass));
+        ATELIER_TRY(trace.set(record, "to_pass", edge.to_pass));
+        ATELIER_TRY(trace.set(record, "resource", edge.resource_index));
+        ATELIER_TRY(trace.set(record, "cross_queue", edge.cross_queue));
     }
     const auto bytes = json::write(trace.root(), {true, true});
     ATELIER_TRY(write(directory / "trace.json", {bytes.data(), bytes.size()}));
@@ -1643,7 +1621,7 @@ std::expected<json::Document, Failure> write_trace(const std::filesystem::path& 
     manifest.set_validated(entry, "json", "trace.json");
     manifest.set_validated(entry, "html", "trace.html");
     manifest.set_validated(entry, "observation", status);
-    ATELIER_TRY(manifest.set(entry, "command_count", commands->size()));
+    ATELIER_TRY(manifest.set(entry, "command_count", scoped_pass_count));
     json::Builder result;
     ATELIER_TRY(output_path(result, "json", output / "trace.json"));
     ATELIER_TRY(output_path(result, "html", output / "trace.html"));

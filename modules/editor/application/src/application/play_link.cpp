@@ -3,6 +3,7 @@
 #include "assets/file.hpp"
 #include "assets/json_format.hpp"
 #include "assets/mesh_format.hpp"
+#include "assets/png.hpp"
 #include "editor/project_code.hpp"
 #include "editor/session.hpp"
 #include "memory/fatal.hpp"
@@ -167,6 +168,7 @@ void PlayLink::forward(const std::vector<editor::LiveChange>& ops) {
     for (const auto& op : ops) {
         std::string encoded;
         std::string mesh_bytes;
+        std::string png_bytes;
         std::string_view text = op.text;
         std::string_view content;
         std::filesystem::path file;
@@ -177,7 +179,18 @@ void PlayLink::forward(const std::vector<editor::LiveChange>& ops) {
         }
         const auto available = maximum_pending_resource_bytes - pending_resource_bytes_ - resources.resource_bytes;
         if (op.texture) {
-            resource_bytes = op.texture->pixels().size();
+            const auto pixels = op.texture->acquire_pixels();
+            if (!pixels || pixels->empty()) {
+                fail("Cannot forward Play changes: Texture pixel content is unavailable.");
+                return;
+            }
+            auto png = assets::encode_png_bytes(op.texture->width(), op.texture->height(), *pixels);
+            if (!png) {
+                fail("Cannot forward Play changes: " + png.error().message);
+                return;
+            }
+            png_bytes = std::move(*png);
+            resource_bytes = png_bytes.size();
             if (resource_bytes > maximum_pending_resource_bytes) {
                 fail("A Play texture exceeds the 256 MiB in-flight resource limit.");
                 return;
@@ -186,7 +199,7 @@ void PlayLink::forward(const std::vector<editor::LiveChange>& ops) {
                 fail("Play stopped acknowledging resource publications (256 MiB resource budget exhausted).");
                 return;
             }
-            file = spill_ / (L"texture-" + std::to_wstring(next_texture_++) + L".rgba");
+            file = spill_ / (L"texture-" + std::to_wstring(next_texture_++) + L".png");
             auto path = platform::utf16_to_utf8(file.native());
             if (!path) {
                 fail("Cannot forward Play changes: Invalid UTF-16 text.");
@@ -213,8 +226,7 @@ void PlayLink::forward(const std::vector<editor::LiveChange>& ops) {
             }
             encoded.assign(written->data(), written->size());
             text = encoded;
-            const auto pixels = op.texture->pixels();
-            content = {reinterpret_cast<const char*>(pixels.data()), pixels.size()};
+            content = png_bytes;
         } else if (op.mesh) {
             const auto parsed = [&]() -> json::Result<json::Document> {
                 ATELIER_TRY_BIND(mesh, assets::json_format::parse(text));

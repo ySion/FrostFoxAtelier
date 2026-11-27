@@ -136,6 +136,98 @@ int main() {
             math_eval.base_color.x == 2.0f && math_eval.base_color.y == 3.0f && math_eval.base_color.z == 4.0f &&
                 std::abs(math_eval.coverage - 2.19f) < 1e-5f,
             "Material CPU evaluation of Batch 1 math intrinsics mismatched expected ties-to-even and distance values.");
+
+        // NormalTextureInput + sample_normal(input, uv): static type enforcement, linear transfer check, HLSL & CPU parity.
+        {
+            const auto bad_sample_on_normal = source::compile_material(
+                runtime, take(runtime.native_type<Context>()), take(runtime.native_type<Output>()),
+                take(runtime.native_type<TextureInput>()), "bad_normal.source", R"(
+                struct Textures { material.NormalTextureInput nrm; };
+                struct Params { float s; };
+                Params defaults() { Params p; p.s = 1.0f; return p; }
+                material.Output shade(material.Context c, Params p, Textures t) {
+                    vector4 v = sample(t.nrm, c.uv);
+                    material.Output o; o.base_color = vector3(v.x, v.y, v.z); o.normal_world = c.normal_world; return o;
+                })");
+            require(!bad_sample_on_normal, "sample() must reject NormalTextureInput.");
+
+            const auto bad_normal_on_color = source::compile_material(
+                runtime, take(runtime.native_type<Context>()), take(runtime.native_type<Output>()),
+                take(runtime.native_type<TextureInput>()), "bad_color_normal.source", R"(
+                struct Textures { material.TextureInput col; };
+                struct Params { float s; };
+                Params defaults() { Params p; p.s = 1.0f; return p; }
+                material.Output shade(material.Context c, Params p, Textures t) {
+                    vector3 n = sample_normal(t.col, c.uv);
+                    material.Output o; o.normal_world = n; return o;
+                })");
+            require(!bad_normal_on_color, "sample_normal() must reject plain TextureInput.");
+
+            const auto nrm_prog = take(source::compile_material(
+                runtime, take(runtime.native_type<Context>()), take(runtime.native_type<Output>()),
+                take(runtime.native_type<TextureInput>()), "normal_map.source", R"(
+                struct Textures { material.NormalTextureInput nrm; };
+                struct Params { float s; };
+                Params defaults() { Params p; p.s = 1.0f; return p; }
+                material.Output shade(material.Context c, Params p, Textures t) {
+                    vector3 n_ts = sample_normal(t.nrm, c.uv);
+                    material.Output o;
+                    o.base_color = n_ts;
+                    o.coverage = n_ts.z * p.s;
+                    o.normal_world = n_ts;
+                    return o;
+                })"));
+            require(nrm_prog->textures().size() == 1 && nrm_prog->textures()[0].is_normal_map,
+                    "NormalTextureInput must expose is_normal_map metadata.");
+
+            const std::array<TextureDefault, 1> srgb_bad{
+                {{"nrm", {"image/nrm", Address::mirror}, TextureColor::srgb, {0.5f, 0.5f, 1.0f, 1.0f}}}};
+            require(!make_definition(nrm_prog, {}, srgb_bad),
+                    "NormalTextureInput must reject sRGB transfer function at definition time.");
+
+            const std::array<TextureDefault, 1> lin_ok{
+                {{"nrm", {"image/nrm", Address::mirror}, TextureColor::linear, {0.5f, 0.5f, 1.0f, 1.0f}}}};
+            const auto nrm_def = take(make_definition(nrm_prog, {}, lin_ok));
+            const auto nrm_hlsl = take(nrm_prog->hlsl("test_nrm"));
+            const auto nrm_cov = take(nrm_prog->hlsl_coverage("test_nrm_cov"));
+            const auto nrm_gi = take(nrm_prog->hlsl_gi_hit("test_nrm_gi"));
+            const auto nrm_fp = take(nrm_prog->hlsl_footprint("test_nrm"));
+            require(nrm_hlsl.contains("::atelier_material_sample_normal(") &&
+                        nrm_cov.contains("float3 atelier_material_sample_normal(") &&
+                        nrm_cov.contains("::atelier_material_sample_normal(") &&
+                        nrm_gi.contains("::atelier_material_sample_normal(") &&
+                        nrm_fp.contains("ms_dsample_normal_value("),
+                    "NormalTextureInput failed to emit sample_normal HLSL calls across all slices.");
+
+            const std::array<ImageRef, 1> nrm_img{take(Image::create(1, 1, {191, 128, 0, 255}))};
+            const auto nrm_surf = take(resolve_source(nrm_def, nrm_img));
+            Context ctx{};
+            ctx.uv = {1.5f, 0.5f}; // mirror X tile -> orientation.x = -1.0
+            const auto nrm_out = take(nrm_surf->evaluate(ctx));
+            const float ex = -(float(191) / 255.0f * 2.0f - 1.0f);
+            const float ey = float(128) / 255.0f * 2.0f - 1.0f;
+            const float ez = std::sqrt(std::max(0.0f, 1.0f - ex * ex - ey * ey));
+            require(std::abs(nrm_out.normal_world.x - ex) < 1e-5f && std::abs(nrm_out.normal_world.y - ey) < 1e-5f &&
+                        std::abs(nrm_out.normal_world.z - ez) < 1e-5f,
+                    "CPU sample_normal mirror orientation or +Z reconstruction mismatched expected tangent normal.");
+
+            // Cold RGBA8 compression/eviction round-trip & pinned lifetime check:
+            std::vector<std::uint8_t> cold_src(64u * 64u * 4u);
+            for (std::size_t i = 0; i < 64u * 64u; ++i) {
+                cold_src[i * 4u + 0u] = static_cast<std::uint8_t>((i * 7u) & 0xFFu);
+                cold_src[i * 4u + 1u] = static_cast<std::uint8_t>((i / 64u) * 4u);
+                cold_src[i * 4u + 2u] = static_cast<std::uint8_t>((i % 64u) * 4u);
+                cold_src[i * 4u + 3u] = 255u;
+            }
+            const auto cold_expected = cold_src;
+            const auto cold_img = take(Image::create(64u, 64u, std::move(cold_src)));
+            require(cold_img->has_resident_pixels(), "Freshly created Image must hold resident pixels.");
+            cold_img->evict_cold_pixels();
+            require(!cold_img->has_resident_pixels(), "evict_cold_pixels() must release resident raw buffer.");
+            const auto inflated = cold_img->acquire_pixels();
+            require(inflated && *inflated == cold_expected,
+                    "Cold-evicted Image failed bit-exact RGBA8 round-trip on acquire_pixels().");
+        }
     }
     const auto output = take(surviving->evaluate({}));
     // IEC sRGB decode and the authored gain/alpha, not a previous capture's output.

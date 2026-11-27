@@ -143,6 +143,8 @@ struct Environment {
     bool material{}; // Enables controlled sample/orientation intrinsics; validation follows typing.
 
     ValueType texture_input{}; // Exact registered value type, only meaningful for materials.
+
+    ValueType normal_texture_input{ValueType::void_value, UINT32_MAX}; // Optional registered NormalTextureInput type.
 };
 
 struct SourcePosition {
@@ -258,6 +260,7 @@ struct Expression {
         math_intrinsic,
         scalar_cast,
         texture_sample,
+        normal_sample,
         texture_orientation,
         conditional,
         constant_data

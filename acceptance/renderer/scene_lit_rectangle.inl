@@ -12,7 +12,7 @@ void rectangle_cases(Fixture& f) {
     f.frame.environment = {};
     auto& options = f.frame.view.lit;
     options = {};
-    options.ddgi = options.gtao = options.sssr = options.bloom = options.shadows = false;
+    options.indirect_lighting = options.ssilvb = options.reflections = options.bloom = options.shadows = false;
     options.antialiasing = render::Antialiasing::none;
     f.room.meshes.assign(1, {});
     auto& plane = f.room.meshes.front();

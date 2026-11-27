@@ -61,12 +61,16 @@ struct Repro {
 class WriteState {
 public:
     bool cancel() { return claim(State::cancelled); }
+
     bool claim_outcome() { return claim(State::finishing); }
+
     bool cancelled() const { return state_.load() == State::cancelled; }
 
 private:
     enum class State { running, cancelled, finishing };
+
     std::atomic<State> state_{State::running};
+
     bool claim(State next) {
         auto expected = State::running;
         return state_.compare_exchange_strong(expected, next);
@@ -86,8 +90,11 @@ std::expected<Repro, control::Failure> snapshot_resources(const editor::Session&
 
 struct ReproBundle {
     json::Document manifest;
+
     std::vector<assets::EngineDependency> engine_assets;
+
     editor::Project project;
+
     std::string scene_text;
 };
 
@@ -104,6 +111,6 @@ std::expected<json::Document, control::Failure> write_samples(const std::filesys
                                                               json::Document, WriteState& work);
 
 // No GPU readback. The worker receives only owned CPU observations and metadata.
-std::expected<json::Document, control::Failure> write_trace(const std::filesystem::path&, rhi::CommandTrace,
+std::expected<json::Document, control::Failure> write_trace(const std::filesystem::path&, rdg::TraceSnapshot,
                                                             json::Document, WriteState& work);
 }

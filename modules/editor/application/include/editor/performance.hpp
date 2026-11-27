@@ -101,7 +101,7 @@ public:
 
         std::uint32_t direct_candidates{};
 
-        bool ddgi{};
+        bool indirect_lighting{};
 
         std::optional<std::uint64_t> resource_bytes;
 

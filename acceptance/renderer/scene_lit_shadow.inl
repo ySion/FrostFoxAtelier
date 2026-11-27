@@ -11,7 +11,7 @@ void shadow_cases(Fixture& f) {
     f.frame.environment = {};
     auto& options = f.frame.view.lit;
     options = {};
-    options.ddgi = options.gtao = options.sssr = options.bloom = false;
+    options.indirect_lighting = options.ssilvb = options.reflections = options.bloom = false;
     options.shadows = true;
     options.antialiasing = render::Antialiasing::none;
     f.room.meshes.assign(2, {});
@@ -38,7 +38,16 @@ void shadow_cases(Fixture& f) {
     light.range = 10;
     light.intensity = 35;
     f.edited();
-    const auto image = f.capture("shadow-point-settled", 20);
+    const auto first_vsm = f.step().stats;
+    check(first_vsm.scene_lit_vsm_static_renders > 0 && first_vsm.scene_lit_vsm_draws > 0,
+          "initial VSM frame bakes static physical pages");
+    const auto cached_vsm = f.step().stats;
+    check(cached_vsm.scene_lit_vsm_static_renders == 0 &&
+              cached_vsm.scene_lit_vsm_dynamic_renders == 0 &&
+              cached_vsm.scene_lit_vsm_reused_pages > 0,
+          "stationary scene reuses baked static VSM pages with zero redraws");
+
+    const auto image = f.capture("shadow-point-settled", 18);
     const auto bright_region =
         project_region(f.frame.camera, f.frame.scene_viewport, f.drawing.extent, {1.8f, -.8f, 4}, 2);
     check(mean_rgb(image, bright_region)[0] > 20, "unoccluded authored receiver is lit");
@@ -77,5 +86,88 @@ void shadow_cases(Fixture& f) {
         }
     });
     check(occluded >= 64 && failures == 0, "geometrically occluded receiver is black outside the silhouette margin");
-    std::puts("Renderer shadow: PASS (authored point-light occlusion)");
+
+    // Verify Dynamic Copy-on-Write VSM update when continuously moving blocker over stationary static receiver:
+    blocker.world = box(-.95f, .5f, 2, .5f, .6f, .2f);
+    f.edited();
+    f.step(); // transition frame: evicts blocker from static base into dynamic CoW
+    blocker.world = box(-1.0f, .5f, 2, .5f, .6f, .2f);
+    f.edited();
+    const auto cow_vsm = f.step().stats;
+    check(cow_vsm.scene_lit_vsm_static_renders == 0 && cow_vsm.scene_lit_vsm_dynamic_renders > 0 &&
+              cow_vsm.scene_lit_vsm_reused_pages > 0,
+          "moving blocker updates VSM via Copy-on-Write without re-rendering static receiver pages");
+
+    // Verify finite-radius sphere light under non-temporal SMAA stays byte-identical (zero 1-spp penumbra boiling):
+    light.source_radius = .05f;
+    options.antialiasing = render::Antialiasing::smaa;
+    f.edited();
+    for (unsigned settle = 0; settle < 4; ++settle)
+        f.step();
+    render::Capture smaa_a;
+    render::Capture smaa_b;
+    f.step(&smaa_a);
+    f.step(&smaa_b);
+    check(smaa_a.rgba == smaa_b.rgba, "finite-radius light shadow under SMAA is deterministic across frames");
+    check(mean_rgb(smaa_a, bright_region)[0] > 20, "finite-radius sphere light illuminates unoccluded receiver");
+
+    // Verify wide Rectangle area light (`width = 3.0m` at z=-5 -> receiver z_v = 9.0m) wraps around narrow blocker
+    // (`0.9m` at z=-3 -> z_occ = 2.0m) via `PenumbraQueue` without stamping a false hard-umbra core:
+    options.antialiasing = render::Antialiasing::none;
+    blocker.world = box(-2.0f, 0.0f, -3.0f, 0.9f, 1.0f, 0.2f);
+    light = {};
+    light.stable_key = 101;
+    light.kind = render::LightKind::rectangle;
+    light.position = {-2.5f, 0.0f, -5.0f};
+    light.direction = {0.0f, 0.0f, 1.0f};
+    light.right = {1.0f, 0.0f, 0.0f};
+    light.up = {0.0f, 1.0f, 0.0f};
+    light.width = 3.0f;
+    light.height = 1.0f;
+    light.range = 18.0f;
+    light.intensity = 90.0f;
+    light.casts_shadow = false;
+    f.edited();
+    render::Capture rect_unocc_cap;
+    f.step(&rect_unocc_cap);
+    light.casts_shadow = true;
+    f.edited();
+    for (unsigned settle = 0; settle < 4; ++settle)
+        f.step();
+    render::Capture rect_cap;
+    f.step(&rect_cap);
+    const auto rect_pen_region =
+        project_region(f.frame.camera, f.frame.scene_viewport, f.drawing.extent, {-.25f, 0.0f, 4.0f}, 2);
+    const auto rect_lit_region =
+        project_region(f.frame.camera, f.frame.scene_viewport, f.drawing.extent, {2.0f, 0.0f, 4.0f}, 2);
+    const double rect_unocc_lum = mean_rgb(rect_unocc_cap, rect_pen_region)[0];
+    const double rect_pen_lum = mean_rgb(rect_cap, rect_pen_region)[0];
+    check(rect_unocc_lum > 40.0 && rect_pen_lum > 10.0 && rect_pen_lum < rect_unocc_lum * 0.90,
+          "wide rectangle area light produces wrapped soft penumbra instead of false hard umbra");
+
+    // Verify 4-Cascade Directional Sun VSM static reuse & geometric umbra occlusion:
+    blocker.world = box(-2.0f, 0.0f, 0.0f, 0.8f, 1.0f, 0.2f);
+    light = {};
+    light.stable_key = 102;
+    light.kind = render::LightKind::directional;
+    light.direction = {0.4472136f, 0.0f, 0.8944272f};
+    light.intensity = 6.0f;
+    light.casts_shadow = true;
+    f.edited();
+    f.frame.camera_cut = true;
+    const auto sun_first = f.step().stats;
+    f.frame.camera_cut = false;
+    check(sun_first.scene_lit_vsm_static_renders > 0, "directional sun VSM bakes initial cascade pages");
+    render::Capture sun_cap;
+    const auto sun_second = f.step(&sun_cap).stats;
+    check(sun_second.scene_lit_vsm_static_renders == 0 &&
+              sun_second.scene_lit_vsm_dynamic_renders == 0 &&
+              sun_second.scene_lit_vsm_reused_pages > 0,
+          "stationary directional sun VSM reuses static cascade pages");
+    const auto sun_umbra_region =
+        project_region(f.frame.camera, f.frame.scene_viewport, f.drawing.extent, {0.0f, 0.0f, 4.0f}, 1);
+    check(mean_rgb(sun_cap, rect_lit_region)[0] > 20.0 && mean_rgb(sun_cap, sun_umbra_region)[0] <= 2.0,
+          "directional sun VSM illuminates unoccluded receiver and occludes geometric umbra");
+
+    std::puts("Renderer shadow: PASS (point, SMAA sphere, rectangle wrap penumbra & directional clipmap VSM)");
 }

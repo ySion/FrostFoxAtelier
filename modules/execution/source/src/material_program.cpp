@@ -199,17 +199,34 @@ std::span<const MaterialTextureInput> MaterialProgram::textures() const noexcept
 }
 
 namespace {
+bool is_reserved_hlsl_namespace(std::string_view ns) noexcept {
+    constexpr std::string_view reserved[] = {
+        "namespace", "struct", "cbuffer", "tbuffer", "register", "packoffset", "float",  "float2",
+        "float3",    "float4", "int",     "uint",    "bool",     "void",       "vector", "matrix",
+        "sample",    "linear", "precise", "return",  "if",       "else",       "for",    "while",
+        "do",        "switch", "case",    "default", "true",     "false",      "static", "const"};
+    return std::ranges::find(reserved, ns) != std::end(reserved);
+}
+
 Result<std::string> wrap_hlsl(std::string_view name_space, std::string_view body, bool footprint) {
     const auto letter = [](char c) { return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); };
     if (name_space.empty() || !letter(name_space.front()) ||
-        !std::ranges::all_of(name_space, [&](char c) { return letter(c) || (c >= '0' && c <= '9'); }))
+        !std::ranges::all_of(name_space, [&](char c) { return letter(c) || (c >= '0' && c <= '9'); }) ||
+        is_reserved_hlsl_namespace(name_space))
         return std::unexpected(
-            Error{ErrorCode::argument_mismatch, "Material HLSL namespace requires an ASCII identifier."});
+            Error{ErrorCode::argument_mismatch, "Material HLSL namespace requires a non-reserved ASCII identifier."});
     const std::string_view sampling =
         footprint
             ? "float4 atelier_material_sample_grad(uint environment,uint local_slot,float2 uv,float2 d0,float2 d1);\n"
+              "#ifndef ATELIER_MATERIAL_SAMPLE_GRAD_OFFSET_DEFINED\n"
+              "#define ATELIER_MATERIAL_SAMPLE_GRAD_OFFSET_DEFINED 1\n"
+              "float4 atelier_material_sample_grad_offset(uint environment,uint local_slot,float2 uv,float2 d0,float2 d1) {\n"
+              "    return atelier_material_sample_grad(environment,local_slot,uv,d0,d1);\n"
+              "}\n"
+              "#endif\n"
             : "float4 atelier_material_sample(uint environment,uint local_slot,float2 uv);\n";
     constexpr std::string_view prefix =
+        "float3 atelier_material_sample_normal(uint environment,uint local_slot,float2 uv);\n"
         "float2 atelier_material_sample_orientation(uint environment,uint local_slot,float2 uv);\nnamespace ";
     std::string result;
     result.reserve(sampling.size() + prefix.size() + name_space.size() + body.size() + 5);
@@ -239,6 +256,21 @@ Result<std::string> MaterialProgram::hlsl_coverage(std::string_view name_space) 
         break;
     }
     return wrap_hlsl(name_space, state_->view.coverage_hlsl, false);
+}
+
+Result<std::string> MaterialProgram::hlsl_gi_hit(std::string_view name_space) const {
+    using Status = language::MaterialCoverageStatus;
+    switch (state_->view.gi_hit_status) {
+    case Status::missing_field:
+        return std::unexpected(
+            Error{ErrorCode::invalid_type, "Material GI-hit slice requires GI surface fields in Output."});
+    case Status::node_budget_exceeded:
+        return std::unexpected(
+            Error{ErrorCode::capacity_exceeded, "Material GI-hit projection exceeded the compiler node budget."});
+    case Status::available:
+        break;
+    }
+    return wrap_hlsl(name_space, state_->view.gi_hit_hlsl, false);
 }
 
 Result<void> MaterialProgram::evaluate(std::span<const std::byte> context, std::span<const std::byte> parameters,
@@ -300,13 +332,18 @@ Result<void> MaterialProgram::evaluate(std::span<const std::byte> context, std::
 
 Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime, TypeId context, TypeId output,
                                                                 TypeId texture_input, std::string_view source_name,
-                                                                std::string_view source) noexcept {
+                                                                std::string_view source,
+                                                                TypeId normal_texture_input) noexcept {
     const auto fail = [&](Error error) {
         error.message = std::string(source_name) + ": " + error.message;
         return std::unexpected(std::move(error));
     };
     if (source.size() > UINT32_MAX)
         return fail(Error{ErrorCode::capacity_exceeded, "Material source is too large."});
+    if (normal_texture_input == TypeId{}) {
+        if (const auto found = runtime.find_type("material.NormalTextureInput"))
+            normal_texture_input = *found;
+    }
     auto declarations = language::collect_declarations(source);
     if (!declarations) {
         const auto& diagnostic = declarations.error();
@@ -329,6 +366,15 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
     const auto context_type = value_kind(*binding, context);
     const auto output_type = value_kind(*binding, output);
     const auto texture_type = value_kind(*binding, texture_input);
+    std::uint32_t normal_tex_idx = UINT32_MAX;
+    if (normal_texture_input != TypeId{}) {
+        const auto normal_tex_type = value_kind(*binding, normal_texture_input);
+        if (normal_tex_type.kind != ValueKind::record) {
+            return fail(Error{ErrorCode::invalid_type,
+                              "Material NormalTextureInput must be a registered plain record in this Runtime."});
+        }
+        normal_tex_idx = normal_tex_type.type_index;
+    }
     if (context_type.kind != ValueKind::record || output_type.kind != ValueKind::record ||
         texture_type.kind != ValueKind::record || binding->values[context_type.type_index].math ||
         binding->values[output_type.type_index].math)
@@ -388,7 +434,7 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
     if (atelier_compile_material(name.c_str(), source.data(), static_cast<std::uint32_t>(source.size()), &catalog,
                                  &defaults, capture, context_type.type_index, output_type.type_index,
                                  texture_type.type_index, sample_texture, sample_orientation, &code, error,
-                                 sizeof(error))) {
+                                 sizeof(error), normal_tex_idx)) {
         if (defaults.error)
             return std::unexpected(std::move(*defaults.error));
         return std::unexpected(Error{ErrorCode::invalid_definition, error});
@@ -420,7 +466,7 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
             return fail(Error{ErrorCode::invalid_definition, "Material Resources must be declared by this source."});
         state->resource_values.resize(resources.size);
         for (const auto& input : std::span(view.textures, view.texture_count)) {
-            state->textures.push_back({input.key, input.slot});
+            state->textures.push_back({input.key, input.slot, input.is_normal_map});
             std::memcpy(state->resource_values.data() + input.offset, &input.slot, sizeof(input.slot));
         }
     }

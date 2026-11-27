@@ -269,9 +269,16 @@ Result<void> Application::publish_document(std::unique_ptr<editor::Session> next
             static_cast<void>(document_->select_entities(restored_entities, restored_active));
         }
         workspace_.reconcile_rebuild(*document_, project_ ? &*project_ : nullptr);
+        if (saved_world_camera_ && (workspace_.active_graph.empty() || !document_->has_graph(workspace_.active_graph))) {
+            camera_ = *saved_world_camera_;
+            workspace_.camera_view = camera_.view();
+            saved_world_camera_.reset();
+        }
     } else {
         camera_.reset();
+        saved_world_camera_.reset();
     }
+    play_idle_snapshot_.reset();
     sync_world_view();
     camera_cut_ = true;
     invalidate_surface();

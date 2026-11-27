@@ -132,22 +132,8 @@ Result<void> Session::validate_name(std::wstring_view name) {
 
 namespace {
 // The EnvironmentComponent field names of a World Settings option (a view option
-// for which world_option holds), e.g. probe_volume_0_min_x -> volume0.minimum.x.
+// for which world_option holds), e.g. sky_color_x -> sky_color.x.
 std::vector<std::string> environment_field(std::string_view option) {
-    constexpr std::string_view volume = "probe_volume_";
-    if (option.starts_with(volume) && option.size() > volume.size() + 2) {
-        std::vector<std::string> names{"volume" + std::string(option.substr(volume.size(), 1))};
-        const auto rest = option.substr(volume.size() + 2);
-        if (rest.starts_with("min_")) {
-            names.emplace_back("minimum");
-            names.emplace_back(rest.substr(4));
-        } else if (rest.starts_with("max_")) {
-            names.emplace_back("maximum");
-            names.emplace_back(rest.substr(4));
-        } else
-            names.emplace_back(rest);
-        return names;
-    }
     if (option.starts_with("sky_color_"))
         return {"sky_color", std::string(option.substr(10))};
     return {std::string(option)};
@@ -682,6 +668,12 @@ Result<world::Commit> Session::create_light(presentation::LightKind kind, math::
     ATELIER_TRY_BIND(light, world::create_component(runtime_, presentation_types_.light_component));
     auto configured = runtime_.with_native<presentation::LightComponent>(light->id(), [&](auto& value) -> Result<void> {
         value.settings.kind = kind;
+        if (kind == presentation::LightKind::spot) {
+            value.settings.intensity = 25.f;
+            value.settings.range = 14.f;
+            value.settings.spot_inner_degrees = 25.f;
+            value.settings.spot_outer_degrees = 40.f;
+        }
         return presentation::validate_light(runtime_, value.settings);
     });
     if (!configured)
@@ -693,6 +685,7 @@ Result<world::Commit> Session::create_light(presentation::LightKind kind, math::
         return std::unexpected(*attached->notification_error);
     const auto label = kind == presentation::LightKind::point       ? L"Point Light"
                        : kind == presentation::LightKind::rectangle ? L"Rectangle Light"
+                       : kind == presentation::LightKind::spot      ? L"Spot Light"
                                                                     : L"Directional Light";
     return attach_created(std::move(*entity), label);
 }

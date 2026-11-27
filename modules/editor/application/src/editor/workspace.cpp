@@ -44,6 +44,8 @@ constexpr ViewToggleBinding view_toggles[]{{control::display_grid, ViewOption::r
                                            {control::guide_grid, ViewOption::reference_grid},
                                            {control::display_axes, ViewOption::origin_axes},
                                            {control::guide_axes, ViewOption::origin_axes},
+                                           {control::display_locators, ViewOption::show_locators},
+                                           {control::guide_locators, ViewOption::show_locators},
                                            {control::display_wire, ViewOption::wireframe,
                                             double(renderer::Wireframe::overlay), double(renderer::Wireframe::off)},
                                            {control::display_wire_only, ViewOption::wireframe,
@@ -1197,6 +1199,7 @@ bool property_visible_when(const Runtime& runtime, std::span<const Property> sch
 ui::ControlIcon light_icon(presentation::LightKind kind) {
     switch (kind) {
     case presentation::LightKind::point:
+    case presentation::LightKind::spot:
         return ui::ControlIcon::point_light;
     case presentation::LightKind::rectangle:
         return ui::ControlIcon::area_light;
@@ -1825,7 +1828,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                 "纯线框模式：隐藏面片着色，仅绘制多边形拓扑轮廓。",
                 "工作室平滑着色：使用相机跟随光照明，适合检查模型体积与曲面形态。",
                 "MatCap 材质球着色：通过高对比反射球检验法线连续性与细节起伏。",
-                "真实场景光照：启用场景直接光、天光与 DDGI 实时全局光照预览。"};
+                "真实场景光照：启用三级阴影、三层全局光照、镜面反射与物理大气预览。"};
             for (std::size_t i = 0; i < shading_icons.size(); ++i) {
                 const auto key = control::shading_preset_first + i;
                 auto help = property_help_.get(930 + i, shading_preset_titles[i],
@@ -1901,7 +1904,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
 
                 const char* desc;
             };
-            const std::array<DisplayToggleDef, 9> display{
+            const std::array<DisplayToggleDef, 10> display{
                 {{control::display_grid, ui::ControlIcon::grid, this->view.reference_grid, false, L"Reference Grid",
                   "显示或隐藏水平地面参考网格与公制刻度线。"},
                  {control::display_axes, ui::ControlIcon::axes_origin, this->view.origin_axes, false, L"Origin Axes",
@@ -1920,9 +1923,11 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                  {control::display_cavity, ui::ControlIcon::shade_matcap, this->view.cavity.enabled && !lit, true,
                   L"Screen-Space Cavity", "在工作室着色下增强棱角高光与凹缝暗部，提升几何体轮廓体积感。"},
                  {control::display_lit, ui::ControlIcon::shade_lit, lit, false, L"Scene Lighting",
-                  "在工作室默认照明与真实场景光照（直接光 + 天光 + DDGI）之间一键切换。"},
+                  "在工作室默认照明与真实场景光照（三级直接光阴影 + 三层全局光照 + 三级反射）之间一键切换。"},
                  {control::display_fps, ui::ControlIcon::fps, show_fps, true, L"Frame Rate (FPS)",
-                  "在视口左上角显示平滑后的实时帧率与帧耗时读数。"}}};
+                  "在视口左上角显示平滑后的实时帧率与帧耗时读数。"},
+                 {control::display_locators, ui::ControlIcon::point_light, this->view.show_locators, false,
+                  L"Entity Locators", "显示或隐藏灯光、相机与空变换实体的定位符号，便于无干扰预览最终场景画面。"}}};
             for (std::size_t index = 0; const auto& item : display) {
                 const auto button_key = control::display_toggle_first + index++;
                 ui_language::ActionBinding binding;
@@ -4102,16 +4107,9 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     {std::move(id), std::move(args), {.selection = {}, .region = RegionKind::network}});
             };
             std::vector<ui::MenuItem> items = dock.menu_items(source->key, frame);
-            if ((source->context_target ? source->context_target : source->key) == world_control::setup) {
-                const std::initializer_list<OperatorCall> items_calls{
-                    {"view.lighting_fit", json::Document::literal<R"({"mode":"scene"})">()},
-                    {"view.lighting_fit", json::Document::literal<R"({"mode":"scene_focus"})">()}};
-                ATELIER_TRY_ASSIGN(items, calls(items_calls));
-                items[0].text = L"Fit Scene";
-                items[1].text = L"Scene + Follow Focus";
-            } else if (auto lighting_items =
-                           lighting.menu(source->context_target ? source->context_target : source->key, this->view);
-                       !lighting_items.empty()) {
+            if (auto lighting_items =
+                    lighting.menu(source->context_target ? source->context_target : source->key, this->view);
+                !lighting_items.empty()) {
                 items = std::move(lighting_items);
             } else if (auto header_items = header_menu(source->key); !header_items) {
                 return std::unexpected(std::move(header_items).error());
@@ -5027,6 +5025,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                                  {}});
                 items.push_back({control::guide_grid, L"Reference Grid", true, view.reference_grid, {}});
                 items.push_back({control::guide_axes, L"Origin Axes", true, view.origin_axes, {}});
+                items.push_back({control::guide_locators, L"Entity Locators", true, view.show_locators, {}});
                 items.push_back(
                     {control::display_backfaces, L"Backface Winding Tint", studio, studio && view.backface_tint, {}});
                 ATELIER_TRY(append_operator(items, {"view.toggle", json::Document::literal<R"({"option":"fps"})">()}));

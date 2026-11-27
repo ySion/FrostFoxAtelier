@@ -132,6 +132,7 @@ include(cmake/style.cmake)
 include(cmake/foundation.cmake)
 
 add_library(atelier_material STATIC
+    modules/engine/material/src/image.cpp
     modules/engine/material/src/program.cpp
     modules/engine/material/src/program_resources.cpp
     modules/engine/material/src/resources.cpp)
@@ -153,7 +154,7 @@ include(cmake/geometry.cmake)
 add_library(atelier_rendering STATIC modules/engine/rendering/src/sky_map.cpp)
 atelier_target(atelier_rendering)
 target_include_directories(atelier_rendering PUBLIC modules/engine/rendering/include)
-target_link_libraries(atelier_rendering PUBLIC atelier_math PRIVATE atelier_foundation_headers)
+target_link_libraries(atelier_rendering PUBLIC atelier_math PRIVATE atelier_foundation)
 
 include(cmake/procedural.cmake)
 atelier_add_procedural()

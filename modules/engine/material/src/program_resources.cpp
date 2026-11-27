@@ -43,6 +43,10 @@ Result<math::Vector4> sample_input(const void* data, math::Vector2 uv) noexcept 
     if (!input.image)
         return input.empty_value;
     const auto& image = *input.image;
+    const auto pinned = image.acquire_pixels();
+    if (!pinned || pinned->size() != image.byte_size())
+        return input.empty_value;
+    const auto& raw_pixels = *pinned;
     const std::array extent{int(image.width()), int(image.height())};
     std::array<int, 2> lower{};
     std::array<double, 2> weight{};
@@ -65,7 +69,7 @@ Result<math::Vector4> sample_input(const void* data, math::Vector2 uv) noexcept 
     };
     const auto texel = [&](int x, int y, std::size_t channel) {
         const auto index = std::size_t(coordinate(y, extent[1]) * extent[0] + coordinate(x, extent[0]));
-        const double value = double(image.pixels()[index * 4 + channel]) / 255;
+        const double value = double(raw_pixels[index * 4 + channel]) / 255;
         return channel == 3 || input.color == TextureColor::linear ? value
                : value <= .04045                                   ? value / 12.92
                                                                    : std::pow((value + .055) / 1.055, 2.4);
@@ -530,6 +534,8 @@ Result<DefinitionRef> make_definition(std::shared_ptr<const source::MaterialProg
         if (!valid_key(found->binding.asset_key) || found->binding.address > Address::mirror ||
             found->color > TextureColor::srgb || !finite(found->empty_value))
             return failure("Invalid material texture default: " + input.key);
+        if (input.is_normal_map && found->color != TextureColor::linear)
+            return failure("NormalTextureInput requires linear transfer function: " + input.key);
         ordered.push_back(*found);
     }
     return DefinitionRef(new SourceDefinition(std::move(program), policy, std::move(ordered)));

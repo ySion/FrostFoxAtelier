@@ -8,7 +8,7 @@
         0.0,
         0.0,
         0.0,
-        1.0
+        0.0
       ]
     },
     {
@@ -268,7 +268,7 @@
       "value": 0
     }
   ],
-  "parent_key": "builtin/material/standard-opaque-double",
+  "parent_key": "builtin/material/standard-mask-double",
   "role": "instance",
   "version": 2
 }

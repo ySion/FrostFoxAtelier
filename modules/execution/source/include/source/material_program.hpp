@@ -25,6 +25,8 @@ struct MaterialTextureInput {
     std::string key; // Declared field path, sharing the numeric parameter key space.
 
     std::uint32_t slot; // Local to this program version; never persisted as identity.
+
+    bool is_normal_map{}; // Statically true iff declared with material.NormalTextureInput.
 };
 
 struct MaterialTexture {
@@ -55,8 +57,8 @@ class MaterialProgram final {
 
     explicit MaterialProgram(std::shared_ptr<const State>);
 
-    friend Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime&, TypeId, TypeId, TypeId,
-                                                                           std::string_view, std::string_view) noexcept;
+    friend Result<std::shared_ptr<const MaterialProgram>>
+    compile_material(Runtime&, TypeId, TypeId, TypeId, std::string_view, std::string_view, TypeId) noexcept;
 
 public:
     MaterialLayout context_layout() const noexcept;
@@ -92,12 +94,20 @@ public:
     // when projection exceeds the node budget. Both failures are local to this variant.
     Result<std::string> hlsl_coverage(std::string_view name_space) const;
 
+    // Pruned GI hit shading slice: emits ms_GiHit ms_shade_gi_hit(uint,ms_Context,ms_Parameters)
+    // with normal_world / normal_texture / TBN removed and OpenPBR §3.10 directional-hemispherical
+    // effective albedo + foliage transmission folded (automatically falls back to the un-inlined
+    // call graph with the same folding when inline projection exceeds the node budget).
+    Result<std::string> hlsl_gi_hit(std::string_view name_space) const;
+
     // Same plain Context/Params/Output and parameter loader, but the entry is
     // ms_shade_footprint(uint,ms_Context center,ms_Context d0,ms_Context d1,ms_Parameters).
     // d0/d1 are zero-initialized changes, NOT neighboring/default Contexts;
     // Params are uniform (zero changes). Branches follow the center only.
     // Consumer defines float4 atelier_material_sample_grad(uint environment,
-    // uint local_slot,float2 uv,float2 d0,float2 d1). For a finite UV with any
+    // uint local_slot,float2 uv,float2 d0,float2 d1) (and may optionally define
+    // ATELIER_MATERIAL_SAMPLE_GRAD_OFFSET_DEFINED + atelier_material_sample_grad_offset
+    // for side-effect-free offset samples on chained-UV materials). For a finite UV with any
     // nonfinite gradient, the bridge MUST sample its actual coarsest mip without
     // passing bad gradients to hardware. Texel-scale overflow is also handled
     // by the bridge. The generated code uses the same gradients for up to two
@@ -127,6 +137,7 @@ public:
 // sampling and empty values belong to MS author data.
 Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime&, TypeId context, TypeId output,
                                                                 TypeId texture_input, std::string_view source_name,
-                                                                std::string_view source) noexcept;
+                                                                std::string_view source,
+                                                                TypeId normal_texture_input = {}) noexcept;
 
 }

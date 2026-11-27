@@ -148,19 +148,15 @@ Scene View 导航行末尾的 **Cavity** 菜单控制屏幕空间凹凸增强：
 
 ### 场景光照
 
-Scene View 的显示菜单只提供着色预览与边线模式，`Scene Lit` 与 Smooth、Flat、MatCap 放在同一互斥组。场景作者参数沿 World 页和同一 ViewOption / Session 路由编辑，修改进入场景撤销栈，随 Scene 保存。直接光对保守灯列表中的解析灯逐盏确定求值，投影光源的遮挡来自阴影 atlas；`Direct candidates`（1～32，默认 8）只控制 DDGI 探针命中点的局部光候选数。AA 默认 SMAA；显示模式、相机和诊断开关仍属于视口。Scene Lit 管线由 Renderer 在工作线程上按设置分组准备，首次使用某组时不阻塞编辑器：视口先继续显示上一个已画出的 Scene Lit 视图，还没画过时显示 Smooth，状态栏显示 `Compiling shaders n/m`（n/m 按当前视图需要的组计算，打开新组时总数会变大），就绪后自动切回。准备失败时状态栏显示错误，视口保持 Smooth。编辑器和 Play 进程把编译结果缓存到环境变量 `ATELIER_SHADER_CACHE` 指定的目录，未设置时为 `%LOCALAPPDATA%\FrostFoxAtelier\ShaderCache`。快照、性能采样模式和 Control 验收在宿主未设置该变量时改用编辑器可执行文件旁的 `shader-cache`（即 `out\dev\shader-cache` 与 `out\release\shader-cache`，两种配置不共用），并由它们启动的 Play 进程继承，不写用户缓存。验收需要冷启动（强制出现未就绪和回退）时，宿主在启动编辑器或 `atelier_editor_control_acceptance` 前把 `ATELIER_SHADER_CACHE` 设为一个新建的空目录；已设置的值不会被覆盖。
+Scene View 的显示菜单只提供着色预览与边线模式，`Scene Lit` 与 Smooth、Flat、MatCap 放在同一互斥组。场景作者参数沿 World 页和同一 ViewOption / Session 路由编辑，修改进入场景撤销栈，随 Scene 保存。直接光对保守三维视锥分簇列表中的解析灯逐盏确定求值，投影光源采用动静分离软件分页 VSM + `PenumbraQueue` 半影光追 + 接触阴影 + 孔径微阴影三级阴影体系；AA 默认 SMAA；显示模式、相机、定位符显隐（`show_locators`）和分簇直方图诊断开关属于视口。Scene Lit 管线由 Renderer 在工作线程上按设置分组准备，首次使用某组时不阻塞编辑器：视口先继续显示上一个已画出的 Scene Lit 视图，还没画过时显示 Smooth，状态栏显示 `Compiling shaders n/m`（n/m 按当前视图需要的组计算，打开新组时总数会变大），就绪后自动切回。准备失败时状态栏显示错误，视口保持 Smooth。编辑器和 Play 进程把编译结果缓存到环境变量 `ATELIER_SHADER_CACHE` 指定的目录，未设置时为 `%LOCALAPPDATA%\FrostFoxAtelier\ShaderCache`。快照、性能采样模式和 Control 验收在宿主未设置该变量时改用编辑器可执行文件旁的 `shader-cache`（即 `out\dev\shader-cache` 与 `out\release\shader-cache`，两种配置不共用），并由它们启动的 Play 进程继承，不写用户缓存。验收需要冷启动（强制出现未就绪和回退）时，宿主在启动编辑器或 `atelier_editor_control_acceptance` 前把 `ATELIER_SHADER_CACHE` 设为一个新建的空目录；已设置的值不会被覆盖。
 
-**Window → World Settings** 打开可停靠的 World 页。页面由 `editor.ui.source` 声明，子页为 Lighting、DDGI、Effects、Diagnostics、Performance。Lighting 提供曝光、阴影、直接光候选数与 Sky 组（均匀天光的开关、强度和颜色）；这些作者值写在 Environment 组件上，第一次编辑时创建它，与这次写入是同一条历史。具体灯光通过 Scene Tree / Entity Structure 选择，并在 Parameters 编辑，World 页不枚举场景灯光。Effects 提供 GTAO、SSSR、Bloom、AA 与半径/距离。DDGI 可选择四个固定槽位，编辑启用、Fixed / Follow Focus、边界、三轴数量、混合边界、共享更新预算、射线数、反馈和间接光增益。Follow Focus 持久化模式和相对边界；实际焦点由宿主提供，编辑器使用观察目标。Diagnostics 包含探针命中点的空间选灯开关、探针球体、接收面指标、体积、X-Ray、反馈可见性和 CPU 布局读数，不进入 Scene。
+**Window → World Settings** 打开可停靠的 World 页。页面由 `editor.ui.source` 声明，子页为 `Lighting`、`GI & Refl`、`Post`、`Diagnostics`、`Performance`。`Lighting` 提供直接光候选预算、阴影开关、屏幕接触阴影长度、Sky 模式（`None` / `Physical Atmosphere` / `HDRI Sky Map`）、强度、颜色、旋转与近场体积雾设置；这些作者值写在 Environment 组件上，第一次编辑时创建它，与这次写入是同一条历史。具体灯光通过 Scene Tree / Entity Structure 选择，并在 Parameters 编辑，World 页不枚举场景灯光。`GI & Refl` 提供三层全局光照开关、质量档位（`High` / `Ultra`）、间接光增益、`SSILVB` 开关与半径（`ao_radius`），以及三级镜面反射开关、最大距离与粗糙度上限（`reflection_roughness`）。`Post` 提供曝光（`exposure_ev`）、色调映射（`PBR Neutral` / `AgX`）、Bloom 与抗锯齿（`Off` / `SMAA` / `Atelier TAAU`）。无网格实体定位符显隐开关（`show_locators`）位于视口 **Guides** 菜单；`Diagnostics` 提供接收面分簇光源直方图开关（`direct_cluster_inspect`）以及 GI 射线、VSM 页池、分簇瓦片与反射计数的实时运行读数，不进入 Scene。
 
-World 字段的 label、category、description 与类型、范围、枚举值统一声明在 `ViewOptionInfo` 原定义表中，面板不再维护另一份逐项名称或帮助表。同一描述供共享属性行与 Control 查询使用；Probe Volume 的四个槽位和 XYZ 分量共用说明，Follow Focus 只按真实语义把边界标题改为 Min / Max offset。World 与 Entity 参数共用属性行和悬浮说明的呈现契约；World 仍是场景持有的设置值，通过完整候选值验证与 Session 撤销提交，不为显示参数创建 Entity。视口诊断保持独立生命周期，不进入 Scene 数据。
+World 字段的 label、category、description 与类型、范围、枚举值统一声明在 `ViewOptionInfo` 原定义表中，面板不再维护另一份逐项名称或帮助表。同一描述供共享属性行与 Control 查询使用。World 与 Entity 参数共用属性行和悬浮说明的呈现契约；World 仍是场景持有的设置值，通过完整候选值验证与 Session 撤销提交，不为显示参数创建 Entity。视口诊断保持独立生命周期，不进入 Scene 数据。
 
-**Coverage → Fit Scene** 按当前可渲染几何的世界边界建立固定覆盖；**Scene + Follow Focus** 保留粗层场景覆盖，并用高优先级体积跟随观察目标。两者保留传播与诊断值，按一次完整 World 修改进入场景历史；重复应用不产生新历史。打开工程或场景、设置 `--scene-lit-camera` 均不自动拟合 DDGI；覆盖拟合须显式调用上述操作。场景读取自身配置，已保存的体积及其更新预算原样保留，没有 Environment 时使用默认值，不继承上一场景。数值输入和拖动只更新字段草稿，提交后才通过 Session 发布 World 配置与渲染快照；取消、关闭页面和替换文档会结束未提交编辑。无效配置整体拒绝，规则与 Renderer / Control 共用。
+场景读取自身配置，没有 Environment 时使用默认值，不继承上一场景。数值输入和拖动只更新字段草稿，提交后才通过 Session 发布 World 配置与渲染快照；取消、关闭页面和替换文档会结束未提交编辑。无效配置整体拒绝，规则与 Renderer / Control 共用。
 
-**Current layout (CPU)** 显示最近接受帧的实际世界边界、间距、数量、驻留槽数及本帧调度/重置数。这些数值描述 CPU 布局和调度，不表示 GPU 已完成更新或有效光照支持数。切换文档清除旧读数；具体容量、传播和诊断语义以 [Scene Lit](../renderer/scene-lit.md) 为准。
-
-覆盖预设根据场景几何边界和相机观察目标确定范围；楼层高度、薄墙和空腔会影响有效支持。多层室内场景可在现有槽位中配置局部楼层体积，用 Receiver Coverage 的 Status / Volume 检查实际贡献。观察时应等待多个完整更新轮次，分别判断覆盖范围、遮挡、有效支持和照明强度。
-
-Create 菜单与工具架沿同一命令创建 Point、Rectangle 和 Directional Light。天光不是灯，而是 World Settings 的 Lighting 页中 Sky 组（开关、Intensity (cd/m²) 和 RGB 颜色），写在 Environment 组件上。Parameters 来自真实 LightComponent.settings 反射字段：颜色为 RGB 数值行，强度标注 cd、cd/m² 或 lux；局部灯显示米制范围，矩形灯显示宽高及双面选项，方向灯显示弧度制角半径。材质 roughness/metallic 锁定在 `[0,1]`，emissive 为非负 HDR RGB（常用范围 0–10，硬上限 65504）。编辑、取消、撤销、组件移除与恢复均沿普通 Session 入口；场景编码见[项目场景](../world/project-scenes.md)。
+Create 菜单与工具架沿同一命令创建 Point、Spot、Rectangle 和 Directional Light。天光不是灯，而是 World Settings 的 Lighting 页中 Sky 组，写在 Environment 组件上。Parameters 来自真实 LightComponent.settings 反射字段：颜色为 RGB 数值行，强度标注 cd、cd/m² 或 lux；局部灯显示米制范围与光源半径，聚光灯显示内外锥角（度），矩形灯显示宽高及双面选项，方向灯显示弧度制角半径。材质 roughness/metallic 锁定在 `[0,1]`，emissive 为非负 HDR RGB（常用范围 0–10，硬上限 65504）。编辑、取消、撤销、组件移除与恢复均沿普通 Session 入口；场景编码见[项目场景](../world/project-scenes.md)。
 
 `application::SceneSnapshot` 在一个地方把 World 的 mesh/light 值快照转换为 Renderer 数据。完整 ObjectId 仅用作映射键，Renderer 使用该场景内单调分配的非零身份；移出投影的条目释放映射，重新出现时分配新键。替换文档重置映射并改变 scene_identity；快照不另记内容修订号，内容变化由 Renderer 逐帧比较得知。显式聚焦、重置、切换视图及正交/透视转换提交 camera_cut，直到 Renderer 接受帧才清除。没有独立的灯生命周期或另一份可编辑场景。
 
@@ -170,7 +166,7 @@ Create 菜单与工具架沿同一命令创建 Point、Rectangle 和 Directional
 
 ### 帧性能
 
-**World → Performance** 用一张 Table 展示 CPU 与 GPU 帧性能：先 CPU 段，后 GPU 段，列为 Current / Mean / P95 / Max（毫秒）与比例。列宽可拖动，行可选择和滚动；层级顺序固定，子阶段缩进，不按格式化字符串排序。顶部给出 CPU 与 GPU 样本数，并区分实际 Target 纹理尺寸与 Scene View 范围；底部显示直接光/AA/DDGI 配置与 Scene Lit 当前逻辑资源大小，不表示物理显存驻留量。两段由同一个 `editor::FramePerformance` 统计，窗口各最多 120 个样本，表格、Control 与 Play 报告都读取它约 4 Hz 发布的同一不可变快照，不各自持有历史。
+**World → Performance** 用一张 Table 展示 CPU 与 GPU 帧性能：先 CPU 段，后 GPU 段，列为 Current / Mean / P95 / Max（毫秒）与比例。列宽可拖动，行可选择和滚动；层级顺序固定，子阶段缩进，不按格式化字符串排序。顶部给出 CPU 与 GPU 样本数，并区分实际 Target 纹理尺寸与 Scene View 范围；底部显示直接光候选数、四层 GI 与 AA 配置（`direct_candidates`、`indirect_lighting`、`antialiasing`）及 Scene Lit 当前逻辑资源大小，不表示物理显存驻留量。两段由同一个 `editor::FramePerformance` 统计，窗口各最多 120 个样本，表格、Control 与 Play 报告都读取它约 4 Hz 发布的同一不可变快照，不各自持有历史。
 
 编辑器宿主启用 [DXGI 呈现准入](../rhi/contract.md#呈现准入)，宿主 VSync=1、原生弹窗 VSync=0 及三个资源帧槽保持不变；弹窗、Play 和其他默认 RHI 消费者不启用此策略。可绘制宿主在每一步外层安全点最多等待 20 ms，输入可以唤醒，但等待本身不分发消息或重入业务。连续鼠标移动已占用本轮消息泵 2 ms 时，宿主把队列中剩余消息留给下一轮按序处理。每次唤醒都处理输入、Control、后台服务和 GC。主窗口取得呈现许可后才描述工作区、准备 UI 并提取宿主场景。已显示的原生菜单在权威文档、视图、选区与控制状态均未变化时，可在服务轮沿用已接受的锚点和菜单模型独立刷新；首次打开、切换原生菜单，或发生连续勾选（`keep_menu_open`）及后台状态变更时，仍会重新投影并验证其命令模型；输入唤醒不能冒充许可，accepted 几何也不会被服务轮替换。隐藏/最小化不叠加这次等待，沿原有服务与有限等待路径；许可保留不妨碍已有的准备中回退与恢复。
 
@@ -187,27 +183,27 @@ GPU 段：
 - 只接收已完成且有效的 GPU 样本，按 sequence 去重。统计窗口最多 120 个样本，表格与 Control 共用约 4 Hz 发布的不可变快照，不发起 GPU 等待或同步读回。
 - 场景身份、RT/视口范围或显示配置变化后清空窗口，并用当前域第一接受帧 ID 拒绝迟到的旧域样本。普通相机运动和选择变化继续统计；文档替换清空历史。此边界依赖正式 Application 单调分配的 UI 帧身份，不扩展成对任意低层 Frame 调用方的承诺。
 - 非 Scene Lit、视口无有效几何或尚无有效样本时显示 Unavailable / Waiting 和空值。mask 未启用的 scope 显示 Skipped；mask 表示进入计时范围，不保证内部存在非零工作。整个窗口均未启用的项不显示伪造的零成本。
-- Mean / P95 使用该窗口中同源的完成帧区间；p95 取最近秩。Measured total 对每个样本先累加八个主阶段，再计算统计量，不重复累加子阶段，也不累加各行 p95。子阶段比重也以主阶段合计为分母。
-- GPU 段共 16 行；Direct lighting 下展开 Light list construction、Shadow atlas updates 与 Shading / HDR composition，DDGI 下展开 update/gather 及 update 的主射线与命中照明。原始 GPU 掩码使用 bit 0～14，其中 12～14 依次是灯列表、阴影 atlas 更新和着色；阴影 atlas 只在本帧有面重绘时置位。表格另以 bit 15 表示计算出的合计，子项不重复加进合计。数值与质量归因统一见 [Renderer 验收记录](../renderer/acceptance.md)。
-- 合计不含 UI、参考辅助线、探针显示叠层、Capture 或 CPU Present；父阶段可能包含传输、调度及计时边界开销，子阶段之和不保证等于父阶段。分组与原始计时范围见 [Scene Lit](../renderer/scene-lit.md)。
+- Mean / P95 使用该窗口中同源的完成帧区间；p95 取最近秩。Measured total 优先读取 RDG 硬件时间轴区间并集 `scene_lit_gpu_union_ms`（正确折算图形与异步计算队列重叠），无并集跨度时回退八个主阶段之和，不重复累加子阶段，也不累加各行 p95。
+- GPU 段共 16 行；Direct lighting 下展开 Light clustering、Virtual shadow maps (VSM) 与 Direct BRDF & compose，Four-layer GI 下展开 GI trace & cache update / GI resolve & gather 及主射线追踪与二次命中着色。原始 GPU 掩码使用 bit 0～14，其中 12～14 依次是灯分簇、VSM 页重绘和直接光着色；VSM 页重绘位只在本帧存在静态或动态物理页渲染时置位。表格另以 bit 15 表示计算出的总耗时，子项不重复加进合计。数值与质量归因统一见 [Renderer 验收记录](../renderer/acceptance.md)。
+- 合计不含 UI、参考辅助线、Capture 或 CPU Present；父阶段可能包含传输、调度及计时边界开销，子阶段之和不保证等于父阶段。分组与原始计时范围见 [Scene Lit](../renderer/scene-lit.md)。
 
 统计与表格状态不写 Scene、不产生撤销项。`editor.inspect` 的 full / summary 都返回相同 `performance` 快照，概要检查不需要遍历对象。
 
 ### 真实工程的原生 1440p 渲染对照
 
-直接光只有一条路径（灯列表、阴影 atlas 与融合 compose）。下面原生性能入口的 `clustered` 与 `clustered_orbit` 沿用原 case 名；2026-10-22 之前同名 case 测的是 RT 可见性的 A 路径，旧 `legacy` case 测的是已删除的 ReSTIR，前后对比时必须同时核对报告中的构建版本。
+直接光采用统一单轨路径（三维分簇灯列表、软件分页 VSM + 半影光追与融合 compose）。下面原生性能入口的 `clustered` 与 `clustered_orbit` 沿用固定 case 名；历史对比时须同时核对报告中的构建版本。
 
-`atelier_editor --project <工程目录> --profile-render-performance <绝对输出目录>` 是测量入口，不属于验收，也不在总 `acceptance` 目标中：它只输出数值报告，其中的耗时与帧率不作为任何通过条件，入口内的检查只拒绝无效样本和对作者状态的改动。它使用该工程的启动 Scene；也可组合已有的 `--scene <相对场景路径> --scene-lit-camera eye-x eye-y eye-z target-x target-y target-z`。它运行同一个产品 Application、Scene 和 Renderer，不生成替代场景；此测量模式不会因 camera 参数自动拟合或改写 DDGI Volume。项目必须完整可加载，禁止进入修复后继续的流程。
+`atelier_editor --project <工程目录> --profile-render-performance <绝对输出目录>` 是测量入口，不属于验收，也不在总 `acceptance` 目标中：它只输出数值报告，其中的耗时与帧率不作为任何通过条件，入口内的检查只拒绝无效样本和对作者状态的改动。它使用该工程的启动 Scene；也可组合已有的 `--scene <相对场景路径> --scene-lit-camera eye-x eye-y eye-z target-x target-y target-z`。它运行同一个产品 Application、Scene 和 Renderer，不生成替代场景，也不改写场景作者设置。项目必须完整可加载，禁止进入修复后继续的流程。
 
 在首次产品帧与任何视图修改之前，入口锁定已加载 Scene 的序列化内容、World 作者值、undo/redo、revision、dirty 和源文件哈希；入口要求刚加载的干净文档。首个真实接受帧同步 World 后才读取原始 view。后续仅允许改变视口诊断项，候选作者值与基线不同会在写入前拒绝。`authoring_baseline` 记录经过正常加载器解析、再序列化的 `loaded_environment`（Environment 组件的属性，没有 Environment 时为 null）；每帧检查作者状态，准备完成和每个 case 后再检查完整场景与文件哈希。失败恢复不会覆盖已经变化的作者值。
 
-普通启动和测量中的 `--scene-lit-camera` 都只设置视口，不自动拟合 DDGI。交互诊断也可在打开工程和 Scene 后通过 Control `camera.look_at` 设置相机；这些相机入口均保留场景的 World 配置。
+普通启动和测量中的 `--scene-lit-camera` 都只设置视口相机，保留场景的 World 配置。交互诊断也可在打开工程和 Scene 后通过 Control `view.look_at` 设置相机。
 
 测量先调用既有 Scene pane maximize，再调整原生客户区。实际 Scene View 范围通过 Renderer 共用的 `raster_viewport` 计算：只在像素中心覆盖恰为 **2560×1440** 时继续。JSON 同时记录含小数的物理逻辑 rect、DIP rect、像素范围、DPI 和完整 Frame.extent；完整窗口 RT 仍包含编辑器 chrome，不能把它与视口像素数混为一谈。无法精确校准时失败，不接受近似尺寸。
 
 正常停靠布局可能需要超出桌面的客户区。仅此测量的校准使用 `SWP_NOSENDCHANGING` 避免 Windows 默认拖动尺寸上限截断，仍沿原生 `WM_SIZE` 和产品 resize 路径更新；产品窗口规则不变。报告的 `calibration` 按布局保存每步原窗口/客户区、实际 RT、DPI、viewport 像素误差、请求与实际调整尺寸及 Win32 错误。尺寸被截断、重复状态、超出 16384 像素窗口上限或耗尽校准步数均明确失败，不改变 Dock 比例或降低采样分辨率。
 
-完成冷资源准备后，独立采集接收面灯数 histogram。clustered case 关闭该诊断，保留同一相机、Scene 和 World 设置；额外 warmup 192 个接受帧，再收集 240 个按 sequence 去重、且来自 warmup 之后的完成 GPU 样本。之后追加 clustered_orbit：配置与 clustered 相同，预热和采样期间每个接受帧把 yaw 改变 .2°，在原相机 ±12° 内三角波往返，没有镜头切换；case 的 `camera_motion` 记录这些参数，结束后恢复原相机。它测量相机持续运动导致缓存失效时的成本，静止 case 的结果不能代表这种情况。随后使用同一场景、相机与原生视口测量最大化布局的 Smooth、MatCap，各 warmup 192 帧并记录 240 个真实接受步。最后通过 Dock 原有恢复入口解除最大化，保留原树和分隔比例，重新将实际 viewport 校准为 2560×1440，追加 docked_smooth、docked_matcap 两组；相机状态和 DPI 不变。非 Lit 的 gpu_passes 和 measured_main_total_ms 明确为 null，不读取上一组的 Scene Lit GPU 样本。统计含八个主区间、全部直接光/DDGI 子区间、cluster 计数、资源，以及接受帧呈现间隔的 P50/P95；`probe_rays`、`shadow_rays`、`ddgi_visibility_rays`、`reflection_work_items`（SSSR 分类出、送去层级追踪的像素数）与耗时共用同一完成帧。CPU 观察帧和完成 GPU 帧分开标记。截图和 JSON 写盘在计时区间外。
+完成冷资源准备后，独立采集接收面灯数 histogram。clustered case 关闭该诊断，保留同一相机、Scene 和 World 设置；额外 warmup 192 个接受帧，再收集 240 个按 sequence 去重、且来自 warmup 之后的完成 GPU 样本。之后追加 clustered_orbit：配置与 clustered 相同，预热和采样期间每个接受帧把 yaw 改变 .2°，在原相机 ±12° 内三角波往返，没有镜头切换；case 的 `camera_motion` 记录这些参数，结束后恢复原相机。它测量相机持续运动导致缓存失效时的成本，静止 case 的结果不能代表这种情况。随后使用同一场景、相机与原生视口测量最大化布局的 Smooth、MatCap，各 warmup 192 帧并记录 240 个真实接受步。最后通过 Dock 原有恢复入口解除最大化，保留原树和分隔比例，重新将实际 viewport 校准为 2560×1440，追加 docked_smooth、docked_matcap 两组；相机状态和 DPI 不变。非 Lit 的 gpu_passes 和 measured_main_total_ms 明确为 null，不读取上一组的 Scene Lit GPU 样本。统计含八个主区间、全部直接光/四层 GI 子区间、VSM 页池计数、cluster 计数、资源，以及接受帧呈现间隔的 P50/P95；`gi_primary_rays`、`shadow_rays`、`gi_visibility_rays`、`reflection_work_items` 与耗时共用同一完成帧。CPU 观察帧和完成 GPU 帧分开标记。截图和 JSON 写盘在计时区间外。
 
 输出为 `render-performance.json`（schema v7）和六组同名 PNG：clustered、clustered_orbit、smooth、matcap、docked_smooth、docked_matcap。每个 case 明确记录 layout（maximized / docked）；layouts 目录记录各布局的实际 viewport、完整 RT、相机矩阵与活动 Dock 页。根级 viewport/camera 保留最初最大化布局，布局对照须读取 case 自身数据。正常布局可能需要更大的客户区；校准只接受像素覆盖精确相等，不以完整窗口尺寸代替 viewport。仅此测量入口在 Application 创建主 Renderer 时关闭 VSync，正常编辑器保持默认开启；报告读取本次实际配置。默认 Release 不启用 GPU validation。测量读取 Application 每一步自身的[帧阶段计时](../../foundation.md#帧阶段计时)记录（`Application::frame_record()`），呈现间隔取相邻两个接受步的帧记录结束时刻之差，包含被跳过的步进、等待以及步与步之间的验收工作；GPU 时间倒数不代表实际 FPS。结束恢复原 view，禁止保存 Scene。`--gpu-validation` 可用于诊断，其结果须与正常性能数据区分。
 
@@ -320,7 +316,7 @@ Popup 的文字、样式、显示器查询、定位/尺寸与 GPU 失败通过 R
 
 PopupHost 的测量 Session 也遵循 Surface 变化取消模态状态的规则。DPI／工作区失效时，先退役测量控件树，再设置新 Surface 并重新投影；保留实际弹窗 HWND、接受帧和输入身份。
 
-当前 renderer/RHI 的所有权仍是一窗口一上下文，主菜单及首层子菜单宿主随应用初始化，其余层首次使用后复用，隐藏时不渲染，静止时不重新提交，主窗口负责帧节奏。跨窗口共享 GPU 设备和纹理缓存尚未实现；多显示器真实 DPI 迁移需要额外设备验证。级联子菜单复用保留的原生菜单窗口，详见下方[页签菜单与弹窗资源](#页签菜单与弹窗资源)。定位依据见 [Microsoft 多显示器指南](https://learn.microsoft.com/en-us/windows/win32/gdi/positioning-objects-on-multiple-display-monitors)，焦点与捕获遵循 [SetCapture](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setcapture) 的前台窗口限制。
+每个窗口持有独立的 `Renderer` 与交换链表面，弹出菜单以 `Options::ui_only` 共享主窗口的 `rhi::Device` 与进程级弱引用 UI 纹理缓存（`SharedUiTextureHub`），不分配任何 3D 场景资源或着色管线；主菜单及首层子菜单宿主随应用初始化，其余层首次使用后复用，隐藏时不渲染，静止时不重新提交，主窗口负责帧节奏。多显示器真实 DPI 迁移需要额外设备验证。级联子菜单复用保留的原生菜单窗口，详见下方[页签菜单与弹窗资源](#页签菜单与弹窗资源)。定位依据见 [Microsoft 多显示器指南](https://learn.microsoft.com/en-us/windows/win32/gdi/positioning-objects-on-multiple-display-monitors)，焦点与捕获遵循 [SetCapture](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setcapture) 的前台窗口限制。
 
 主窗口统一消费线程消息队列，每次分发后处理自身事件记录；弹出窗口只处理已由该消息泵或同步回调排入的自身记录和回调错误，业务消费者始终在 WndProc 返回后执行。
 

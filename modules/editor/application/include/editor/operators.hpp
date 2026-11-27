@@ -220,8 +220,6 @@ public:
 
     virtual void toggle_view(ViewToggleOption) = 0;
 
-    virtual Result<void> fit_lighting(bool follow_focus) = 0;
-
     virtual Result<void> rename_asset(std::string_view key, std::string_view name) = 0;
 
     virtual Result<void> save_scene(const std::filesystem::path&) = 0;

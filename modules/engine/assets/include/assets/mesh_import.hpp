@@ -20,12 +20,22 @@ struct ImportedFile {
     std::string bytes;
 };
 
+struct DecodedTexture {
+    std::filesystem::path relative;
+
+    material::ImageRef image;
+};
+
 struct MeshImport {
     geometry::MeshRef mesh;
 
     // One immutable read per dependency, relative to the source file's directory.
     // Import publishes these exact bytes; project refresh tracks the same paths.
     std::vector<ImportedFile> files;
+
+    // Retains decoded pixels prepared during mesh validation so immediate Reader::texture()
+    // and Project::import_mesh() consumers hit the cache without re-decoding PNG/JPEG bytes.
+    std::vector<DecodedTexture> decoded_textures;
 
     std::vector<std::string> notes; // Source content the import left out, one line each.
 

@@ -387,6 +387,9 @@ Result<void> scene_add(OperatorHost& host, const Context& context, const SceneAd
     case AddKind::directional:
         added = document.create_light(presentation::LightKind::directional, context.cursor);
         break;
+    case AddKind::spot:
+        added = document.create_light(presentation::LightKind::spot, context.cursor);
+        break;
     case AddKind::camera:
         added = document.create_camera(context.cursor);
         break;
@@ -1103,11 +1106,6 @@ Result<OperatorRegistry> OperatorRegistry::builtins() {
              return static_cast<const ViewToggle*>(p.data)->option == ViewToggleOption::fps ? c.show_fps
                                                                                             : c.viewport_options;
          }});
-    add({"view.lighting_fit", L"Fit Lighting", "Fit the scene probe volume", OperatorFlag::undo, available,
-         with_parameters(+[](OperatorHost& h, const Context&, const LightingFit& p) {
-             return h.fit_lighting(p.mode == LightingFitMode::scene_focus);
-         }),
-         "editor.LightingFit"});
     add(interactive_when<SceneRename>(
         {"asset.rename", L"Rename Asset", "Rename the context's project asset", OperatorFlag::none,
          [](const Context& c) -> Result<void> {
