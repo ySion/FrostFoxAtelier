@@ -1,6 +1,7 @@
 #include "assets/mesh_import.hpp"
 #include "assets/file.hpp"
 #include "assets/image_decode.hpp"
+#include "foundation/inline_array.hpp"
 #include "foundation/map.hpp"
 #include "foundation/string.hpp"
 #include "platform/error.hpp"
@@ -53,9 +54,9 @@ Result<float> scalar(std::istringstream& row) {
     return v;
 }
 
-Result<std::vector<std::array<unsigned, 3>>> triangulate(const std::vector<geometry::Vertex>& face) {
+Result<Array<std::array<unsigned, 3>>> triangulate(const Array<geometry::Vertex>& face) {
     if (face.size() == 3)
-        return std::vector<std::array<unsigned, 3>>{{0, 1, 2}};
+        return Array<std::array<unsigned, 3>>{{0, 1, 2}};
     std::array<double, 3> normal{};
     for (std::size_t i = 0; i < face.size(); ++i) {
         const auto& a = face[i].position;
@@ -77,10 +78,12 @@ Result<std::vector<std::array<unsigned, 3>>> triangulate(const std::vector<geome
                        (double(face[b].position[y]) - face[a].position[y]) *
                            (double(face[c].position[x]) - face[a].position[x]));
     };
-    std::vector<unsigned> remaining;
+    InlineArray<unsigned, 64> remaining;
+    remaining.resize_uninitialized(face.size());
     for (unsigned i = 0; i < face.size(); ++i)
-        remaining.push_back(i);
-    std::vector<std::array<unsigned, 3>> triangles;
+        remaining[i] = i;
+    Array<std::array<unsigned, 3>> triangles;
+    triangles.reserve(face.size() - 2);
     while (remaining.size() > 3) {
         bool found = false;
         for (std::size_t i = 0; i < remaining.size(); ++i) {
@@ -98,14 +101,14 @@ Result<std::vector<std::array<unsigned, 3>>> triangulate(const std::vector<geome
                 }
             if (inside)
                 continue;
-            triangles.push_back({a, b, c});
-            remaining.erase(remaining.begin() + static_cast<std::ptrdiff_t>(i));
+            triangles.add({a, b, c});
+            remaining.remove_at(i);
             found = true;
             break;
         }
         ATELIER_TRY(require(found, "OBJ polygon cannot be triangulated."));
     }
-    triangles.push_back({remaining[0], remaining[1], remaining[2]});
+    triangles.add({remaining[0], remaining[1], remaining[2]});
     return triangles;
 }
 }
@@ -136,7 +139,7 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
         total_bytes += bytes->size();
         const auto slot = result.files.size();
         files.try_emplace(std::move(key), slot);
-        result.files.push_back({relative, std::move(*bytes)});
+        result.files.add({relative, std::move(*bytes)});
         return slot;
     };
     const auto read = [&](const std::filesystem::path& relative) -> Result<std::size_t> {
@@ -153,7 +156,7 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
             return *found;
         ATELIER_TRY_BIND(slot, read_with_key(relative, *key));
         const std::string_view bytes = result.files[*slot].bytes;
-        ATELIER_TRY_BIND(decoded, decode_images(std::span(&bytes, 1), shared_images));
+        ATELIER_TRY_BIND(decoded, decode_images(Span{&bytes, 1}, shared_images));
         auto loaded = decoded->front();
         ATELIER_TRY(require(image_bytes + loaded->pixels().size() <= 768ull * 1024 * 1024,
                             "Decoded OBJ textures exceed 768 MiB."));
@@ -166,10 +169,10 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
 
         bool color_alpha{};
     };
-    std::vector<geometry::MaterialSlot> materials(1);
-    std::vector<AuthorMaterial> authors(1);
-    result.materials.emplace_back();
-    result.textures.emplace_back();
+    Array<geometry::MaterialSlot> materials(1);
+    Array<AuthorMaterial> authors(1);
+    result.materials.emplace();
+    result.textures.emplace();
     Map<std::string, std::uint32_t> material_names;
     const auto mtl = [&](const std::filesystem::path& relative) -> Result<void> {
         ATELIER_TRY_BIND(slot, read(relative));
@@ -196,11 +199,11 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
                     require(material_names.try_emplace(name, static_cast<std::uint32_t>(materials.size())).inserted,
                             "Duplicate MTL material name."));
                 current_slot = materials.size();
-                materials.push_back({std::move(name)});
-                authors.emplace_back();
+                materials.add({std::move(name)});
+                authors.emplace();
                 current = &authors.back();
-                result.materials.emplace_back(MaterialInstanceAsset{});
-                result.textures.emplace_back();
+                result.materials.emplace(MaterialInstanceAsset{});
+                result.textures.emplace();
             } else {
                 ATELIER_TRY(require(current != nullptr, "MTL property precedes newmtl."));
                 if (kind == "Kd")
@@ -239,12 +242,12 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
     ATELIER_TRY_BIND(source_slot, read(*source_path));
     std::istringstream input(result.files[*source_slot].bytes);
     input.imbue(std::locale::classic());
-    std::vector<std::array<float, 3>> positions;
-    std::vector<std::array<float, 3>> normals;
-    std::vector<std::array<float, 2>> uv;
-    std::vector<geometry::Vertex> vertices;
-    std::vector<std::uint8_t> masks;
-    std::vector<geometry::MeshPart> parts;
+    Array<std::array<float, 3>> positions;
+    Array<std::array<float, 3>> normals;
+    Array<std::array<float, 2>> uv;
+    Array<geometry::Vertex> vertices;
+    Array<std::uint8_t> masks;
+    Array<geometry::MeshPart> parts;
     std::uint32_t material{};
     std::string line;
     std::string kind;
@@ -261,12 +264,12 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
             ATELIER_TRY_BIND(x, scalar(row));
             ATELIER_TRY_BIND(y, scalar(row));
             ATELIER_TRY_BIND(z, scalar(row));
-            target.push_back({*x, *y, *z});
+            target.add({*x, *y, *z});
         } else if (kind == "vt") {
             ATELIER_TRY(require(uv.size() < 1000000, "OBJ exceeds the UV limit."));
             ATELIER_TRY_BIND(u, scalar(row));
             ATELIER_TRY_BIND(v, scalar(row));
-            uv.push_back({*u, 1 - *v});
+            uv.add({*u, 1 - *v});
         } else if (kind == "mtllib") {
             auto path = platform::utf8_to_utf16(rest(row));
             if (!path)
@@ -278,8 +281,8 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
             ATELIER_TRY(require(found != nullptr, "OBJ references an unknown material."));
             material = *found;
         } else if (kind == "f") {
-            std::vector<geometry::Vertex> face;
-            std::vector<bool> has_normal;
+            Array<geometry::Vertex> face;
+            std::uint64_t has_normal = 0;
             std::string token;
             while (row >> token) {
                 ATELIER_TRY(require(face.size() < 64, "OBJ polygon exceeds 64 corners."));
@@ -304,15 +307,15 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
                 if (normal) {
                     ATELIER_TRY_BIND(direction, index(std::string_view(token).substr(b + 1), normals.size()));
                     std::ranges::copy(normals[*direction], vertex.normal);
+                    has_normal |= std::uint64_t{1} << face.size();
                 }
-                face.push_back(vertex);
-                has_normal.push_back(normal);
+                face.add(vertex);
             }
             ATELIER_TRY(require(face.size() >= 3, "OBJ face requires at least three corners."));
             ATELIER_TRY_BIND(triangles, triangulate(face));
             ATELIER_TRY(require(vertices.size() + triangles->size() * 3 <= 3000000, "OBJ exceeds the triangle limit."));
             if (parts.empty() || parts.back().material != material)
-                parts.push_back({static_cast<std::uint32_t>(vertices.size()), 0, material});
+                parts.add({static_cast<std::uint32_t>(vertices.size()), 0, material});
             for (const auto& t : *triangles) {
                 std::array<geometry::Vertex, 3> triangle{face[t[0]], face[t[1]], face[t[2]]};
                 std::array<double, 3> a{};
@@ -326,7 +329,7 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
                 const auto length = std::hypot(n[0], n[1], n[2]);
                 std::uint8_t mask = 0;
                 for (unsigned i = 0; i < 3; ++i) {
-                    if (!has_normal[t[i]]) {
+                    if ((has_normal & (std::uint64_t{1} << t[i])) == 0) {
                         ATELIER_TRY(require(length > 0, "Degenerate OBJ face needs explicit normals."));
                         for (unsigned j = 0; j < 3; ++j)
                             triangle[i].normal[j] = static_cast<float>(n[j] / length);
@@ -336,8 +339,8 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
                     if ((j + 1) % face.size() == k || (k + 1) % face.size() == j)
                         mask |= static_cast<std::uint8_t>(1u << i);
                 }
-                vertices.insert(vertices.end(), triangle.begin(), triangle.end());
-                masks.push_back(mask);
+                vertices.append(triangle);
+                masks.add(mask);
                 parts.back().vertex_count += 3;
             }
         } else if (kind != "o" && kind != "g" && kind != "s")
@@ -366,13 +369,13 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
         for (std::size_t input = 0; input < imported_material_inputs.size(); ++input)
             if (!result.textures[i][input].empty()) {
                 const auto name = std::string(imported_material_inputs[input]);
-                instance.entries.push_back(
+                instance.entries.add(
                     {name + "_texture", material::TextureBinding{{}, material::Address::repeat}});
-                instance.entries.push_back({name + "_uv.scale", math::Vector2{1, 1}});
-                instance.entries.push_back({name + "_uv.offset", math::Vector2{}});
-                instance.entries.push_back({name + "_uv.rotation", 0.f});
+                instance.entries.add({name + "_uv.scale", math::Vector2{1, 1}});
+                instance.entries.add({name + "_uv.offset", math::Vector2{}});
+                instance.entries.add({name + "_uv.rotation", 0.f});
                 if (input == 5)
-                    instance.entries.push_back({"opacity_channel", 0.f});
+                    instance.entries.add({"opacity_channel", 0.f});
             }
     }
     auto mesh = geometry::Mesh::create(std::move(vertices), std::move(masks), std::move(materials), std::move(parts));

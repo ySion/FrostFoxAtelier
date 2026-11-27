@@ -18,26 +18,25 @@ Result<ui::ControlKey> Workspace::bind_material(ObjectId object, std::string_vie
         });
 }
 
-std::optional<Workspace::MaterialChoice> Workspace::material_choice(ui::ControlKey key) const {
+Optional<Workspace::MaterialChoice> Workspace::material_choice(ui::ControlKey key) const {
     if (key < choices || key - choices >= material_choices_.size())
         return {};
     return material_choices_[static_cast<std::size_t>(key - choices)];
 }
 
-Result<std::vector<ui::MenuItem>> Workspace::material_menu(const Binding& target, const Session& session,
-                                                           const Project* project,
-                                                           std::vector<MaterialChoice>& options) const {
-    std::vector<ui::MenuItem> result;
+Result<Array<ui::MenuItem>> Workspace::material_menu(const Binding& target, const Session& session,
+                                                     const Project* project, Array<MaterialChoice>& options) const {
+    Array<ui::MenuItem> result;
     const bool texture = target.kind == Binding::Kind::material_texture;
     const auto add = [&](std::wstring title, MaterialChoice choice, bool selected = false, bool separator = false) {
         const auto key = choices + options.size();
-        options.push_back(std::move(choice));
+        options.add(std::move(choice));
         ui::MenuItem item{key, std::move(title), !session.world().running(), selected, {}, L"", separator};
         if (options.back().kind == MaterialChoice::Kind::assign || texture) {
             item.behavior = ui::MenuBehavior::radio;
             item.radio_group = target.key;
         }
-        result.push_back(std::move(item));
+        result.add(std::move(item));
     };
     std::string current;
     if (!target.material_path.empty()) {

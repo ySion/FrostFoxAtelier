@@ -65,12 +65,12 @@ public:
 
     MaterialLayout parameter_layout() const noexcept;
 
-    std::span<const MaterialParameter> parameters() const noexcept;
+    Span<const MaterialParameter> parameters() const noexcept;
 
-    std::span<const std::byte> default_parameters() const noexcept;
+    Span<const std::byte> default_parameters() const noexcept;
 
     // All declared inputs require bindings, including currently unsampled ones.
-    std::span<const MaterialTextureInput> textures() const noexcept;
+    Span<const MaterialTextureInput> textures() const noexcept;
 
     // Emits an ASCII-identifier namespace, with ms_Context, ms_Output,
     // ms_Parameters, ms_shade(uint environment,ms_Context,ms_Parameters), and
@@ -111,8 +111,8 @@ public:
     // inputs/sample results/outputs only; missing bindings and failures leave
     // output unchanged. Byte spans have the captured sizes, may be unaligned.
     // CPU/HLSL use float math; no bit-identity promise near rounding boundaries.
-    Result<void> evaluate(std::span<const std::byte> context, std::span<const std::byte> parameters,
-                          std::span<std::byte> output, std::span<const MaterialTexture> textures = {}) const noexcept;
+    Result<void> evaluate(Span<const std::byte> context, Span<const std::byte> parameters, Span<std::byte> output,
+                          Span<const MaterialTexture> textures = {}) const noexcept;
 };
 
 // Runtime supplies the actual registered Context/Output and value layouts only

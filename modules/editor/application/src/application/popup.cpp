@@ -51,7 +51,7 @@ auto window_failure(const char* message) {
 }
 }
 
-Result<void> PopupHost::initialize(HWND owner, std::span<const std::wstring> fonts, bool validation) {
+Result<void> PopupHost::initialize(HWND owner, Span<const std::wstring> fonts, bool validation) {
     ATELIER_TRY(window_.initialize(owner));
     ATELIER_TRY(ui_.initialize(fonts).transform_error(ui_error));
     ATELIER_TRY(measurement_.initialize(fonts).transform_error(ui_error));
@@ -63,7 +63,7 @@ Result<void> PopupHost::initialize(HWND owner, std::span<const std::wstring> fon
     return {};
 }
 
-Result<void> PopupHost::update(ui::ControlKey source, RECT anchor, bool below, std::span<const ui::MenuItem> items,
+Result<void> PopupHost::update(ui::ControlKey source, RECT anchor, bool below, Span<const ui::MenuItem> items,
                                const ui::Style& style, std::shared_ptr<const ui::StyleSheet> sheet,
                                std::shared_ptr<ui_language::Component> component, bool center_first_item) {
     const auto reject = [&](std::string message) {
@@ -100,7 +100,7 @@ Result<void> PopupHost::update(ui::ControlKey source, RECT anchor, bool below, s
     LONG width = static_cast<LONG>(extent_.width);
     LONG height = static_cast<LONG>(extent_.height);
     if (measure) {
-        auto rows = std::make_shared<std::vector<ui_language::Item>>();
+        auto rows = std::make_shared<Array<ui_language::Item>>();
         rows->reserve(items.size());
         row_keys_.remove_if([&](ui::ControlKey key, ui::ControlKey) {
             return std::ranges::none_of(items, [&](const auto& item) { return item.key == key; });
@@ -110,7 +110,7 @@ Result<void> PopupHost::update(ui::ControlKey source, RECT anchor, bool below, s
             if (inserted)
                 *at = next_key_++;
             const bool branch = !item.children.empty();
-            rows->push_back(
+            rows->add(
                 {*at,
                  {item.text, branch ? std::wstring{} : item.shortcut, item.enabled, item.selected, branch,
                   !rows->empty() && item.separator_before,
@@ -133,7 +133,7 @@ Result<void> PopupHost::update(ui::ControlKey source, RECT anchor, bool below, s
         } else if (auto update = instance_->update(inputs, component); !update) {
             return reject(update.error().message);
         }
-        std::vector<ui::Control> controls(instance_->controls().begin(), instance_->controls().end());
+        Array<ui::Control> controls(instance_->controls());
         if (controls.empty() || controls.front().key != 500 || controls.front().kind != ui::ControlKind::popup ||
             controls.front().parent) {
             return reject("PopupMenu requires its named root to be a standalone Popup.");
@@ -206,7 +206,7 @@ Result<void> PopupHost::update(ui::ControlKey source, RECT anchor, bool below, s
                 control.layout.width = ui_layout::Axis::expand();
                 control.layout.padding.right = shortcut_width + gap;
             }
-        items_.assign(items.begin(), items.end());
+        items_.assign(items);
         controls_ = std::move(controls);
         measured_dpi_ = dpi;
         measured_area_ = work_area;

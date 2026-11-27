@@ -1,13 +1,13 @@
 #pragma once
 
 #include "foundation/array.hpp"
+#include "foundation/optional.hpp"
 #include "foundation/result.hpp"
 #include "foundation/string.hpp"
 #include <expected>
 #include <initializer_list>
 #include <memory>
-#include <optional>
-#include <span>
+#include <ranges>
 #include <string>
 #include <string_view>
 
@@ -22,7 +22,7 @@ struct Error {
 
     std::string path;
 
-    std::optional<std::size_t> offset;
+    Optional<std::size_t> offset;
 
     std::size_t line{};
 
@@ -57,7 +57,7 @@ public:
 
     [[nodiscard]] Result<Value> at(std::string_view key) const;
 
-    [[nodiscard]] Result<std::optional<Value>> find(std::string_view key) const;
+    [[nodiscard]] Result<Optional<Value>> find(std::string_view key) const;
 
     [[nodiscard]] Result<Value> path(std::initializer_list<std::string_view> keys) const;
 
@@ -245,14 +245,23 @@ public:
 
     // Typed contiguous numeric fields (vectors, matrices, histograms). Integers
     // keep their signedness and never pass through double.
-    template <class T, std::size_t N>
-        requires(std::is_arithmetic_v<T> && !std::is_same_v<std::remove_cv_t<T>, bool>)
-    [[nodiscard]] Result<void> numbers(Value parent, std::string_view key, std::span<T, N> values) {
+    template <std::ranges::contiguous_range R>
+        requires std::ranges::sized_range<R> &&
+                 std::is_arithmetic_v<std::remove_cvref_t<std::ranges::range_value_t<R>>> &&
+                 (!std::is_same_v<std::remove_cvref_t<std::ranges::range_value_t<R>>, bool>) &&
+                 (!std::is_same_v<std::remove_cvref_t<std::ranges::range_value_t<R>>, char>) &&
+                 (!std::is_same_v<std::remove_cvref_t<std::ranges::range_value_t<R>>, wchar_t>) &&
+                 (!std::is_same_v<std::remove_cvref_t<std::ranges::range_value_t<R>>, char8_t>) &&
+                 (!std::is_same_v<std::remove_cvref_t<std::ranges::range_value_t<R>>, char16_t>) &&
+                 (!std::is_same_v<std::remove_cvref_t<std::ranges::range_value_t<R>>, char32_t>)
+    [[nodiscard]] Result<void> numbers(Value parent, std::string_view key, R&& values) {
+        using Elem = std::remove_cvref_t<std::ranges::range_value_t<R>>;
         ATELIER_TRY_BIND(items, array(parent, key));
-        for (const auto value : values) {
-            if constexpr (std::is_floating_point_v<T>) {
+        const Span<const Elem> span{std::ranges::data(values), std::ranges::size(values)};
+        for (const auto value : span) {
+            if constexpr (std::is_floating_point_v<Elem>) {
                 ATELIER_TRY(append(*items, value));
-            } else if constexpr (std::is_signed_v<T>)
+            } else if constexpr (std::is_signed_v<Elem>)
                 append(*items, static_cast<std::int64_t>(value));
             else
                 append(*items, static_cast<std::uint64_t>(value));
@@ -333,7 +342,7 @@ public:
 
     // Create missing object prefixes, replacing nonobjects. Names are already
     // validated UTF-8 (schema fields or keys borrowed from a parsed document).
-    [[nodiscard]] Value object_path_validated(Value parent, std::span<const std::string> keys);
+    [[nodiscard]] Value object_path_validated(Value parent, Span<const std::string> keys);
 
     // Prevent string literals selecting the pointer-to-bool conversion.
     template <std::size_t N>

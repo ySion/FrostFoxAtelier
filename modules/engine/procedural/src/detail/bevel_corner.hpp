@@ -17,6 +17,6 @@ math::Vector3d bevel_arc(math::Vector3d a, math::Vector3d b, std::uint32_t index
 // supplies adjacent exterior face normals in winding order. The returned planes
 // have dot(normal, p) <= offset on the retained side. An empty result means
 // the incident strip planes already close this chamfer.
-Result<Array<BevelPlane>> bevel_corner_planes(std::span<const math::Vector3d> normals, std::uint32_t segments);
+Result<Array<BevelPlane>> bevel_corner_planes(Span<const math::Vector3d> normals, std::uint32_t segments);
 
 }

@@ -2,6 +2,7 @@
 #include "editor/project.hpp"
 #include "assets/builtin_materials.hpp"
 #include "assets/material_format.hpp"
+#include "foundation/scope_exit.hpp"
 #include "foundation/set.hpp"
 #include "material/resources.hpp"
 #include "memory/fatal.hpp"
@@ -20,7 +21,7 @@ auto stand_in(const MissingResource& item) {
 
 // Explicit resource loads without a caller-owned issue list publish through the
 // same diagnostic queue as scene loading, not a second logging/cache owner.
-void report_resources(world::World& world, ObjectId object, std::span<const MissingResource> missing) noexcept {
+void report_resources(world::World& world, ObjectId object, Span<const MissingResource> missing) noexcept {
     for (const auto& item : missing) {
         world::Diagnostic diagnostic;
         diagnostic.severity = world::Severity::warning;
@@ -50,16 +51,16 @@ bool same(const material::Override& a, const material::Override& b) {
         a.value);
 }
 
-bool same(const std::optional<material::Override>& a, const std::optional<material::Override>& b) {
+bool same(const Optional<material::Override>& a, const Optional<material::Override>& b) {
     return a.has_value() == b.has_value() && (!a || same(*a, *b));
 }
 
-std::optional<material::Override> entry_at(std::span<const material::Override> entries, std::string_view path) {
+Optional<material::Override> entry_at(Span<const material::Override> entries, std::string_view path) {
     const auto at = std::ranges::find(entries, path, &material::Override::path);
-    return at == entries.end() ? std::nullopt : std::optional(*at);
+    return at == entries.end() ? Optional<material::Override>{} : Optional<material::Override>(*at);
 }
 
-material::LocalValue parameter_value(const source::MaterialParameter& parameter, std::span<const std::byte> bytes) {
+material::LocalValue parameter_value(const source::MaterialParameter& parameter, Span<const std::byte> bytes) {
     const auto read = [&]<class T>() {
         T value;
         std::memcpy(&value, bytes.data() + parameter.offset, sizeof(T));
@@ -85,7 +86,7 @@ const MissingResource& Session::remember_unavailable(const assets::Reader& reade
     const bool listed = reader.entry(key) != nullptr;
     return *unavailable_
                 .insert_or_assign({kind, std::string(key)},
-                                  MissingResource{std::string(key), error, std::nullopt,
+                                  MissingResource{std::string(key), error, {},
                                                   listed ? world::DiagnosticKind::unreadable_resource
                                                          : world::DiagnosticKind::missing_resource})
                 .value;
@@ -122,12 +123,12 @@ Result<void> Session::reimport_texture(Project& project, std::string_view key, c
 }
 
 Result<ObjectRoot> Session::texture_resource(assets::Reader& reader, std::string_view key,
-                                             std::vector<MissingResource>* missing, std::size_t input) {
+                                             Array<MissingResource>* missing, std::size_t input) {
     if (const auto* at = textures_.find(key)) {
         if (const auto* item = unavailable(assets::AssetKind::texture, key)) {
             if (!missing)
                 return stand_in(*item);
-            missing->push_back(*item);
+            missing->add(*item);
             missing->back().input = input;
         }
         return *at;
@@ -138,21 +139,21 @@ Result<ObjectRoot> Session::texture_resource(assets::Reader& reader, std::string
     ATELIER_TRY_BIND(root, material::create_texture(runtime_, key, asset ? asset->image : material::ImageRef{}));
     textures_.try_emplace(key, *root);
     if (!asset) {
-        missing->push_back(remember_unavailable(reader, assets::AssetKind::texture, key, asset.error()));
+        missing->add(remember_unavailable(reader, assets::AssetKind::texture, key, asset.error()));
         missing->back().input = input;
     }
     return std::move(*root);
 }
 
 Result<ObjectRoot> Session::material_resource(assets::Reader& reader, std::string_view key,
-                                              std::vector<MissingResource>* missing) {
+                                              Array<MissingResource>* missing) {
     if (std::ranges::find(loading_materials_, key) != loading_materials_.end())
         return failure("Material parent cycle at " + std::string(key));
     if (const auto* at = materials_.find(key)) {
         if (const auto* item = unavailable(assets::AssetKind::material, key)) {
             if (!missing)
                 return stand_in(*item);
-            missing->push_back(*item);
+            missing->add(*item);
             return at->root;
         }
         ObjectRoot root = at->root;
@@ -161,8 +162,7 @@ Result<ObjectRoot> Session::material_resource(assets::Reader& reader, std::strin
             if (at->error) {
                 if (!missing)
                     return std::unexpected(*at->error);
-                missing->push_back(
-                    {std::string(key), *at->error, std::nullopt, world::DiagnosticKind::unreadable_resource});
+                missing->add({std::string(key), *at->error, {}, world::DiagnosticKind::unreadable_resource});
             } else if (const auto* author = std::get_if<assets::MaterialInstanceAsset>(&at->author.author)) {
                 const std::string parent_key = author->parent_key;
                 ATELIER_TRY_BIND(parent, material_resource(reader, parent_key, missing));
@@ -183,9 +183,9 @@ Result<ObjectRoot> Session::material_resource(assets::Reader& reader, std::strin
     document.root = *root;
     document.author.key = key;
     document.author.author = assets::MaterialSourceAsset{};
-    document.diagnostics.push_back({{}, asset.error().message});
+    document.diagnostics.add({{}, asset.error().message});
     materials_.try_emplace(key, std::move(document));
-    missing->push_back(remember_unavailable(reader, assets::AssetKind::material, key, asset.error()));
+    missing->add(remember_unavailable(reader, assets::AssetKind::material, key, asset.error()));
     return std::move(*root);
 }
 
@@ -193,7 +193,7 @@ Result<ObjectRoot> Session::open_material(Project& project, std::string_view key
     if (const auto* item = unavailable(assets::AssetKind::material, key))
         return stand_in(*item);
     ATELIER_TRY_BIND(asset, project.assets().material(key));
-    std::vector<MissingResource> missing;
+    Array<MissingResource> missing;
     auto result = material_resource(project.assets(), *asset, &missing);
     if (result)
         report_resources(world_, result->id(), missing);
@@ -201,15 +201,15 @@ Result<ObjectRoot> Session::open_material(Project& project, std::string_view key
 }
 
 Result<ObjectRoot> Session::material_resource(assets::Reader& reader, const assets::MaterialAsset& asset,
-                                              std::vector<MissingResource>* missing) {
+                                              Array<MissingResource>* missing) {
     if (!asset.key.empty() && materials_.contains(asset.key))
         return material_resource(reader, asset.key, missing);
     return publish_material(reader, asset, {}, missing);
 }
 
 Result<ObjectRoot> Session::publish_material(assets::Reader& reader, const assets::MaterialAsset& asset,
-                                             std::optional<source::SourceFile> exact_source,
-                                             std::vector<MissingResource>* missing) {
+                                             Optional<source::SourceFile> exact_source,
+                                             Array<MissingResource>* missing) {
     ATELIER_TRY_BIND(root, store_material(reader, asset, std::move(exact_source), missing));
     ++revision_;
     forward_material(root->id());
@@ -217,20 +217,16 @@ Result<ObjectRoot> Session::publish_material(assets::Reader& reader, const asset
 }
 
 Result<ObjectRoot> Session::store_material(assets::Reader& reader, const assets::MaterialAsset& asset,
-                                           std::optional<source::SourceFile> exact_source,
-                                           std::vector<MissingResource>* missing) {
+                                           Optional<source::SourceFile> exact_source,
+                                           Array<MissingResource>* missing) {
     if (world_.closed())
         return failure("Material publication requires a live Session.");
     if (!asset.key.empty()) {
         if (std::ranges::find(loading_materials_, asset.key) != loading_materials_.end())
             return failure("Material parent cycle at " + asset.key);
     }
-    loading_materials_.push_back(asset.key);
-    struct Loading {
-        std::vector<std::string>& keys;
-
-        ~Loading() { keys.pop_back(); }
-    } loading{loading_materials_};
+    loading_materials_.add(asset.key);
+    ScopeExit loading{[this]() noexcept { loading_materials_.pop(); }};
     const auto encoded = assets::material_format::encode(asset);
     if (!encoded)
         return failure(encoded.error().describe());
@@ -246,7 +242,8 @@ Result<ObjectRoot> Session::store_material(assets::Reader& reader, const assets:
             return failure("An installed material key cannot be invented or its author data replaced.");
         if (exact_source) {
             const auto* author = std::get_if<assets::MaterialSourceAsset>(&at->author);
-            const auto source = author ? assets::builtin_material_source(author->source_path) : std::nullopt;
+            const auto source = author ? assets::builtin_material_source(author->source_path)
+                                       : Optional<source::SourceFile>{};
             if (!source || source->path != exact_source->path || source->source != exact_source->source)
                 return failure("An installed Material Source snapshot cannot replace the installed text.");
         }
@@ -292,7 +289,7 @@ Result<ObjectRoot> Session::store_material(assets::Reader& reader, const assets:
                                                                        state.default_textures.size()));
                             root = std::move(*texture);
                         }
-                        state.default_textures.push_back(std::move(root));
+                        state.default_textures.add(std::move(root));
                     }
                 }
             }
@@ -305,15 +302,15 @@ Result<ObjectRoot> Session::store_material(assets::Reader& reader, const assets:
                 error.source->path == document.source_file->path &&
                 error.source->version == document.source_file->version)
                 error.source->disk_path = document.source_file->disk_path;
-            document.diagnostics.push_back({author->source_path, error.message});
+            document.diagnostics.add({author->source_path, error.message});
             if (!missing)
                 return std::unexpected(error);
-            missing->push_back({asset.key, error, std::nullopt, world::DiagnosticKind::unreadable_resource});
+            missing->add({asset.key, error, {}, world::DiagnosticKind::unreadable_resource});
         }
         // A cold fallback (or an absent declaration) may have left enabled
         // child bindings unresolved. Prepare those roots against the new
         // declaration without replacing child authors, history or images.
-        std::vector<std::pair<ObjectRoot, material::InstanceState>> children;
+        Array<std::pair<ObjectRoot, material::InstanceState>> children;
         if (document.root.registered() && state.definition) {
             ATELIER_TRY_BIND(instance_type, runtime_.native_type<material::MaterialInstance>());
             const auto prepare_child = [&](ObjectId object) -> Result<void> {
@@ -352,7 +349,7 @@ Result<ObjectRoot> Session::store_material(assets::Reader& reader, const assets:
                 }
                 if (changed) {
                     ATELIER_TRY_BIND(root, runtime_.hold(object));
-                    children.emplace_back(std::move(*root), std::move(*child));
+                    children.emplace(std::move(*root), std::move(*child));
                 }
                 return {};
             };
@@ -395,7 +392,7 @@ Result<ObjectRoot> Session::store_material(assets::Reader& reader, const assets:
                 ATELIER_TRY_BIND(loaded, texture_resource(reader, texture->asset_key, missing, state.textures.size()));
                 root = std::move(*loaded);
             }
-            state.textures.push_back(std::move(root));
+            state.textures.add(std::move(root));
         }
         if (document.root.registered())
             ATELIER_TRY(material::update_instance(runtime_, document.root.id(), state));
@@ -420,24 +417,24 @@ Result<ObjectRoot> Session::store_material(assets::Reader& reader, const assets:
     return root;
 }
 
-Result<std::vector<presentation::MaterialBinding>>
-Session::mesh_defaults(assets::Reader& reader, const assets::MeshAsset& asset, std::vector<MissingResource>* missing) {
-    std::vector<MissingResource> unreported;
-    std::vector<presentation::MaterialBinding> result;
+Result<Array<presentation::MaterialBinding>>
+Session::mesh_defaults(assets::Reader& reader, const assets::MeshAsset& asset, Array<MissingResource>* missing) {
+    Array<MissingResource> unreported;
+    Array<presentation::MaterialBinding> result;
     result.reserve(asset.materials.size());
     for (const auto& item : asset.materials) {
         ATELIER_TRY_BIND(root, material_resource(reader, item.key, missing ? missing : &unreported));
         report_resources(world_, root->id(), unreported);
         unreported.clear();
-        result.push_back({item.slot, std::move(*root), false});
+        result.add({item.slot, std::move(*root), false});
     }
     return result;
 }
 
-Result<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>>
-Session::mesh_surfaces(assets::Reader& reader, const assets::MeshAsset& asset, std::vector<MissingResource>* missing) {
+Result<std::shared_ptr<const Array<material::ProgramSurfaceRef>>>
+Session::mesh_surfaces(assets::Reader& reader, const assets::MeshAsset& asset, Array<MissingResource>* missing) {
     ATELIER_TRY_BIND(defaults, mesh_defaults(reader, asset, missing));
-    auto result = std::make_shared<std::vector<material::ProgramSurfaceRef>>();
+    auto result = std::make_shared<Array<material::ProgramSurfaceRef>>();
     if (!asset.mesh)
         return result;
     for (std::size_t i = 0; i < asset.mesh->materials().size(); ++i) {
@@ -445,7 +442,7 @@ Session::mesh_surfaces(assets::Reader& reader, const assets::MeshAsset& asset, s
                                           &presentation::MaterialBinding::slot);
         ATELIER_TRY_BIND(surface, at == defaults->end() ? material::default_world_surface()
                                                         : material::capture_program(runtime_, at->resource.id()));
-        result->push_back(std::move(*surface));
+        result->add(std::move(*surface));
     }
     return result;
 }
@@ -470,24 +467,24 @@ Result<assets::MaterialAsset> Session::material_asset(ObjectId object) const {
     return result;
 }
 
-Result<std::vector<assets::MaterialAsset>> Session::material_assets() const {
-    std::vector<assets::MaterialAsset> result;
+Result<Array<assets::MaterialAsset>> Session::material_assets() const {
+    Array<assets::MaterialAsset> result;
     result.reserve(materials_.size());
     for (const auto& [key, document] : materials_) {
         if (unavailable(assets::AssetKind::material, key))
             continue;
         ATELIER_TRY_BIND(asset, material_asset(document.root.id()));
-        result.push_back(std::move(*asset));
+        result.add(std::move(*asset));
     }
     return result;
 }
 
-std::vector<source::SourceFile> Session::material_sources() const {
-    std::vector<source::SourceFile> result;
+Array<source::SourceFile> Session::material_sources() const {
+    Array<source::SourceFile> result;
     for (const auto& [key, document] : materials_) {
         static_cast<void>(key);
         if (document.source_file)
-            result.push_back(*document.source_file);
+            result.add(*document.source_file);
     }
     return result;
 }
@@ -501,12 +498,12 @@ Result<MaterialView> Session::inspect_material(ObjectId object) const {
     view.scene = asset->key.empty();
     view.source = std::holds_alternative<assets::MaterialSourceAsset>(asset->author);
     view.default_material = (*surface)->uses_default_material();
-    view.diagnostics.assign((*surface)->diagnostics().begin(), (*surface)->diagnostics().end());
+    view.diagnostics.append((*surface)->diagnostics());
     if (const auto* instance = std::get_if<assets::MaterialInstanceAsset>(&asset->author)) {
         view.parent_key = instance->parent_key;
         view.entries = instance->entries;
     }
-    std::vector<material::InstanceState> chain;
+    Array<material::InstanceState> chain;
     Set<ObjectId> visited;
     auto current = object;
     for (;;) {
@@ -520,7 +517,7 @@ Result<MaterialView> Session::inspect_material(ObjectId object) const {
         }
         ATELIER_TRY_BIND(key, material::material_key(runtime, current));
         if (const auto* at = materials_.find(*key)) {
-            view.diagnostics.insert(view.diagnostics.end(), at->diagnostics.begin(), at->diagnostics.end());
+            view.diagnostics.append(at->diagnostics);
             if (at->source_file)
                 view.source_file = at->source_file;
         }
@@ -530,7 +527,7 @@ Result<MaterialView> Session::inspect_material(ObjectId object) const {
             break;
         ATELIER_TRY_BIND(state, material::read_instance(runtime, current));
         const auto parent = state->parent.id();
-        chain.push_back(std::move(*state));
+        chain.add(std::move(*state));
         if (parent == ObjectId{})
             break;
         current = parent;
@@ -538,9 +535,9 @@ Result<MaterialView> Session::inspect_material(ObjectId object) const {
     if (view.default_material)
         return view;
     for (const auto& parameter : (*surface)->program().parameters())
-        view.declarations.push_back({parameter.key, parameter.components,
-                                     parameter_value(parameter, (*surface)->parameters()),
-                                     parameter_value(parameter, (*surface)->program().default_parameters())});
+        view.declarations.add({parameter.key, parameter.components,
+                               parameter_value(parameter, (*surface)->parameters()),
+                               parameter_value(parameter, (*surface)->program().default_parameters())});
     for (const auto& input : (*surface)->definition()->textures()) {
         auto binding = input.binding;
         for (auto at = chain.rbegin(); at != chain.rend(); ++at)
@@ -561,17 +558,17 @@ Result<MaterialView> Session::inspect_material(ObjectId object) const {
                         binding = *value;
                 }
             }
-        view.declarations.push_back({input.path, 0, binding, input.binding});
+        view.declarations.add({input.path, 0, binding, input.binding});
     }
     return view;
 }
 
-std::vector<ObjectId> Session::material_objects() const {
-    std::vector<ObjectId> result;
+Array<ObjectId> Session::material_objects() const {
+    Array<ObjectId> result;
     result.reserve(materials_.size());
     for (const auto& [key, document] : materials_) {
         static_cast<void>(key);
-        result.push_back(document.root.id());
+        result.add(document.root.id());
     }
     return result;
 }
@@ -607,7 +604,7 @@ Result<Session::MaterialEdit> Session::prepare_material_edit(ObjectId object, st
     return MaterialEdit{std::move(*held), control, std::move(*document_key), {}};
 }
 
-Result<void> Session::apply_material_entries(ObjectId object, std::span<const MaterialEntryChange> changes,
+Result<void> Session::apply_material_entries(ObjectId object, Span<const MaterialEntryChange> changes,
                                              bool forward, Project* project) {
     ATELIER_TRY_BIND(state, material::read_instance(runtime_, object));
     for (const auto& change : changes) {
@@ -616,8 +613,8 @@ Result<void> Session::apply_material_entries(ObjectId object, std::span<const Ma
         const auto index = static_cast<std::size_t>(at - state->entries.begin());
         if (!value) {
             if (at != state->entries.end()) {
-                state->entries.erase(at);
-                state->textures.erase(state->textures.begin() + static_cast<std::ptrdiff_t>(index));
+                state->entries.remove_at(index);
+                state->textures.remove_at(index);
             }
             continue;
         }
@@ -634,7 +631,7 @@ Result<void> Session::apply_material_entries(ObjectId object, std::span<const Ma
                 if (!(*surface)->uses_default_material() &&
                     std::ranges::find((*surface)->definition()->textures(), change.path,
                                       &material::TextureDefault::path) != (*surface)->definition()->textures().end()) {
-                    std::vector<MissingResource> missing;
+                    Array<MissingResource> missing;
                     ATELIER_TRY_BIND(resolved, texture_resource(project->assets(), binding->asset_key, &missing));
                     report_resources(world_, object, missing);
                     texture = std::move(*resolved);
@@ -642,8 +639,8 @@ Result<void> Session::apply_material_entries(ObjectId object, std::span<const Ma
             }
         }
         if (at == state->entries.end()) {
-            state->entries.push_back(*value);
-            state->textures.push_back(std::move(texture));
+            state->entries.add(*value);
+            state->textures.add(std::move(texture));
         } else {
             *at = *value;
             state->textures[index] = std::move(texture);
@@ -671,7 +668,7 @@ Result<void> Session::preview_material_entry(MaterialEdit& edit, MaterialEntryCh
                     ATELIER_TRY(texture_resource(project->assets(), texture->asset_key));
                 }
             }
-        const auto encoded = assets::material_format::encode_entries(std::span(&*entry, 1));
+        const auto encoded = assets::material_format::encode_entries(Span(&*entry, 1));
         if (!encoded)
             return failure(encoded.error().describe());
     }
@@ -680,9 +677,9 @@ Result<void> Session::preview_material_entry(MaterialEdit& edit, MaterialEntryCh
         ATELIER_TRY_BIND(state, material::read_instance(runtime_, object));
         change.before = entry_at(state->entries, change.path);
     }
-    ATELIER_TRY(apply_material_entries(object, std::span(&change, 1), true));
+    ATELIER_TRY(apply_material_entries(object, Span(&change, 1), true));
     if (at == edit.entries.end())
-        edit.entries.push_back(std::move(change));
+        edit.entries.add(std::move(change));
     else
         at->after = std::move(change.after);
     ++revision_;
@@ -699,7 +696,7 @@ Result<void> Session::commit_material_edit(std::uint64_t control) {
 }
 
 void Session::record_material_edit(MaterialEdit& edit) {
-    std::erase_if(edit.entries, [](const auto& entry) { return same(entry.before, entry.after); });
+    edit.entries.remove_if([](const auto& entry) { return same(entry.before, entry.after); });
     if (edit.entries.empty())
         return;
     MaterialValueChange change{std::move(edit.root), std::move(edit.entries)};
@@ -707,12 +704,11 @@ void Session::record_material_edit(MaterialEdit& edit) {
         remember(std::move(change));
     else {
         auto& document = materials_.at(edit.document_key);
-        document.history.erase(document.history.begin() + static_cast<std::ptrdiff_t>(document.cursor),
-                               document.history.end());
-        document.history.push_back(std::move(change));
+        document.history.truncate(document.cursor);
+        document.history.add(std::move(change));
         ++document.cursor;
         if (document.history.size() > history_limit) {
-            document.history.erase(document.history.begin());
+            document.history.remove_at(0);
             --document.cursor;
         }
         ++revision_;
@@ -778,16 +774,16 @@ bool Session::material_dirty(std::string_view key) const {
     const auto state = material::read_instance(world_.runtime(), at->root.id());
     return !state || at->saved.size() != state->entries.size() ||
            !std::ranges::all_of(at->saved, [&](const auto& entry) {
-               return same(std::optional(entry), entry_at(state->entries, entry.path));
+               return same(Optional<material::Override>(entry), entry_at(state->entries, entry.path));
            });
 }
 
-std::vector<std::string> Session::dirty_materials() const {
-    std::vector<std::string> result;
+Array<std::string> Session::dirty_materials() const {
+    Array<std::string> result;
     for (const auto& [key, value] : materials_) {
         static_cast<void>(value);
         if (material_dirty(key))
-            result.push_back(key);
+            result.add(key);
     }
     return result;
 }
@@ -848,7 +844,7 @@ Result<void> Session::set_material_texture(Project& project, ObjectId object, st
     return set_material_entry(object, {std::string(path), std::move(value), true});
 }
 
-Result<void> Session::replace_material_bindings(ObjectId object, std::vector<presentation::MaterialBinding> after) {
+Result<void> Session::replace_material_bindings(ObjectId object, Array<presentation::MaterialBinding> after) {
     ATELIER_TRY(cancel_edit());
     ATELIER_TRY_BIND(component, admit_component_edit(object));
     ATELIER_TRY_BIND(before, presentation::read_material_bindings(runtime_, object));
@@ -868,7 +864,7 @@ Result<void> Session::assign_material(Project& project, ObjectId object, std::st
     ATELIER_TRY_BIND(bindings, presentation::read_material_bindings(runtime_, object));
     const auto at = std::ranges::find(*bindings, slot, &presentation::MaterialBinding::slot);
     if (at == bindings->end())
-        bindings->push_back({std::string(slot), std::move(*resource), true});
+        bindings->add({std::string(slot), std::move(*resource), true});
     else {
         at->resource = std::move(*resource);
         at->overridden = true;
@@ -880,8 +876,8 @@ Result<void> Session::clear_material(ObjectId object, std::string_view slot) {
     ATELIER_TRY_BIND(bindings, presentation::read_material_bindings(runtime_, object));
     ATELIER_TRY_BIND(type, runtime_.type_of(object));
     ATELIER_TRY_BIND(is_generator, runtime_.is_a(*type, presentation_types_.procedural_generator_component));
-    std::erase_if(*bindings,
-                  [&](const auto& binding) { return binding.slot == slot && (*is_generator || binding.overridden); });
+    bindings->remove_if(
+        [&](const auto& binding) { return binding.slot == slot && (*is_generator || binding.overridden); });
     return replace_material_bindings(object, std::move(*bindings));
 }
 
@@ -911,7 +907,7 @@ Result<ObjectRoot> Session::create_scene_material(ObjectId component, std::strin
     ATELIER_TRY_BIND(instance, material::create_instance(runtime_, {}, material::InstanceState{parent, {}, {}}));
     scene_material_parents_.try_emplace(instance->id(), *parent_key);
     if (at == bindings->end())
-        bindings->push_back({std::string(slot), *instance, true});
+        bindings->add({std::string(slot), *instance, true});
     else {
         at->resource = *instance;
         at->overridden = true;

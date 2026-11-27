@@ -1,8 +1,8 @@
     static void action(Reply& reply, ActionKind kind, ControlKey key,
                        ActionValue value = {}, ControlKey target = 0, bool keep_menu_open = false) {
-        reply.effects.emplace_back(Action{kind,key,std::move(value),target,keep_menu_open});
+        reply.effects.emplace(Action{kind,key,std::move(value),target,keep_menu_open});
     }
-    static void platform(Reply& reply, PlatformRequest request) { reply.effects.emplace_back(std::move(request)); }
+    static void platform(Reply& reply, PlatformRequest request) { reply.effects.emplace(std::move(request)); }
     template<class T> static bool text_ok(Reply& reply,const Result<T>& result,ControlKey key) {
         if (!result && !reply.error) {reply.error=result.error();reply.error->key=key;}
         return result.has_value();
@@ -43,11 +43,11 @@
             reply.redraw=true;return true;
         }
         const bool numeric=state.control.kind==ControlKind::number;
-        const auto parsed=numeric?number(edit->buffer().current().text,state.control):std::optional<double>{};
+        const auto parsed=numeric?number(edit->buffer().current().text,state.control):Optional<double>{};
         commit=commit && (!numeric || parsed.has_value());
         const auto value=numeric?(commit?*parsed:edit->original_value):0.0;
         auto content=commit?edit->buffer().current().text:edit->buffer().original();
-        std::optional<Edit> next;
+        Optional<Edit> next;
         if (keep_context && focus==key) {
             auto candidate=Edit::create(state,numeric?format(state.control,value):content,value,!numeric,false);
             if (!text_ok(reply,candidate,key)) {

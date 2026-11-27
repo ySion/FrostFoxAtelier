@@ -1,14 +1,15 @@
 #pragma once
 
+#include "foundation/array.hpp"
+#include "foundation/optional.hpp"
+#include "foundation/span.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <limits>
 #include <memory>
-#include <optional>
-#include <span>
 #include <string_view>
-#include <vector>
 
 namespace atelier::ui_layout {
 
@@ -80,7 +81,7 @@ struct Error {
     InputField field{};
 
     // set_tree entry responsible for a validation error, when available.
-    std::optional<std::size_t> tree_index{};
+    Optional<std::size_t> tree_index{};
 };
 
 std::string_view describe(ErrorCode) noexcept;
@@ -132,7 +133,7 @@ struct Axis {
 
     float minimum{};
 
-    std::optional<float> maximum;
+    Optional<float> maximum;
 
     Basis basis{};
 
@@ -142,16 +143,16 @@ struct Axis {
 
     static Axis fixed(float size) { return {SizeRule::fixed, size, 0, {}}; }
 
-    static Axis content(float minimum = 0, std::optional<float> maximum = {}) {
+    static Axis content(float minimum = 0, Optional<float> maximum = {}) {
         return {SizeRule::content, 0, minimum, maximum};
     }
 
-    static Axis expand(float weight = 1, float minimum = 0, std::optional<float> maximum = {}) {
+    static Axis expand(float weight = 1, float minimum = 0, Optional<float> maximum = {}) {
         return {SizeRule::expand, weight, minimum, maximum};
     }
 
     static Axis flex(Basis basis, float grow_weight = 1, float shrink_weight = 1, float minimum = 0,
-                     std::optional<float> maximum = {}) {
+                     Optional<float> maximum = {}) {
         return {SizeRule::flex, 0, minimum, maximum, basis, grow_weight, shrink_weight};
     }
 
@@ -197,9 +198,9 @@ struct FlexSpec {
 };
 
 struct Cell {
-    std::optional<std::uint32_t> row{};
+    Optional<std::uint32_t> row{};
 
-    std::optional<std::uint32_t> column{};
+    Optional<std::uint32_t> column{};
 
     std::uint32_t row_span{1};
 
@@ -211,9 +212,9 @@ struct Cell {
 enum class AutoFlow { row, column };
 
 struct GridSpec {
-    std::vector<Axis> columns{};
+    Array<Axis> columns{};
 
-    std::vector<Axis> rows{};
+    Array<Axis> rows{};
 
     float column_gap{};
 
@@ -270,7 +271,7 @@ struct NodeInput {
     float cross_gap{};
 
     // Table tracks share widths across ordinary row children.
-    std::vector<Axis> columns;
+    Array<Axis> columns;
 
     // Wrap: zero uses individual natural widths; positive uses repeated slots.
     float item_width{};
@@ -279,9 +280,9 @@ struct NodeInput {
 
     float line_align{}; // [0,1], applies independently to every wrap line.
 
-    std::optional<FlexSpec> flow{}; // Only row/column. Legacy wrap remains natural packing.
+    Optional<FlexSpec> flow{}; // Only row/column. Legacy wrap remains natural packing.
 
-    std::optional<GridSpec> grid_spec{};
+    Optional<GridSpec> grid_spec{};
 
     Cell cell{};
 
@@ -295,7 +296,7 @@ struct NodeInput {
 
     static NodeInput measured(std::uint64_t key, std::uint64_t revision = 1);
 
-    static NodeInput table(std::vector<Axis> columns, float column_gap = 0, float row_gap = 0);
+    static NodeInput table(Array<Axis> columns, float column_gap = 0, float row_gap = 0);
 
     static NodeInput wrap(float item_gap = 0, float line_gap = 0);
 
@@ -314,7 +315,7 @@ struct RootInput {
 
     float gap{};
 
-    std::optional<FlexSpec> flow{};
+    Optional<FlexSpec> flow{};
 
     bool operator==(const RootInput&) const = default;
 };
@@ -339,7 +340,7 @@ struct MeasureQuery {
 
     // Absent: unwrapped intrinsic size. Present: natural size at content width.
     // No implicit viewport-height limit is passed to the provider.
-    std::optional<float> width;
+    Optional<float> width;
 
     bool first_baseline{};
 
@@ -355,13 +356,13 @@ struct MeasuredSize {
 
     float height{};
 
-    std::optional<float> first_baseline;
+    Optional<float> first_baseline;
 
     MeasuredSize() = default;
 
     MeasuredSize(Size size) : width(size.width), height(size.height) {}
 
-    MeasuredSize(float width, float height, std::optional<float> baseline = {})
+    MeasuredSize(float width, float height, Optional<float> baseline = {})
         : width(width), height(height), first_baseline(baseline) {}
 };
 
@@ -395,7 +396,7 @@ struct LayoutView {
 
     Size viewport{};
 
-    std::span<const LayoutBox> boxes; // Ordered preorder; root first.
+    Span<const LayoutBox> boxes; // Ordered preorder; root first.
 
     // O(1). Uses this publication, including nodes removed since it was published.
     const LayoutBox* find(LayoutNodeId) const noexcept;
@@ -408,11 +409,11 @@ private:
     friend struct LayoutSnapshot;
 
     LayoutView(std::uint64_t publication, std::uint64_t input, std::uint64_t provider, Size viewport,
-               std::span<const LayoutBox> boxes, std::span<const std::uint32_t> index)
+               Span<const LayoutBox> boxes, Span<const std::uint32_t> index)
         : publication(publication), input_revision(input), provider_revision(provider), viewport(viewport),
           boxes(boxes), index_(index) {}
 
-    std::span<const std::uint32_t> index_;
+    Span<const std::uint32_t> index_;
 };
 
 struct LayoutSnapshot {
@@ -424,7 +425,7 @@ struct LayoutSnapshot {
 
     Size viewport{};
 
-    std::vector<LayoutBox> boxes; // Geometry only; does not retain text/resources.
+    Array<LayoutBox> boxes; // Geometry only; does not retain text/resources.
 
     LayoutView view() const noexcept;
 
@@ -433,7 +434,7 @@ struct LayoutSnapshot {
 private:
     friend class LayoutDocument;
 
-    std::vector<std::uint32_t> index_;
+    Array<std::uint32_t> index_;
 };
 
 struct Stats {
@@ -474,7 +475,7 @@ inline constexpr std::size_t append_position = std::numeric_limits<std::size_t>:
 struct TreeNodeInput {
     LayoutNodeId node{}; // Empty creates; a live identity retains its node.
 
-    std::optional<std::size_t> parent{}; // Earlier entry; absent means implicit root.
+    Optional<std::size_t> parent{}; // Earlier entry; absent means implicit root.
 
     NodeInput input{};
 };
@@ -519,7 +520,7 @@ public:
     // defines sibling order; omitted identities retire, retained identities survive.
     // Validate final relationships and reserve before commit, including replacement
     // at capacity. Returns identities in entry order. The old publication survives.
-    Result<std::vector<LayoutNodeId>> set_tree(std::span<const TreeNodeInput>);
+    Result<Array<LayoutNodeId>> set_tree(Span<const TreeNodeInput>);
 
     Result<LayoutView> compute(Size viewport, std::uint64_t provider_revision);
 
@@ -588,7 +589,7 @@ private:
 
     void restore_anchor(std::size_t row, double within) noexcept;
 
-    void rebuild(std::vector<double>& sums, const std::vector<double>& heights) const noexcept;
+    void rebuild(Array<double>& sums, const Array<double>& heights) const noexcept;
 
     Result<void> revision_available() const;
 
@@ -604,9 +605,9 @@ private:
 
     std::uint64_t revision_{1};
 
-    std::vector<double> heights_;
+    Array<double> heights_;
 
-    std::vector<double> sums_;
+    Array<double> sums_;
 };
 
 } // namespace atelier::ui_layout

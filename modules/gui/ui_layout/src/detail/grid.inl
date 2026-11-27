@@ -12,23 +12,23 @@
     };
     struct GridTrack { double size{}, position{}; };
     struct GridPrefix { std::uint32_t non_fixed{}, expand{}; };
-    Buffer<GridPlan> grid_plans{BufferAllocator<GridPlan>{&memory}};
-    Buffer<GridItem> grid_items{BufferAllocator<GridItem>{&memory}};
-    Buffer<std::size_t> grid_item_for_work{BufferAllocator<std::size_t>{&memory}};
-    Buffer<GridTrack> grid_tracks{BufferAllocator<GridTrack>{&memory}};
-    Buffer<GridPrefix> grid_prefixes{BufferAllocator<GridPrefix>{&memory}};
-    Buffer<std::uint64_t> grid_occupancy{BufferAllocator<std::uint64_t>{&memory}};
-    Buffer<std::uint32_t> grid_locked_cursors{BufferAllocator<std::uint32_t>{&memory}};
-    Buffer<std::size_t> grid_candidates{BufferAllocator<std::size_t>{&memory}};
-    Buffer<double> grid_increases{BufferAllocator<double>{&memory}};
-    Buffer<std::uint32_t> grid_touched_tracks{BufferAllocator<std::uint32_t>{&memory}};
+    Buffer<GridPlan> grid_plans{&memory};
+    Buffer<GridItem> grid_items{&memory};
+    Buffer<std::size_t> grid_item_for_work{&memory};
+    Buffer<GridTrack> grid_tracks{&memory};
+    Buffer<GridPrefix> grid_prefixes{&memory};
+    Buffer<std::uint64_t> grid_occupancy{&memory};
+    Buffer<std::uint32_t> grid_locked_cursors{&memory};
+    Buffer<std::size_t> grid_candidates{&memory};
+    Buffer<double> grid_increases{&memory};
+    Buffer<std::uint32_t> grid_touched_tracks{&memory};
     // Intrinsic Grid sizing can run while the parent is collecting its ordinary
     // shares. Keep track allocation scratch separate from that live parent state.
-    Buffer<Share> grid_shares{BufferAllocator<Share>{&memory}};
-    Buffer<std::uint32_t> grid_share_indices{BufferAllocator<std::uint32_t>{&memory}};
-    Buffer<double> grid_share_output{BufferAllocator<double>{&memory}};
-    Buffer<double> grid_weight_sums{BufferAllocator<double>{&memory}};
-    Buffer<std::pair<double, std::size_t>> grid_events{BufferAllocator<std::pair<double, std::size_t>>{&memory}};
+    Buffer<Share> grid_shares{&memory};
+    Buffer<std::uint32_t> grid_share_indices{&memory};
+    Buffer<double> grid_share_output{&memory};
+    Buffer<double> grid_weight_sums{&memory};
+    Buffer<std::pair<double, std::size_t>> grid_events{&memory};
 
     void prepare_grid_work() {
         grid_items.clear();
@@ -46,7 +46,7 @@
         return bits << (column % 64);
     }
     struct GridCollision { std::uint32_t row{}, column{}; };
-    std::optional<GridCollision> grid_collision(const GridItem& item, std::size_t stride) const {
+    Optional<GridCollision> grid_collision(const GridItem& item, std::size_t stride) const {
         for (auto row = item.row; row < item.row + item.row_span; ++row) {
             for (auto column = item.column; column < item.column + item.column_span;) {
                 const auto count = std::min<std::uint32_t>(64 - column % 64, item.column + item.column_span - column);
@@ -110,7 +110,7 @@
                 return std::unexpected(grid_error(child, ErrorCode::capacity_exceeded, InputField::cell));
             automatic |= !cell.row || !cell.column;
             grid_item_for_work[slots[child].work_index] = grid_items.size();
-            grid_items.push_back({child, cell.row.value_or(no_slot), cell.column.value_or(no_slot), cell.row_span, cell.column_span});
+            grid_items.add({child, cell.row.value_or(no_slot), cell.column.value_or(no_slot), cell.row_span, cell.column_span});
         }
         plan.count = grid_items.size() - plan.begin;
         if (automatic) {
@@ -207,7 +207,7 @@
                 const auto rule = grid_rule(index, horizontal_axis, track).rule;
                 non_fixed += rule != SizeRule::fixed;
                 expand += rule == SizeRule::expand;
-                grid_prefixes.push_back({non_fixed, expand});
+                grid_prefixes.add({non_fixed, expand});
             }
         }
         plan.ready = true;
@@ -238,7 +238,7 @@
         const auto position = grid_item_for_work[slots[child].work_index];
         return position != no_pending && grid_contributes(index, grid_items[position], true, true);
     }
-    Result<float> grid_size_axis(std::uint32_t index, bool horizontal_axis, std::optional<float> available) {
+    Result<float> grid_size_axis(std::uint32_t index, bool horizontal_axis, Optional<float> available) {
         const auto plan = grid_plans[slots[index].work_index];
         const auto offset = horizontal_axis ? plan.columns_begin : plan.rows_begin;
         const auto count = horizontal_axis ? plan.columns : plan.rows;
@@ -254,7 +254,7 @@
         bool spanning = false;
         for (std::size_t i = plan.begin; i < plan.begin + plan.count; ++i) {
             if (!grid_contributes(index, grid_items[i], horizontal_axis, !available)) continue;
-            grid_candidates.push_back(i);
+            grid_candidates.add(i);
             spanning |= (horizontal_axis ? grid_items[i].column_span : grid_items[i].row_span) > 1;
         }
         if (spanning) std::sort(grid_candidates.begin(), grid_candidates.end(), [&](std::size_t a, std::size_t b) {
@@ -266,7 +266,7 @@
         auto plan_increase = [&](std::uint32_t track, double increase) {
             auto& planned = grid_increases[track];
             if (increase <= planned) return;
-            if (planned == 0) grid_touched_tracks.push_back(track);
+            if (planned == 0) grid_touched_tracks.add(track);
             planned = increase;
         };
         std::size_t begin = 0;
@@ -302,8 +302,8 @@
                     const auto& rule = grid_rule(index, horizontal_axis, track);
                     const auto current = grid_tracks[offset + track].size;
                     if (rule.rule == SizeRule::fixed) continue;
-                    grid_shares.push_back({0, 1, rule.maximum ? std::optional<double>(std::max(0.0, *rule.maximum - current)) : std::nullopt});
-                    grid_share_indices.push_back(track);
+                    grid_shares.add({0, 1, rule.maximum ? Optional<double>(std::max(0.0, *rule.maximum - current)) : Optional<double>{}});
+                    grid_share_indices.add(track);
                 }
                 allocate_slots(grid_shares, std::max(0.0, demand - occupied), grid_share_output, grid_events, grid_weight_sums);
                 for (std::size_t track = 0; track < grid_share_indices.size(); ++track)
@@ -324,8 +324,8 @@
             for (std::uint32_t track = 0; track < count; ++track) {
                 const auto& rule = grid_rule(index, horizontal_axis, track);
                 if (rule.rule == SizeRule::expand) {
-                    grid_shares.push_back({rule.minimum, rule.value, rule.maximum ? std::optional<double>(*rule.maximum) : std::nullopt});
-                    grid_share_indices.push_back(track);
+                    grid_shares.add({rule.minimum, rule.value, rule.maximum ? Optional<double>(*rule.maximum) : Optional<double>{}});
+                    grid_share_indices.add(track);
                 } else fixed += grid_tracks[offset + track].size;
             }
             allocate_slots(grid_shares, std::max(0.0, static_cast<double>(*available) - fixed), grid_share_output, grid_events, grid_weight_sums);

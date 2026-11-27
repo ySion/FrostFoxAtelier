@@ -17,18 +17,18 @@ void wait(render::Renderer& renderer, render::MaterialBatch& batch) {
     }
 }
 
-std::shared_ptr<const std::vector<std::uint32_t>> slots(std::initializer_list<std::uint32_t> values) {
-    return std::make_shared<const std::vector<std::uint32_t>>(values);
+std::shared_ptr<const atelier::Array<std::uint32_t>> slots(std::initializer_list<std::uint32_t> values) {
+    return std::make_shared<const atelier::Array<std::uint32_t>>(values);
 }
 
 material::ProgramSurfaceRef texture_override(material::ProgramSurfaceRef parent, const char* path,
                                              material::ImageRef image) {
-    return take(material::resolve_instance(
-        parent, std::array{material::Override{path, material::TextureBinding{"native/image"}, true}},
-        std::array{image}));
+    const material::Override overrides[]{{path, material::TextureBinding{"native/image"}, true}};
+    const material::ImageRef images[]{image};
+    return take(material::resolve_instance(parent, overrides, images));
 }
 
-std::vector<material::ProgramSurfaceRef> surfaces(const std::filesystem::path& output) {
+atelier::Array<material::ProgramSurfaceRef> surfaces(const std::filesystem::path& output) {
     atelier::Runtime compiler;
     take(material::register_program_types(compiler));
     const auto compile = [&](const char* name, bool masked) {
@@ -58,33 +58,30 @@ std::vector<material::ProgramSurfaceRef> surfaces(const std::filesystem::path& o
     };
     const auto mask = compile("NativeMask", true);
     const auto opaque = compile("NativeOpaque", false);
-    const auto white = take(material::Image::create(1, 1, std::vector<std::uint8_t>{255, 255, 255, 255}));
-    std::vector<std::uint8_t> ramp(256 * 4);
+    const auto white = take(material::Image::create(1, 1, atelier::Array<std::uint8_t>{255, 255, 255, 255}));
+    atelier::Array<std::uint8_t> ramp(256 * 4);
     for (unsigned i = 0; i < 256; ++i) {
         ramp[i * 4] = ramp[i * 4 + 1] = ramp[i * 4 + 2] = static_cast<std::uint8_t>(i);
         ramp[i * 4 + 3] = 255;
     }
     const auto coverage_image = take(material::Image::create(256, 1, std::move(ramp)));
     const auto source_surface = [&](auto program, material::Policy policy) {
-        const auto definition = take(material::make_definition(
-            program, policy,
-            std::array{material::TextureDefault{
-                           "mData", {"native/white"}, material::TextureColor::linear, {.25f, .5f, .75f, 1}},
-                       material::TextureDefault{"zCoverage",
-                                                {"native/ramp", material::Address::clamp},
-                                                material::TextureColor::linear,
-                                                {0, 0, 0, 1}},
-                       material::TextureDefault{
-                           "aColor", {"native/white"}, material::TextureColor::srgb, {.2f, .4f, .8f, 1}}}));
-        std::vector<material::ImageRef> images;
+        const material::TextureDefault defaults[]{
+            {"mData", {"native/white"}, material::TextureColor::linear, {.25f, .5f, .75f, 1}},
+            {"zCoverage", {"native/ramp", material::Address::clamp}, material::TextureColor::linear, {0, 0, 0, 1}},
+            {"aColor", {"native/white"}, material::TextureColor::srgb, {.2f, .4f, .8f, 1}}};
+        const auto definition = take(material::make_definition(program, policy, defaults));
+        atelier::Array<material::ImageRef> images;
         for (const auto& input : definition->textures())
-            images.push_back(input.path == "zCoverage" ? coverage_image : white);
+            images.add(input.path == "zCoverage" ? coverage_image : white);
         return take(material::resolve_source(definition, images));
     };
     const auto masked = source_surface(mask, {material::Coverage::mask, true, true});
     const auto solid = source_surface(opaque, {material::Coverage::opaque, true, true});
-    const auto override = [&](auto parent, std::vector<material::Override> entries) {
-        return take(material::resolve_instance(parent, entries, std::vector<material::ImageRef>(entries.size())));
+    const auto override = [&](auto parent, std::initializer_list<material::Override> entries) {
+        const atelier::Array<material::ImageRef> images(entries.size());
+        return take(material::resolve_instance(
+            parent, atelier::Span<const material::Override>{entries.begin(), entries.size()}, images));
     };
     const auto emitter = override(masked, {{"cutoff", 0.f, true},
                                            {"color", atelier::math::Vector3{}, true},
@@ -105,18 +102,18 @@ void run(HWND window, const std::filesystem::path& output) {
     auto batch = take(renderer.prepare_materials(table));
     wait(renderer, batch);
     ui::Frame drawing{.id = 30000, .extent = take(renderer.target()).extent, .draws = {}};
-    std::vector<geometry::Vertex> vertices;
+    atelier::Array<geometry::Vertex> vertices;
     for (float z : {.2f, .6f})
-        vertices.insert(vertices.end(), {{{-1, -1, z}, {0, 0, -1}, {0, 1}, {1, 0, 0, 1}},
-                                         {{-1, 1, z}, {0, 0, -1}, {0, 0}, {1, 0, 0, 1}},
-                                         {{1, 1, z}, {0, 0, -1}, {1, 0}, {1, 0, 0, 1}},
-                                         {{-1, -1, z}, {0, 0, -1}, {0, 1}, {1, 0, 0, 1}},
-                                         {{1, 1, z}, {0, 0, -1}, {1, 0}, {1, 0, 0, 1}},
-                                         {{1, -1, z}, {0, 0, -1}, {1, 1}, {1, 0, 0, 1}}});
+        vertices.append({{{-1, -1, z}, {0, 0, -1}, {0, 1}, {1, 0, 0, 1}},
+                         {{-1, 1, z}, {0, 0, -1}, {0, 0}, {1, 0, 0, 1}},
+                         {{1, 1, z}, {0, 0, -1}, {1, 0}, {1, 0, 0, 1}},
+                         {{-1, -1, z}, {0, 0, -1}, {0, 1}, {1, 0, 0, 1}},
+                         {{1, 1, z}, {0, 0, -1}, {1, 0}, {1, 0, 0, 1}},
+                         {{1, -1, z}, {0, 0, -1}, {1, 1}, {1, 0, 0, 1}}});
     std::array<render::MeshInstance, 1> meshes{};
-    meshes[0].geometry = take(geometry::Mesh::create(vertices, std::vector<std::uint8_t>{},
-                                                     std::vector<geometry::MaterialSlot>{{"front"}, {"back"}},
-                                                     std::vector<geometry::MeshPart>{{0, 6, 0}, {6, 6, 1}}));
+    meshes[0].geometry = take(geometry::Mesh::create(std::move(vertices), atelier::Array<std::uint8_t>{},
+                                                     atelier::Array<geometry::MaterialSlot>{{"front"}, {"back"}},
+                                                     atelier::Array<geometry::MeshPart>{{0, 6, 0}, {6, 6, 1}}));
     meshes[0].stable_key = 1;
     meshes[0].material_slots = slots({0, 1});
     render::Frame frame{drawing, {}, {0, 0, float(drawing.extent.width), float(drawing.extent.height)}, meshes};
@@ -145,7 +142,7 @@ void run(HWND window, const std::filesystem::path& output) {
               "engine default is opaque magenta");
     }
     meshes[0].material_slots = slots({0, 1});
-    std::vector<std::uint8_t> checks(256 * 256 * 4);
+    atelier::Array<std::uint8_t> checks(256 * 256 * 4);
     for (unsigned v = 0; v < 256; ++v)
         for (unsigned u = 0; u < 256; ++u) {
             const auto at = (v * 256 + u) * 4;
@@ -156,11 +153,11 @@ void run(HWND window, const std::filesystem::path& output) {
         }
     auto next_table = table;
     next_table[0] = texture_override(table[2], "aColor", take(material::Image::create(256, 256, std::move(checks))));
-    next_table[0] = take(material::resolve_instance(
-        next_table[0],
-        std::array{material::Override{"color", atelier::math::Vector3{1, 1, 1}, true},
-                   material::Override{"mode", 1.f, true}, material::Override{"frequency", 64.f, true}},
-        std::array<material::ImageRef, 3>{}));
+    const material::Override next_overrides[]{{"color", atelier::math::Vector3{1, 1, 1}, true},
+                                              {"mode", 1.f, true},
+                                              {"frequency", 64.f, true}};
+    const material::ImageRef next_images[3]{};
+    next_table[0] = take(material::resolve_instance(next_table[0], next_overrides, next_images));
     auto next = take(renderer.prepare_materials(next_table));
     wait(renderer, next);
     // Prepared but unadopted image ownership survives unrelated old frames.
@@ -178,15 +175,15 @@ void run(HWND window, const std::filesystem::path& output) {
                   "equal-area red/blue checker filters to a visible mean at the authored front depth");
         }
     frame.materials = &batch;
-    std::vector<render::MeshInstance> room;
+    atelier::Array<render::MeshInstance> room;
     for (const auto& mesh : scene_lit_e2e::Room{}.meshes)
-        room.push_back({mesh.world, mesh.selected, mesh.geometry, mesh.stable_key, slots({3})});
-    room[7].geometry = take(geometry::Mesh::create(std::vector<geometry::Vertex>{{{-2, 6, -2}, {0, -1, 0}, {0, 0}},
-                                                                                 {{2, 6, -2}, {0, -1, 0}, {1, 0}},
-                                                                                 {{2, 6, 2}, {0, -1, 0}, {1, 1}},
-                                                                                 {{-2, 6, -2}, {0, -1, 0}, {0, 0}},
-                                                                                 {{2, 6, 2}, {0, -1, 0}, {1, 1}},
-                                                                                 {{-2, 6, 2}, {0, -1, 0}, {0, 1}}}));
+        room.add({mesh.world, mesh.selected, mesh.geometry, mesh.stable_key, slots({3})});
+    room[7].geometry = take(geometry::Mesh::create(atelier::Array<geometry::Vertex>{{{-2, 6, -2}, {0, -1, 0}, {0, 0}},
+                                                                                    {{2, 6, -2}, {0, -1, 0}, {1, 0}},
+                                                                                    {{2, 6, 2}, {0, -1, 0}, {1, 1}},
+                                                                                    {{-2, 6, -2}, {0, -1, 0}, {0, 0}},
+                                                                                    {{2, 6, 2}, {0, -1, 0}, {1, 1}},
+                                                                                    {{-2, 6, 2}, {0, -1, 0}, {0, 1}}}));
     room[7].world = scene_lit_e2e::box(0, 0, 0, 1, 1, 1);
     room[7].material_slots = slots({4});
     frame.meshes = room;

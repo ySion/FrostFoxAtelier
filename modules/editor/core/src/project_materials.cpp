@@ -17,7 +17,7 @@ Result<const assets::ProjectEntry*> listed(const Project& project, std::string_v
     return at;
 }
 
-auto failed_import(std::string message, const std::vector<std::filesystem::path>& paths) {
+auto failed_import(std::string message, Span<const std::filesystem::path> paths) {
     for (auto at = paths.rbegin(); at != paths.rend(); ++at) {
         std::error_code error;
         std::filesystem::remove(*at, error);
@@ -29,7 +29,7 @@ auto failed_import(std::string message, const std::vector<std::filesystem::path>
 }
 
 Result<std::string> Project::import_texture(const std::filesystem::path& source) {
-    std::vector<std::filesystem::path> created;
+    Array<std::filesystem::path> created;
     if (!assets::is_texture_path(source))
         return failed_import("Import a PNG, JPEG, BMP or TIFF texture.", created);
     ATELIER_TRY_BIND(bytes, assets::read_file(source, 128 * 1024 * 1024));
@@ -46,11 +46,11 @@ Result<std::string> Project::import_texture(const std::filesystem::path& source)
     if (exists)
         return failed_import("Texture metadata already exists.", created);
     ATELIER_TRY(write_file(*target, *bytes, WriteMode::create));
-    created.push_back(*target);
+    created.add(*target);
     // refresh is the sole GUID producer for all resource kinds.
     auto refreshed = refresh();
     if (std::filesystem::exists(metadata, error))
-        created.push_back(metadata);
+        created.add(metadata);
     if (error)
         return failed_import(platform::error_message(error), created);
     if (!refreshed)
@@ -86,7 +86,7 @@ Result<assets::TextureAsset> Project::reimport_texture(std::string_view key, con
 
 Result<std::string> Project::create_material(const std::filesystem::path& relative,
                                              const assets::MaterialAsset& asset) {
-    std::vector<std::filesystem::path> created;
+    Array<std::filesystem::path> created;
     const auto normalized = relative.lexically_normal();
     if (normalized.empty() || normalized.has_root_path() || normalized.extension() != L".material" ||
         *normalized.begin() != L"Content")
@@ -123,10 +123,10 @@ Result<std::string> Project::create_material(const std::filesystem::path& relati
         return failed_import(document.error().describe(), created);
     const auto bytes = json::write(document->root(), {true, true});
     ATELIER_TRY(write_file(*target, {bytes.data(), bytes.size()}, WriteMode::create));
-    created.push_back(*target);
+    created.add(*target);
     auto refreshed = refresh();
     if (std::filesystem::exists(metadata, error))
-        created.push_back(metadata);
+        created.add(metadata);
     if (error)
         return failed_import(platform::error_message(error), created);
     if (!refreshed)
@@ -138,7 +138,7 @@ Result<std::string> Project::create_material(const std::filesystem::path& relati
 }
 
 Result<std::string> Project::create_material_source(const std::filesystem::path& relative, std::string_view text) {
-    std::vector<std::filesystem::path> created;
+    Array<std::filesystem::path> created;
     const auto normalized = relative.lexically_normal();
     if (normalized.empty() || normalized.has_root_path() || *normalized.begin() != L"Content" ||
         !assets::is_material_source_path(normalized))
@@ -155,7 +155,7 @@ material.Output shade(material.Context context,Params p) {
 }
 )";
     ATELIER_TRY(write_file(*source_file, text, WriteMode::create));
-    created.push_back(*source_file);
+    created.add(*source_file);
     assets::MaterialAsset asset;
     auto name = platform::utf16_to_utf8(source_path.generic_wstring());
     if (!name)
@@ -183,7 +183,7 @@ Result<void> Project::save_material(const assets::MaterialAsset& asset) {
 }
 
 Result<std::string> Project::create_procedural_graph(const std::filesystem::path& relative, std::string_view text) {
-    std::vector<std::filesystem::path> created;
+    Array<std::filesystem::path> created;
     const auto normalized = relative.lexically_normal();
     if (normalized.empty() || normalized.has_root_path() || !assets::is_procedural_graph_path(normalized) ||
         *normalized.begin() != L"Content")
@@ -221,10 +221,10 @@ Result<std::string> Project::create_procedural_graph(const std::filesystem::path
         content.assign(text);
     }
     ATELIER_TRY(write_file(*target, content, WriteMode::create));
-    created.push_back(*target);
+    created.add(*target);
     auto refreshed = refresh();
     if (std::filesystem::exists(metadata, error))
-        created.push_back(metadata);
+        created.add(metadata);
     if (error)
         return failed_import(platform::error_message(error), created);
     if (!refreshed)

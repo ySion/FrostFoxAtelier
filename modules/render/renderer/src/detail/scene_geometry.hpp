@@ -1,4 +1,5 @@
 #pragma once
+#include "foundation/array.hpp"
 #include "geometry/mesh.hpp"
 #include "rhi/rhi.hpp"
 #include "result.hpp"
@@ -6,7 +7,6 @@
 #include <array>
 #include <cstdint>
 #include <functional>
-#include <vector>
 
 namespace atelier::renderer::detail {
 // The one GPU form of an immutable Mesh, shared by every raster pass and ray hit.
@@ -36,11 +36,11 @@ struct SceneGeometry {
 };
 
 struct WeldedMesh {
-    std::vector<geometry::Vertex> vertices;
+    Array<geometry::Vertex> vertices;
 
-    std::vector<std::uint32_t> indices;
+    Array<std::uint32_t> indices;
 
-    std::vector<GpuFace> faces;
+    Array<GpuFace> faces;
 };
 
 CancellableResult<WeldedMesh> weld(const geometry::Mesh& mesh, const std::function<bool()>* stop_requested);

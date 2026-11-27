@@ -36,17 +36,17 @@ Result<Types> register_types(Runtime& runtime) {
         return std::unexpected(vector.error());
     if (!quaternion)
         return std::unexpected(quaternion.error());
-    std::vector<TypeDefinition> definitions;
-    definitions.push_back(reflection::Definition<Entity>::build(runtime));
-    definitions.push_back(reflection::Definition<Component>::build(runtime));
-    definitions.push_back(reflection::Definition<ShapeKind>::build(runtime));
-    definitions.push_back(reflection::Definition<MotionKind>::build(runtime));
-    definitions.push_back(reflection::Definition<Response>::build(runtime));
-    definitions.push_back(reflection::Definition<PhysicsMaterial>::build(runtime));
-    definitions.push_back(reflection::Definition<BodySettings>::build(runtime));
-    definitions.push_back(reflection::Definition<PrimitiveComponent>::build(runtime));
-    definitions.push_back(reflection::Definition<CollisionComponent>::build(runtime));
-    definitions.push_back(reflection::Definition<SpatialComponent>::build(runtime));
+    Array<TypeDefinition> definitions;
+    definitions.add(reflection::Definition<Entity>::build(runtime));
+    definitions.add(reflection::Definition<Component>::build(runtime));
+    definitions.add(reflection::Definition<ShapeKind>::build(runtime));
+    definitions.add(reflection::Definition<MotionKind>::build(runtime));
+    definitions.add(reflection::Definition<Response>::build(runtime));
+    definitions.add(reflection::Definition<PhysicsMaterial>::build(runtime));
+    definitions.add(reflection::Definition<BodySettings>::build(runtime));
+    definitions.add(reflection::Definition<PrimitiveComponent>::build(runtime));
+    definitions.add(reflection::Definition<CollisionComponent>::build(runtime));
+    definitions.add(reflection::Definition<SpatialComponent>::build(runtime));
     ATELIER_TRY_BIND(ids, runtime.register_types(std::move(definitions)));
     Types types;
     types.vector3 = *vector;
@@ -207,8 +207,8 @@ Result<ComponentStatus> inspect_component(Runtime& runtime, ObjectId object) {
     return status;
 }
 
-Result<std::vector<ObjectRoot>> components(Runtime& runtime, ObjectId object) {
-    return runtime.with_native<const Entity>(object, [&](const Entity& entity) -> Result<std::vector<ObjectRoot>> {
+Result<Array<ObjectRoot>> components(Runtime& runtime, ObjectId object) {
+    return runtime.with_native<const Entity>(object, [&](const Entity& entity) -> Result<Array<ObjectRoot>> {
         if (Access::transitioning(entity))
             return error(ErrorCode::busy, "Entity is transitioning.");
         if (auto* world = Access::member_world(entity)) {
@@ -216,12 +216,12 @@ Result<std::vector<ObjectRoot>> components(Runtime& runtime, ObjectId object) {
         }
         ATELIER_TRY_BIND(field, runtime.reference_field(object, Access::sequence(entity)));
         ATELIER_TRY_BIND(count, runtime.sequence_size(*field));
-        std::vector<ObjectRoot> result;
+        Array<ObjectRoot> result;
         result.reserve(*count);
         for (std::size_t i = 0; i < *count; ++i) {
             ATELIER_TRY_BIND(reference, runtime.sequence_read(*field, i));
             ATELIER_TRY_BIND(root, runtime.hold(*reference));
-            result.push_back(std::move(*root));
+            result.add(std::move(*root));
         }
         return result;
     });
@@ -257,7 +257,7 @@ Result<Commit> destroy_entity(Runtime& runtime, ObjectId object) {
     }
     // Hold and validate the complete composition before any exit or unlink.
     ATELIER_TRY_BIND(owned, detail::subtree(runtime, object));
-    std::vector<std::vector<ObjectRoot>> groups;
+    Array<Array<ObjectRoot>> groups;
     groups.reserve(owned->size());
     Set<ObjectId> component_ids;
     for (const auto& root : *owned) {
@@ -272,7 +272,7 @@ Result<Commit> destroy_entity(Runtime& runtime, ObjectId object) {
             if (capability->owner != root.id() || !component_ids.add(component.id()))
                 return error(ErrorCode::invalid_member, "Subtree has an inconsistent or duplicate component owner.");
         }
-        groups.push_back(std::move(*group));
+        groups.add(std::move(*group));
     }
     ATELIER_TRY_BIND(entity_type, runtime.native_type<Entity>());
     auto null_owner = runtime.null_reference(*entity_type);
@@ -314,19 +314,19 @@ Result<Commit> destroy_entity(Runtime& runtime, ObjectId object) {
                 if (!origin)
                     return std::unexpected(origin.error());
                 ATELIER_TRY_BIND(count, runtime.sequence_size(*child_sequence));
-                std::vector<ReferenceChange> changes;
+                Array<ReferenceChange> changes;
                 changes.reserve(groups[i].size() + 4);
-                changes.push_back(SequenceSplice{*sequence, 0, groups[i].size(), {}});
-                changes.push_back(SequenceSplice{*child_sequence, 0, *count, {}});
-                changes.push_back(ReferenceWrite{*parent, *null_weak});
-                changes.push_back(ReferenceWrite{*origin, *null_weak});
+                changes.add(SequenceSplice{*sequence, 0, groups[i].size(), {}});
+                changes.add(SequenceSplice{*child_sequence, 0, *count, {}});
+                changes.add(ReferenceWrite{*parent, *null_weak});
+                changes.add(ReferenceWrite{*origin, *null_weak});
                 for (const auto& component : groups[i]) {
                     auto owner = runtime.with_native<Component>(component.id(), [&](Component& value) {
                         return runtime.reference_field(component.id(), Access::owner(value));
                     });
                     if (!owner)
                         return std::unexpected(owner.error());
-                    changes.push_back(ReferenceWrite{*owner, *null_owner});
+                    changes.add(ReferenceWrite{*owner, *null_owner});
                 }
                 ATELIER_TRY_BIND(cleared, runtime.apply_reference_changes(changes));
                 Access::explicit_origin(entity) = false;

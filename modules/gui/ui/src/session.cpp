@@ -3,6 +3,7 @@
 #include "ui/text.hpp"
 #include "foundation/map.hpp"
 #include "foundation/result.hpp"
+#include "foundation/scope_exit.hpp"
 #include "foundation/set.hpp"
 #include <algorithm>
 #include <array>
@@ -175,7 +176,7 @@ bool valid_color(Color c) {
 }
 
 Result<void> draw_paragraph(detail::TextStore& text, ControlKey key, float width, float scale, float x, float y,
-                            Clip visible_clip, Clip preferred_clip, Color foreground, std::optional<Color> shadow,
+                            Clip visible_clip, Clip preferred_clip, Color foreground, Optional<Color> shadow,
                             const auto& quad) {
     if (visible_clip.left >= visible_clip.right || visible_clip.top >= visible_clip.bottom)
         return {};
@@ -253,7 +254,7 @@ double quantize_control_value(const Control& control, double raw) {
     return res == 0.0 ? 0.0 : res;
 }
 
-std::optional<double> number(std::wstring_view text, const Control& control) {
+Optional<double> number(std::wstring_view text, const Control& control) {
     if (text.empty() || text.size() > 64)
         return {};
     char buffer[64];
@@ -504,7 +505,7 @@ struct Session::Impl {
 
         float code_width{};
 
-        std::vector<detail::TextKey> table_text; // Visible cells only; old frames retain their own coverage.
+        Array<detail::TextKey> table_text; // Visible cells only; old frames retain their own coverage.
 
         TableIndex table_index;
 
@@ -536,7 +537,7 @@ struct Session::Impl {
 
         StyleProperties inherited;
 
-        std::vector<std::shared_ptr<const StyleSheet>> sheets;
+        Array<std::shared_ptr<const StyleSheet>> sheets;
 
         std::shared_ptr<const ResolvedStyle> resolved;
     };
@@ -580,7 +581,7 @@ struct Session::Impl {
 
         PointerButton button{PointerButton::primary};
 
-        std::optional<Ladder> ladder{};
+        Optional<Ladder> ladder{};
 
         float slider_span{1}; // Accepted physical track width, frozen until release.
 
@@ -620,7 +621,7 @@ struct Session::Impl {
 
         EditToken token;
 
-        std::optional<detail::TextEdit> field_buffer;
+        Optional<detail::TextEdit> field_buffer;
 
         std::shared_ptr<CodeDocument> document;
 
@@ -638,11 +639,11 @@ struct Session::Impl {
 
         float scroll{};
 
-        std::optional<Composition> composition;
+        Optional<Composition> composition;
 
-        std::optional<ClipboardRequest> clipboard;
+        Optional<ClipboardRequest> clipboard;
 
-        std::optional<ImeRequest> ime_request;
+        Optional<ImeRequest> ime_request;
 
         bool commit_paste{};
 
@@ -702,15 +703,15 @@ struct Session::Impl {
 
     std::map<ControlKey, State> states;
 
-    std::vector<ControlKey> order;
+    Array<ControlKey> order;
 
     bool structure_dirty{true};
 
     std::shared_ptr<const UiFrame> published;
 
-    std::optional<Press> press;
+    Optional<Press> press;
 
-    std::optional<Edit> edit;
+    Optional<Edit> edit;
 
     ControlKey focus{};
 
@@ -768,9 +769,9 @@ struct Session::Impl {
         detail::RasterText body;
     };
 
-    std::optional<TooltipHover> tooltip_hover;
+    Optional<TooltipHover> tooltip_hover;
 
-    std::optional<TooltipCache> tooltip_cache;
+    Optional<TooltipCache> tooltip_cache;
 
     Impl() { static_cast<void>(layout.set_root({ui_layout::Kind::overlay})); }
 
@@ -856,11 +857,11 @@ struct Session::Impl {
         if (!state.style_dirty && state.resolved && state.theme_revision == style_revision &&
             state.parent_revision == parent_revision && state.visual == visual)
             return;
-        auto sheets = parent ? parent->sheets : std::vector<std::shared_ptr<const StyleSheet>>{};
+        auto sheets = parent ? parent->sheets : Array<std::shared_ptr<const StyleSheet>>{};
         if (!parent && style_sheet)
-            sheets.push_back(style_sheet);
+            sheets.add(style_sheet);
         if (control.style_scope)
-            sheets.push_back(control.style_scope);
+            sheets.add(control.style_scope);
         auto inherited = parent ? parent->inherited : StyleProperties{};
         auto value = resolve_style(style, control.role, control.kind, visual);
         // A one-line label sits on its box's centre line like every control beside it;
@@ -939,7 +940,7 @@ struct Session::Impl {
                 return std::unexpected(Error{ErrorCode::layout_failed, key, result.error().provider_code});
             return {};
         };
-        std::vector<ui_layout::TreeNodeInput> tree;
+        Array<ui_layout::TreeNodeInput> tree;
         if (structure_dirty)
             tree.reserve(order.size());
         for (auto key : order) {
@@ -973,8 +974,8 @@ struct Session::Impl {
             auto input = input_for(state, padding);
             if (structure_dirty) {
                 state.layout_position = tree.size();
-                tree.push_back({state.node, owner ? std::optional<std::size_t>{owner->layout_position} : std::nullopt,
-                                std::move(input)});
+                tree.add({state.node, owner ? Optional<std::size_t>{owner->layout_position} : Optional<std::size_t>{},
+                          std::move(input)});
             } else {
                 ATELIER_TRY(checked(layout.update(state.node, input), key));
                 state.layout_dirty = false;
@@ -1009,7 +1010,7 @@ Session::Session() = default;
 
 Session::~Session() = default;
 
-Result<void> Session::initialize(std::span<const std::wstring> fonts) {
+Result<void> Session::initialize(Span<const std::wstring> fonts) {
     auto candidate = std::make_unique<Impl>();
     ATELIER_TRY(candidate->text.initialize(fonts));
     impl_ = std::move(candidate);
@@ -1096,7 +1097,7 @@ bool ControlList::advance(std::size_t count, std::uint64_t revision) {
     const Range range{count_, count};
     count_ += count;
     if (region_ == regions_.size())
-        regions_.emplace_back();
+        regions_.emplace();
     auto& previous = regions_[region_++];
     if (revision && previous.revision == revision && previous.range.first == range.first &&
         previous.range.count == count)
@@ -1106,27 +1107,27 @@ bool ControlList::advance(std::size_t count, std::uint64_t revision) {
         if (!dirty_.empty() && dirty_.back().first + dirty_.back().count == range.first)
             dirty_.back().count += count;
         else
-            dirty_.push_back(range);
+            dirty_.add(range);
     }
     return true;
 }
 
-void ControlList::append(std::span<const Control> controls, std::uint64_t revision) {
+void ControlList::append(Span<const Control> controls, std::uint64_t revision) {
     const auto first = count_;
     if (!advance(controls.size(), revision))
         return;
     const auto overlap = std::min(controls.size(), values_.size() - first);
     std::copy_n(controls.begin(), overlap, values_.begin() + first);
-    values_.insert(values_.end(), controls.begin() + overlap, controls.end());
+    values_.append(controls.slice(overlap));
 }
 
-void ControlList::append(std::vector<Control>&& controls) {
+void ControlList::append(Array<Control>&& controls) {
     const auto first = count_;
     advance(controls.size(), 0);
     const auto overlap = std::min(controls.size(), values_.size() - first);
     auto middle = controls.begin() + overlap;
     std::move(controls.begin(), middle, values_.begin() + first);
-    values_.insert(values_.end(), std::make_move_iterator(middle), std::make_move_iterator(controls.end()));
+    values_.append(std::ranges::subrange(std::make_move_iterator(middle), std::make_move_iterator(controls.end())));
 }
 
 Result<Reply> Session::set_controls(ControlList& list) {
@@ -1136,7 +1137,7 @@ Result<Reply> Session::set_controls(ControlList& list) {
             return std::unexpected(Error{ErrorCode::invalid_control});
         if (list.baseline_ != impl_->controls_revision || controls.size() != impl_->order.size())
             return set_controls(controls);
-        std::vector<Control> changed;
+        Array<Control> changed;
         for (auto range : list.dirty_) {
             for (std::size_t i = range.first; i < range.first + range.count; ++i) {
                 const auto& proposed = controls[i];
@@ -1147,7 +1148,7 @@ Result<Reply> Session::set_controls(ControlList& list) {
                     continue;
                 if (!Impl::same_structure(previous, proposed))
                     return impl_->apply_controls(controls, false);
-                changed.push_back(proposed);
+                changed.add(proposed);
             }
         }
         return changed.empty() ? Result<Reply>{Reply{}} : update_controls(changed);
@@ -1158,7 +1159,7 @@ Result<Reply> Session::set_controls(ControlList& list) {
     return result;
 }
 
-Result<Reply> Session::set_controls(std::span<const Control> controls) {
+Result<Reply> Session::set_controls(Span<const Control> controls) {
     bool unchanged = controls.size() == impl_->order.size();
     for (std::size_t i = 0; unchanged && i < controls.size(); ++i)
         unchanged = controls[i].key == impl_->order[i] && controls[i] == impl_->states.at(impl_->order[i]).control;
@@ -1184,7 +1185,7 @@ TreeViewport Session::tree_viewport(ControlKey key) const noexcept {
             state.resolved->tree_row_height};
 }
 
-Result<Reply> Session::update_controls(std::span<const Control> controls) {
+Result<Reply> Session::update_controls(Span<const Control> controls) {
     return impl_->apply_controls(controls, true);
 }
 
@@ -1193,18 +1194,7 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
     const bool paint = preparation == Preparation::complete;
     ++self.prepares;
     const auto frame_id = detail::new_identity();
-    struct Attempt {
-        std::uint64_t& failed;
-
-        std::uint64_t frame_id;
-
-        bool completed{};
-
-        ~Attempt() {
-            if (!completed)
-                failed = frame_id;
-        }
-    } attempt{self.failed_frame_id, frame_id};
+    ScopeExit attempt{[&]() noexcept { self.failed_frame_id = frame_id; }};
     if (!self.surface.extent.width || !self.surface.extent.height)
         return std::unexpected(Error{ErrorCode::unavailable_surface});
     self.sync_code_edit();
@@ -1287,12 +1277,12 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
     auto quad = [&](Rect bounds, Clip clip, Color color, std::shared_ptr<const Coverage> coverage = {}) {
         clip = intersect(clip, target);
         if (visible(bounds, clip) && color.a > 0)
-            draws->draws.push_back({bounds, clip, color, {0, 0, 1, 1}, std::move(coverage)});
+            draws->draws.add({bounds, clip, color, {0, 0, 1, 1}, std::move(coverage)});
     };
     const auto paint_box = [&](Rect bounds, Clip clip, Color background, std::shared_ptr<const ColorImage> image,
                                CornerRadii radius, float border, Color edge, BorderStyle relief,
-                               BorderEdges edges = BorderEdges::all, std::optional<Color> inner = {},
-                               std::optional<Color> shadow = {}) {
+                               BorderEdges edges = BorderEdges::all, Optional<Color> inner = {},
+                               Optional<Color> shadow = {}) {
         const bool beveled = relief != BorderStyle::solid;
         const bool square = beveled || edges != BorderEdges::all || radius == CornerRadii{};
         if (square && border > 0) {
@@ -1305,16 +1295,16 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
             border = std::min(std::max(1.f, std::round(border)), std::min(bounds.width * .5f, bounds.height * .5f));
         }
         const bool separate = beveled || edges != BorderEdges::all;
-        draws->draws.push_back({bounds,
-                                clip,
-                                image ? Color{1, 1, 1, 1} : background,
-                                {0, 0, 1, 1},
-                                {},
-                                square ? CornerRadii{} : radius,
-                                separate ? 0 : border,
-                                edge,
-                                std::move(image),
-                                background});
+        draws->draws.add({bounds,
+                          clip,
+                          image ? Color{1, 1, 1, 1} : background,
+                          {0, 0, 1, 1},
+                          {},
+                          square ? CornerRadii{} : radius,
+                          separate ? 0 : border,
+                          edge,
+                          std::move(image),
+                          background});
         if (border <= 0)
             return;
         if (separate) {
@@ -1364,7 +1354,7 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
             std::min(track_span, std::max(appearance.scrollbar_min_thumb * scale,
                                           track_span * static_cast<float>(bar.page / (bar.page + bar.maximum))));
         bar.thumb = segment(static_cast<float>(bar.value / bar.maximum) * (track_span - length), length);
-        output->scrollbars.push_back(bar);
+        output->scrollbars.add(bar);
         if (!paint)
             return;
         const auto stroke = std::max(1.f, std::round(scale * 2.f / 3));
@@ -1454,35 +1444,35 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
             std::abs(bounds.y) > 1e8f || bounds.width > 1e8f || bounds.height > 1e8f)
             return std::unexpected(Error{ErrorCode::invalid_control, key});
         state.frame_index = output->controls.size();
-        output->controls.push_back({key,
-                                    state.control.parent,
-                                    state.control.kind,
-                                    bounds,
-                                    clip,
-                                    enabled,
-                                    state.incarnation,
-                                    state.resolved,
-                                    state.control.selected,
-                                    state.control.action_target,
-                                    state.control.button_behavior,
-                                    state.control.menu_behavior,
-                                    state.control.radio_group,
-                                    state.control.table,
-                                    state.control.table_selection,
-                                    state.control.context_target,
-                                    state.control.context_group,
-                                    state.control.table_layout,
-                                    state.control.code,
-                                    state.control.tooltip,
-                                    state.control.read_only});
+        output->controls.add({key,
+                              state.control.parent,
+                              state.control.kind,
+                              bounds,
+                              clip,
+                              enabled,
+                              state.incarnation,
+                              state.resolved,
+                              state.control.selected,
+                              state.control.action_target,
+                              state.control.button_behavior,
+                              state.control.menu_behavior,
+                              state.control.radio_group,
+                              state.control.table,
+                              state.control.table_selection,
+                              state.control.context_target,
+                              state.control.context_group,
+                              state.control.table_layout,
+                              state.control.code,
+                              state.control.tooltip,
+                              state.control.read_only});
         const auto kind = state.control.kind;
         if (kind == ControlKind::tree_item) {
             const auto indent = self.states.at(state.control.parent).resolved->tree_indent * scale;
             const auto x = bounds.x + (state.control.layout.padding.left + state.resolved->padding.left) * scale +
                            state.control.tree_depth * indent;
-            output->tree_rows.push_back({key, state.control.tree_index, state.control.tree_depth,
-                                         state.control.tree_branch ? Rect{x, bounds.y, indent, bounds.height} : Rect{},
-                                         state.control.tree_expanded});
+            output->tree_rows.add({key, state.control.tree_index, state.control.tree_depth,
+                                   state.control.tree_branch ? Rect{x, bounds.y, indent, bounds.height} : Rect{},
+                                   state.control.tree_expanded});
         }
         // Keep every arranged box and its parent transform. Only painting is culled.
         if (!visible(bounds, clip)) {
@@ -1504,11 +1494,10 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
                 const auto& prior = accepted->controls[previous.box_index];
                 if (prior.bounds == bounds && prior.clip == clip && prior.style == state.resolved &&
                     prior.enabled == enabled) {
-                    const auto range =
-                        std::span(accepted->drawing->draws).subspan(previous.draw_begin, previous.draw_count);
-                    draws->draws.insert(draws->draws.end(), range.begin(), range.end());
+                    const auto range = accepted->drawing->draws.slice(previous.draw_begin, previous.draw_count);
+                    draws->draws.append(range);
                     if (text_field(kind))
-                        output->text_geometry.push_back(accepted->text_geometry[previous.text_index]);
+                        output->text_geometry.add(accepted->text_geometry[previous.text_index]);
                     state.paint_range.draw_count = range.size();
                     continue;
                 }
@@ -1584,7 +1573,7 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
                                                      b.radius.bottom_right * scale, b.radius.bottom_left * scale};
                         const float bw =
                             std::min(b.border_width * scale, std::min(rect.width * .5f, rect.height * .5f));
-                        draws->draws.push_back(
+                        draws->draws.add(
                             {rect, canvas_clip, b.fill, {0, 0, 1, 1}, {}, box_radius, bw, b.border_color});
                     }
                     for (const auto& a : c.arcs) {
@@ -1599,18 +1588,18 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
                         if (!visible(aabb, canvas_clip))
                             continue;
                         const float bw = std::min(a.border_width * scale, (ro - ri) * .5f);
-                        draws->draws.push_back({aabb,
-                                                canvas_clip,
-                                                a.fill,
-                                                {cx, cy, ri, ro},
-                                                {},
-                                                {a.dir_x, a.dir_y, a.cos_half, a.sin_half},
-                                                bw,
-                                                a.border_color,
-                                                {},
-                                                {},
-                                                0.f,
-                                                ProceduralQuad::arc_sector});
+                        draws->draws.add({aabb,
+                                          canvas_clip,
+                                          a.fill,
+                                          {cx, cy, ri, ro},
+                                          {},
+                                          {a.dir_x, a.dir_y, a.cos_half, a.sin_half},
+                                          bw,
+                                          a.border_color,
+                                          {},
+                                          {},
+                                          0.f,
+                                          ProceduralQuad::arc_sector});
                     }
                     for (const auto& sh : c.shapes) {
                         if (sh.bounds.width <= 0 || sh.bounds.height <= 0 ||
@@ -1622,19 +1611,19 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
                             continue;
                         const float bw =
                             std::min(sh.border_width * scale, std::min(rect.width * .5f, rect.height * .5f));
-                        draws->draws.push_back({rect,
-                                                canvas_clip,
-                                                sh.fill,
-                                                {static_cast<float>(sh.shape), static_cast<float>(sh.slot),
-                                                 sh.strip_start * scale, sh.strip_end * scale},
-                                                {},
-                                                {},
-                                                bw,
-                                                sh.border_color,
-                                                {},
-                                                {},
-                                                0.f,
-                                                ProceduralQuad::node_shape});
+                        draws->draws.add({rect,
+                                          canvas_clip,
+                                          sh.fill,
+                                          {static_cast<float>(sh.shape), static_cast<float>(sh.slot),
+                                           sh.strip_start * scale, sh.strip_end * scale},
+                                          {},
+                                          {},
+                                          bw,
+                                          sh.border_color,
+                                          {},
+                                          {},
+                                          0.f,
+                                          ProceduralQuad::node_shape});
                     }
                     for (const auto& s : c.strokes) {
                         if (s.width <= 0 || s.color.a == 0)
@@ -1648,7 +1637,7 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
                         const Rect aabb{std::min(ax, bx) - pad, std::min(ay, by) - pad, std::abs(bx - ax) + 2.f * pad,
                                         std::abs(by - ay) + 2.f * pad};
                         if (visible(aabb, canvas_clip))
-                            draws->draws.push_back(
+                            draws->draws.add(
                                 {aabb, canvas_clip, s.color, {ax, ay, bx, by}, {}, {}, 0.f, {}, {}, {}, w});
                     }
                 }
@@ -1935,9 +1924,9 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
             }
             if (text_field(kind)) {
                 const bool bound = self.edit && self.edit->key == key;
-                output->text_geometry.push_back({key, state.incarnation, paragraph, x, y, scale, scroll,
-                                                 bound ? self.edit->token : EditToken{},
-                                                 bound && self.edit->composition ? self.edit->composition->id : 0});
+                output->text_geometry.add({key, state.incarnation, paragraph, x, y, scale, scroll,
+                                           bound ? self.edit->token : EditToken{},
+                                           bound && self.edit->composition ? self.edit->composition->id : 0});
             }
             if (paint) {
                 ATELIER_TRY(draw_paragraph(self.text, key, width, scale, x, y, text_clip,
@@ -2017,14 +2006,14 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
     }
     output->control_index.reserve(output->controls.size());
     for (std::uint32_t i = 0; i < static_cast<std::uint32_t>(output->controls.size()); ++i)
-        output->control_index.emplace_back(output->controls[i].key, i);
+        output->control_index.emplace(output->controls[i].key, i);
     std::ranges::sort(output->control_index, {}, &std::pair<ControlKey, std::uint32_t>::first);
     if (paint) {
 #include "detail/session_ladder.inl"
 #include "detail/session_tooltip_draw.inl"
     }
     output->drawing = std::move(draws);
-    attempt.completed = true;
+    attempt.release();
     return std::shared_ptr<const UiFrame>(std::move(output));
 }
 
@@ -2131,7 +2120,7 @@ bool Session::clipboard_current(const ClipboardRequest& request) const noexcept 
            pending.token == request.token && self.edit->token == request.token;
 }
 
-std::optional<TextInputState> Session::text_input() const noexcept {
+Optional<TextInputState> Session::text_input() const noexcept {
     const auto& self = *impl_;
     if (!self.edit || self.focus != self.edit->key || !self.active())
         return {};

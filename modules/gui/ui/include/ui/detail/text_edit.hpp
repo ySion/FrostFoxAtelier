@@ -1,10 +1,10 @@
 #pragma once
-#include "ui/error.hpp"
+#include "foundation/array.hpp"
 #include "foundation/ring_deque.hpp"
+#include "ui/error.hpp"
 #include <cstdint>
 #include <string>
 #include <string_view>
-#include <vector>
 
 namespace atelier::ui::detail {
 struct TextPosition {
@@ -19,7 +19,7 @@ bool valid_text(std::wstring_view, bool single_line = true) noexcept;
 
 bool valid_document_text(std::wstring_view) noexcept;
 
-Result<std::vector<std::uint32_t>> character_boundaries(std::wstring_view);
+Result<Array<std::uint32_t>> character_boundaries(std::wstring_view);
 
 // Shared Unicode editing mechanics. Documents retain this buffer across views;
 // fields own a short-lived buffer. History stores splices, never whole documents.
@@ -49,7 +49,7 @@ public:
 
     const std::wstring& original() const noexcept { return original_; }
 
-    const std::vector<std::uint32_t>& boundaries() const noexcept { return boundaries_; }
+    const Array<std::uint32_t>& boundaries() const noexcept { return boundaries_; }
 
     bool active() const noexcept { return active_; }
 
@@ -110,9 +110,9 @@ private:
 
     std::wstring original_;
 
-    std::vector<std::uint32_t> boundaries_{0};
+    Array<std::uint32_t> boundaries_{0};
 
-    std::vector<std::uint32_t> lines_{0};
+    Array<std::uint32_t> lines_{0};
 
     RingDeque<Entry> history_;
 

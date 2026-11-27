@@ -1,4 +1,6 @@
 #pragma once
+#include "foundation/array.hpp"
+#include "foundation/bit_vector.hpp"
 #include "foundation/map.hpp"
 #include "geometry/mesh.hpp"
 
@@ -11,7 +13,7 @@ struct TriangleVolume {
 // Exact position adjacency bridges normal/UV seams; it never changes polygon
 // wire masks or welds nearby vertices. Open, ambiguous and nonmanifold connected
 // components remain opaque surfaces but provide no evidence of a solid interior.
-inline std::vector<TriangleVolume> triangle_volumes(const geometry::Mesh& mesh) {
+inline Array<TriangleVolume> triangle_volumes(const geometry::Mesh& mesh) {
     using Position = std::array<float, 3>;
     using Vector = std::array<double, 3>;
     struct Edge {
@@ -23,11 +25,11 @@ inline std::vector<TriangleVolume> triangle_volumes(const geometry::Mesh& mesh) 
     };
     const auto vertices = mesh.vertices();
     const auto count = vertices.size() / 3;
-    std::vector<TriangleVolume> result(count);
-    std::vector<std::uint32_t> parent(count);
-    std::vector<std::uint32_t> sizes(count, 1);
-    std::vector<int> orientation(count, 1);
-    std::vector<bool> eligible(count, true);
+    Array<TriangleVolume> result(count);
+    Array<std::uint32_t> parent(count);
+    Array<std::uint32_t> sizes(count, 1);
+    Array<int> orientation(count, 1);
+    BitVector eligible(count, true);
     for (std::uint32_t i = 0; i < count; ++i)
         parent[i] = i;
     const auto root = [&](std::uint32_t i) {
@@ -66,7 +68,7 @@ inline std::vector<TriangleVolume> triangle_volumes(const geometry::Mesh& mesh) 
                               double(v[0].normal[2]) + v[1].normal[2] + v[2].normal[2]};
         const double alignment = dot(n, authored);
         const double length = std::hypot(n[0], n[1], n[2]);
-        eligible[i] = length > 0 && alignment != 0;
+        eligible.set(i, length > 0 && alignment != 0);
         orientation[i] = alignment < 0 ? -1 : 1;
         std::array<std::uint32_t, 3> ids;
         for (std::size_t c = 0; c < 3; ++c) {
@@ -77,7 +79,7 @@ inline std::vector<TriangleVolume> triangle_volumes(const geometry::Mesh& mesh) 
             const auto a = ids[c];
             const auto b = ids[(c + 1) % 3];
             if (a == b)
-                eligible[i] = false;
+                eligible.reset(i);
             const auto key = (std::uint64_t(std::min(a, b)) << 32) | std::max(a, b);
             auto& edge = *edges.try_emplace(key, Edge{i}).value;
             // Join every incident face, including a third nonmanifold face.
@@ -86,17 +88,17 @@ inline std::vector<TriangleVolume> triangle_volumes(const geometry::Mesh& mesh) 
             edge.direction += (a < b ? 1 : -1) * orientation[i];
         }
     }
-    std::vector<bool> closed(count, true);
+    BitVector closed(count, true);
     for (std::uint32_t i = 0; i < count; ++i)
         if (!eligible[i])
-            closed[root(i)] = false;
+            closed.reset(root(i));
     for (const auto& [key, edge] : edges) {
         (void)key;
         if (edge.count != 2 || edge.direction != 0)
-            closed[root(edge.triangle)] = false;
+            closed.reset(root(edge.triangle));
     }
-    std::vector<double> volume(count);
-    std::vector<double> absolute_volume(count);
+    Array<double> volume(count);
+    Array<double> absolute_volume(count);
     for (std::uint32_t i = 0; i < count; ++i) {
         const auto component = root(i);
         if (!closed[component])

@@ -11,11 +11,13 @@
 #include "physics/physics.hpp"
 #include "procedural/graph.hpp"
 #include "foundation/function_ref.hpp"
+#include "foundation/scope_exit.hpp"
 #include "foundation/set.hpp"
 #include "platform/utf.hpp"
 #include "runtime/detail/value_storage.hpp"
 #include <limits>
 #include <charconv>
+#include <cstring>
 #include <utility>
 #include <algorithm>
 #include <cmath>
@@ -30,13 +32,17 @@ using assets::json_format::preview;
 
 struct SceneFailure {
     enum class Disposition { reject, destroyed, unsupported_pose };
+
     std::variant<std::string, Error> detail;
+
     Disposition disposition;
 
     SceneFailure(std::string message, Disposition action = Disposition::reject)
         : detail(std::move(message)), disposition(action) {}
+
     SceneFailure(Error cause, Disposition action = Disposition::reject)
         : detail(std::move(cause)), disposition(action) {}
+
     SceneFailure(const json::Error& error) : SceneFailure(error.describe()) {}
 
     Error into_error() && {
@@ -216,10 +222,10 @@ std::string dump_retained(json::Value value) {
     return {bytes.data(), bytes.size()};
 }
 
-Result<std::vector<detail::ScalarField>> business_fields(Runtime& runtime, const world::Types& types, TypeId type,
-                                                         std::vector<detail::FieldNames>* transient_paths = nullptr) {
+Result<Array<detail::ScalarField>> business_fields(Runtime& runtime, const world::Types& types, TypeId type,
+                                                   Array<detail::FieldNames>* transient_paths = nullptr) {
     ATELIER_TRY_BIND(result, detail::author_fields(runtime, type, false, transient_paths));
-    std::erase_if(*result, [&](const auto& field) { return detail::transform_field(types, field.path.front()); });
+    result->remove_if([&](const auto& field) { return detail::transform_field(types, field.path.front()); });
     return result;
 }
 
@@ -239,7 +245,7 @@ Result<void> encode_array(Runtime& runtime, ObjectId object, const detail::Scala
     ATELIER_TRY_BIND(info, runtime.describe(element));
     const bool text = (*info)->kind == TypeKind::string;
     auto path = field.path;
-    path.emplace_back();
+    path.emplace();
     ATELIER_TRY_BIND(count, runtime.element_count(object, field.path));
     for (std::size_t i = 0; i < *count; ++i) {
         ATELIER_TRY_BIND(index, runtime.element(field.type, static_cast<std::uint32_t>(i)));
@@ -275,9 +281,9 @@ Result<void> store_leaf(Runtime& runtime, const PropertyTarget& target, const de
 // (no report) return an error at the first rejected leaf and never clamp. Earlier accepted leaves remain written.
 template <class E = Error, class Resolver, class Report>
 std::expected<void, E>
-read_record(Runtime& runtime, const PropertyTarget& target, std::span<const detail::ScalarField> schema,
-            json::Value record, const std::vector<std::string>& prefix, const Resolver& resolve, const WriteLeaf& write,
-            const Report* report, std::span<const detail::FieldNames> transient_paths = {}) {
+read_record(Runtime& runtime, const PropertyTarget& target, Span<const detail::ScalarField> schema,
+            json::Value record, const Array<std::string>& prefix, const Resolver& resolve, const WriteLeaf& write,
+            const Report* report, Span<const detail::FieldNames> transient_paths = {}) {
     const auto object = target.object != ObjectId{};
     const auto write_leaf = [&](const detail::ScalarField& field,
                                 const PropertyLeaf& leaf) -> std::expected<std::string, E> {
@@ -289,24 +295,25 @@ read_record(Runtime& runtime, const PropertyTarget& target, std::span<const deta
                 return std::unexpected(std::move(written.error()));
         return std::move(written.error().message);
     };
-    const auto issue = [&](std::vector<std::string> at, json::Value item, world::DiagnosticKind kind,
+    const auto issue = [&](Array<std::string> at, json::Value item, world::DiagnosticKind kind,
                            const std::string& problem, const std::string& kept) -> std::expected<void, E> {
         if (!report)
-            return std::unexpected(Error{ErrorCode::argument_mismatch,
-                                         detail::dotted(std::span(at).subspan(prefix.size())) + ": " + problem});
+            return std::unexpected(Error{
+                ErrorCode::argument_mismatch,
+                detail::dotted(Span<const std::string>(at).slice(prefix.size())) + ": " + problem});
         if constexpr (std::same_as<Report, PropertyReport>)
             if (!report->keep)
                 return std::unexpected(Error{ErrorCode::invalid_storage, "No callback for a retained property."});
         return report->keep(std::move(at), item, kind, kept);
     };
     const auto read = [&](this auto&& self, json::Value value,
-                          const std::vector<std::string>& path) -> std::expected<void, E> {
+                          const Array<std::string>& path) -> std::expected<void, E> {
         const auto members = value.object_items();
         for (const auto& [name, item] : *members) {
             auto next_path = path;
-            next_path.emplace_back(name);
+            next_path.emplace(name);
             auto at = prefix;
-            at.insert(at.end(), next_path.begin(), next_path.end());
+            at.append(next_path);
             const auto field = std::ranges::find_if(schema, [&](const auto& f) { return f.names == next_path; });
             if (field == schema.end()) {
                 if (std::ranges::find(transient_paths, next_path) != transient_paths.end())
@@ -328,7 +335,7 @@ read_record(Runtime& runtime, const PropertyTarget& target, std::span<const deta
                 continue;
             }
             bool converted{};
-            std::optional<Scalar> clamped;
+            Optional<Scalar> clamped;
             const auto decoded = [&]() -> std::expected<std::string, E> {
                 if (field->form == ValueForm::inline_value && field->kind == TypeKind::string) {
                     if (!field->material_entries_json && item.kind() != json::Kind::string)
@@ -354,7 +361,7 @@ read_record(Runtime& runtime, const PropertyTarget& target, std::span<const deta
                     // Every element takes the field's hard bounds, which constrain() reads through any element selector.
                     auto bounded = field->path;
                     ATELIER_TRY_BIND(first, runtime.element(field->type, 0));
-                    bounded.push_back(*first);
+                    bounded.add(*first);
                     bool clamped_elements{};
                     std::uint32_t index = 0;
                     const auto items = *item.array();
@@ -424,14 +431,14 @@ read_record(Runtime& runtime, const PropertyTarget& target, std::span<const deta
                     if (item.kind() != json::Kind::array ||
                         item.size() > Session::maximum_entities * Session::maximum_components)
                         return "Expected an object reference sequence.";
-                    std::vector<ObjectReference> refs;
+                    Array<ObjectReference> refs;
                     refs.reserve(item.size());
                     const auto items = *item.array();
                     for (auto ref : items) {
                         ATELIER_TRY_BIND(resolved, resolve(ref, field->type, ValueForm::strong_reference));
                         if (!*resolved)
                             return "A sequence element is not a reference of the field's type.";
-                        refs.push_back(std::move(**resolved));
+                        refs.add(std::move(**resolved));
                     }
                     ATELIER_TRY_BIND(locator, runtime.reference_field(target.object, field->path));
                     ATELIER_TRY_BIND(count, runtime.sequence_size(*locator));
@@ -535,14 +542,20 @@ Result<void> validate_property_target(Runtime& runtime, const PropertyTarget& ta
 
 struct detail::PropertyStorage {
     Runtime& runtime;
+
     TypeId type;
+
     atelier::detail::ValueStorage bytes;
-    std::span<std::byte> storage;
+
+    Span<std::byte> storage;
+
     bool live{};
 
     PropertyStorage(Runtime& owner, const TypeInfo& info)
         : runtime(owner), type(info.id), storage(bytes.prepare(info.size, info.alignment), info.size) {}
+
     PropertyStorage(const PropertyStorage&) = delete;
+
     PropertyStorage& operator=(const PropertyStorage&) = delete;
 
     Result<void> initialize() {
@@ -571,7 +584,7 @@ TypeId ArrayLeaf::type() const noexcept {
     return value_->type;
 }
 
-std::span<std::byte> ArrayLeaf::storage() const noexcept {
+Span<std::byte> ArrayLeaf::storage() const noexcept {
     return value_->storage;
 }
 
@@ -583,7 +596,7 @@ ValueOutput ArrayLeaf::output() const noexcept {
     return {value_->type, value_->storage.data()};
 }
 
-Result<json::Document> encode_properties(Runtime& runtime, ObjectId object, std::span<const detail::ScalarField> fields,
+Result<json::Document> encode_properties(Runtime& runtime, ObjectId object, Span<const detail::ScalarField> fields,
                                          const EncodeReference& reference) {
     const auto type = runtime.type_of(object);
     if (!type)
@@ -592,7 +605,7 @@ Result<json::Document> encode_properties(Runtime& runtime, ObjectId object, std:
 }
 
 Result<json::Document> encode_properties(Runtime& runtime, const PropertyTarget& target,
-                                         std::span<const detail::ScalarField> fields,
+                                         Span<const detail::ScalarField> fields,
                                          const EncodeReference& reference) {
     const auto object = target.object;
     if ((object == ObjectId{}) == target.storage.empty())
@@ -609,8 +622,8 @@ Result<json::Document> encode_properties(Runtime& runtime, const PropertyTarget&
         if (object == ObjectId{} && (field.kind == TypeKind::array || field.form == ValueForm::strong_sequence))
             return std::unexpected(
                 Error{ErrorCode::unsupported_operation, "Indexed properties require an object target."});
-        const auto parent =
-            result.object_path_validated(result.root(), std::span(field.names).first(field.names.size() - 1));
+        const auto parent = result.object_path_validated(
+            result.root(), Span<const std::string>(field.names).first(field.names.size() - 1));
         const auto& key = field.names.back();
         if (field.form == ValueForm::inline_value) {
             if (field.kind == TypeKind::string) {
@@ -667,7 +680,7 @@ Result<void> decode_properties(Runtime& runtime, const PropertyTarget& target, j
 Result<void> decode_properties(Runtime& runtime, const PropertyTarget& target, json::Value record,
                                const PropertyReport& report, const ResolveReference& resolve) {
     ATELIER_TRY(validate_property_target(runtime, target, record));
-    std::vector<detail::FieldNames> transient_paths;
+    Array<detail::FieldNames> transient_paths;
     ATELIER_TRY_BIND(fields, detail::author_fields(runtime, target.type, false, &transient_paths));
     return read_record(runtime, target, *fields, record, {}, resolve, {}, &report, transient_paths);
 }
@@ -680,17 +693,18 @@ Result<void> patch_object_properties(Runtime& runtime, ObjectId object, json::Va
     ATELIER_TRY_BIND(fields, detail::author_fields(runtime, *type));
     // Paths borrow this schema. Each backup owns the exact typed value from before its successful write.
     struct Backup {
-        std::span<const FieldId> path;
+        Span<const FieldId> path;
+
         std::unique_ptr<detail::PropertyStorage> value;
     };
-    std::vector<Backup> written;
+    Array<Backup> written;
     const WriteLeaf write = [&](const detail::ScalarField& field, const PropertyLeaf& leaf) -> Result<void> {
         ATELIER_TRY_BIND(info, runtime.describe(field.type));
         auto old = std::make_unique<detail::PropertyStorage>(runtime, **info);
         ATELIER_TRY(old->initialize());
         ATELIER_TRY(runtime.read_for_restore(object, field.path, ValueOutput{field.type, old->storage.data()}));
         ATELIER_TRY(store_leaf(runtime, target, field, leaf));
-        written.push_back({field.path, std::move(old)});
+        written.add({field.path, std::move(old)});
         return {};
     };
     auto result = read_record(runtime, target, *fields, patch, {}, ResolveReference{}, write,
@@ -716,13 +730,13 @@ struct Session::GraphCodec {
     struct MeshCopy {
         presentation::StaticMeshState state;
 
-        std::vector<presentation::MaterialBinding> bindings;
+        Array<presentation::MaterialBinding> bindings;
     };
 
     struct GeneratorCopy {
         presentation::ProceduralBinding binding;
 
-        std::vector<presentation::MaterialBinding> bindings;
+        Array<presentation::MaterialBinding> bindings;
 
         json::Document overrides;
     };
@@ -756,9 +770,9 @@ struct Session::GraphCodec {
         // name live objects, and targets the game destroyed are dropped.
         bool live{};
 
-        std::vector<std::uint64_t> dropped;
+        Array<std::uint64_t> dropped;
 
-        std::vector<world::Diagnostic> issues;
+        Array<world::Diagnostic> issues;
 
         Map<ObjectId, json::Builder> pending; // {"type","record","slots"} with file identities.
 
@@ -772,7 +786,7 @@ struct Session::GraphCodec {
 
         Retained document_retained;
 
-        Map<ObjectId, std::vector<ObjectRoot>> materials; // Named by a kept binding table.
+        Map<ObjectId, Array<ObjectRoot>> materials; // Named by a kept binding table.
 
         Map<ObjectId, Retained> retained;
 
@@ -787,7 +801,7 @@ struct Session::GraphCodec {
         }
 
         SceneResult<void> report(world::Severity severity, world::DiagnosticKind kind, ObjectId object,
-                                 std::vector<std::string> field, const json::Value* value, const std::string& detail,
+                                 Array<std::string> field, const json::Value* value, const std::string& detail,
                                  const Error* cause = nullptr) {
             auto message =
                 cause ? cause->message
@@ -818,11 +832,11 @@ struct Session::GraphCodec {
                 item.source = cause->source;
                 item.element = cause->element;
             }
-            issues.push_back(std::move(item));
+            issues.add(std::move(item));
             return {};
         }
 
-        void store(ObjectId object, std::span<const std::string> path, json::Value value) {
+        void store(ObjectId object, Span<const std::string> path, json::Value value) {
             auto& builder = object == ObjectId{} ? top : *pending.try_emplace(object).value;
             auto node = builder.root();
             if (object != ObjectId{}) {
@@ -833,7 +847,7 @@ struct Session::GraphCodec {
             builder.set_validated(node, path.back(), value);
         }
 
-        SceneResult<void> keep(ObjectId object, std::vector<std::string> path, json::Value value,
+        SceneResult<void> keep(ObjectId object, Array<std::string> path, json::Value value,
                                world::DiagnosticKind kind, const std::string& detail) {
             ATELIER_TRY(report(world::Severity::warning, kind, object, path, &value, detail));
             store(object, path, value);
@@ -850,12 +864,12 @@ struct Session::GraphCodec {
         }
 
         SceneResult<void> extra(ObjectId object, json::Value value, std::initializer_list<std::string_view> allowed,
-                                std::vector<std::string> prefix = {}) {
+                                Array<std::string> prefix = {}) {
             ATELIER_TRY_BIND(members, value.object_items());
             for (const auto& [name, item] : *members)
                 if (std::ranges::find(allowed, name) == allowed.end()) {
                     auto path = prefix;
-                    path.emplace_back(name);
+                    path.emplace(name);
                     ATELIER_TRY(keep(object, std::move(path), item, world::DiagnosticKind::unknown_key,
                                      "Unknown key kept from the saved scene."));
                 }
@@ -866,18 +880,18 @@ struct Session::GraphCodec {
     struct Prepared {
         Session* session{};
 
-        std::vector<ObjectRoot> objects;
+        Array<ObjectRoot> objects;
 
-        std::vector<ObjectId> roots;
+        Array<ObjectId> roots;
 
-        std::vector<world::SpaceReference> spaces;
+        Array<world::SpaceReference> spaces;
 
-        std::vector<ObjectId> triangle_meshes;
+        Array<ObjectId> triangle_meshes;
 
-        std::vector<ObjectRoot> resources;
+        Array<ObjectRoot> resources;
 
         // Live graphs only: new components of an existing Entity, attached on publication.
-        std::vector<std::pair<ObjectId, std::vector<world::Attachment>>> anchored;
+        Array<std::pair<ObjectId, Array<world::Attachment>>> anchored;
 
         Project* project{};
 
@@ -981,28 +995,18 @@ struct Session::GraphCodec {
         return id;
     }
 
-    static Result<Graph> capture(const Session& session, std::span<const ObjectId> requested, bool persistent,
+    static Result<Graph> capture(const Session& session, Span<const ObjectId> requested, bool persistent,
                                  bool document = false, bool live = false) {
-        struct IdentityRollback {
-            const Session& session;
-
-            Map<ObjectId, std::uint64_t> before;
-
-            std::uint64_t next;
-
-            bool complete{};
-
-            ~IdentityRollback() {
-                if (!complete) {
-                    session.local_ids_.swap(before);
-                    session.next_local_id_ = next;
-                }
-            }
-        } identities{session, session.local_ids_, session.next_local_id_};
+        auto before = session.local_ids_;
+        const auto next = session.next_local_id_;
+        ScopeExit identities{[&]() noexcept {
+            session.local_ids_.swap(before);
+            session.next_local_id_ = next;
+        }};
         auto& runtime = session.world_.runtime();
         Graph graph;
-        std::vector<ObjectId> roots;
-        std::vector<ObjectId> nodes;
+        Array<ObjectId> roots;
+        Array<ObjectId> nodes;
         ATELIER_TRY(session.world_.members());
         session.local_ids_.remove_if([&](const ObjectId id, std::uint64_t) { return !runtime.type_of(id); });
         Set<ObjectId> selected(requested.begin(), requested.end());
@@ -1027,12 +1031,12 @@ struct Session::GraphCodec {
                 ancestor = *parent;
             }
             if (!covered && root_seen.add(object))
-                roots.push_back(object);
+                roots.add(object);
         }
         const auto walk = [&](auto&& self, ObjectId object) -> Result<void> {
             if (!seen.add(object))
                 return std::unexpected(Error{ErrorCode::invalid_storage, "Entity graph contains a repeated identity."});
-            nodes.push_back(object);
+            nodes.add(object);
             if (nodes.size() > maximum_entities)
                 return std::unexpected(Error{ErrorCode::invalid_storage, "Scene exceeds the Entity limit."});
             ATELIER_TRY_BIND(children, world::children(runtime, object));
@@ -1260,7 +1264,7 @@ struct Session::GraphCodec {
                 ATELIER_TRY_BIND(record, properties(part.id(), state->type));
                 builder.set_validated(value, "properties", record->root());
                 const auto encode_material_bindings =
-                    [&](json::Value target, std::span<const presentation::MaterialBinding> bindings) -> Result<void> {
+                    [&](json::Value target, Span<const presentation::MaterialBinding> bindings) -> Result<void> {
                     const auto entries = *builder.array(target, "materials");
                     for (const auto& binding : bindings) {
                         const auto entry = builder.append_object(entries);
@@ -1341,7 +1345,7 @@ struct Session::GraphCodec {
             overlay(builder, root, kept->root());
         }
         graph.data = builder.finish();
-        identities.complete = true;
+        identities.release();
         return graph;
     }
 
@@ -1393,7 +1397,7 @@ struct Session::GraphCodec {
 
     // The graph of an attach change: the Entity record lists only these components.
     static Result<json::Document> live_components(const Session& session, ObjectId entity,
-                                                  std::span<const ObjectId> components) {
+                                                  Span<const ObjectId> components) {
         for (const auto component : components) {
             ATELIER_TRY_BIND(state, world::inspect_component(session.world_.runtime(), component));
             if (state->owner != entity)
@@ -1484,8 +1488,8 @@ struct Session::GraphCodec {
         if (bytes.size() > assets::json_format::maximum_bytes)
             return std::unexpected(Error{ErrorCode::invalid_storage, "A Play change exceeds the 16 MiB limit."});
         if (!key.empty())
-            std::erase_if(session.live_ops_, [&](const LiveOp& item) { return item.key == key; });
-        session.live_ops_.push_back(
+            session.live_ops_.remove_if([&](const LiveOp& item) { return item.key == key; });
+        session.live_ops_.add(
             {std::move(key), {{bytes.data(), bytes.size()}, std::move(texture), std::move(mesh)}});
         return {};
     }
@@ -1573,7 +1577,7 @@ struct Session::GraphCodec {
 
     // A set of these fields' current values; `key` names the object and fields.
     static Result<json::Document> live_properties(Session& session, ObjectId object,
-                                                  std::span<const world::FieldPath> paths, std::string* key = nullptr) {
+                                                  Span<const world::FieldPath> paths, std::string* key = nullptr) {
         auto& runtime = session.runtime_;
         ATELIER_TRY_BIND(type, runtime.type_of(object));
         ATELIER_TRY_BIND(fields, detail::author_fields(runtime, *type));
@@ -1626,7 +1630,7 @@ struct Session::GraphCodec {
         ATELIER_TRY_BIND(fields, business_fields(runtime, session.types_, *type));
         for (const auto& field : *fields)
             if (field.form == ValueForm::inline_value && field.names.size() > 1 && field.names.front() == "body") {
-                const auto at = op.object_path_validated(body, std::span(field.names).subspan(1));
+                const auto at = op.object_path_validated(body, Span<const std::string>(field.names).slice(1));
                 ATELIER_TRY_BIND(scalar, runtime.read(component, field.path));
                 ATELIER_TRY(encode_scalar(runtime, op, at, *scalar));
             }
@@ -1636,19 +1640,20 @@ struct Session::GraphCodec {
     // Scene and Play changes decode a properties record leaf by leaf through the shared decoder.
     static SceneResult<void>
     read_properties(Runtime& runtime, const PropertyTarget& target, json::Value record, Load& load,
-                    FunctionRef<SceneResult<std::optional<ObjectReference>>(json::Value, TypeId, ValueForm)> resolve,
-                    std::span<const detail::ScalarField> fields, std::span<const detail::FieldNames> transient_paths,
+                    FunctionRef<SceneResult<Optional<ObjectReference>>(json::Value, TypeId, ValueForm)> resolve,
+                    Span<const detail::ScalarField> fields, Span<const detail::FieldNames> transient_paths,
                     const WriteLeaf& write = {}) {
-        const auto keep_value = [&](std::vector<std::string> at, json::Value item, world::DiagnosticKind kind,
+        const auto keep_value = [&](Array<std::string> at, json::Value item, world::DiagnosticKind kind,
                                     const std::string& detail) {
             return load.keep(target.object, std::move(at), item, kind, detail);
         };
-        const auto converted_value = [&](std::vector<std::string> at, json::Value item) {
+        const auto converted_value = [&](Array<std::string> at, json::Value item) {
             return load.report(world::Severity::info, world::DiagnosticKind::converted, target.object, std::move(at),
                                &item, "Integral number converted exactly to the field's integer type.");
         };
         const struct {
             decltype(keep_value)& keep;
+
             decltype(converted_value)& converted;
         } report{keep_value, converted_value};
         return read_record<SceneFailure>(runtime, target, fields, record, {"properties"}, resolve, write, &report,
@@ -1660,7 +1665,7 @@ struct Session::GraphCodec {
     static SceneResult<ObjectRoot>
     restore_material(Session& session, Project* project, json::Value entry,
                      FunctionRef<SceneResult<ObjectRoot>(std::uint64_t)> resolve,
-                     std::vector<MissingResource>* missing = nullptr, ObjectId existing = {}) {
+                     Array<MissingResource>* missing = nullptr, ObjectId existing = {}) {
         auto& runtime = session.runtime_;
         if (!project)
             return std::unexpected(SceneFailure("Material restoration requires a Project."));
@@ -1719,11 +1724,11 @@ struct Session::GraphCodec {
     // A Play copy's object for a document identity. Unknown identities mean Play
     // diverged; identities whose object the game destroyed are skipped.
 
-    static std::optional<ObjectId> live_object(const Session& session, std::uint64_t key) {
+    static Optional<ObjectId> live_object(const Session& session, std::uint64_t key) {
         const auto* at = session.live_objects_.find(key);
         if (!at)
-            return std::nullopt;
-        return session.runtime_.type_of(*at) ? std::optional(*at) : std::optional(ObjectId{});
+            return {};
+        return session.runtime_.type_of(*at) ? Optional<ObjectId>(*at) : Optional<ObjectId>(ObjectId{});
     }
 
     static SceneResult<ObjectId> live_target(const Session& session, std::uint64_t key, ObjectId* subject = nullptr) {
@@ -1740,14 +1745,14 @@ struct Session::GraphCodec {
     }
 
     // A reference leaving a live graph; nullopt when the game destroyed its target.
-    static SceneResult<std::optional<ObjectId>> live_reference(const Session& session, std::uint64_t key, Load& load) {
+    static SceneResult<Optional<ObjectId>> live_reference(const Session& session, std::uint64_t key, Load& load) {
         const auto object = live_object(session, key);
         if (!object)
             return std::unexpected(
                 SceneFailure("Reference target #" + std::to_string(key) + " does not exist in Play."));
         if (*object == ObjectId{}) {
-            load.dropped.push_back(key);
-            return std::nullopt;
+            load.dropped.add(key);
+            return Optional<ObjectId>{};
         }
         return object;
     }
@@ -1848,7 +1853,7 @@ struct Session::GraphCodec {
             ids.try_emplace(key, object);
             descriptors.try_emplace(key, value);
             records.try_emplace(object, value);
-            result.objects.push_back(std::move(*root));
+            result.objects.add(std::move(*root));
             if (keep_ids)
                 session.local_ids_.try_emplace(object, key);
             else
@@ -1966,18 +1971,18 @@ struct Session::GraphCodec {
             }
         }
         // A stand-in keeps the key, so saving writes the reference unchanged.
-        const auto report_missing = [&](ObjectId object, std::vector<std::string> base, json::Value entry,
-                                        const std::vector<MissingResource>& missing) -> SceneResult<void> {
+        const auto report_missing = [&](ObjectId object, Array<std::string> base, json::Value entry,
+                                        const Array<MissingResource>& missing) -> SceneResult<void> {
             for (const auto& item : missing) {
                 auto at = base;
                 json::Builder saved;
                 saved.set_validated(saved.root(), item.key);
                 const auto value = saved.root();
                 if (item.input) {
-                    at.push_back("textures");
-                    at.emplace_back(std::to_string(*item.input));
+                    at.add("textures");
+                    at.emplace(std::to_string(*item.input));
                 } else
-                    at.emplace_back(*entry.find("parent") ? "parent" : "source");
+                    at.emplace(*entry.find("parent") ? "parent" : "source");
                 ATELIER_TRY(load.report(world::Severity::warning, item.kind, object, std::move(at), &value,
                                         item.error.message, &item.error));
             }
@@ -2013,9 +2018,9 @@ struct Session::GraphCodec {
                 return std::unexpected(SceneFailure("Scene material parent cycle."));
             const auto definition = *record;
             ObjectRoot resource;
-            std::vector<MissingResource> missing;
+            Array<MissingResource> missing;
             // Play keeps a material it already has; its value changes travel separately.
-            const auto live = load.live ? live_object(session, key) : std::nullopt;
+            const auto live = load.live ? live_object(session, key) : Optional<ObjectId>{};
             const bool reused = live && *live != ObjectId{};
             if (reused) {
                 if (!session.is_material(*live))
@@ -2054,7 +2059,7 @@ struct Session::GraphCodec {
                 return std::unexpected(SceneFailure("One material asset has multiple document identities."));
             ids.try_emplace(key, resource.id());
             material_ids.try_emplace(key, resource);
-            result.resources.push_back(resource);
+            result.resources.add(resource);
             if (keep_ids && !reused) {
                 if (!session.local_ids_.try_emplace(resource.id(), key).inserted)
                     return std::unexpected(SceneFailure("One material asset has multiple document identities."));
@@ -2087,13 +2092,13 @@ struct Session::GraphCodec {
         for (const auto& entity : entities) {
             const auto key = *local_key(*entity.at("id"));
             const auto object = required_entry(ids, key);
-            std::vector<world::Attachment> parts;
+            Array<world::Attachment> parts;
             const auto components = *entity.at("components")->array();
             for (auto part : components)
-                parts.push_back({required_entry(ids, *local_key(*part.at("id")))});
+                parts.add({required_entry(ids, *local_key(*part.at("id")))});
             // A running Entity begins new components on attachment, after they are restored.
             if (anchors.contains(key))
-                result.anchored.emplace_back(object, std::move(parts));
+                result.anchored.emplace(object, std::move(parts));
             else if (!parts.empty())
                 ATELIER_TRY(committed(world.attach_components(object, parts)));
             if (const auto space = *entity.find("space"); space && !space->is_null()) {
@@ -2115,8 +2120,10 @@ struct Session::GraphCodec {
                                                     " The identity transform is used and the saved values are kept."));
                         trs = {};
                         for (const auto name : {"position", "rotation", "scale"})
-                            if (const auto at = *space->find(name))
-                                load.store(object, std::array{std::string("space"), std::string(name)}, *at);
+                            if (const auto at = *space->find(name)) {
+                                const std::array space_path{std::string("space"), std::string(name)};
+                                load.store(object, space_path, *at);
+                            }
                     }
                 }
                 ATELIER_TRY(world.set_transform(object, trs));
@@ -2147,7 +2154,7 @@ struct Session::GraphCodec {
             if (!entity_ids.contains(key) || owners.contains(key) || !roots.add(key))
                 return std::unexpected(SceneFailure("Invalid graph root."));
             ATELIER_TRY(visit(visit, key));
-            result.roots.push_back(required_entry(ids, key));
+            result.roots.add(required_entry(ids, key));
         }
         if (visited.size() != entity_ids.size())
             return std::unexpected(SceneFailure("Entity graph has unreachable nodes or a cycle."));
@@ -2161,7 +2168,7 @@ struct Session::GraphCodec {
         }
         // Dangling or malformed identities are structural damage. A target whose
         // type does not satisfy the field is schema drift: nullopt, not an error.
-        const auto locate = [&](json::Value value) -> SceneResult<std::optional<ObjectId>> {
+        const auto locate = [&](json::Value value) -> SceneResult<Optional<ObjectId>> {
             ObjectId object;
             if (value.kind() == json::Kind::object && *value.find("$ref")) {
                 ATELIER_TRY(value.members({"$ref"}));
@@ -2175,7 +2182,7 @@ struct Session::GraphCodec {
                 else {
                     ATELIER_TRY_BIND(live, live_reference(session, key, load));
                     if (!*live)
-                        return std::optional{ObjectId{}};
+                        return Optional<ObjectId>{ObjectId{}};
                     object = **live;
                 }
                 if (material_ids.contains(key))
@@ -2188,40 +2195,40 @@ struct Session::GraphCodec {
                     return std::unexpected(SceneFailure("External object references cannot be loaded from a file."));
                 object = at->id();
             } else
-                return std::nullopt;
-            return std::optional{object};
+                return Optional<ObjectId>{};
+            return Optional<ObjectId>{object};
         };
         const auto resolve = [&](json::Value value, TypeId target,
-                                 ValueForm form) -> SceneResult<std::optional<ObjectReference>> {
+                                 ValueForm form) -> SceneResult<Optional<ObjectReference>> {
             if (value.is_null()) {
                 ATELIER_TRY_BIND(reference, runtime.null_reference(target, form == ValueForm::weak_reference
                                                                                ? form
                                                                                : ValueForm::strong_reference));
-                return std::optional{*reference};
+                return Optional<ObjectReference>{*reference};
             }
             ATELIER_TRY_BIND(found, locate(value));
             if (!*found)
-                return std::nullopt;
+                return Optional<ObjectReference>{};
             if (**found == ObjectId{}) {
                 ATELIER_TRY_BIND(reference, runtime.null_reference(target, form == ValueForm::weak_reference
                                                                                ? form
                                                                                : ValueForm::strong_reference));
-                return std::optional{*reference};
+                return Optional<ObjectReference>{*reference};
             }
             auto held = runtime.hold(**found, target);
             if (!held)
-                return std::nullopt;
+                return Optional<ObjectReference>{};
             if (form == ValueForm::weak_reference) {
                 ATELIER_TRY_BIND(reference, runtime.observe(held->reference()));
-                return std::optional{*reference};
+                return Optional<ObjectReference>{*reference};
             }
-            return std::optional{held->reference()};
+            return Optional<ObjectReference>{held->reference()};
         };
         for (const auto& entity : entities) {
             const auto space = *entity.find("space");
             if (!space || space->is_null())
                 continue;
-            std::optional<ObjectId> target;
+            Optional<ObjectId> target;
             if (space->kind() == json::Kind::object)
                 if (const auto origin = *space->find("origin"); origin && !origin->is_null()) {
                     if (origin->kind() == json::Kind::string) {
@@ -2244,10 +2251,10 @@ struct Session::GraphCodec {
                         target = **found;
                     }
                 }
-            result.spaces.push_back({required_entry(ids, *local_key(*entity.at("id"))), target});
+            result.spaces.add({required_entry(ids, *local_key(*entity.at("id"))), target});
         }
         using Names = detail::FieldNames;
-        using DefaultValue = std::variant<Scalar, String, ArrayLeaf, ObjectReference, std::vector<ObjectReference>>;
+        using DefaultValue = std::variant<Scalar, String, ArrayLeaf, ObjectReference, Array<ObjectReference>>;
         struct DefaultField {
             Names names;
 
@@ -2255,8 +2262,8 @@ struct Session::GraphCodec {
 
             DefaultValue value;
         };
-        using Defaults = std::vector<DefaultField>;
-        const auto find_path = [](json::Value value, std::span<const std::string> path) -> std::optional<json::Value> {
+        using Defaults = Array<DefaultField>;
+        const auto find_path = [](json::Value value, Span<const std::string> path) -> Optional<json::Value> {
             for (const auto& name : path) {
                 if (value.kind() != json::Kind::object)
                     return {};
@@ -2290,11 +2297,11 @@ struct Session::GraphCodec {
             }
             ATELIER_TRY_BIND(locator, runtime.reference_field(object, field.path));
             ATELIER_TRY_BIND(count, runtime.sequence_size(*locator));
-            std::vector<ObjectReference> references;
+            Array<ObjectReference> references;
             references.reserve(*count);
             for (std::size_t i = 0; i < *count; ++i) {
                 ATELIER_TRY_BIND(ref, runtime.sequence_read(*locator, i));
-                references.push_back(std::move(*ref));
+                references.add(std::move(*ref));
             }
             return DefaultValue{std::move(references)};
         };
@@ -2303,7 +2310,7 @@ struct Session::GraphCodec {
             if (const auto at = *value.find("properties")) {
                 if (at->kind() == json::Kind::object) {
                     const PropertyTarget target{type, object};
-                    std::vector<Names> transient;
+                    Array<Names> transient;
                     ATELIER_TRY_BIND(fields,
                                      business_fields(runtime, session.types_, type, load.live ? nullptr : &transient));
                     // Capture this instance's constructor values only for leaves the file may overwrite.
@@ -2313,7 +2320,7 @@ struct Session::GraphCodec {
                             for (const auto& field : *fields)
                                 if (find_path(*at, field.names)) {
                                     ATELIER_TRY_BIND(value, default_value(target, field));
-                                    defaults.push_back({field.names, field.path, std::move(*value)});
+                                    defaults.add({field.names, field.path, std::move(*value)});
                                 }
                     }
                     ATELIER_TRY(read_properties(runtime, target, *at, load, resolve, *fields, transient));
@@ -2334,16 +2341,16 @@ struct Session::GraphCodec {
             ATELIER_TRY(committed(world.set_enabled(object, enabled)));
             return defaults;
         };
-        const auto invalid_record = [&](ObjectId object, std::span<const std::string> names, const Defaults& defaults,
+        const auto invalid_record = [&](ObjectId object, Span<const std::string> names, const Defaults& defaults,
                                         const std::string& problem) -> SceneResult<void> {
             Names path{"properties"};
-            path.insert(path.end(), names.begin(), names.end());
+            path.append(names);
             const auto saved = find_path(required_entry(records, object), path);
             ATELIER_TRY(load.report(
                 world::Severity::warning, world::DiagnosticKind::mismatch, object, path, saved ? &*saved : nullptr,
                 load.policy == LoadPolicy::strict ? problem : problem + " Record restored to its defaults."));
             if (auto* entry = load.pending.find(object)) {
-                path.insert(path.begin(), "record");
+                path.insert(0, "record");
                 detail::erase_path(*entry, entry->root(), path);
                 if (entry->root().size() == 0)
                     load.pending.remove(object);
@@ -2366,7 +2373,7 @@ struct Session::GraphCodec {
                     ATELIER_TRY_BIND(locator, runtime.reference_field(object, path));
                     ATELIER_TRY_BIND(count, runtime.sequence_size(*locator));
                     const ReferenceChange change =
-                        SequenceSplice{*locator, 0, *count, std::get<std::vector<ObjectReference>>(value)};
+                        SequenceSplice{*locator, 0, *count, std::get<Array<ObjectReference>>(value)};
                     ATELIER_TRY(runtime.apply_reference_changes({&change, 1}));
                 }
             }
@@ -2392,7 +2399,7 @@ struct Session::GraphCodec {
             }
             return {};
         };
-        const auto copy_bindings = [&](const std::vector<presentation::MaterialBinding>& source) {
+        const auto copy_bindings = [&](const Array<presentation::MaterialBinding>& source) {
             auto bindings = source;
             for (auto& binding : bindings) {
                 const auto key = required_entry(copied_material_keys, binding.resource.id());
@@ -2421,17 +2428,18 @@ struct Session::GraphCodec {
                 if (!found)
                     return std::unexpected(SceneFailure("Material binding references an unknown scene resource."));
                 used_materials.add(key);
-                held.push_back(*found);
+                held.add(*found);
                 ATELIER_TRY_BIND(id, identity(session, found->id()));
                 kept.set_validated(**at, std::to_string(*id));
             }
-            load.store(object, std::array{std::string("materials")}, kept.root());
+            const std::array mat_path{std::string("materials")};
+            load.store(object, mat_path, kept.root());
             return {};
         };
         const auto decode_material_bindings =
             [&](ObjectId object, json::Value part, bool unresolved, bool warn_if_missing, auto&& slot_matches,
-                const char* slot_mismatch_message) -> SceneResult<std::vector<presentation::MaterialBinding>> {
-            std::vector<presentation::MaterialBinding> bindings;
+                const char* slot_mismatch_message) -> SceneResult<Array<presentation::MaterialBinding>> {
+            Array<presentation::MaterialBinding> bindings;
             const auto entries = *part.find("materials");
             if (!entries) {
                 if (warn_if_missing)
@@ -2481,7 +2489,7 @@ struct Session::GraphCodec {
                                        "Expected a boolean. The slot is not overridden and the saved value is kept."));
                 else
                     overridden = *flag->boolean();
-                bindings.push_back({slot, std::move(resource), overridden});
+                bindings.add({slot, std::move(resource), overridden});
             }
             auto kept = bindings.begin();
             for (auto at = bindings.begin(); at != bindings.end(); ++at) {
@@ -2495,7 +2503,7 @@ struct Session::GraphCodec {
                 }
             }
             if (kept != bindings.end()) {
-                bindings.erase(kept, bindings.end());
+                bindings.truncate(static_cast<std::size_t>(kept - bindings.begin()));
                 ATELIER_TRY(keep_bindings(object, *entries));
             }
             return bindings;
@@ -2504,7 +2512,8 @@ struct Session::GraphCodec {
                                auto clear) -> SceneResult<void> {
             if (applied)
                 return {};
-            if (const auto value = find_path(required_entry(records, object), Names{"properties", name}))
+            const Names prop_path{"properties", name};
+            if (const auto value = find_path(required_entry(records, object), prop_path))
                 ATELIER_TRY(load.keep(object, {"properties", name}, *value, world::DiagnosticKind::mismatch,
                                       applied.error().message + " The binding is empty and the saved value is kept."));
             else
@@ -2554,14 +2563,14 @@ struct Session::GraphCodec {
                         else
                             source = *mesh_at->string();
                         geometry::MeshRef mesh;
-                        std::vector<presentation::MaterialBinding> defaults;
+                        Array<presentation::MaterialBinding> defaults;
                         if (!source.empty()) {
                             // A source that already failed is not read again for each component that uses it.
                             const auto* item = session.unavailable(assets::AssetKind::mesh, source);
                             if (!item) {
                                 if (auto loaded = project->assets().mesh(source)) {
                                     mesh = loaded->mesh;
-                                    std::vector<MissingResource> missing;
+                                    Array<MissingResource> missing;
                                     {
                                         ATELIER_TRY_BIND(value,
                                                          session.mesh_defaults(project->assets(), *loaded, &missing));
@@ -2738,7 +2747,8 @@ struct Session::GraphCodec {
                             problem = "Triangle collision needs a persistent mesh source.";
                     }
                     if (!problem.empty()) {
-                        ATELIER_TRY(invalid_record(object, Names{"body"}, *defaults, problem));
+                        const Names body_path{"body"};
+                        ATELIER_TRY(invalid_record(object, body_path, *defaults, problem));
                         ATELIER_TRY(validate(object, *defaults));
                         {
                             ATELIER_TRY_BIND(value, physics::read_settings(runtime, object));
@@ -2754,7 +2764,7 @@ struct Session::GraphCodec {
                                 object, {"properties", "body", "shape"}, nullptr,
                                 "Triangle collision has no mesh to cook; Play cannot create this body until the mesh is restored."));
                         } else if (mesh->mesh.source.starts_with("project/"))
-                            result.triangle_meshes.push_back(object);
+                            result.triangle_meshes.add(object);
                     }
                     if (const auto* cached = graph.cooked_shapes.find(part_id);
                         cached && *cached != settings->cooked_shape) {
@@ -2800,7 +2810,7 @@ struct Session::GraphCodec {
                 ATELIER_TRY_BIND(id, identity(session, target));
                 if (session.is_material(target) && held_keys.add(*id)) {
                     ATELIER_TRY_BIND(root, runtime.hold(target));
-                    owner.reference_roots.emplace_back(*id, std::move(*root));
+                    owner.reference_roots.emplace(*id, std::move(*root));
                 }
                 const auto reference = ref_key(*id);
                 entry.replace(node, reference.root());
@@ -2832,7 +2842,7 @@ struct Session::GraphCodec {
                     ATELIER_TRY(load.report(
                         world::Severity::warning, world::DiagnosticKind::unknown_key, resource.id(), {}, nullptr,
                         "The material definition is not referenced; it is kept for the next save."));
-                    load.document_retained.materials.push_back(resource);
+                    load.document_retained.materials.add(resource);
                 } else
                     ATELIER_TRY(load.report(world::Severity::warning, world::DiagnosticKind::unknown_key, resource.id(),
                                             {}, nullptr,
@@ -2841,21 +2851,21 @@ struct Session::GraphCodec {
         return result;
     }
 
-    static std::vector<world::EntityAttachment> attachments(const Prepared& prepared, const Graph& graph,
-                                                            ObjectId parent, bool duplicate) {
-        std::vector<world::EntityAttachment> attachments;
+    static Array<world::EntityAttachment> attachments(const Prepared& prepared, const Graph& graph,
+                                                      ObjectId parent, bool duplicate) {
+        Array<world::EntityAttachment> attachments;
         attachments.reserve(prepared.roots.size());
         for (std::size_t i = 0; i < prepared.roots.size(); ++i) {
             auto target = parent;
             if (duplicate)
                 target = required_entry(graph.parents, std::string(*graph.data.root().at("roots")->at(i)->string()));
-            attachments.push_back({prepared.roots[i], target, world::append});
+            attachments.add({prepared.roots[i], target, world::append});
         }
         return attachments;
     }
 
     static SceneResult<void> prepare_cook(Session& session, Prepared& prepared,
-                                          std::span<const world::EntityAttachment> attachments, Load& load) {
+                                          Span<const world::EntityAttachment> attachments, Load& load) {
         if (prepared.triangle_meshes.empty())
             return {};
         Map<ObjectId, math::Matrix4> worlds;
@@ -2914,7 +2924,7 @@ struct Session::GraphCodec {
             world::EntityRemoval removal;
             ATELIER_TRY_BIND(held, session.runtime_.hold(root));
             removal.root = std::move(*held);
-            history.removals.push_back(std::move(removal));
+            history.removals.add(std::move(removal));
         }
         auto plans = attachments(prepared, graph, parent, duplicate);
         ATELIER_TRY(prepare_cook(session, prepared, plans, load));
@@ -2936,7 +2946,8 @@ struct Session::GraphCodec {
             session.remember(std::move(history));
             session.retained_.merge(load.retained);
             if (!duplicate)
-                std::ranges::move(load.issues, std::back_inserter(session.load_issues_));
+                for (auto& issue : load.issues)
+                    session.load_issues_.add(std::move(issue));
         }
         return result;
     }
@@ -2944,9 +2955,9 @@ struct Session::GraphCodec {
     // Play publication keeps document identities and records no history.
     static SceneResult<world::Commit> publish_live(Session& session, Prepared& prepared, ObjectId parent,
                                                    std::size_t index, Load& load) {
-        std::vector<world::EntityAttachment> plans;
+        Array<world::EntityAttachment> plans;
         for (const auto root : prepared.roots)
-            plans.push_back({root, parent, index});
+            plans.add({root, parent, index});
         ATELIER_TRY(prepare_cook(session, prepared, plans, load));
         for (const auto& [object, label] : prepared.labels)
             session.names_.insert_or_assign(object, label);
@@ -2974,7 +2985,7 @@ struct Session::GraphCodec {
     // Game spawns and destructions legitimately change those lists, so a stale index clamps to the end.
     // World attaches a new root before a member position, so an added root's ordinal is translated.
     static SceneResult<std::size_t> live_index(Session& session, json::Value value, ObjectId parent,
-                                               std::optional<ObjectId> moved = {}) {
+                                               Optional<ObjectId> moved = {}) {
         if (value.is_null())
             return world::append;
         ATELIER_TRY_BIND(parsed, value.u64());
@@ -2984,13 +2995,13 @@ struct Session::GraphCodec {
             ATELIER_TRY_BIND(siblings, world::children(runtime, parent));
             return std::min<std::size_t>(
                 wanted, siblings->size() -
-                            std::ranges::count_if(*siblings, [&](const auto& item) { return item.id() == moved; }));
+                            std::ranges::count_if(*siblings, [&](const auto& item) { return moved == item.id(); }));
         }
         ATELIER_TRY_BIND(members, session.world_.members());
         std::size_t ordinal{};
         for (std::size_t i = 0; i < members->size(); ++i) {
             const auto id = (*members)[i].id();
-            if (id == moved)
+            if (moved == id)
                 continue;
             ATELIER_TRY_BIND(actual_parent, world::parent_entity(runtime, id));
             if (*actual_parent != ObjectId{})
@@ -3004,9 +3015,13 @@ struct Session::GraphCodec {
 
     struct PlayCommand {
         Session& session;
+
         Project& project;
-        std::vector<world::Diagnostic>& out;
+
+        Array<world::Diagnostic>& out;
+
         std::string subject;
+
         ObjectId object{};
 
         void note(world::Severity severity, world::DiagnosticKind kind, const std::string& detail,
@@ -3032,7 +3047,7 @@ struct Session::GraphCodec {
                 item.source = cause->source;
                 item.element = cause->element;
             }
-            out.push_back(std::move(item));
+            out.add(std::move(item));
         }
 
         SceneResult<void> apply(json::Value op) {
@@ -3084,7 +3099,7 @@ struct Session::GraphCodec {
                 Graph graph;
                 graph.data = json::Document(*graph_value);
                 // A resource imported after Play opened its Project is not catalogued yet.
-                std::optional<Prepared> prepared;
+                Optional<Prepared> prepared;
                 for (bool refreshed = false;; refreshed = true) {
                     load = Load{};
                     load.live = true;
@@ -3122,7 +3137,7 @@ struct Session::GraphCodec {
                         issue.serial = out.size() + 1;
                         issue.phase = world::DiagnosticPhase::command;
                         issue.message = subject + ": " + issue.message;
-                        out.push_back(std::move(issue));
+                        out.add(std::move(issue));
                     }
             } else if (kind == "remove") {
                 ATELIER_TRY(op.members({"op", "id"}));
@@ -3165,36 +3180,36 @@ struct Session::GraphCodec {
                     if (at->kind() != json::Kind::object)
                         return std::unexpected(SceneFailure("Expected a property record."));
                     const auto resolve = [&](json::Value value, TypeId field_type,
-                                             ValueForm form) -> SceneResult<std::optional<ObjectReference>> {
+                                             ValueForm form) -> SceneResult<Optional<ObjectReference>> {
                         const auto null = [&] {
                             return runtime.null_reference(
                                 field_type, form == ValueForm::weak_reference ? form : ValueForm::strong_reference);
                         };
                         if (value.is_null()) {
                             ATELIER_TRY_BIND(reference, null());
-                            return std::optional{*reference};
+                            return Optional<ObjectReference>{*reference};
                         }
                         if (value.kind() != json::Kind::object || !*value.find("$ref"))
-                            return std::nullopt;
+                            return Optional<ObjectReference>{};
                         ATELIER_TRY(scene_result(value.members({"$ref"})));
                         ATELIER_TRY_BIND(key, scene_result(local_key(*value.at("$ref"))));
                         ATELIER_TRY_BIND(live, live_reference(session, *key, load));
                         if (!*live) {
                             ATELIER_TRY_BIND(reference, null());
-                            return std::optional{*reference};
+                            return Optional<ObjectReference>{*reference};
                         }
                         auto held = runtime.hold(**live, field_type);
                         if (!held)
-                            return std::nullopt;
+                            return Optional<ObjectReference>{};
                         if (form == ValueForm::weak_reference) {
                             ATELIER_TRY_BIND(reference, runtime.observe(held->reference()));
-                            return std::optional{*reference};
+                            return Optional<ObjectReference>{*reference};
                         }
-                        return std::optional{held->reference()};
+                        return Optional<ObjectReference>{held->reference()};
                     };
                     // Scalar leaves are one group write: a type's rules can span them, as when a probe volume moves.
-                    std::vector<world::FieldPath> paths;
-                    std::vector<Scalar> values;
+                    Array<world::FieldPath> paths;
+                    Array<Scalar> values;
                     const PropertyTarget target{*type, edited};
                     ATELIER_TRY_BIND(fields, business_fields(runtime, session.types_, target.type));
                     ATELIER_TRY(read_properties(
@@ -3202,8 +3217,8 @@ struct Session::GraphCodec {
                         [&](const detail::ScalarField& field, const PropertyLeaf& leaf) -> Result<void> {
                             const auto& path = field.path;
                             if (const auto* scalar = std::get_if<Scalar>(&leaf)) {
-                                paths.emplace_back(path.begin(), path.end());
-                                values.push_back(*scalar);
+                                paths.add(path);
+                                values.add(*scalar);
                                 return {};
                             }
                             if (const auto* array = std::get_if<ArrayLeaf>(&leaf))
@@ -3212,14 +3227,13 @@ struct Session::GraphCodec {
                             return world.write(edited, path, ValueInput{*string_type, &std::get<String>(leaf)});
                         }));
                     if (!paths.empty())
-                        ATELIER_TRY(world.write(edited, std::span<const world::FieldPath>(paths),
-                                                std::span<const Scalar>(values)));
+                        ATELIER_TRY(world.write(edited, paths, values));
                 }
                 if (const auto at = *op.find("materials")) {
                     ATELIER_TRY_BIND(entries, at->array());
                     if (entries->size() > 1024)
                         return std::unexpected(SceneFailure("Expected a material binding table."));
-                    std::vector<presentation::MaterialBinding> bindings;
+                    Array<presentation::MaterialBinding> bindings;
                     for (auto entry : *entries) {
                         ATELIER_TRY(entry.members({"slot", "resource", "overridden"}));
                         ATELIER_TRY_BIND(parsed_key, local_key(*entry.at("resource")));
@@ -3232,7 +3246,7 @@ struct Session::GraphCodec {
                         ATELIER_TRY_BIND(slot, entry.string({"slot"}));
                         ATELIER_TRY_BIND(overridden, entry.boolean({"overridden"}));
                         ATELIER_TRY_BIND(held, runtime.hold(*live));
-                        bindings.push_back({std::string(*slot), std::move(*held), *overridden});
+                        bindings.add({std::string(*slot), std::move(*held), *overridden});
                     }
                     ATELIER_TRY(presentation::set_material_bindings(runtime, edited, bindings));
                 }
@@ -3336,7 +3350,7 @@ struct Session::GraphCodec {
                         ATELIER_TRY_BIND(canonical, world::canonical_transform(trs));
                         trs = std::move(*canonical);
                         if (const auto origin = *at->find("origin")) {
-                            std::optional<ObjectId> reference;
+                            Optional<ObjectId> reference;
                             if (!origin->is_null()) {
                                 ATELIER_TRY_BIND(key, local_key(*origin, true));
                                 if (*key) {
@@ -3399,7 +3413,7 @@ struct Session::GraphCodec {
                     if (!visiting.add(key))
                         return std::unexpected(SceneFailure("Live material parent cycle."));
                     // As in a tolerant load: an unavailable source, parent or texture stands in with a warning.
-                    std::vector<MissingResource> missing;
+                    Array<MissingResource> missing;
                     ATELIER_TRY_BIND(restored, restore_material(session, &project, *record, self, &missing,
                                                                 live.value_or(ObjectId{})));
                     for (const auto& item : missing)
@@ -3409,7 +3423,7 @@ struct Session::GraphCodec {
                             return std::unexpected(
                                 SceneFailure("One material asset has multiple document identities."));
                         session.live_objects_.insert_or_assign(key, restored->id());
-                        session.live_materials_.push_back(*restored);
+                        session.live_materials_.add(*restored);
                     }
                     visiting.remove(key);
                     complete.add(key);
@@ -3439,9 +3453,11 @@ struct Session::GraphCodec {
                 }
                 if (rgba->size() != bytes)
                     return std::unexpected(SceneFailure("Play texture RGBA byte count does not match its dimensions."));
-                auto image =
-                    material::Image::create(static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height),
-                                            std::vector<std::uint8_t>(rgba->begin(), rgba->end()));
+                Array<std::uint8_t> pixels;
+                pixels.resize_uninitialized(rgba->size());
+                std::memcpy(pixels.data(), rgba->data(), rgba->size());
+                auto image = material::Image::create(static_cast<std::uint32_t>(width),
+                                                     static_cast<std::uint32_t>(height), std::move(pixels));
                 if (!image) {
                     note(world::Severity::error, world::DiagnosticKind::command_rejected, image.error().message);
                     return {};
@@ -3479,7 +3495,7 @@ struct Session::GraphCodec {
                 ATELIER_TRY_BIND(material, op.at("material"));
                 ATELIER_TRY_BIND(asset, assets::material_format::decode(*material));
                 asset->key = key;
-                std::optional<source::SourceFile> exact_source;
+                Optional<source::SourceFile> exact_source;
                 if (const auto input = *op.find("source")) {
                     ATELIER_TRY(input->members({"path", "text"}));
                     ATELIER_TRY_BIND(text, input->string({"text"}));
@@ -3494,7 +3510,7 @@ struct Session::GraphCodec {
                 // Refresh only the catalogue for newly created dependencies;
                 // published pixels and Source text above remain authoritative.
                 ATELIER_TRY(project.refresh());
-                std::vector<MissingResource> missing;
+                Array<MissingResource> missing;
                 ATELIER_TRY(session.publish_material(project.assets(), *asset, std::move(exact_source), &missing));
                 for (const auto& item : missing)
                     note(world::Severity::warning, item.kind, item.error.message, &item.error);
@@ -3523,12 +3539,12 @@ struct Session::GraphCodec {
 Result<std::string> Session::serialize() const {
     if (editing())
         return std::unexpected(Error{ErrorCode::invalid_storage, "Finish the active edit before saving."});
-    std::vector<ObjectId> roots;
+    Array<ObjectId> roots;
     ATELIER_TRY_BIND(members, world_.members());
     for (const auto& member : *members) {
         ATELIER_TRY_BIND(parent, world::parent_entity(world_.runtime(), member.id()));
         if (*parent == ObjectId{})
-            roots.push_back(member.id());
+            roots.add(member.id());
     }
     ATELIER_TRY_BIND(graph, GraphCodec::capture(*this, roots, true, true));
     const auto text = json::write(graph->data.root(), {true, true});
@@ -3556,7 +3572,7 @@ Result<std::string> Session::serialize_live_subtree(ObjectId root) const {
     return std::string(text.data(), text.size());
 }
 
-Result<std::string> Session::serialize_live_components(ObjectId entity, std::span<const ObjectId> components) const {
+Result<std::string> Session::serialize_live_components(ObjectId entity, Span<const ObjectId> components) const {
     ATELIER_TRY_BIND(graph, GraphCodec::live_components(*this, entity, components));
     const auto text = json::write(graph->root());
     if (text.size() > assets::json_format::maximum_bytes)
@@ -3571,13 +3587,13 @@ void Session::set_live_forwarding(bool enabled) {
     live_leaves_.clear();
 }
 
-Result<std::vector<LiveChange>> Session::take_live_ops() {
+Result<Array<LiveChange>> Session::take_live_ops() {
     if (live_failure_)
         return std::unexpected(*live_failure_);
-    std::vector<LiveChange> result;
+    Array<LiveChange> result;
     result.reserve(live_ops_.size());
     for (auto& op : live_ops_)
-        result.push_back(std::move(op.change));
+        result.add(std::move(op.change));
     live_ops_.clear();
     return result;
 }
@@ -3638,7 +3654,7 @@ void Session::forward_change(const Change& change, bool forward) {
 
                         json::Builder op;
                     };
-                    std::vector<Add> adds;
+                    Array<Add> adds;
                     Map<std::string, std::size_t> added_entities;
                     for (const auto& removal : item.removals) {
                         const auto root = removal.id();
@@ -3675,12 +3691,12 @@ void Session::forward_change(const Change& change, bool forward) {
                         }
                         ATELIER_TRY(scene_result(op.set(op.root(), "index", std::uint64_t(*index))));
                         op.set_validated(op.root(), "graph", graph.root());
-                        adds.push_back({parent_key, *index, std::move(op)});
+                        adds.add({parent_key, *index, std::move(op)});
                     }
                     // Import and Redo also own references inside their incoming forest.
                     // Defer only main_camera across its roots; never resend an existing
                     // Environment or pull a target outside this batch back into Play.
-                    std::optional<json::Builder> imported_camera;
+                    Optional<json::Builder> imported_camera;
                     if (const auto env = environment(); env != ObjectId{}) {
                         ATELIER_TRY_BIND(component, scene_result(C::live_id(*this, env)));
                         for (std::size_t i = 0; i < adds.size(); ++i) {
@@ -3936,7 +3952,7 @@ Result<void> Session::reimport_mesh(Project& project, std::string_view key, cons
         ATELIER_TRY(publish_texture(texture.key, texture.image));
     // Existing documents may have unsaved author edits. Importing geometry
     // must not replace those edits with the material file's saved values.
-    std::vector<MissingResource> missing;
+    Array<MissingResource> missing;
     for (const auto& asset : publication->materials) {
         ATELIER_TRY_BIND(root, material_resource(project.assets(), asset, &missing));
         forward_material(root->id());
@@ -3948,16 +3964,16 @@ Result<void> Session::publish_mesh(assets::Reader& reader, const assets::MeshAss
     if (world_.closed() || asset.key.empty() || !asset.mesh)
         return std::unexpected(Error{ErrorCode::invalid_storage,
                                      "Mesh publication needs a live Session, asset key and complete geometry."});
-    std::vector<MissingResource> missing;
+    Array<MissingResource> missing;
     ATELIER_TRY_BIND(defaults, mesh_defaults(reader, asset, &missing));
     struct Replacement {
         ObjectId object;
 
-        std::vector<presentation::MaterialBinding> active;
+        Array<presentation::MaterialBinding> active;
 
         Retained kept;
     };
-    std::vector<Replacement> replacements;
+    Array<Replacement> replacements;
     // Include detached history objects with a document identity: later Undo
     // reattaches the current mesh rather than resurrecting an imported version.
     Set<ObjectId> components;
@@ -4016,17 +4032,17 @@ Result<void> Session::publish_mesh(assets::Reader& reader, const assets::MeshAss
                         overridden = *value;
                     }
                     ATELIER_TRY_BIND(root, runtime_.hold(*id));
-                    bindings->push_back({slot, std::move(*root), overridden});
+                    bindings->add({slot, std::move(*root), overridden});
                 }
             }
-            std::vector<presentation::MaterialBinding> active;
+            Array<presentation::MaterialBinding> active;
             bool dormant{};
             for (const auto& binding : *bindings) {
                 std::size_t matches{};
                 for (std::size_t i = 0; i < asset.mesh->materials().size(); ++i)
                     matches += geometry::material_slot_name(*asset.mesh, i) == binding.slot;
                 if (matches == 1)
-                    active.push_back(binding);
+                    active.add(binding);
                 else
                     dormant = true;
             }
@@ -4039,7 +4055,7 @@ Result<void> Session::publish_mesh(assets::Reader& reader, const assets::MeshAss
                     ATELIER_TRY_BIND(id, scene_result(GraphCodec::identity(*this, binding.resource.id())));
                     record.set_validated(entry, "resource", std::to_string(*id));
                     ATELIER_TRY(scene_result(record.set(entry, "overridden", binding.overridden)));
-                    kept.materials.push_back(binding.resource);
+                    kept.materials.add(binding.resource);
                 }
             } else
                 record.erase(record.root(), "materials");
@@ -4049,7 +4065,7 @@ Result<void> Session::publish_mesh(assets::Reader& reader, const assets::MeshAss
         }();
         if (!changed)
             return std::unexpected(std::move(changed.error()));
-        replacements.push_back(std::move(*changed));
+        replacements.add(std::move(*changed));
     }
     ATELIER_TRY(reader.publish_mesh_content(asset));
     for (auto& replacement : replacements) {
@@ -4088,7 +4104,7 @@ void Session::forward_edit() {
             }
         return {};
     };
-    const auto fields = [&](ObjectId object, std::span<const world::FieldPath> paths) -> Result<void> {
+    const auto fields = [&](ObjectId object, Span<const world::FieldPath> paths) -> Result<void> {
         std::string key;
         ATELIER_TRY_BIND(op, C::live_properties(*this, object, paths, &key));
         return C::live_push(*this, std::move(key), op->root());
@@ -4131,7 +4147,7 @@ void Session::enter_play() {
             live_objects_.insert_or_assign(key, object);
 }
 
-Result<std::vector<world::Diagnostic>> Session::apply_live(std::string_view text, Project& project) {
+Result<Array<world::Diagnostic>> Session::apply_live(std::string_view text, Project& project) {
     if (!play_)
         return std::unexpected(Error{ErrorCode::invalid_storage, "Editor changes apply only to a Play copy."});
     if (world_.closed())
@@ -4145,7 +4161,7 @@ Result<std::vector<world::Diagnostic>> Session::apply_live(std::string_view text
     const auto ops = batch->root().at("ops")->array();
     if (!ops)
         return std::unexpected(Error{ErrorCode::invalid_storage, ops.error().describe()});
-    std::vector<world::Diagnostic> result;
+    Array<world::Diagnostic> result;
     std::size_t index = 0;
     for (auto op : *ops) {
         GraphCodec::PlayCommand command{*this, project, result, "Play change " + std::to_string(index++)};
@@ -4212,7 +4228,7 @@ Result<world::Commit> Session::instantiate_subtree(std::string_view text, Projec
     return published;
 }
 
-Result<world::Commit> Session::duplicate_entities(std::span<const ObjectId> entities) {
+Result<world::Commit> Session::duplicate_entities(Span<const ObjectId> entities) {
     if (editing())
         return std::unexpected(Error{ErrorCode::invalid_storage, "Finish the active edit before duplicating."});
     if (entities.empty())
@@ -4260,11 +4276,11 @@ void Session::Retained::prune_reference_roots() {
         if (!visited)
             fatal("Invalid retained reference produced by the Scene writer.");
     }
-    std::erase_if(reference_roots, [&](const auto& entry) { return !kept.contains(entry.first); });
+    reference_roots.remove_if([&](const auto& entry) { return !kept.contains(entry.first); });
 }
 
-std::vector<Session::RetainedSwap> Session::release(const Change& change) {
-    std::vector<RetainedSwap> swaps;
+Array<Session::RetainedSwap> Session::release(const Change& change) {
+    Array<RetainedSwap> swaps;
     if (retained_.empty() && retained_document_.record.empty())
         return swaps;
     const auto entry_of = [&](ObjectId object) -> Retained* {
@@ -4274,13 +4290,13 @@ std::vector<Session::RetainedSwap> Session::release(const Change& change) {
     };
     const auto update = [&](ObjectId object, Retained& entry, Retained after) {
         after.prune_reference_roots();
-        swaps.push_back({object, entry, after});
+        swaps.add({object, entry, after});
         if (object != ObjectId{} && after.empty())
             retained_.remove(object);
         else
             entry = std::move(after);
     };
-    const auto drop = [&](ObjectId object, std::span<const std::string> path) {
+    const auto drop = [&](ObjectId object, Span<const std::string> path) {
         auto* entry = entry_of(object);
         if (!entry || entry->record.empty())
             return;
@@ -4326,13 +4342,13 @@ std::vector<Session::RetainedSwap> Session::release(const Change& change) {
         update(object, *entry, std::move(after));
     };
     // Business field paths map directly to the properties record.
-    const auto field = [&](ObjectId object, std::span<const FieldId> path) {
+    const auto field = [&](ObjectId object, Span<const FieldId> path) {
         if (!retained_.contains(object))
             return;
         const auto type = runtime_.type_of(object);
         if (!type || path.empty())
             return;
-        std::vector<std::string> names{"properties"};
+        Array<std::string> names{"properties"};
         auto owner = *type;
         for (const auto id : path) {
             const auto info = runtime_.describe(owner);
@@ -4341,7 +4357,7 @@ std::vector<Session::RetainedSwap> Session::release(const Change& change) {
             const auto at = std::ranges::find((*info)->fields, id, &FieldInfo::id);
             if (at == (*info)->fields.end())
                 return;
-            names.emplace_back(at->name);
+            names.emplace(at->name);
             owner = at->value.type;
         }
         drop(object, names);
@@ -4398,7 +4414,7 @@ std::vector<Session::RetainedSwap> Session::release(const Change& change) {
     return swaps;
 }
 
-void Session::restore(std::span<const RetainedSwap> swaps, bool forward) {
+void Session::restore(Span<const RetainedSwap> swaps, bool forward) {
     const auto apply = [&](const RetainedSwap& swap) {
         const auto& value = forward ? swap.after : swap.before;
         if (swap.object == ObjectId{})
@@ -4412,8 +4428,8 @@ void Session::restore(std::span<const RetainedSwap> swaps, bool forward) {
         for (const auto& swap : swaps)
             apply(swap);
     else
-        for (auto at = swaps.rbegin(); at != swaps.rend(); ++at)
-            apply(*at);
+        for (std::size_t i = swaps.size(); i > 0; --i)
+            apply(swaps[i - 1]);
 }
 
 Result<void> Session::discard_retained(ObjectId object) {
@@ -4441,7 +4457,7 @@ Result<void> Session::discard_retained(ObjectId object) {
     RetainedSwap swap{object, std::move(before), std::move(after)};
     restore({&swap, 1}, true);
     remember(RetainedChange{});
-    history_.back().retained.push_back(std::move(swap));
+    history_.back().retained.add(std::move(swap));
     return {};
 }
 
@@ -4462,9 +4478,9 @@ std::size_t Session::placeholder_count() const noexcept {
     }));
 }
 
-std::optional<std::uint64_t> Session::document_identity(ObjectId object) const {
+Optional<std::uint64_t> Session::document_identity(ObjectId object) const {
     const auto* at = local_ids_.find(object);
-    return at ? std::optional(*at) : std::nullopt;
+    return at ? Optional<std::uint64_t>(*at) : Optional<std::uint64_t>{};
 }
 
 Result<RetainedView> Session::retained(ObjectId object) const {
@@ -4479,7 +4495,7 @@ Result<RetainedView> Session::retained(ObjectId object) const {
     view.type = entry->type;
     const bool document = object == ObjectId{};
     bool material{};
-    std::vector<detail::ScalarField> schema;
+    Array<detail::ScalarField> schema;
     const MissingResource* mesh_unavailable{};
     if (!document) {
         ATELIER_TRY_BIND(type, runtime_.type_of(object));
@@ -4497,14 +4513,14 @@ Result<RetainedView> Session::retained(ObjectId object) const {
         }
     }
     // Descends into records the current schema still declares; anything else is one entry.
-    const auto classify = [&](std::span<const std::string> path) -> std::pair<bool, world::DiagnosticKind> {
+    const auto classify = [&](Span<const std::string> path) -> std::pair<bool, world::DiagnosticKind> {
         using enum world::DiagnosticKind;
         if (document || material)
             return {false, unknown_key};
         if (path.front() == "properties") {
             if (path.size() == 1)
                 return {true, mismatch};
-            const auto names = path.subspan(1);
+            const auto names = path.slice(1);
             bool exact{};
             bool prefix{};
             for (const auto& field : schema) {
@@ -4530,17 +4546,17 @@ Result<RetainedView> Session::retained(ObjectId object) const {
         constexpr std::array known{"name", "enabled", "mesh", "graph", "overrides", "materials", "sky_map"};
         return {false, std::ranges::find(known, path.front()) != known.end() ? mismatch : unknown_key};
     };
-    std::vector<std::string> path;
+    Array<std::string> path;
     const auto walk = [&](auto&& self, json::Value value) -> json::Result<void> {
         ATELIER_TRY_BIND(members, value.object_items());
         for (const auto& [name, item] : *members) {
-            path.emplace_back(name);
+            path.emplace(name);
             const auto [record, kind] = classify(path);
             if (record && item.kind() == json::Kind::object && !reference_value(item))
                 ATELIER_TRY(self(self, item));
             else
-                view.entries.push_back({path, preview(item), kind});
-            path.pop_back();
+                view.entries.add({path, preview(item), kind});
+            path.pop();
         }
         return {};
     };
@@ -4558,7 +4574,7 @@ Result<RetainedView> Session::retained(ObjectId object) const {
         for (const auto& [slot, keys] : *members) {
             ATELIER_TRY_BIND(items, scene_result(keys.object_items()));
             for (const auto& [key, value] : *items)
-                view.entries.push_back(
+                view.entries.add(
                     {{"materials", std::string(slot), std::string(key)},
                      preview(value),
                      key == "overridden" ? world::DiagnosticKind::mismatch : world::DiagnosticKind::unknown_key});
@@ -4571,15 +4587,15 @@ Result<RetainedView> Session::retained(ObjectId object) const {
                 json::Builder value;
                 ATELIER_TRY_BIND(asset_key, material::material_key(world_.runtime(), resource.id()));
                 ATELIER_TRY(scene_result(value.set(value.root(), *asset_key)));
-                view.entries.push_back({{"materials", key ? std::to_string(*key) : std::string("?")},
-                                        preview(value.root()),
-                                        world::DiagnosticKind::unknown_key});
+                view.entries.add({{"materials", key ? std::to_string(*key) : std::string("?")},
+                                  preview(value.root()),
+                                  world::DiagnosticKind::unknown_key});
             }
     return view;
 }
 
-std::vector<world::Diagnostic> Session::issues() const {
-    std::vector<world::Diagnostic> result;
+Array<world::Diagnostic> Session::issues() const {
+    Array<world::Diagnostic> result;
     if (retained_.empty() && !has_retained({}))
         return result;
     const bool readable = world_.members().has_value();
@@ -4596,7 +4612,7 @@ std::vector<world::Diagnostic> Session::issues() const {
         for (const auto& [object, key] : local_ids_)
             editor_objects.try_emplace(key, object);
     const auto& by_key = play_ ? live_objects_ : editor_objects;
-    const auto add = [&](ObjectId object, std::string type, world::DiagnosticKind kind, std::vector<std::string> field,
+    const auto add = [&](ObjectId object, std::string type, world::DiagnosticKind kind, Array<std::string> field,
                          std::string value, std::string detail) {
         world::Diagnostic item;
         item.serial = result.size() + 1;
@@ -4612,7 +4628,7 @@ std::vector<world::Diagnostic> Session::issues() const {
         item.message = subject + (field.empty() ? std::string{} : " " + detail::dotted(field)) + ": " + detail;
         item.field = std::move(field);
         item.value = std::move(value);
-        result.push_back(std::move(item));
+        result.add(std::move(item));
     };
     const auto report = [&](ObjectId object, const Retained& entry, std::string type) {
         if (!entry.type.empty())
@@ -4655,13 +4671,13 @@ std::vector<world::Diagnostic> Session::issues() const {
             }
     };
     // Serials and display order follow document identity. A stale object has no issue to display.
-    std::vector<std::tuple<std::uint64_t, ObjectId, const Retained*, TypeId>> listed;
+    Array<std::tuple<std::uint64_t, ObjectId, const Retained*, TypeId>> listed;
     for (const auto [object, entry] : retained_) {
         const auto type = runtime_.type_of(object);
         if (!type || (owner(object) == ObjectId{} && !is_material(object)))
             continue;
         if (const auto key = document_identity(object))
-            listed.emplace_back(*key, object, &entry, *type);
+            listed.emplace(*key, object, &entry, *type);
     }
     std::ranges::sort(listed, {}, [](const auto& item) { return std::get<0>(item); });
     for (const auto& [key, object, entry, type] : listed) {

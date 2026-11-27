@@ -1,5 +1,6 @@
 #pragma once
 #include "editor/operators.hpp"
+#include "foundation/optional.hpp"
 #include <array>
 
 namespace atelier::editor {
@@ -57,7 +58,7 @@ struct MenuBinding {
 
     std::uint64_t radio_group{};
 
-    std::optional<assets::AssetKind> asset_kind{};
+    Optional<assets::AssetKind> asset_kind{};
 };
 
 // Presentation only: these are the same calls used by keyboard and Control, not another action identity.

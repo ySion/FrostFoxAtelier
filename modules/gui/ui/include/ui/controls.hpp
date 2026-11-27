@@ -51,7 +51,7 @@ struct NumberField {
 
     VectorAxis axis{VectorAxis::none};
 
-    std::optional<SliderRange> slider{};
+    Optional<SliderRange> slider{};
 
     bool single_precision{};
 
@@ -81,7 +81,7 @@ struct ParameterRow {
 
     // When the host filters out fields, retain the complete group's state.
     // Otherwise derive it from the supplied fields.
-    std::optional<bool> group_modified{};
+    Optional<bool> group_modified{};
 
     // Optional explicit right-click target; falls back to group_key when zero.
     ControlKey context_target{};
@@ -89,13 +89,13 @@ struct ParameterRow {
 
 // Common caption/body composition for numbers, text and choices. body_key is
 // a row with a 23 DIP minimum height; callers append their ordinary controls to it.
-void append_parameter_row(std::vector<Control>&, const ParameterRow&, float body_minimum = 144);
+void append_parameter_row(Array<Control>&, const ParameterRow&, float body_minimum = 144);
 
 // Append 1–4 fields. The caption uses group_key when supplied; its context menu
 // and Ctrl+middle reset address that stable identity. The host owns group undo.
 // Invalid fields return invalid_control with a static diagnostic. Failure may
 // leave partially appended controls; the caller must discard that candidate.
-Result<void> append_number_row(std::vector<Control>&, ParameterRow, std::span<const NumberField>);
+Result<void> append_number_row(Array<Control>&, ParameterRow, Span<const NumberField>);
 
 struct MenuItem {
     ControlKey key{};
@@ -106,13 +106,13 @@ struct MenuItem {
 
     bool selected{};
 
-    std::optional<EditCommand> edit_command;
+    Optional<EditCommand> edit_command;
 
     std::wstring shortcut{};
 
     bool separator_before{};
 
-    std::vector<MenuItem> children{};
+    Array<MenuItem> children{};
 
     MenuBehavior behavior{MenuBehavior::command};
 
@@ -154,10 +154,10 @@ struct TreeRow {
 // Returns complete visible rows or the first preorder, depth or capacity error.
 // Filtering keeps matches, their ancestors and subtrees expanded. Callers may
 // transfer a spare row buffer to reuse its capacity.
-[[nodiscard]] Result<std::vector<TreeRow>> flatten_tree(std::span<const TreeNode>, std::wstring_view filter,
-                                                        std::vector<TreeRow> rows = {});
+[[nodiscard]] Result<Array<TreeRow>> flatten_tree(Span<const TreeNode>, std::wstring_view filter,
+                                                  Array<TreeRow> rows = {});
 
 // Ascending row indices to describe: the viewport and one screen beyond either
 // edge, the first and last rows, and each pinned row with its neighbours and ancestors.
-std::vector<std::uint32_t> tree_window(std::span<const TreeRow>, TreeViewport, std::span<const std::uint32_t> pinned);
+Array<std::uint32_t> tree_window(Span<const TreeRow>, TreeViewport, Span<const std::uint32_t> pinned);
 } // namespace atelier::ui

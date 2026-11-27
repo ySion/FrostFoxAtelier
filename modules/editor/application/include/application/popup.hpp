@@ -1,6 +1,8 @@
 #pragma once
 #include "application/window.hpp"
+#include "foundation/array.hpp"
 #include "foundation/map.hpp"
+#include "foundation/span.hpp"
 #include "renderer/renderer.hpp"
 #include "ui_language/component.hpp"
 
@@ -12,11 +14,11 @@ public:
     PopupHost() = default;
 
     // Initialize once at a stable address. On failure the owner destroys this unpublished host.
-    Result<void> initialize(HWND owner, std::span<const std::wstring> fonts, bool validation);
+    Result<void> initialize(HWND owner, Span<const std::wstring> fonts, bool validation);
 
     ~PopupHost() = default; // Renderer member retires before the Window member.
 
-    Result<void> update(ui::ControlKey source, RECT anchor, bool below, std::span<const ui::MenuItem>, const ui::Style&,
+    Result<void> update(ui::ControlKey source, RECT anchor, bool below, Span<const ui::MenuItem>, const ui::Style&,
                         std::shared_ptr<const ui::StyleSheet>, std::shared_ptr<ui_language::Component>,
                         bool center_first_item = false);
 
@@ -49,9 +51,9 @@ private:
 
     renderer::Renderer renderer_;
 
-    std::vector<ui::MenuItem> items_;
+    Array<ui::MenuItem> items_;
 
-    std::vector<ui::Control> controls_;
+    Array<ui::Control> controls_;
 
     ui::ControlKey next_key_{1ULL << 62};
 

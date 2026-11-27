@@ -60,7 +60,7 @@ Result<std::filesystem::path> Reader::resolve(const std::filesystem::path& relat
     return resolve_project_path(root_, relative);
 }
 
-Result<void> Reader::publish(std::vector<ProjectEntry> entries) {
+Result<void> Reader::publish(Array<ProjectEntry> entries) {
     // A received current snapshot must not turn into a read of newer disk
     // content when Live refreshes the catalogue merely to discover another key.
     for (auto& item : entries)
@@ -140,22 +140,22 @@ Result<void> Reader::publish(std::vector<ProjectEntry> entries) {
     return {};
 }
 
-Result<MeshAsset> Reader::publish_mesh(Reader candidate, std::vector<ProjectEntry> entries, std::string_view key,
-                                       const MeshImport& loaded, std::span<const TextureAsset> textures) {
+Result<MeshAsset> Reader::publish_mesh(Reader candidate, Array<ProjectEntry> entries, std::string_view key,
+                                       const MeshImport& loaded, Span<const TextureAsset> textures) {
     if (!loaded.mesh)
         return failure("Mesh publication requires prepared geometry.");
     candidate.meshes_.remove(key); // Explicit reimport supersedes received content/defaults.
     ATELIER_TRY(candidate.publish(std::move(entries)));
     ATELIER_TRY_BIND(found, listed(candidate, key, AssetKind::mesh));
     const auto& item = **found;
-    std::vector<std::filesystem::path> changed;
+    Array<std::filesystem::path> changed;
     CachedMesh cached{loaded.mesh, {}, loaded.notes};
     for (const auto& file : loaded.files) {
         const auto path = item.path.parent_path() / file.relative;
         ATELIER_TRY(candidate.resolve(path));
-        changed.push_back(path);
+        changed.add(path);
         if (file.relative != item.path.filename())
-            cached.dependencies.push_back(path);
+            cached.dependencies.add(path);
     }
     const auto touched = [&](const std::filesystem::path& path) {
         const auto text = path.lexically_normal().generic_wstring();
@@ -231,8 +231,8 @@ Result<MeshImport> Reader::prepare_mesh(const std::filesystem::path& source) {
     return load_mesh(source, &images_);
 }
 
-Result<std::vector<material::ImageRef>> Reader::prepare_images(std::span<const std::string_view> sources,
-                                                               std::uint64_t pixel_budget) {
+Result<Array<material::ImageRef>> Reader::prepare_images(Span<const std::string_view> sources,
+                                                         std::uint64_t pixel_budget) {
     return decode_images(sources, &images_, pixel_budget);
 }
 
@@ -240,7 +240,7 @@ Reader::CachedMesh& Reader::retain_import(std::string key, const std::filesystem
     CachedMesh cached{loaded.mesh, {}, std::move(loaded.notes)};
     for (const auto& file : loaded.files)
         if (file.relative != relative.filename())
-            cached.dependencies.push_back(relative.parent_path() / file.relative);
+            cached.dependencies.add(relative.parent_path() / file.relative);
     return *meshes_.try_emplace(std::move(key), std::move(cached)).value;
 }
 
@@ -260,7 +260,7 @@ Result<MeshAsset> Reader::mesh(std::string_view key) {
     }
     // In slot order, so every consumer lists the defaults as the mesh lists its slots.
     const auto& mesh = *found_mesh->mesh;
-    std::vector<std::pair<std::size_t, SlotMaterial>> ordered;
+    Array<std::pair<std::size_t, SlotMaterial>> ordered;
     Set<std::string_view> bound;
     bound.reserve(entry.materials.size());
     for (const auto& binding : entry.materials) {
@@ -275,24 +275,24 @@ Result<MeshAsset> Reader::mesh(std::string_view key) {
             return failure("Mesh metadata names a default material for a missing or ambiguous slot: " + binding.slot);
         if (!bound.add(binding.slot))
             return failure("Mesh metadata repeats a default material slot: " + binding.slot);
-        ordered.emplace_back(index, binding);
+        ordered.emplace(index, binding);
     }
     std::ranges::sort(ordered, {}, &std::pair<std::size_t, SlotMaterial>::first);
     MeshAsset result{entry.key, entry.path.stem().wstring(), found_mesh->mesh};
     for (auto& [index, binding] : ordered)
-        result.materials.push_back(std::move(binding));
+        result.materials.add(std::move(binding));
     return result;
 }
 
-std::span<const std::string> Reader::mesh_notes(std::string_view key) const {
+Span<const std::string> Reader::mesh_notes(std::string_view key) const {
     const auto* found = meshes_.find(key);
-    return found ? std::span<const std::string>(found->notes) : std::span<const std::string>{};
+    return found ? Span<const std::string>(found->notes) : Span<const std::string>{};
 }
 
-Result<std::vector<std::filesystem::path>> Reader::mesh_dependency_files(std::string_view key) {
+Result<Array<std::filesystem::path>> Reader::mesh_dependency_files(std::string_view key) {
     for (const auto& builtin : mesh_assets())
         if (builtin.key == key)
-            return std::vector<std::filesystem::path>{};
+            return Array<std::filesystem::path>{};
     ATELIER_TRY_BIND(found, listed(*this, key, AssetKind::mesh));
     const auto& item = **found;
     auto* cached = meshes_.find(item.key);

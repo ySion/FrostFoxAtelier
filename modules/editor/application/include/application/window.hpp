@@ -2,10 +2,11 @@
 
 #include <Windows.h>
 #include "ui/session.hpp"
+#include "foundation/array.hpp"
 #include "foundation/function_ref.hpp"
+#include "foundation/optional.hpp"
 #include "runtime/runtime.hpp"
 #include <array>
-#include <vector>
 
 namespace atelier::application {
 struct NativeEvent {
@@ -25,7 +26,7 @@ struct NativeEvent {
 
     std::wstring text;
 
-    std::optional<ui::CompositionEvent> composition;
+    Optional<ui::CompositionEvent> composition;
 
     std::uint32_t error{};
 
@@ -35,12 +36,12 @@ struct NativeEvent {
         float y{};
     };
 
-    std::optional<Motion> relative_motion;
+    Optional<Motion> relative_motion;
 };
 
 // Shared translation for editor and project windows. The caller handles
 // surface changes and application commands before dispatching UI input.
-std::optional<ui::Event> input_event(NativeEvent, HWND);
+Optional<ui::Event> input_event(NativeEvent, HWND);
 
 // Owns only the native window. WM_CLOSE requests shutdown; the application must
 // close the renderer before this owner destroys the HWND.
@@ -50,7 +51,7 @@ public:
 
     // Optional initial main-window client extent is in physical pixels, independent of DPI.
     // Initialize once at this stable address; failure leaves no HWND and permits destruction only.
-    Result<void> initialize(HWND popup_owner = nullptr, std::optional<ui::PixelExtent> initial_client = {});
+    Result<void> initialize(HWND popup_owner = nullptr, Optional<ui::PixelExtent> initial_client = {});
 
     ~Window();
 
@@ -116,7 +117,7 @@ public:
 
     ui::ImeResult ime(const ui::ImeRequest&);
 
-    std::uint32_t text_input(const std::optional<ui::TextInputState>&);
+    std::uint32_t text_input(const Optional<ui::TextInputState>&);
 
 private:
     HWND handle_{};
@@ -135,7 +136,7 @@ private:
         HCURSOR handle;
     };
 
-    std::vector<ToolCursor> tool_cursors_; // Owned, keyed by semantic intent and display DPI.
+    Array<ToolCursor> tool_cursors_; // Owned, keyed by semantic intent and display DPI.
 
     QuitSource quit_source_{QuitSource::none};
 
@@ -158,11 +159,11 @@ private:
 
     RECT clip_before_{};
 
-    std::vector<NativeEvent> events_;
+    Array<NativeEvent> events_;
 
-    std::optional<ui::EditToken> input_token_;
+    Optional<ui::EditToken> input_token_;
 
-    std::optional<ui::TextInputAnchor> input_anchor_;
+    Optional<ui::TextInputAnchor> input_anchor_;
 
     ui::EditToken composition_token_;
 
@@ -180,7 +181,7 @@ private:
 
     bool input_enabled_{true};
 
-    std::optional<RECT> candidate_rect_;
+    Optional<RECT> candidate_rect_;
 
     NativeEvent event(UINT, WPARAM = 0, LPARAM = 0) const;
 

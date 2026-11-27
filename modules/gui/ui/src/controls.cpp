@@ -28,7 +28,7 @@ ui_layout::NodeInput single_line_layout(float width) {
     return layout;
 }
 
-void append_parameter_row(std::vector<Control>& controls, const ParameterRow& row, float body_minimum) {
+void append_parameter_row(Array<Control>& controls, const ParameterRow& row, float body_minimum) {
     using namespace ui_layout;
     const auto append = [&](ControlKey key, ControlKey parent, ControlKind kind, NodeInput layout,
                             std::wstring text = {}) -> Control& {
@@ -38,8 +38,7 @@ void append_parameter_row(std::vector<Control>& controls, const ParameterRow& ro
         control.kind = kind;
         control.layout = std::move(layout);
         control.text = std::move(text);
-        controls.push_back(std::move(control));
-        return controls.back();
+        return controls.add(std::move(control));
     };
     const bool modified = row.group_modified.value_or(false);
     const ControlKey ctx = row.context_target ? row.context_target : row.group_key;
@@ -68,7 +67,7 @@ void append_parameter_row(std::vector<Control>& controls, const ParameterRow& ro
     body_ctrl.context_group = row.group_key;
 }
 
-Result<void> append_number_row(std::vector<Control>& controls, ParameterRow row, std::span<const NumberField> fields) {
+Result<void> append_number_row(Array<Control>& controls, ParameterRow row, Span<const NumberField> fields) {
     if (fields.empty() || fields.size() > 4)
         return std::unexpected(Error{ErrorCode::invalid_control, row.key, 0, "A number row requires 1–4 fields."});
     for (const auto& field : fields)
@@ -112,7 +111,7 @@ Result<void> append_number_row(std::vector<Control>& controls, ParameterRow row,
         number.classes = {"parameter-field"};
         constexpr std::array axis_classes{"", "axis-x", "axis-y", "axis-z", "axis-w"};
         if (field.axis != VectorAxis::none)
-            number.classes.push_back(axis_classes.at(static_cast<std::size_t>(field.axis)));
+            number.classes.add(axis_classes.at(static_cast<std::size_t>(field.axis)));
         if (field.slider)
             number.layout.width = ui_layout::Axis::fixed(72);
         // Houdini: a lone scalar is one tuple column wide (about a third of the
@@ -120,7 +119,7 @@ Result<void> append_number_row(std::vector<Control>& controls, ParameterRow row,
         else if (fields.size() == 1)
             number.layout.width =
                 ui_layout::Axis::flex(ui_layout::Basis::fixed(scalar_field_width), 0, 1, field_minimum);
-        controls.push_back(std::move(number));
+        controls.add(std::move(number));
         if (field.slider) {
             Control slider;
             slider.key = field.slider->key;
@@ -138,7 +137,7 @@ Result<void> append_number_row(std::vector<Control>& controls, ParameterRow row,
             slider.context_target = field.key;
             slider.context_group = row.group_key;
             slider.classes = {"parameter-slider"};
-            controls.push_back(std::move(slider));
+            controls.add(std::move(slider));
         }
     }
     return {};
@@ -151,8 +150,7 @@ std::bitset<128> levels_below(std::uint32_t depth) {
 }
 }
 
-Result<std::vector<TreeRow>> flatten_tree(std::span<const TreeNode> nodes, std::wstring_view filter,
-                                          std::vector<TreeRow> rows) {
+Result<Array<TreeRow>> flatten_tree(Span<const TreeNode> nodes, std::wstring_view filter, Array<TreeRow> rows) {
     rows.clear();
     if (nodes.size() >= no_tree_node)
         return std::unexpected(Error{ErrorCode::capacity_exceeded, {}, {}, "A tree has too many nodes."});
@@ -165,7 +163,7 @@ Result<std::vector<TreeRow>> flatten_tree(std::span<const TreeNode> nodes, std::
     };
     // Filtering keeps matches, their subtrees (below) and their ancestors (above).
     enum : std::uint8_t { match = 1, below = 2, above = 4 };
-    std::vector<std::uint8_t> kept;
+    Array<std::uint8_t> kept;
     if (!filter.empty()) {
         kept.resize(nodes.size());
         const auto fold = [](wchar_t c) { return c >= L'A' && c <= L'Z' ? static_cast<wchar_t>(c + L'a' - L'A') : c; };
@@ -208,7 +206,7 @@ Result<std::vector<TreeRow>> flatten_tree(std::span<const TreeNode> nodes, std::
             return std::unexpected(
                 Error{ErrorCode::capacity_exceeded, {}, {}, "A tree shows more rows than Session accepts."});
         const bool children = branch(i);
-        rows.push_back({i, parent_row, depth, children, children && (!filter.empty() || nodes[i].expanded), {}});
+        rows.add({i, parent_row, depth, children, children && (!filter.empty() || nodes[i].expanded), {}});
     }
     // A guide continues through a row while the ancestor at its level, or the
     // row itself, has a later shown sibling. Bit 0 temporarily holds that fact.
@@ -228,9 +226,8 @@ Result<std::vector<TreeRow>> flatten_tree(std::span<const TreeNode> nodes, std::
     return rows;
 }
 
-std::vector<std::uint32_t> tree_window(std::span<const TreeRow> rows, TreeViewport viewport,
-                                       std::span<const std::uint32_t> pinned) {
-    std::vector<std::uint32_t> result;
+Array<std::uint32_t> tree_window(Span<const TreeRow> rows, TreeViewport viewport, Span<const std::uint32_t> pinned) {
+    Array<std::uint32_t> result;
     if (rows.empty())
         return result;
     const auto last = static_cast<std::uint32_t>(rows.size() - 1);
@@ -243,22 +240,22 @@ std::vector<std::uint32_t> tree_window(std::span<const TreeRow> rows, TreeViewpo
     const auto begin = row_at(viewport.scroll - height);
     const auto end = row_at(viewport.scroll + 2 * height);
     result.reserve(end - begin + 3 + pinned.size() * 4);
-    result.push_back(0);
-    result.push_back(last);
+    result.add(0);
+    result.add(last);
     for (auto i = begin; i <= end; ++i)
-        result.push_back(i);
+        result.add(i);
     for (const auto row : pinned)
         if (row <= last) {
             if (row)
-                result.push_back(row - 1);
-            result.push_back(row);
+                result.add(row - 1);
+            result.add(row);
             if (row < last)
-                result.push_back(row + 1);
+                result.add(row + 1);
             for (auto parent = rows[row].parent; parent != no_tree_node; parent = rows[parent].parent)
-                result.push_back(parent);
+                result.add(parent);
         }
     std::ranges::sort(result);
-    result.erase(std::unique(result.begin(), result.end()), result.end());
+    result.deduplicate();
     return result;
 }
 } // namespace atelier::ui

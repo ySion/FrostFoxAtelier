@@ -1,5 +1,7 @@
 #include "rhi/rhi.hpp"
 #include "detail/shader_compiler.hpp"
+#include "foundation/array.hpp"
+#include "foundation/inline_array.hpp"
 #include "foundation/result.hpp"
 #include "foundation/ring_deque.hpp"
 #include "memory/fatal.hpp"
@@ -19,7 +21,6 @@
 #include <string_view>
 #include <thread>
 #include <utility>
-#include <vector>
 
 namespace atelier::rhi {
 namespace {
@@ -70,7 +71,7 @@ struct PreparationJob {
 
     std::string model;
 
-    std::vector<std::pair<GfxShaderStage, ShaderSource>> stages;
+    Array<std::pair<GfxShaderStage, ShaderSource>> stages;
 
     GfxKernelBuild* build{};
 
@@ -79,7 +80,7 @@ struct PreparationJob {
     // Guarded by Preparer::mutex_ once submitted; a worker owns build while running.
     enum class Phase { queued, running, done, cancelled } phase{Phase::queued};
 
-    std::optional<Error> error;
+    Optional<Error> error;
 };
 
 // Runs preparation jobs. Owner-thread prepare uses the same steps inline.
@@ -106,8 +107,8 @@ public:
     void submit(std::shared_ptr<PreparationJob> job) noexcept {
         std::lock_guard lock(mutex_);
         for (auto count = std::clamp(std::thread::hardware_concurrency(), 1u, 8u); threads_.size() < count;)
-            threads_.emplace_back([this] { work(); });
-        live_.push_back(job);
+            threads_.emplace([this] { work(); });
+        live_.add(job);
         queue_.emplace_back(std::move(job));
         wake_.notify_one();
     }
@@ -119,13 +120,13 @@ public:
         std::lock_guard lock(mutex_);
         if (job.phase == PreparationJob::Phase::queued || job.phase == PreparationJob::Phase::running)
             return false;
-        std::erase_if(live_, [&](const auto& item) { return item.get() == &job; });
+        live_.remove_if([&](const auto& item) { return item.get() == &job; });
         return true;
     }
 
     void cancel(PreparationJob& job) noexcept {
         std::lock_guard lock(mutex_);
-        std::erase_if(live_, [&](const auto& item) { return item.get() == &job; });
+        live_.remove_if([&](const auto& item) { return item.get() == &job; });
         if (job.phase == PreparationJob::Phase::running)
             job.cancel = true;
         else
@@ -157,7 +158,7 @@ public:
 
 private:
     struct Worker {
-        std::optional<ShaderCompiler> compiler;
+        Optional<ShaderCompiler> compiler;
 
         ComPtr<ID3D12CommandAllocator> allocator;
 
@@ -273,9 +274,9 @@ private:
 
     RingDeque<std::shared_ptr<PreparationJob>> queue_;
 
-    std::vector<std::shared_ptr<PreparationJob>> live_; // Submitted and not yet taken or cancelled.
+    Array<std::shared_ptr<PreparationJob>> live_; // Submitted and not yet taken or cancelled.
 
-    std::vector<std::thread> threads_;
+    Array<std::thread> threads_;
 
     bool stopped_{};
 
@@ -547,14 +548,16 @@ Result<std::shared_ptr<detail::PreparationJob>> Context::job(const PipelineDesc&
         bool primary;
     };
     const auto& s = desc.source;
-    const std::vector<Stage> stages =
-        desc.kind == PipelineKind::compute  ? std::vector<Stage>{{kGfxShaderStage_CS, s.cs, L"cs_", L".comp", true}}
-        : desc.kind == PipelineKind::vertex ? std::vector<Stage>{{kGfxShaderStage_VS, s.vs, L"vs_", L".vert", true},
-                                                                 {kGfxShaderStage_GS, s.gs, L"gs_", L".geom", false},
-                                                                 {kGfxShaderStage_PS, s.ps, L"ps_", L".frag", false}}
-                                            : std::vector<Stage>{{kGfxShaderStage_AS, s.as, L"as_", L".task", false},
-                                                                 {kGfxShaderStage_MS, s.ms, L"ms_", L".mesh", true},
-                                                                 {kGfxShaderStage_PS, s.ps, L"ps_", L".frag", false}};
+    const InlineArray<Stage, 3> stages =
+        desc.kind == PipelineKind::compute
+            ? InlineArray<Stage, 3>{{kGfxShaderStage_CS, s.cs, L"cs_", L".comp", true}}
+        : desc.kind == PipelineKind::vertex
+            ? InlineArray<Stage, 3>{{kGfxShaderStage_VS, s.vs, L"vs_", L".vert", true},
+                                    {kGfxShaderStage_GS, s.gs, L"gs_", L".geom", false},
+                                    {kGfxShaderStage_PS, s.ps, L"ps_", L".frag", false}}
+            : InlineArray<Stage, 3>{{kGfxShaderStage_AS, s.as, L"as_", L".task", false},
+                                    {kGfxShaderStage_MS, s.ms, L"ms_", L".mesh", true},
+                                    {kGfxShaderStage_PS, s.ps, L"ps_", L".frag", false}};
     auto job = std::make_shared<detail::PreparationJob>();
     job->kind = desc.kind;
     job->model = desc.shader_model;
@@ -597,7 +600,7 @@ Result<std::shared_ptr<detail::PreparationJob>> Context::job(const PipelineDesc&
             source.text = stage.source;
             source.name = *name + stage.extension;
         }
-        job->stages.emplace_back(stage.stage, std::move(source));
+        job->stages.emplace(stage.stage, std::move(source));
     }
     const auto type = desc.kind == PipelineKind::compute  ? kGfxKernelBuildType_Compute
                       : desc.kind == PipelineKind::vertex ? kGfxKernelBuildType_Graphics
@@ -616,7 +619,8 @@ Result<Pipeline> Context::adopt(detail::PreparationJob& job) {
             Error{ErrorCode::closed, kGfxResult_InvalidOperation, "pipeline preparation was cancelled"});
     if (job.error) {
         gfxKernelBuildDestroy(std::exchange(job.build, nullptr));
-        return std::unexpected(std::move(*job.error));
+        const auto taken = job.error.take();
+        return std::unexpected(std::move(*taken));
     }
     const GfxContext context = state_->context;
     const GfxProgram program = gfxCreateProgram(context, GfxProgramDesc{}, job.name.c_str(), job.model.c_str());
@@ -656,14 +660,14 @@ Result<PipelineJob> Context::submit(const PipelineDesc& desc) {
     return handle;
 }
 
-std::optional<Result<Pipeline>> Context::take(PipelineJob& job) {
+Optional<Result<Pipeline>> Context::take(PipelineJob& job) {
     if (const auto admitted = admit("take"); !admitted)
         return Result<Pipeline>(std::unexpected(admitted.error()));
     if (!job.job_ || job.preparer_ != state_->preparer)
         return Result<Pipeline>(std::unexpected(Error{ErrorCode::invalid_argument, kGfxResult_InvalidParameter,
                                                       "job was already taken or belongs to another context"}));
     if (!state_->preparer->finished(*job.job_))
-        return std::nullopt;
+        return {};
     const auto finished = std::exchange(job.job_, {});
     job.preparer_.reset();
     return adopt(*finished);
@@ -832,11 +836,11 @@ const CommandTraceInfo& CommandTrace::info() const noexcept {
     return storage_->info;
 }
 
-std::span<const RecordedCommand> CommandTrace::commands() const noexcept {
+Span<const RecordedCommand> CommandTrace::commands() const noexcept {
     return {storage_->commands.data(), storage_->command_count};
 }
 
-std::span<const RecordedBinding> CommandTrace::bindings() const noexcept {
+Span<const RecordedBinding> CommandTrace::bindings() const noexcept {
     return {storage_->bindings.data(), storage_->binding_count};
 }
 

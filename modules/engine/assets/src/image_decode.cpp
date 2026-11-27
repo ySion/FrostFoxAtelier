@@ -1,10 +1,11 @@
 #include "assets/image_decode.hpp"
+#include "foundation/optional.hpp"
+#include "foundation/scope_exit.hpp"
 #include "foundation/sha256.hpp"
 #include <Windows.h>
 #include <wincodec.h>
 #include <wrl/client.h>
 #include <atomic>
-#include <optional>
 #include <mutex>
 #include <thread>
 
@@ -38,14 +39,10 @@ Result<material::ImageRef> decode(std::string_view bytes, PixelBudget* budget) {
     const auto initialized = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     ATELIER_TRY(
         require(SUCCEEDED(initialized) || initialized == RPC_E_CHANGED_MODE, "Cannot initialize texture decoder."));
-    struct Apartment {
-        bool owns;
-
-        ~Apartment() {
-            if (owns)
-                CoUninitialize();
-        }
-    } apartment{SUCCEEDED(initialized)};
+    const ScopeExit apartment{[owns = SUCCEEDED(initialized)]() noexcept {
+        if (owns)
+            CoUninitialize();
+    }};
     ComPtr<IWICImagingFactory> factory;
     ComPtr<IWICStream> stream;
     ComPtr<IWICBitmapDecoder> decoder;
@@ -78,7 +75,8 @@ Result<material::ImageRef> decode(std::string_view bytes, PixelBudget* budget) {
                 "Cannot convert texture to RGBA.");
     if (!converted)
         return std::unexpected(converted.error());
-    std::vector<std::uint8_t> pixels(std::size_t(width) * height * 4);
+    Array<std::uint8_t> pixels;
+    pixels.resize_uninitialized(std::size_t(width) * height * 4);
     ATELIER_TRY(
         require(SUCCEEDED(converter->CopyPixels(nullptr, width * 4, static_cast<UINT>(pixels.size()), pixels.data())),
                 "Cannot read texture pixels."));
@@ -90,13 +88,13 @@ Result<material::ImageRef> decode_image(std::string_view bytes) {
     return decode(bytes, nullptr);
 }
 
-Result<std::vector<material::ImageRef>> decode_images(std::span<const std::string_view> sources, ImageCache* cache,
-                                                      std::uint64_t pixel_budget) {
-    std::vector<material::ImageRef> result(sources.size());
+Result<Array<material::ImageRef>> decode_images(Span<const std::string_view> sources, ImageCache* cache,
+                                                std::uint64_t pixel_budget) {
+    Array<material::ImageRef> result(sources.size());
     if (sources.empty())
         return result;
     std::mutex guard; // Cache entries and the first failure.
-    std::optional<Error> failure;
+    Optional<Error> failure;
     std::atomic<std::size_t> next{};
     std::atomic<bool> stopped{};
     PixelBudget budget{pixel_budget, pixel_budget};
@@ -106,7 +104,7 @@ Result<std::vector<material::ImageRef>> decode_images(std::span<const std::strin
             auto completed = [&]() -> Result<void> {
                 std::string digest;
                 if (cache) {
-                    digest = foundation::sha256(std::as_bytes(std::span{sources[i]}));
+                    digest = foundation::sha256(as_bytes(Span{sources[i]}));
                     std::scoped_lock lock(guard);
                     if (const auto* found = cache->entries.find(digest))
                         result[i] = found->lock();
@@ -137,12 +135,12 @@ Result<std::vector<material::ImageRef>> decode_images(std::span<const std::strin
     {
         const auto threads =
             std::min<std::size_t>({sources.size(), 8, std::max(1u, std::thread::hardware_concurrency() / 2)});
-        std::vector<std::jthread> workers; // Joined before the shared state above leaves scope.
+        Array<std::jthread> workers; // Joined before the shared state above leaves scope.
         workers.reserve(threads - 1);
         // Only startup is fatal; decoding failures still join and report below.
         [&]() noexcept {
             for (std::size_t i = 1; i < threads; ++i)
-                workers.emplace_back(work);
+                workers.emplace(work);
         }();
         work();
     }

@@ -1,4 +1,5 @@
 #include "detail/triangles.hpp"
+#include "foundation/bit_vector.hpp"
 #include "foundation/map.hpp"
 #include "foundation/result.hpp"
 #include "procedural/operations.hpp"
@@ -9,7 +10,6 @@
 #include <limits>
 #include <numbers>
 #include <utility>
-#include <vector>
 
 namespace atelier::procedural {
 namespace {
@@ -67,7 +67,7 @@ Vector3 face_unit_normal(Vector3 p0, Vector3 p1, Vector3 p2, Vector3 fallback) n
     return fallback;
 }
 
-ColumnData gather_column_rows(const ColumnData& source, std::span<const std::uint32_t> mapping) {
+ColumnData gather_column_rows(const ColumnData& source, Span<const std::uint32_t> mapping) {
     return std::visit(
         [&](const auto& column) -> ColumnData {
             using T = typename std::remove_cvref_t<decltype(column)>::Value;
@@ -92,9 +92,9 @@ struct SurfaceBuilder {
 
     Array<Vector2> uvs;
 
-    std::vector<std::uint32_t> point_sources;
+    Array<std::uint32_t> point_sources;
 
-    std::vector<std::uint32_t> prim_sources;
+    Array<std::uint32_t> prim_sources;
 
     Array<bool> front_flags;
 
@@ -122,22 +122,21 @@ struct SurfaceBuilder {
         const auto idx = static_cast<std::uint32_t>(positions.size());
         positions.add(pos);
         if (track_point)
-            point_sources.push_back(src_pt);
+            point_sources.add(src_pt);
         return idx;
     }
 
     void record_face(std::uint32_t src_prim, bool is_front, bool is_side) {
         offsets.add(static_cast<std::uint32_t>(corners.size()));
-        prim_sources.push_back(src_prim);
+        prim_sources.add(src_prim);
         if (track_groups) {
             front_flags.add(is_front);
             side_flags.add(is_side);
         }
     }
 
-    void emit_polygon(std::span<const std::uint32_t> pts, std::span<const Vector2> face_uvs,
-                      std::span<const Vector3> face_normals, std::uint32_t src_prim, bool is_front = false,
-                      bool is_side = false, bool reverse = false) {
+    void emit_polygon(Span<const std::uint32_t> pts, Span<const Vector2> face_uvs, Span<const Vector3> face_normals,
+                      std::uint32_t src_prim, bool is_front = false, bool is_side = false, bool reverse = false) {
         const std::size_t k = pts.size();
         for (std::size_t j = 0; j < k; ++j) {
             const std::size_t idx = reverse ? (j == 0 ? 0 : k - j) : j;
@@ -148,7 +147,7 @@ struct SurfaceBuilder {
         record_face(src_prim, is_front, is_side);
     }
 
-    void emit_flat_face(std::span<const std::uint32_t> pts, std::span<const Vector2> face_uvs, Vector3 normal,
+    void emit_flat_face(Span<const std::uint32_t> pts, Span<const Vector2> face_uvs, Vector3 normal,
                         std::uint32_t src_prim, bool is_front, bool is_side, bool reverse) {
         const std::size_t k = pts.size();
         for (std::size_t j = 0; j < k; ++j) {
@@ -366,21 +365,21 @@ Result<Geometry> extrude(const Geometry& surface, const ExtrudeSettings& setting
     const auto& in_positions = surface.positions();
     const auto in_corners = surface.vertex_points();
 
-    std::vector<bool> selected(prim_count, true);
+    BitVector selected(prim_count, true);
     if (!settings.group.empty()) {
         ATELIER_TRY_BIND(found, group_column<bool>(surface, settings.group));
         const auto* group_attr = *found;
         const auto& flags = std::get<SharedArray<bool>>(group_attr->data).array();
         if (group_attr->layer == Layer::primitive) {
             for (std::uint32_t p = 0; p < prim_count; ++p)
-                selected[p] = flags[p];
+                selected.set(p, flags[p]);
         } else if (group_attr->layer == Layer::point) {
             for (std::uint32_t p = 0; p < prim_count; ++p) {
                 const auto range = surface.primitive(p);
                 bool all_in = true;
                 for (std::uint32_t j = 0; j < range.count; ++j)
                     all_in &= flags[in_corners[range.first + j]];
-                selected[p] = all_in;
+                selected.set(p, all_in);
             }
         } else {
             return failure("Extrude group must live on the primitive or point layer.");
@@ -410,7 +409,8 @@ Result<Geometry> extrude(const Geometry& surface, const ExtrudeSettings& setting
             in_pt_uv = &std::get<SharedArray<Vector2>>(uv_attr->data).array();
     }
 
-    std::vector<Vector3d> face_normals(prim_count);
+    Array<Vector3d> face_normals;
+    face_normals.resize(prim_count);
     bool any_selected = false;
     bool any_nonzero_inset = false;
     for (std::uint32_t p = 0; p < prim_count; ++p) {
@@ -432,7 +432,8 @@ Result<Geometry> extrude(const Geometry& surface, const ExtrudeSettings& setting
     SurfaceBuilder mesh;
     mesh.track_groups = !settings.front_group.empty() || !settings.side_group.empty();
     mesh.reserve(in_corners.size() * 2u, in_corners.size() * 6u, prim_count * 6u, true);
-    std::vector<std::uint32_t> shared_input_map(in_positions.size(), std::numeric_limits<std::uint32_t>::max());
+    Array<std::uint32_t> shared_input_map;
+    shared_input_map.resize(in_positions.size(), std::numeric_limits<std::uint32_t>::max());
     const auto ensure_shared_point = [&](std::uint32_t in_pt) -> std::uint32_t {
         if (shared_input_map[in_pt] == std::numeric_limits<std::uint32_t>::max())
             shared_input_map[in_pt] = mesh.add_point(in_positions[in_pt], in_pt);
@@ -445,10 +446,10 @@ Result<Geometry> extrude(const Geometry& surface, const ExtrudeSettings& setting
             return (*in_pt_uv)[pt_idx];
         return {pos.x * 0.5f, pos.z * 0.5f};
     };
-    std::vector<std::uint32_t> base_ring;
-    std::vector<std::uint32_t> top_ring;
-    std::vector<Vector2> base_uv;
-    std::vector<Vector2> top_uv;
+    Array<std::uint32_t> base_ring;
+    Array<std::uint32_t> top_ring;
+    Array<Vector2> base_uv;
+    Array<Vector2> top_uv;
     const auto emit_input_polygon = [&](std::uint32_t p, bool is_front) {
         const auto range = surface.primitive(p);
         base_ring.resize(range.count);
@@ -468,10 +469,10 @@ Result<Geometry> extrude(const Geometry& surface, const ExtrudeSettings& setting
     }
 
     if (any_selected && settings.individual) {
-        std::vector<Vector3d> proj;
-        std::vector<Vector3d> e_unit;
-        std::vector<Vector3d> m_inward;
-        std::vector<Vector3d> inset_pts;
+        Array<Vector3d> proj;
+        Array<Vector3d> e_unit;
+        Array<Vector3d> m_inward;
+        Array<Vector3d> inset_pts;
         for (std::uint32_t p = 0; p < prim_count; ++p) {
             if (!selected[p])
                 continue;
@@ -559,9 +560,12 @@ Result<Geometry> extrude(const Geometry& surface, const ExtrudeSettings& setting
         }
     } else if (any_selected) {
         Map<DirectedEdge, std::uint32_t> region_edges;
-        std::vector<Vector3d> point_normal_sum(in_positions.size(), Vector3d{});
-        std::vector<double> point_dist_sum(in_positions.size(), 0.0);
-        std::vector<std::uint32_t> point_valence(in_positions.size(), 0u);
+        Array<Vector3d> point_normal_sum;
+        point_normal_sum.resize(in_positions.size(), Vector3d{});
+        Array<double> point_dist_sum;
+        point_dist_sum.resize(in_positions.size(), 0.0);
+        Array<std::uint32_t> point_valence;
+        point_valence.resize(in_positions.size(), 0u);
         bool any_negative = false;
         bool any_positive = false;
 
@@ -587,8 +591,10 @@ Result<Geometry> extrude(const Geometry& surface, const ExtrudeSettings& setting
             return failure("Closed region extrude requires consistent distance sign across the region.");
 
         const bool flip = any_negative && settings.output_back;
-        std::vector<std::uint32_t> base_map(in_positions.size(), std::numeric_limits<std::uint32_t>::max());
-        std::vector<std::uint32_t> top_map(in_positions.size(), std::numeric_limits<std::uint32_t>::max());
+        Array<std::uint32_t> base_map;
+        base_map.resize(in_positions.size(), std::numeric_limits<std::uint32_t>::max());
+        Array<std::uint32_t> top_map;
+        top_map.resize(in_positions.size(), std::numeric_limits<std::uint32_t>::max());
         for (std::size_t pt = 0; pt < in_positions.size(); ++pt) {
             if (point_valence[pt] == 0)
                 continue;
@@ -681,7 +687,7 @@ Result<Geometry> sweep(const Geometry& backbone, const SweepSettings& settings, 
         float v{};
     };
 
-    std::vector<ProfileVertex> profile_pts;
+    Array<ProfileVertex> profile_pts;
     bool closed_profile = true;
     bool smooth_ring_normals = false;
 
@@ -741,7 +747,8 @@ Result<Geometry> sweep(const Geometry& backbone, const SweepSettings& settings, 
         const auto& c_pos = cross_section->positions();
         profile_pts.resize(cr.count);
         double perim = 0.0;
-        std::vector<double> acc(cr.count, 0.0);
+        Array<double> acc;
+        acc.resize(cr.count, 0.0);
         for (std::uint32_t i = 1; i < cr.count; ++i) {
             const Vector3 a = c_pos[c_vp[cr.first + i - 1]];
             const Vector3 b = c_pos[c_vp[cr.first + i]];
@@ -777,21 +784,25 @@ Result<Geometry> sweep(const Geometry& backbone, const SweepSettings& settings, 
 
     SurfaceBuilder mesh;
     mesh.reserve(point_count, corner_reserve, face_reserve, false);
-    std::vector<Vector3d> path_pts;
-    std::vector<double> scales;
-    std::vector<Vector3d> seg_t;
-    std::vector<Vector3d> seg_r;
-    std::vector<Vector3d> seg_u;
-    std::vector<double> arc_u;
-    std::vector<Vector3> lower_normals, upper_normals;
-    std::vector<std::uint32_t> cap_pts;
-    std::vector<Vector2> cap_uvs;
-    std::vector<Vector3> cap_pos;
+    Array<Vector3d> path_pts;
+    Array<double> scales;
+    Array<Vector3d> seg_t;
+    Array<Vector3d> seg_r;
+    Array<Vector3d> seg_u;
+    Array<double> arc_u;
+    Array<Vector3> lower_normals;
+    Array<Vector3> upper_normals;
+    Array<std::uint32_t> cap_pts;
+    Array<Vector2> cap_uvs;
+    Array<Vector3> cap_pos;
     for (std::uint32_t p = 0; p < prim_count; ++p) {
         const auto range = backbone.primitive(p);
         const std::uint32_t m = range.count;
-        path_pts.resize(m);
-        scales.assign(m, 1.0);
+        path_pts.resize_uninitialized(m);
+        if (pscale_col)
+            scales.resize_uninitialized(m);
+        else
+            scales.assign(m, 1.0);
         for (std::uint32_t k = 0; k < m; ++k) {
             const std::uint32_t pt_idx = bb_corners[range.first + k];
             path_pts[k] = Vector3d(bb_positions[pt_idx]);
@@ -803,10 +814,10 @@ Result<Geometry> sweep(const Geometry& backbone, const SweepSettings& settings, 
             }
         }
 
-        seg_t.resize(m - 1);
-        seg_r.resize(m - 1);
-        seg_u.resize(m - 1);
-        arc_u.resize(m);
+        seg_t.resize_uninitialized(m - 1);
+        seg_r.resize_uninitialized(m - 1);
+        seg_u.resize_uninitialized(m - 1);
+        arc_u.resize_uninitialized(m);
         arc_u[0] = 0.0;
         for (std::uint32_t s = 0; s + 1 < m; ++s) {
             const Vector3d delta = path_pts[s + 1] - path_pts[s];
@@ -860,8 +871,8 @@ Result<Geometry> sweep(const Geometry& backbone, const SweepSettings& settings, 
         // The circumferential tangent and the actual sweep rails span the side
         // surface. Equal-weight unit normals on either side of a station keep a
         // short moulding from inheriting the slope of its longer neighbour.
-        const auto fill_normals = [&](std::uint32_t k, std::vector<Vector3>& normals) {
-            normals.resize(ring_size);
+        const auto fill_normals = [&](std::uint32_t k, Array<Vector3>& normals) {
+            normals.resize_uninitialized(ring_size);
             const auto at = [&](std::uint32_t station, std::uint32_t i) {
                 return Vector3d(mesh.positions[ring_point(station, i)]);
             };

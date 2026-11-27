@@ -102,16 +102,16 @@ MaterialAsset standard_material(std::string key, std::wstring name, material::Po
     source.policy = policy;
     for (const std::string_view input : {"base_color", "roughness", "metallic", "normal", "emissive", "opacity"}) {
         const bool color = input == "base_color" || input == "emissive";
-        source.inputs.push_back({std::string(input) + "_texture",
-                                 {},
-                                 color ? material::TextureColor::srgb : material::TextureColor::linear,
-                                 input == "normal" ? math::Vector4{.5f, .5f, 1, 1} : math::Vector4{1, 1, 1, 1}});
+        source.inputs.add({std::string(input) + "_texture",
+                           {},
+                           color ? material::TextureColor::srgb : material::TextureColor::linear,
+                           input == "normal" ? math::Vector4{.5f, .5f, 1, 1} : math::Vector4{1, 1, 1, 1}});
     }
     return {std::move(key), std::move(name), std::move(source)};
 }
 }
 
-std::span<const MaterialAsset> material_assets() {
+Span<const MaterialAsset> material_assets() {
     static const std::array assets{
         standard_material("builtin/material/standard-opaque-double", L"Standard PBR · Opaque / Two Sided",
                           {material::Coverage::opaque, true, true}),
@@ -126,13 +126,13 @@ std::span<const MaterialAsset> material_assets() {
     return assets;
 }
 
-std::optional<source::SourceFile> builtin_material_source(std::string_view path) {
+Optional<source::SourceFile> builtin_material_source(std::string_view path) {
     if (path == standard_path)
         return source::SourceFile{std::string(path), source::content_hash(standard), std::string(standard)};
     if (path == grid_path) {
         const auto text = material::default_world_source();
         return source::SourceFile{std::string(path), source::content_hash(text), std::string(text)};
     }
-    return std::nullopt;
+    return {};
 }
 }

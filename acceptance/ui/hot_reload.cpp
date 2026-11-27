@@ -39,7 +39,8 @@ void verify_ui_error_recovery() {
     const std::array<KeyBinding, 1> keys{{{"run", 42}}};
     const auto stage = [&](double value) {
         controls.begin();
-        auto staged = document.append("Probe", 0, keys, std::array<InputValue, 1>{value}, controls);
+        const InputValue input_values[]{value};
+        auto staged = document.append("Probe", 0, keys, input_values, controls);
         controls.finish();
         return staged;
     };
@@ -72,13 +73,16 @@ void verify_ui_error_recovery() {
     present(7);
     check_failure(source);
     const auto initial = document.component("Probe");
-    const auto identity = document.statistics("Probe")->instance;
+    const auto initial_stats = document.statistics("Probe");
+    require(initial_stats.has_value(), "Missing initial Probe statistics.");
+    const auto identity = initial_stats->instance;
     source.insert(source.find("state.count = 1.0d"), "// moved within the same handler\n            ");
     reload(source);
     take(stage(0));
     present(7);
+    const auto moved_stats = document.statistics("Probe");
     require(initial->declaration().generated_source == document.component("Probe")->declaration().generated_source &&
-                document.statistics("Probe")->instance == identity,
+                moved_stats && moved_stats->instance == identity,
             "Position-only edit changed the dispatch or instance.");
     check_failure(source);
     reload("\n\n" + source);
@@ -150,11 +154,12 @@ void verify_ui_error_recovery() {
         const auto stage_split = [&](double value, std::size_t& decorated) {
             split_controls.begin();
             ControlRegion region{&split_controls};
-            take(document.append("Probe", 0, keys, std::array<InputValue, 1>{value}, region));
+            const InputValue input_values[]{value};
+            take(document.append("Probe", 0, keys, input_values, region));
             require(!region.controls.empty() && region.revision != 0, "ControlRegion missed the region revision.");
             split_controls.append(region.controls.first(1), region.revision);
-            split_controls.append(std::span{&mid, 1}, mid_revision);
-            split_controls.append(region.controls.subspan(1), region.revision);
+            split_controls.append(Span{&mid, 1}, mid_revision);
+            split_controls.append(region.controls.slice(1), region.revision);
             decorated = 0;
             split_controls.finish([&](ui::Control&) { ++decorated; });
         };

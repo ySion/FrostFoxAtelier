@@ -3,13 +3,13 @@
 #include "assets/file.hpp"
 
 namespace atelier::application {
-Result<std::vector<std::wstring>> editor_fonts() {
+Result<Array<std::wstring>> editor_fonts() {
     ATELIER_TRY_BIND(root, editor::asset_directory());
     const auto directory = *root / "fonts";
-    std::vector<std::wstring> paths;
+    Array<std::wstring> paths;
     for (const auto* file : {L"SarasaUiSC-Regular.ttf", L"SarasaUiSC-SemiBold.ttf", L"SourceCodePro-Regular.otf",
                              L"SourceCodePro-Bold.otf"})
-        paths.push_back((directory / file).wstring());
+        paths.add((directory / file).wstring());
     return paths;
 }
 

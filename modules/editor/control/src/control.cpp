@@ -1,5 +1,7 @@
 #include "control/control.hpp"
+#include "foundation/array.hpp"
 #include "foundation/sha256.hpp"
+#include "foundation/span.hpp"
 #include "platform/error.hpp"
 #include "platform/utf.hpp"
 #include "platform/windows_path.hpp"
@@ -12,7 +14,6 @@
 #include <mutex>
 #include <thread>
 #include <utility>
-#include <vector>
 
 namespace atelier::control {
 namespace {
@@ -47,7 +48,7 @@ std::unexpected<Failure> disconnected() {
     return std::unexpected(Failure("disconnected", "Control peer disconnected"));
 }
 
-std::string hex(std::span<const unsigned char> bytes) {
+std::string hex(Span<const unsigned char> bytes) {
     constexpr char digits[] = "0123456789abcdef";
     std::string result;
     result.reserve(bytes.size() * 2);
@@ -90,7 +91,7 @@ struct Security {
         if (!GetTokenInformation(token.value, TokenUser, nullptr, 0, &bytes) &&
             GetLastError() != ERROR_INSUFFICIENT_BUFFER)
             return check(false, "Read user identity");
-        std::vector<std::byte> storage(bytes);
+        Array<std::byte> storage(bytes);
         ATELIER_TRY(check(GetTokenInformation(token.value, TokenUser, storage.data(), bytes, &bytes) != FALSE,
                           "Read user identity"));
         LPWSTR sid{};

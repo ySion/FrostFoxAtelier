@@ -25,7 +25,7 @@ struct EditBinding {
 
     bool modified{};
 
-    std::vector<ui::NumberField> fields;
+    Array<ui::NumberField> fields;
 
     bool operator==(const EditBinding&) const = default;
 };
@@ -102,7 +102,7 @@ struct Item;
 
 struct ItemList {
     // An immutable snapshot: relinquish all mutable aliases before update().
-    std::shared_ptr<const std::vector<Item>> values;
+    std::shared_ptr<const Array<Item>> values;
 
     bool operator==(const ItemList&) const;
 };
@@ -127,13 +127,13 @@ struct KeyBinding {
 struct Item {
     ui::ControlKey key{}; // Host-allocated stable item identity; never the list index.
 
-    std::vector<InputValue> inputs;
+    Array<InputValue> inputs;
 
     // Optional host slots and named native interaction identities. The root key
     // always comes from key. Reparenting uses the same reversible scope update.
-    std::vector<KeyBinding> keys{};
+    Array<KeyBinding> keys{};
 
-    std::optional<ui::ControlKey> parent{};
+    Optional<ui::ControlKey> parent{};
 
     bool operator==(const Item& other) const;
 };
@@ -220,7 +220,7 @@ public:
     struct CompileTiming {
         std::uint64_t lower_ns{};
 
-        std::vector<ComponentTiming> components;
+        Array<ComponentTiming> components;
     };
 
     // Reuse only identical dispatch code from the active module in this Runtime.
@@ -258,7 +258,7 @@ private:
 
     static Result<std::shared_ptr<Module>> finish(Build&);
 
-    std::vector<std::shared_ptr<Component>> components_;
+    Array<std::shared_ptr<Component>> components_;
 
     std::shared_ptr<source::Program> contract_prototype_;
 
@@ -281,12 +281,12 @@ private:
 class Instance {
 public:
     static Result<std::unique_ptr<Instance>> create(std::shared_ptr<Component>, ui::ControlKey parent,
-                                                    ui::ControlKey& next_key, std::span<const KeyBinding>,
-                                                    std::span<const InputValue>);
+                                                    ui::ControlKey& next_key, Span<const KeyBinding>,
+                                                    Span<const InputValue>);
 
     ~Instance();
 
-    Result<void> update(std::span<const InputValue>, std::shared_ptr<Component> definition = {});
+    Result<void> update(Span<const InputValue>, std::shared_ptr<Component> definition = {});
 
     // Re-evaluate local events, or keep an already prepared snapshot unchanged.
     Result<void> update();
@@ -295,7 +295,7 @@ public:
 
     // Borrowed until the next update/reject/commit, close, or destruction.
     // Copy descriptors before retaining them in another owner or frame.
-    std::span<const ui::Control> controls() const noexcept;
+    Span<const ui::Control> controls() const noexcept;
 
     Statistics statistics() const noexcept;
 
@@ -312,10 +312,10 @@ private:
     explicit Instance(std::unique_ptr<detail::InstanceData>);
 
     static Result<std::unique_ptr<Instance>> create_bounded(std::shared_ptr<Component>, ui::ControlKey, ui::ControlKey&,
-                                                            std::span<const KeyBinding>, std::span<const InputValue>,
-                                                            std::size_t, std::shared_ptr<detail::ScopeLifetime>);
+                                                            Span<const KeyBinding>, Span<const InputValue>, std::size_t,
+                                                            std::shared_ptr<detail::ScopeLifetime>);
 
-    std::span<const InputValue> inputs() const noexcept;
+    Span<const InputValue> inputs() const noexcept;
 
     bool has_pending() const noexcept;
 

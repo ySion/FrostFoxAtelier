@@ -1,6 +1,8 @@
 #pragma once
 
+#include "foundation/array.hpp"
 #include "foundation/result.hpp"
+#include "foundation/span.hpp"
 #include "math/bounds.hpp"
 #include "memory/fatal.hpp"
 #include <algorithm>
@@ -9,9 +11,7 @@
 #include <expected>
 #include <limits>
 #include <memory>
-#include <span>
 #include <string>
-#include <vector>
 
 namespace atelier::geometry {
 
@@ -31,12 +31,12 @@ struct Vertex {
 
 // Requires a nonempty triangle list with at most INT_MAX vertices, finite
 // positions/UVs and unit normals. CPU allocation failure is fatal.
-void generate_tangents(std::span<Vertex>);
+void generate_tangents(Span<Vertex>);
 
 // Keeps each authored handedness; orthogonalizes XYZ against the unit normal and normalizes it.
 // A zero tangent, or one parallel to its normal at any length, takes the same fallback as degenerate UVs.
 // On failure the processed prefix may have changed; discard the unpublished candidate.
-[[nodiscard]] std::expected<void, MeshError> adopt_tangents(std::span<Vertex>);
+[[nodiscard]] std::expected<void, MeshError> adopt_tangents(Span<Vertex>);
 
 enum class Tangents : std::uint8_t { generate, authored };
 
@@ -61,9 +61,8 @@ public:
     // during triangulation; the renderer never guesses connectivity from positions.
     // Failure destroys the candidate without publishing a resource.
     [[nodiscard]] static std::expected<std::shared_ptr<const Mesh>, MeshError>
-    create(std::vector<Vertex> vertices, std::vector<std::uint8_t> edge_masks = {},
-           std::vector<MaterialSlot> materials = {}, std::vector<MeshPart> parts = {},
-           Tangents tangents = Tangents::generate) {
+    create(Array<Vertex> vertices, Array<std::uint8_t> edge_masks = {}, Array<MaterialSlot> materials = {},
+           Array<MeshPart> parts = {}, Tangents tangents = Tangents::generate) {
         auto candidate = std::shared_ptr<Mesh>(
             new Mesh(std::move(vertices), std::move(edge_masks), std::move(materials), std::move(parts)));
         ATELIER_TRY(candidate->initialize(tangents, false));
@@ -74,8 +73,8 @@ public:
     // finite, orthonormal tangent frames, but never renormalizes any float bits.
     // Unlike author construction, slots and parts must already be explicit.
     [[nodiscard]] static std::expected<std::shared_ptr<const Mesh>, MeshError>
-    restore_published(std::vector<Vertex> vertices, std::vector<std::uint8_t> edge_masks,
-                      std::vector<MaterialSlot> materials, std::vector<MeshPart> parts) {
+    restore_published(Array<Vertex> vertices, Array<std::uint8_t> edge_masks, Array<MaterialSlot> materials,
+                      Array<MeshPart> parts) {
         auto candidate = std::shared_ptr<Mesh>(
             new Mesh(std::move(vertices), std::move(edge_masks), std::move(materials), std::move(parts)));
         ATELIER_TRY(candidate->initialize(Tangents::authored, true));
@@ -83,8 +82,7 @@ public:
     }
 
 private:
-    Mesh(std::vector<Vertex> vertices, std::vector<std::uint8_t> edge_masks, std::vector<MaterialSlot> materials,
-         std::vector<MeshPart> parts)
+    Mesh(Array<Vertex> vertices, Array<std::uint8_t> edge_masks, Array<MaterialSlot> materials, Array<MeshPart> parts)
         : vertices_(std::move(vertices)), edge_masks_(std::move(edge_masks)), materials_(std::move(materials)),
           parts_(std::move(parts)) {}
 
@@ -99,9 +97,9 @@ private:
         if (published && (materials_.empty() || parts_.empty()))
             return std::unexpected(MeshError{"Published mesh requires explicit material slots and parts."});
         if (materials_.empty())
-            materials_.push_back({});
+            materials_.add({});
         if (parts_.empty())
-            parts_.push_back({0, static_cast<std::uint32_t>(vertices_.size()), 0});
+            parts_.add({0, static_cast<std::uint32_t>(vertices_.size()), 0});
         std::uint64_t end = 0;
         for (const auto& part : parts_) {
             if (part.first_vertex != end || !part.vertex_count || part.vertex_count % 3 ||
@@ -161,13 +159,13 @@ public:
 
     Mesh& operator=(Mesh&&) = delete;
 
-    [[nodiscard]] std::span<const Vertex> vertices() const noexcept { return vertices_; }
+    [[nodiscard]] Span<const Vertex> vertices() const noexcept { return vertices_; }
 
     [[nodiscard]] const math::Bounds& bounds() const noexcept { return bounds_; }
 
-    [[nodiscard]] std::span<const MaterialSlot> materials() const noexcept { return materials_; }
+    [[nodiscard]] Span<const MaterialSlot> materials() const noexcept { return materials_; }
 
-    [[nodiscard]] std::span<const MeshPart> parts() const noexcept { return parts_; }
+    [[nodiscard]] Span<const MeshPart> parts() const noexcept { return parts_; }
 
     [[nodiscard]] std::uint32_t material_slot(std::size_t triangle) const noexcept {
         const auto vertex = triangle * 3;
@@ -182,13 +180,13 @@ public:
     }
 
 private:
-    std::vector<Vertex> vertices_;
+    Array<Vertex> vertices_;
 
-    std::vector<std::uint8_t> edge_masks_;
+    Array<std::uint8_t> edge_masks_;
 
-    std::vector<MaterialSlot> materials_;
+    Array<MaterialSlot> materials_;
 
-    std::vector<MeshPart> parts_;
+    Array<MeshPart> parts_;
 
     math::Bounds bounds_;
 };
@@ -218,7 +216,7 @@ struct MeshSource {
                                      {1, 5, 6, 2}, {3, 2, 6, 7}, {4, 5, 1, 0}};
         constexpr float normals[6][3] = {{0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, -1, 0}};
         constexpr int indices[6] = {0, 1, 2, 0, 2, 3};
-        std::vector<Vertex> vertices(36);
+        Array<Vertex> vertices(36);
         for (int face = 0; face < 6; ++face)
             for (int i = 0; i < 6; ++i) {
                 auto& vertex = vertices[face * 6 + i];
@@ -227,7 +225,7 @@ struct MeshSource {
                 constexpr float uv[4][2] = {{0, 1}, {0, 0}, {1, 0}, {1, 1}};
                 std::copy_n(uv[indices[i]], 2, vertex.uv);
             }
-        auto mesh = Mesh::create(std::move(vertices), std::vector<std::uint8_t>{5, 3, 5, 3, 5, 3, 5, 3, 5, 3, 5, 3});
+        auto mesh = Mesh::create(std::move(vertices), Array<std::uint8_t>{5, 3, 5, 3, 5, 3, 5, 3, 5, 3, 5, 3});
         if (!mesh)
             fatal(mesh.error().message);
         return std::move(*mesh);

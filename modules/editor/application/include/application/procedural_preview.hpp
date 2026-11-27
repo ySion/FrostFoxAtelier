@@ -3,13 +3,13 @@
 #include "editor/project.hpp"
 #include "editor/session.hpp"
 #include "editor/viewport_tool.hpp"
+#include "foundation/array.hpp"
+#include "foundation/optional.hpp"
 #include "procedural/geometry.hpp"
 #include "renderer/overlay.hpp"
 #include "renderer/renderer.hpp"
 #include <memory>
-#include <optional>
 #include <string>
-#include <vector>
 
 namespace atelier::editor {
 class GeometryGroupGuide;
@@ -42,24 +42,24 @@ bool is_pure_point_cloud(const procedural::Geometry& geometry) noexcept;
 
 // Multi-line summary for the Scene View (i) Geometry Info HUD.
 std::wstring format_geometry_info_hud(std::wstring_view title, const procedural::Geometry& geometry,
-                                      bool auto_points = false, std::optional<double> cook_ms = {},
+                                      bool auto_points = false, Optional<double> cook_ms = {},
                                       std::size_t chunk_count = 0);
 
 void append_procedural_guides(const procedural::Geometry& geometry, const editor::ViewportView& view,
-                              const SopGuideOptions& options, std::vector<renderer::OverlayShape>& overlay);
+                              const SopGuideOptions& options, Array<renderer::OverlayShape>& overlay);
 
 // Draws ghosted reference wireframe & points for an active SOP Template Flag node.
 void append_template_wireframe(const procedural::Geometry& geometry, const editor::ViewportView& view,
-                               std::vector<renderer::OverlayShape>& overlay,
+                               Array<renderer::OverlayShape>& overlay,
                                const math::Matrix4& world_transform = math::Matrix4::identity());
 
 // Draws the persistent bottom-left 3D XYZ camera orientation gnomon in physical viewport space.
-void append_orientation_gnomon(const editor::ViewportView& view, std::vector<renderer::OverlayShape>& overlay);
+void append_orientation_gnomon(const editor::ViewportView& view, Array<renderer::OverlayShape>& overlay);
 
 class ProceduralPreview final {
 public:
     struct Draw {
-        std::vector<renderer::MeshInstance> meshes;
+        Array<renderer::MeshInstance> meshes;
 
         std::uint64_t identity{1};
 
@@ -85,7 +85,7 @@ private:
 
         Draw draw;
 
-        std::optional<renderer::Error> failure;
+        Optional<renderer::Error> failure;
     };
 
     std::uint64_t identity_{500000};
@@ -98,15 +98,15 @@ private:
 
     geometry::MeshRef cached_surface_mesh_;
 
-    std::vector<renderer::MeshInstance> meshes_;
+    Array<renderer::MeshInstance> meshes_;
 
-    std::vector<material::ProgramSurfaceRef> surfaces_;
+    Array<material::ProgramSurfaceRef> surfaces_;
 
     std::shared_ptr<const editor::ViewportScene> picking_;
 
-    std::optional<Prepared> pending_;
+    Optional<Prepared> pending_;
 
-    std::optional<Prepared> adopted_;
+    Optional<Prepared> adopted_;
 };
 
 } // namespace atelier::application

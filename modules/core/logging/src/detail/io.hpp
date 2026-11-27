@@ -1,5 +1,6 @@
 #pragma once
 
+#include "foundation/inline_array.hpp"
 #include "logging/logging.hpp"
 #include "platform/error.hpp"
 #include <Windows.h>
@@ -12,7 +13,6 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
-#include <vector>
 
 namespace atelier::logging::detail {
 class Handle final {
@@ -91,12 +91,13 @@ inline Result<void> atomic_write(const std::filesystem::path& path, std::string_
     if (error)
         return std::unexpected(io_failure("Resolve summary destination", static_cast<DWORD>(error.value())));
     const auto length = destination.size() * sizeof(wchar_t);
-    std::vector<std::byte> storage(offsetof(FILE_RENAME_INFO, FileName) + length + sizeof(wchar_t));
+    const auto bytes_needed = offsetof(FILE_RENAME_INFO, FileName) + length + sizeof(wchar_t);
+    InlineArray<std::uint64_t, 80> storage((bytes_needed + sizeof(std::uint64_t) - 1) / sizeof(std::uint64_t), 0);
     auto* rename = reinterpret_cast<FILE_RENAME_INFO*>(storage.data());
     rename->Flags = FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS;
     rename->FileNameLength = static_cast<DWORD>(length);
     std::memcpy(rename->FileName, destination.data(), length);
-    if (!SetFileInformationByHandle(file.get(), FileRenameInfoEx, rename, static_cast<DWORD>(storage.size())))
+    if (!SetFileInformationByHandle(file.get(), FileRenameInfoEx, rename, static_cast<DWORD>(bytes_needed)))
         return std::unexpected(io_failure("Publish summary"));
     if (!CloseHandle(file.release()))
         return std::unexpected(io_failure("Close summary temporary file"));

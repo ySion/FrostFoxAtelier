@@ -14,7 +14,7 @@ void fallback_tangent(Vertex& vertex) {
 }
 }
 
-std::expected<void, MeshError> adopt_tangents(std::span<Vertex> vertices) {
+std::expected<void, MeshError> adopt_tangents(Span<Vertex> vertices) {
     for (auto& vertex : vertices) {
         auto& t = vertex.tangent;
         if (!std::isfinite(t[0]) || !std::isfinite(t[1]) || !std::isfinite(t[2]) || (t[3] != 1 && t[3] != -1))
@@ -37,7 +37,7 @@ std::expected<void, MeshError> adopt_tangents(std::span<Vertex> vertices) {
     return {};
 }
 
-void generate_tangents(std::span<Vertex> vertices) {
+void generate_tangents(Span<Vertex> vertices) {
     // Fallback also covers isolated degenerate UVs. Never change authored normals.
     for (auto& vertex : vertices) {
         fallback_tangent(vertex);
@@ -45,22 +45,21 @@ void generate_tangents(std::span<Vertex> vertices) {
     }
     SMikkTSpaceInterface callbacks{};
     callbacks.m_getNumFaces = [](const SMikkTSpaceContext* c) {
-        return static_cast<int>(static_cast<std::span<Vertex>*>(c->m_pUserData)->size() / 3);
+        return static_cast<int>(static_cast<Span<Vertex>*>(c->m_pUserData)->size() / 3);
     };
     callbacks.m_getNumVerticesOfFace = [](const SMikkTSpaceContext*, int) { return 3; };
     callbacks.m_getPosition = [](const SMikkTSpaceContext* c, float* out, int face, int corner) {
-        std::copy_n((*static_cast<std::span<Vertex>*>(c->m_pUserData))[std::size_t(face) * 3 + corner].position, 3,
-                    out);
+        std::copy_n((*static_cast<Span<Vertex>*>(c->m_pUserData))[std::size_t(face) * 3 + corner].position, 3, out);
     };
     callbacks.m_getNormal = [](const SMikkTSpaceContext* c, float* out, int face, int corner) {
-        std::copy_n((*static_cast<std::span<Vertex>*>(c->m_pUserData))[std::size_t(face) * 3 + corner].normal, 3, out);
+        std::copy_n((*static_cast<Span<Vertex>*>(c->m_pUserData))[std::size_t(face) * 3 + corner].normal, 3, out);
     };
     callbacks.m_getTexCoord = [](const SMikkTSpaceContext* c, float* out, int face, int corner) {
-        std::copy_n((*static_cast<std::span<Vertex>*>(c->m_pUserData))[std::size_t(face) * 3 + corner].uv, 2, out);
+        std::copy_n((*static_cast<Span<Vertex>*>(c->m_pUserData))[std::size_t(face) * 3 + corner].uv, 2, out);
     };
     callbacks.m_setTSpaceBasic = [](const SMikkTSpaceContext* c, const float* tangent, float sign, int face,
                                     int corner) {
-        auto& vertex = (*static_cast<std::span<Vertex>*>(c->m_pUserData))[std::size_t(face) * 3 + corner];
+        auto& vertex = (*static_cast<Span<Vertex>*>(c->m_pUserData))[std::size_t(face) * 3 + corner];
         const auto* n = vertex.normal;
         const double projection = (double(tangent[0]) * n[0] + double(tangent[1]) * n[1] + double(tangent[2]) * n[2]) /
                                   (double(n[0]) * n[0] + double(n[1]) * n[1] + double(n[2]) * n[2]);

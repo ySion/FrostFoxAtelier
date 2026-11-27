@@ -60,9 +60,9 @@ struct DiagnosticReport {
 
     DiagnosticResources after;
 
-    std::optional<DiagnosticLocation> location;
+    Optional<DiagnosticLocation> location;
 
-    std::optional<Error> error;
+    Optional<Error> error;
 };
 
 // A same-thread, passive capture handle. One invocation may own a handle at a
@@ -97,6 +97,6 @@ struct CompilationArtifacts {
 
     // Actual compiler output before JIT relocation; section-relative symbols
     // and relocations are included in assembly. These bytes are not executable.
-    std::vector<std::byte> object_code;
+    Array<std::byte> object_code;
 };
 }

@@ -430,7 +430,12 @@ template <class V>
 // Synchronous borrow. Constness belongs to T, not to the descriptor.
 template <class T>
 class Span {
-    static_assert(std::is_object_v<T> && !std::is_abstract_v<T> && !std::is_volatile_v<T>);
+    static_assert(std::is_object_v<T> && !std::is_volatile_v<T>);
+
+    [[nodiscard]] static consteval std::size_t max_elements() noexcept {
+        static_assert(!std::is_abstract_v<T>);
+        return static_cast<std::size_t>(PTRDIFF_MAX) / sizeof(T);
+    }
 
 public:
     using Value = T;
@@ -439,8 +444,6 @@ public:
 
     static constexpr std::size_t npos = std::numeric_limits<std::size_t>::max();
 
-    static constexpr std::size_t max_size = static_cast<std::size_t>(PTRDIFF_MAX) / sizeof(T);
-
     constexpr Span() noexcept = default;
 
     constexpr Span(const Span&) noexcept = default;
@@ -448,6 +451,7 @@ public:
     constexpr Span& operator=(const Span&) noexcept = default;
 
     constexpr Span(std::nullptr_t, std::size_t size) noexcept {
+        static_assert(!std::is_abstract_v<T>);
         if (size != 0)
             fatal("Invalid Span storage.");
     }
@@ -455,7 +459,7 @@ public:
     template <std::contiguous_iterator It>
         requires detail::SpanCompatiblePointer<std::remove_reference_t<std::iter_reference_t<It>>, T>
     constexpr Span(It first, std::size_t count) noexcept : data_(std::to_address(first)), size_(count) {
-        if ((!data_ && count) || count > max_size)
+        if ((!data_ && count) || count > max_elements())
             fatal("Invalid Span storage.");
     }
 
@@ -466,13 +470,13 @@ public:
         const auto distance = last - first;
         data_ = std::to_address(first);
         if (distance < 0 || (!data_ && distance != 0) ||
-            static_cast<std::make_unsigned_t<decltype(distance)>>(distance) > max_size)
+            static_cast<std::make_unsigned_t<decltype(distance)>>(distance) > max_elements())
             fatal("Invalid Span storage.");
         size_ = static_cast<std::size_t>(distance);
     }
 
     template <std::size_t N>
-        requires(N <= max_size)
+        requires(N <= max_elements())
     constexpr Span(std::type_identity_t<T> (&data [[clang::lifetimebound]])[N]) noexcept : data_(data), size_(N) {}
 
     template <class U, std::size_t Extent>
@@ -481,7 +485,9 @@ public:
 
     template <class U>
         requires(!std::same_as<U, T>) && detail::SpanCompatiblePointer<U, T>
-    constexpr Span(Span<U> other) noexcept : data_(other.data()), size_(other.size()) {}
+    constexpr Span(Span<U> other) noexcept : data_(other.data()), size_(other.size()) {
+        static_assert(!std::is_abstract_v<T>);
+    }
 
     template <class R>
         requires(!detail::is_atelier_span_v<std::remove_cvref_t<R>>) &&
@@ -745,7 +751,7 @@ public:
 
     template <class U>
         requires std::three_way_comparable_with<T, U>
-    [[nodiscard]] constexpr auto operator<=>(Span<U> other) const noexcept {
+    [[nodiscard]] constexpr std::compare_three_way_result_t<T, U> operator<=>(Span<U> other) const noexcept {
         using V = std::remove_cv_t<T>;
         if !consteval {
             if constexpr (std::same_as<V, std::remove_cv_t<U>> &&

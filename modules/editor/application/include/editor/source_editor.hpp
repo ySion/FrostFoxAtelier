@@ -1,7 +1,9 @@
 #pragma once
 #include "editor/project.hpp"
 #include "editor/operators.hpp"
+#include "foundation/array.hpp"
 #include "foundation/function_ref.hpp"
+#include "foundation/optional.hpp"
 #include "ui_language/live_document.hpp"
 #include "logging/logging.hpp"
 #include <chrono>
@@ -51,7 +53,7 @@ public:
 
         bool crlf{};
 
-        std::optional<std::filesystem::file_time_type> stamp;
+        Optional<std::filesystem::file_time_type> stamp;
 
         std::uintmax_t disk_size{};
 
@@ -74,7 +76,7 @@ public:
 
     File* active() const noexcept;
 
-    const std::vector<std::unique_ptr<File>>& files() const noexcept { return files_; }
+    const Array<std::unique_ptr<File>>& files() const noexcept { return files_; }
 
     void poll(bool composing = false);
 
@@ -82,7 +84,7 @@ public:
                         FunctionRef<Result<ui_language::ActionBinding>(OperatorCall)>,
                         const Project* = nullptr, const ProjectBuild* = nullptr, bool running = false);
 
-    std::vector<ui::MenuItem> menu_items() const;
+    Array<ui::MenuItem> menu_items() const;
 
     Result<bool> locate_problem();
 
@@ -96,7 +98,7 @@ public:
 private:
     using Clock = std::chrono::steady_clock;
 
-    std::vector<std::unique_ptr<File>> files_;
+    Array<std::unique_ptr<File>> files_;
 
     ui::ControlKey selected_{};
 

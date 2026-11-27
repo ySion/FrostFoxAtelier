@@ -5,7 +5,7 @@
 #include <wrl/client.h>
 
 namespace atelier::assets {
-Result<void> write_png(std::uint32_t width, std::uint32_t height, std::span<const std::uint8_t> rgba,
+Result<void> write_png(std::uint32_t width, std::uint32_t height, Span<const std::uint8_t> rgba,
                        const std::filesystem::path& path) {
     const auto pixels = std::uint64_t{width} * height;
     if (!pixels || pixels > UINT_MAX / 4 || rgba.size() != pixels * 4)
@@ -38,9 +38,14 @@ Result<void> write_png(std::uint32_t width, std::uint32_t height, std::span<cons
         return std::unexpected(Error{ErrorCode::invalid_storage, "PNG codec changed BGRA format"});
     // Channel permutation only: Image bytes may be linear data or sRGB. Never
     // apply a transfer function, premultiply alpha, or quantize through a capture.
-    std::vector<std::uint8_t> bgra(rgba.begin(), rgba.end());
-    for (std::size_t pixel = 0; pixel < bgra.size(); pixel += 4)
-        std::swap(bgra[pixel], bgra[pixel + 2]);
+    Array<std::uint8_t> bgra;
+    bgra.resize_uninitialized(rgba.size());
+    for (std::size_t pixel = 0; pixel < bgra.size(); pixel += 4) {
+        bgra[pixel] = rgba[pixel + 2];
+        bgra[pixel + 1] = rgba[pixel + 1];
+        bgra[pixel + 2] = rgba[pixel];
+        bgra[pixel + 3] = rgba[pixel + 3];
+    }
     ATELIER_TRY(check(frame->WritePixels(height, width * 4, static_cast<UINT>(bgra.size()), bgra.data())));
     ATELIER_TRY(check(frame->Commit()));
     ATELIER_TRY(check(encoder->Commit()));

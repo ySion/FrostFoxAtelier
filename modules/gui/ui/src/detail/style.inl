@@ -257,7 +257,7 @@ bool matches(const StyleSelector& selector, const Control& control, VisualState 
     if ((selector.kind && *selector.kind != control.kind) || (selector.role && *selector.role != control.role))
         return false;
     for (const auto& name : selector.classes)
-        if (std::find(control.classes.begin(), control.classes.end(), name) == control.classes.end())
+        if (!control.classes.contains(name))
             return false;
     auto states = state.enabled ? StyleState::enabled : StyleState::disabled;
     if (state.hover)

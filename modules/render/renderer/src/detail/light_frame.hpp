@@ -1,5 +1,6 @@
 #pragma once
 
+#include "foundation/array.hpp"
 #include "foundation/map.hpp"
 #include "renderer/renderer.hpp"
 #include <limits>
@@ -84,23 +85,23 @@ public:
     void clear();
 
     // Local analytic lights, then explicit directionals.
-    std::vector<GpuLightSource> sources;
+    Array<GpuLightSource> sources;
 
-    std::vector<GpuLightProposal> proposals; // Local pool only; actual uploaded PMF.
+    Array<GpuLightProposal> proposals; // Local pool only; actual uploaded PMF.
 
     // Index of each source in the previously published layout, or no_light_source.
     // Becomes the identity on the first stationary frame after a change.
-    std::vector<std::uint32_t> current_to_previous;
+    Array<std::uint32_t> current_to_previous;
 
     // A bounded near-source proposal, never a light influence/culling list.
     // Empty cells disable local sampling; the global proposal always survives.
     std::array<float, 4> spatial_origin{}; // Minimum XYZ, cell spacing.
 
-    std::vector<GpuLightCell> spatial_cells;
+    Array<GpuLightCell> spatial_cells;
 
-    std::vector<GpuSpatialLightProposal> spatial_proposals;
+    Array<GpuSpatialLightProposal> spatial_proposals;
 
-    std::vector<std::uint32_t> spatial_source_slots; // (cell << 5) | slot, or no_light_source.
+    Array<std::uint32_t> spatial_source_slots; // (cell << 5) | slot, or no_light_source.
 
     bool spatial_changed{};
 
@@ -135,33 +136,33 @@ private:
         std::size_t operator()(const SourceKey&) const noexcept;
     };
 
-    std::vector<GpuLightSource> analytic_;
+    Array<GpuLightSource> analytic_;
 
-    std::vector<GpuLightSource> next_analytic_;
+    Array<GpuLightSource> next_analytic_;
 
-    std::vector<GpuLightSource> previous_sources_;
+    Array<GpuLightSource> previous_sources_;
 
-    std::vector<SourceKey> analytic_keys_;
+    Array<SourceKey> analytic_keys_;
 
-    std::vector<SourceKey> next_analytic_keys_;
+    Array<SourceKey> next_analytic_keys_;
 
-    std::vector<SourceKey> keys_;
+    Array<SourceKey> keys_;
 
-    std::vector<SourceKey> previous_keys_;
+    Array<SourceKey> previous_keys_;
 
     Map<SourceKey, std::uint32_t, KeyHash> previous_lookup_;
 
-    std::vector<double> powers_;
+    Array<double> powers_;
 
-    std::vector<double> scaled_;
+    Array<double> scaled_;
 
-    std::vector<double> actual_;
+    Array<double> actual_;
 
-    std::vector<std::uint32_t> below_;
+    Array<std::uint32_t> below_;
 
-    std::vector<std::uint32_t> above_;
+    Array<std::uint32_t> above_;
 
-    std::vector<std::array<std::uint32_t, light_grid_cell_capacity>> spatial_bins_;
+    Array<std::array<std::uint32_t, light_grid_cell_capacity>> spatial_bins_;
 
     std::uint64_t scene_identity_{};
 

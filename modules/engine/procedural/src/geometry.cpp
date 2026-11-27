@@ -18,7 +18,7 @@ std::size_t column_size(const ColumnData& data) noexcept {
 // Values at `indices`, or the type's default where an index is `absent`.
 constexpr std::uint32_t absent = element_limit + 1;
 
-ColumnData gather(const ColumnData& data, std::span<const std::uint32_t> indices) {
+ColumnData gather(const ColumnData& data, Span<const std::uint32_t> indices) {
     return std::visit(
         [&](const auto& column) -> ColumnData {
             using T = typename std::remove_cvref_t<decltype(column)>::Value;
@@ -88,7 +88,7 @@ bool Geometry::same_value(const Geometry& other) const noexcept {
 }
 
 Geometry::Geometry() {
-    attributes_.push_back({String::literal<"P">(), Layer::point, Usage::point, SharedArray<math::Vector3>{}});
+    attributes_.add({String::literal<"P">(), Layer::point, Usage::point, SharedArray<math::Vector3>{}});
 }
 
 Result<Geometry> Geometry::points(Array<math::Vector3> positions) {
@@ -250,7 +250,7 @@ Result<void> Geometry::fits(Layer layer, const ColumnData& data) const {
     return {};
 }
 
-Result<void> Geometry::set(String name, Layer layer, ColumnData data, std::optional<Usage> usage) {
+Result<void> Geometry::set(String name, Layer layer, ColumnData data, Optional<Usage> usage) {
     auto* existing = mutable_find(name);
     if (existing && (existing->layer != layer || existing->data.index() != data.index()))
         return failure("Attribute " + text(name) + " has another layer or type.");
@@ -277,7 +277,7 @@ Result<void> Geometry::set(String name, Layer layer, ColumnData data, std::optio
         existing->usage = resolved;
         existing->data = std::move(data);
     } else
-        attributes_.push_back({std::move(name), layer, resolved, std::move(data)});
+        attributes_.add({std::move(name), layer, resolved, std::move(data)});
     return {};
 }
 
@@ -286,11 +286,11 @@ Result<void> Geometry::remove(StringView name) {
         return failure("P cannot be removed.");
     const auto at = std::ranges::find_if(attributes_, [&](const Attribute& a) { return a.name == name; });
     if (at != attributes_.end())
-        attributes_.erase(at);
+        attributes_.remove_at(static_cast<std::size_t>(at - attributes_.begin()));
     return {};
 }
 
-Result<void> Geometry::set_instances(std::vector<Reference> references, Array<std::uint32_t> indices,
+Result<void> Geometry::set_instances(Array<Reference> references, Array<std::uint32_t> indices,
                                      Array<math::Matrix4> transforms) {
     if (indices.size() != transforms.size() || indices.size() > absent - 1)
         return failure("Each instance needs one reference index and one transform.");
@@ -304,7 +304,7 @@ Result<void> Geometry::set_instances(std::vector<Reference> references, Array<st
     for (const auto& matrix : transforms)
         if (!math::is_finite(matrix) || matrix[3] != 0 || matrix[7] != 0 || matrix[11] != 0 || matrix[15] != 1)
             return failure("Instance transforms must be finite and affine.");
-    std::erase_if(attributes_, [](const Attribute& a) { return a.layer == Layer::instance; });
+    (void)attributes_.remove_if([](const Attribute& a) { return a.layer == Layer::instance; });
     references_ = std::move(references);
     instance_references_ = SharedArray<std::uint32_t>{std::move(indices)};
     instance_transforms_ = SharedArray<math::Matrix4>{std::move(transforms)};
@@ -339,10 +339,10 @@ Result<Geometry> Geometry::remove_flagged(Layer layer, StringView flag) const {
         return std::unexpected(flags.error());
     if (!*flags)
         return failure("Geometry has no attribute " + text(flag) + ".");
-    return remove_flagged(layer, std::span<const bool>{(*flags)->data(), (*flags)->size()});
+    return remove_flagged(layer, (*flags)->view());
 }
 
-Result<Geometry> Geometry::remove_flagged(Layer layer, std::span<const bool> removed) const {
+Result<Geometry> Geometry::remove_flagged(Layer layer, Span<const bool> removed) const {
     if (layer != Layer::point && layer != Layer::primitive && layer != Layer::instance)
         return failure("Only points, primitives and instances can be removed.");
     if (removed.size() != count(layer))
@@ -355,7 +355,7 @@ Result<Geometry> Geometry::remove_flagged(Layer layer, std::span<const bool> rem
         return indices;
     };
     Geometry result = *this;
-    const auto retain = [&](Layer target, std::span<const std::uint32_t> indices) {
+    const auto retain = [&](Layer target, Span<const std::uint32_t> indices) {
         for (auto& attribute : result.attributes_)
             if (attribute.layer == target)
                 attribute.data = gather(attribute.data, indices);
@@ -428,7 +428,7 @@ Result<Geometry> Geometry::remove_flagged(Layer layer, std::span<const bool> rem
     return result;
 }
 
-Result<Geometry> Geometry::merge(std::span<const Geometry> inputs) {
+Result<Geometry> Geometry::merge(Span<const Geometry> inputs) {
     if (inputs.empty())
         return Geometry{};
     if (inputs.size() == 1)
@@ -440,7 +440,7 @@ Result<Geometry> Geometry::merge(std::span<const Geometry> inputs) {
         for (const auto& attribute : input.attributes_) {
             const auto* existing = result.find(attribute.name);
             if (!existing) {
-                result.attributes_.push_back(
+                result.attributes_.add(
                     {attribute.name, attribute.layer, attribute.usage, empty_like(attribute.data)});
                 continue;
             }
@@ -487,9 +487,14 @@ Result<Geometry> Geometry::merge(std::span<const Geometry> inputs) {
         for (std::size_t i = 0; i < input.instance_references_.size(); ++i) {
             const auto& reference = input.references_[input.instance_references_.array()[i]];
             auto at = std::ranges::find(result.references_, reference);
-            if (at == result.references_.end())
-                at = result.references_.insert(at, reference);
-            indices.add(static_cast<std::uint32_t>(at - result.references_.begin()));
+            std::uint32_t ref_idx{};
+            if (at == result.references_.end()) {
+                ref_idx = static_cast<std::uint32_t>(result.references_.size());
+                result.references_.add(reference);
+            } else {
+                ref_idx = static_cast<std::uint32_t>(at - result.references_.begin());
+            }
+            indices.add(ref_idx);
         }
         transforms.append(input.instance_transforms_.view());
         for (auto& attribute : result.attributes_) {

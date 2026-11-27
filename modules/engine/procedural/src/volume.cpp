@@ -84,7 +84,7 @@ Result<Array<Triangle>> prepare(const Geometry& surface) {
 }
 
 // Original fixed polygon/fan-order compensated sum, used only after eight uncertain rays.
-bool winding_inside(std::span<const Triangle> triangles, Vector3 position) {
+bool winding_inside(Span<const Triangle> triangles, Vector3 position) {
     const auto q = Vector3d(position);
     Sum angles;
     for (const auto& t : triangles) {
@@ -101,7 +101,7 @@ bool winding_inside(std::span<const Triangle> triangles, Vector3 position) {
     return angles.value >= 2 * std::numbers::pi;
 }
 
-Classification classify(const Bvh& bvh, std::span<const Triangle> triangles, Vector3 position, Block& block) {
+Classification classify(const Bvh& bvh, Span<const Triangle> triangles, Vector3 position, Block& block) {
     if (bvh.on_surface_band(position))
         return Classification::surface;
     // Fixed binary approximations of sqrt(2), sqrt(3), sqrt(5), widened exactly
@@ -197,19 +197,19 @@ Result<Geometry> volume_scatter(const Geometry& surface, const VolumeScatterSett
         }
     }
     Array<Vector3> candidate_positions;
-    candidate_positions.resize(candidates);
+    candidate_positions.resize_uninitialized(candidates);
     Array<Classification> states;
-    states.resize(candidates);
+    states.resize_uninitialized(candidates);
     Array<Block> blocks;
     blocks.resize((candidates + block_size - 1) / block_size);
     {
         timing::Scope classification{phases::classify};
         const auto classified = tasks::parallel_for(
             {0, blocks.size()},
-            [bvh, triangles = std::span<const Triangle>{*triangles}, coordinate, cell_seed, origin = settings.origin, h,
-             candidates, offsets = std::span<const std::uint32_t>{offsets}, positions = candidate_positions.view(),
-             states = std::span{states},
-             blocks = std::span{blocks}](tasks::Range range) noexcept -> std::expected<void, tasks::Failure> {
+            [bvh, triangles = Span<const Triangle>{*triangles}, coordinate, cell_seed, origin = settings.origin, h,
+             candidates, offsets = Span<const std::uint32_t>{offsets}, positions = candidate_positions.view(),
+             states = states.view(),
+             blocks = blocks.view()](tasks::Range range) noexcept -> std::expected<void, tasks::Failure> {
                 // A scheduler body may contain several fixed-size logical blocks.
                 for (auto b = range.begin; b < range.end; ++b) {
                     Block result;
@@ -275,17 +275,17 @@ Result<Geometry> volume_scatter(const Geometry& surface, const VolumeScatterSett
     Array<std::uint32_t> ids;
     Array<std::uint32_t> ordinals;
     std::array<Array<std::int32_t>, 3> sources;
-    positions.resize(retained);
-    ids.resize(retained);
-    ordinals.resize(retained);
+    positions.resize_uninitialized(retained);
+    ids.resize_uninitialized(retained);
+    ordinals.resize_uninitialized(retained);
     for (auto& source : sources)
-        source.resize(retained);
+        source.resize_uninitialized(retained);
     const auto filled = tasks::parallel_for(
         {0, blocks.size()},
-        [coordinate, cell_seed, candidates, offsets = std::span<const std::uint32_t>{offsets},
-         output_offsets = std::span<const std::uint32_t>{output_offsets},
+        [coordinate, cell_seed, candidates, offsets = Span<const std::uint32_t>{offsets},
+         output_offsets = Span<const std::uint32_t>{output_offsets},
          candidate_positions = Span<const Vector3>{candidate_positions.view()},
-         states = std::span<const Classification>{states}, positions = positions.view(), ids = ids.view(),
+         states = Span<const Classification>{states}, positions = positions.view(), ids = ids.view(),
          ordinals = ordinals.view(), sources = std::array{sources[0].view(), sources[1].view(), sources[2].view()}](
             tasks::Range range) noexcept -> std::expected<void, tasks::Failure> {
             for (auto b = range.begin; b < range.end; ++b) {

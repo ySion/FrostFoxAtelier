@@ -6,13 +6,13 @@ struct Program::ModuleRequest {
 
         language::MappedSource source;
 
-        std::vector<std::string> names;
+        Array<std::string> names;
 
         std::string owner; // the class, "" for the project unit, or "engine/<module>"
 
-        std::vector<std::vector<std::string>> parameter_names;
+        Array<Array<std::string>> parameter_names;
 
-        std::vector<std::vector<MetadataList>> parameter_metadata;
+        Array<Array<MetadataList>> parameter_metadata;
 
         bool receiver{};
     };
@@ -24,21 +24,21 @@ struct Program::ModuleRequest {
     language::SourceModule source;
 
     // Per class, the resolved field definitions that a published class must keep.
-    std::vector<std::vector<FieldDefinition>> class_fields;
+    Array<Array<FieldDefinition>> class_fields;
 
-    std::vector<ClassInfo> classes;
+    Array<ClassInfo> classes;
 
-    std::vector<Unit> units;
+    Array<Unit> units;
 };
 
 struct Program::ModuleVersion {
     std::shared_ptr<const ModuleRequest> request;
 
-    std::vector<ClassInfo> classes;
+    Array<ClassInfo> classes;
 
-    std::vector<EntryInfo> entries;
+    Array<EntryInfo> entries;
 
-    std::vector<FunctionInfo> functions;
+    Array<FunctionInfo> functions;
 
-    std::vector<std::shared_ptr<const Version>> versions;
+    Array<std::shared_ptr<const Version>> versions;
 };

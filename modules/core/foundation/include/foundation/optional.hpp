@@ -415,53 +415,6 @@ public:
         left.swap(right);
     }
 
-    friend constexpr bool operator==(const Optional& left, const Optional& right) noexcept
-        requires requires(const T& a, const T& b) {
-            { a == b } -> std::convertible_to<bool>;
-        }
-    {
-        if (left.engaged_ != right.engaged_)
-            return false;
-        return !left.engaged_ || static_cast<bool>(*left.pointer() == *right.pointer());
-    }
-
-    template <class U = T>
-        requires(!detail::is_atelier_optional_v<std::remove_cvref_t<U>>) &&
-                (!std::same_as<std::remove_cvref_t<U>, std::nullopt_t>) &&
-                requires(const T& a, const U& b) {
-                    { a == b } -> std::convertible_to<bool>;
-                }
-    friend constexpr bool operator==(const Optional& left, const U& right) noexcept {
-        return left.engaged_ && static_cast<bool>(*left.pointer() == right);
-    }
-
-    friend constexpr bool operator==(const Optional& value, std::nullopt_t) noexcept { return !value.engaged_; }
-
-    friend constexpr auto operator<=>(const Optional& left, const Optional& right) noexcept
-        requires std::three_way_comparable<T>
-    {
-        using Result = std::compare_three_way_result_t<T>;
-        if (left.engaged_ && right.engaged_)
-            return static_cast<Result>(*left.pointer() <=> *right.pointer());
-        return static_cast<Result>(left.engaged_ <=> right.engaged_);
-    }
-
-    friend constexpr std::strong_ordering operator<=>(const Optional& value, std::nullopt_t) noexcept {
-        return value.engaged_ <=> std::uint8_t{0};
-    }
-
-    template <class U = T>
-        requires(!detail::is_atelier_optional_v<std::remove_cvref_t<U>>) &&
-                (!std::same_as<std::remove_cvref_t<U>, std::nullopt_t>) &&
-                requires(const T& a, const U& b) {
-                    { a <=> b } -> std::convertible_to<std::partial_ordering>;
-                }
-    friend constexpr std::compare_three_way_result_t<T, U> operator<=>(const Optional& left, const U& right) noexcept {
-        using Result = std::compare_three_way_result_t<T, U>;
-        return left.engaged_ ? static_cast<Result>(*left.pointer() <=> right)
-                             : static_cast<Result>(std::strong_ordering::less);
-    }
-
 private:
     [[nodiscard]] constexpr T* pointer() noexcept { return std::addressof(storage_.value); }
 
@@ -475,8 +428,15 @@ private:
 template <class T>
 Optional(T) -> Optional<T>;
 
+namespace detail {
+template <class U>
+concept DerivedFromOptional =
+    is_atelier_optional_v<std::remove_cvref_t<U>> ||
+    requires(const std::remove_cvref_t<U>& value) { []<class V>(const Optional<V>&) {}(value); };
+}
+
 template <class T, class U>
-    requires(!std::same_as<T, U>) && requires(const T& a, const U& b) {
+    requires requires(const T& a, const U& b) {
         { a == b } -> std::convertible_to<bool>;
     }
 [[nodiscard]] constexpr bool operator==(const Optional<T>& left, const Optional<U>& right) noexcept {
@@ -487,18 +447,48 @@ template <class T, class U>
     return static_cast<bool>(*a == *b);
 }
 
+template <class T>
+[[nodiscard]] constexpr bool operator==(const Optional<T>& value, std::nullopt_t) noexcept {
+    return !value.has_value();
+}
+
 template <class T, class U>
-    requires(!std::same_as<T, U>) && requires(const T& a, const U& b) {
+    requires(!detail::DerivedFromOptional<U>) && (!std::same_as<std::remove_cvref_t<U>, std::nullopt_t>) &&
+            requires(const T& a, const U& b) {
+                { a == b } -> std::convertible_to<bool>;
+            }
+[[nodiscard]] constexpr bool operator==(const Optional<T>& left, const U& right) noexcept {
+    const auto* a = left.try_get();
+    return a && static_cast<bool>(*a == right);
+}
+
+template <class T, class U>
+    requires requires(const T& a, const U& b) {
         { a <=> b } -> std::convertible_to<std::partial_ordering>;
     }
-[[nodiscard]] constexpr std::compare_three_way_result_t<T, U> operator<=>(const Optional<T>& left,
-                                                                          const Optional<U>& right) noexcept {
+[[nodiscard]] constexpr auto operator<=>(const Optional<T>& left, const Optional<U>& right) noexcept {
     using Result = std::compare_three_way_result_t<T, U>;
     const auto* a = left.try_get();
     const auto* b = right.try_get();
     if (a && b)
         return static_cast<Result>(*a <=> *b);
     return static_cast<Result>(left.has_value() <=> right.has_value());
+}
+
+template <class T>
+[[nodiscard]] constexpr std::strong_ordering operator<=>(const Optional<T>& value, std::nullopt_t) noexcept {
+    return value.has_value() <=> false;
+}
+
+template <class T, class U>
+    requires(!detail::DerivedFromOptional<U>) && (!std::same_as<std::remove_cvref_t<U>, std::nullopt_t>) &&
+            requires(const T& a, const U& b) {
+                { a <=> b } -> std::convertible_to<std::partial_ordering>;
+            }
+[[nodiscard]] constexpr auto operator<=>(const Optional<T>& left, const U& right) noexcept {
+    using Result = std::compare_three_way_result_t<T, U>;
+    const auto* a = left.try_get();
+    return a ? static_cast<Result>(*a <=> right) : static_cast<Result>(std::strong_ordering::less);
 }
 
 }

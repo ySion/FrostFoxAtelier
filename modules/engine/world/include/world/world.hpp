@@ -235,7 +235,7 @@ public:
     CollisionComponent() { body.enabled = true; }
 };
 
-using FieldPath = std::vector<FieldId>;
+using FieldPath = Array<FieldId>;
 
 struct Types {
     TypeId entity;
@@ -298,9 +298,9 @@ struct ComponentStatus {
 [[nodiscard]] Result<ComponentStatus> inspect_component(Runtime&, ObjectId);
 
 // These owning reference snapshots are ordinary roots, not a second relation graph.
-[[nodiscard]] Result<std::vector<ObjectRoot>> components(Runtime&, ObjectId entity);
+[[nodiscard]] Result<Array<ObjectRoot>> components(Runtime&, ObjectId entity);
 
-[[nodiscard]] Result<std::vector<ObjectRoot>> children(Runtime&, ObjectId entity);
+[[nodiscard]] Result<Array<ObjectRoot>> children(Runtime&, ObjectId entity);
 
 [[nodiscard]] Result<ObjectId> parent_entity(Runtime&, ObjectId entity);
 
@@ -315,9 +315,9 @@ struct ComponentStatus {
 
 [[nodiscard]] Result<math::Matrix4> world_matrix(Runtime&, ObjectId entity);
 
-// nullopt inherits the nearest spatial composition ancestor; a null ObjectId
+// Empty Optional inherits the nearest spatial composition ancestor; a null ObjectId
 // explicitly selects world space. A non-null identity is a weak spatial origin.
-[[nodiscard]] Result<std::optional<ObjectId>> space_reference(Runtime&, ObjectId entity);
+[[nodiscard]] Result<Optional<ObjectId>> space_reference(Runtime&, ObjectId entity);
 
 [[nodiscard]] Result<ObjectId> spatial_parent(Runtime&, ObjectId entity);
 
@@ -331,7 +331,7 @@ struct Commit {
 
     // A completed relation change is never reported as if it had not happened.
     // Consumers record that change, then surface a lifecycle/cleanup error.
-    std::optional<Error> notification_error;
+    Optional<Error> notification_error;
 };
 
 // The only game-object destruction entry. A detached object does not depend on
@@ -449,8 +449,8 @@ struct EntityAttachment {
 struct SpaceReference {
     ObjectId entity;
 
-    // nullopt inherits; a null identity selects world space.
-    std::optional<ObjectId> origin;
+    // Empty Optional inherits; a null identity selects world space.
+    Optional<ObjectId> origin;
 };
 
 struct Request {
@@ -497,7 +497,7 @@ struct Simulation {
 
     std::function<bool(ObjectId)> writes_pose;
 
-    std::function<Result<void>(std::span<const ObjectId>)> relocated;
+    std::function<Result<void>(Span<const ObjectId>)> relocated;
 };
 
 // Opaque handle of a component type registered as a capability in one World.
@@ -520,7 +520,7 @@ struct CapabilityMember {
 // The invalid_value Diagnostic for a type-rule failure. `record` is the path of
 // the checked value inside `object`, empty when the object itself was checked.
 [[nodiscard]] Diagnostic validation_diagnostic(const ValidationFailure&, DiagnosticPhase, ObjectId object,
-                                               ObjectId entity, std::vector<std::string> record = {});
+                                               ObjectId entity, Array<std::string> record = {});
 
 // Same Runtime thread. Runtime outlives World, its detached objects and tasks.
 // The World owns only member roots and execution/registration state. Entity's
@@ -585,24 +585,24 @@ public:
     [[nodiscard]] bool contains(ObjectId entity) const noexcept;
 
     // Borrow ends at the next structural change. Queries during a transition fail.
-    [[nodiscard]] Result<std::span<const Member>> members() const;
+    [[nodiscard]] Result<Span<const Member>> members() const;
 
-    [[nodiscard]] Result<std::vector<ObjectId>> query(TypeId, bool include_derived = true) const;
+    [[nodiscard]] Result<Array<ObjectId>> query(TypeId, bool include_derived = true) const;
 
     [[nodiscard]] Result<Commit> attach(ObjectId entity, std::size_t index = append, ObjectId parent = {});
 
-    [[nodiscard]] Result<Commit> attach_batch(std::span<const ObjectId> roots, std::size_t index = append,
+    [[nodiscard]] Result<Commit> attach_batch(Span<const ObjectId> roots, std::size_t index = append,
                                               ObjectId parent = {});
 
     // Publishes an entire detached forest, including cross-root spatial refs.
     // Each parent is either an existing member of this World or null. Spatial
     // plans target incoming Entities only and publish with the entire forest.
-    [[nodiscard]] Result<Commit> attach_batch(std::span<const EntityAttachment>, std::span<const SpaceReference> = {});
+    [[nodiscard]] Result<Commit> attach_batch(Span<const EntityAttachment>, Span<const SpaceReference> = {});
 
     // Validates the same final attachment graph without publishing it. Returns
     // the incoming spatial Entities' world matrices for derived resource setup.
-    [[nodiscard]] Result<std::vector<std::pair<ObjectId, math::Matrix4>>>
-        attachment_world_matrices(std::span<const EntityAttachment>, std::span<const SpaceReference> = {}) const;
+    [[nodiscard]] Result<Array<std::pair<ObjectId, math::Matrix4>>>
+        attachment_world_matrices(Span<const EntityAttachment>, Span<const SpaceReference> = {}) const;
 
     // Composition changes preserve identity. Both objects must be detached or
     // members of this World; adding a detached subtree to a member uses attach.
@@ -615,7 +615,7 @@ public:
     // Spatial references may change at a host boundary while running. This
     // preserves composition, lifecycle pairing and tasks; keep-world preserves
     // the world pose. Invalid final space and callback reentry are rejected.
-    [[nodiscard]] Result<Commit> set_space_reference(ObjectId entity, std::optional<ObjectId> origin,
+    [[nodiscard]] Result<Commit> set_space_reference(ObjectId entity, Optional<ObjectId> origin,
                                                      ReparentRule = ReparentRule::keep_world);
 
     [[nodiscard]] Result<EntityRemoval> detach(ObjectId entity);
@@ -624,16 +624,16 @@ public:
     // origins. Departing objects retain outward weak origins, whose Detached
     // matrices fail until a compatible complete attachment is restored.
     // Returned histories retain the input root order and the original positions.
-    [[nodiscard]] Result<std::vector<EntityRemoval>> detach_batch(std::span<const ObjectId> roots);
+    [[nodiscard]] Result<Array<EntityRemoval>> detach_batch(Span<const ObjectId> roots);
 
     [[nodiscard]] Result<Commit> restore(const EntityRemoval&);
 
     // Restores histories from one forest removal through one attach transaction.
-    [[nodiscard]] Result<Commit> restore(std::span<const EntityRemoval>);
+    [[nodiscard]] Result<Commit> restore(Span<const EntityRemoval>);
 
     // Detached Entities may be composed before World registration. The same
     // validation applies; no member/query/presentation or behavior is registered.
-    [[nodiscard]] Result<Commit> attach_components(ObjectId entity, std::span<const Attachment>,
+    [[nodiscard]] Result<Commit> attach_components(ObjectId entity, Span<const Attachment>,
                                                    std::size_t index = append);
 
     [[nodiscard]] Result<ComponentRemoval> remove_component(ObjectId component);
@@ -660,7 +660,7 @@ public:
     // consumer failures of one object/field coalesce into `repeats` while they
     // persist across consecutive frames, and a taken entry is not reissued
     // until its failure resolves. The log keeps at most 1024 entries.
-    [[nodiscard]] std::vector<Diagnostic> take_diagnostics();
+    [[nodiscard]] Array<Diagnostic> take_diagnostics();
 
     [[nodiscard]] std::uint64_t dropped_diagnostics() const noexcept;
 
@@ -678,7 +678,7 @@ public:
     // objects take the running insertion Begin path again.
     [[nodiscard]] Result<Commit> clear_faults();
 
-    [[nodiscard]] Result<Scalar> read(ObjectId entity_or_component, std::span<const FieldId>) const;
+    [[nodiscard]] Result<Scalar> read(ObjectId entity_or_component, Span<const FieldId>) const;
 
     // Authoring requires an open World at a host boundary, outside behavior
     // dispatch. Running members take the new values from the next phase without
@@ -688,19 +688,19 @@ public:
     // scalar writes preserve TRS validation. Other fields take Runtime::write's
     // hard-bound clamping; an edit that makes a valid object fail its type
     // rules (Runtime::validate) or an admission is restored and rejected.
-    [[nodiscard]] Result<void> write(ObjectId entity_or_component, std::span<const FieldId>, Scalar);
+    [[nodiscard]] Result<void> write(ObjectId entity_or_component, Span<const FieldId>, Scalar);
 
     // Whole values (String, Array, records) through Runtime::write(ValueInput), with the
     // same type-rule and admission checks; a rejected edit restores the previous whole
     // value. Transform fields use the scalar form or set_transform.
-    [[nodiscard]] Result<void> write(ObjectId entity_or_component, std::span<const FieldId>, ValueInput);
+    [[nodiscard]] Result<void> write(ObjectId entity_or_component, Span<const FieldId>, ValueInput);
 
     // Several scalar leaves of one object as a single edit: every leaf is written
     // (with the scalar form's hard-bound clamping), then type rules and admissions
     // run once, so the values only need to be valid together. A failure restores
     // every leaf to its exact previous bytes. Each path may appear once; Transform
     // leaves are rejected (use set_transform).
-    [[nodiscard]] Result<void> write(ObjectId entity_or_component, std::span<const FieldPath>, std::span<const Scalar>);
+    [[nodiscard]] Result<void> write(ObjectId entity_or_component, Span<const FieldPath>, Span<const Scalar>);
 
     [[nodiscard]] Result<void> set_transform(ObjectId entity, Trs);
 
@@ -710,8 +710,8 @@ public:
     // and converted parent-first before any TRS is published; scale is retained.
     // `written`, when given, receives the exact local TRS published per Entity;
     // poses rejected under the isolate policy are not listed.
-    [[nodiscard]] Result<void> apply_simulation_transforms(std::span<const SimulationPose>,
-                                                           std::vector<std::pair<ObjectId, Trs>>* written = nullptr);
+    [[nodiscard]] Result<void> apply_simulation_transforms(Span<const SimulationPose>,
+                                                           Array<std::pair<ObjectId, Trs>>* written = nullptr);
 
     // Domains (presentation, simulation) register the component types they
     // consume. Member components of `type` (or derived) for which `predicate`
@@ -723,7 +723,7 @@ public:
 
     // Registered member components in composition order, including inactive
     // ones. The borrow ends at the next change of this World.
-    [[nodiscard]] Result<std::span<const CapabilityMember>> members(CapabilityId) const;
+    [[nodiscard]] Result<Span<const CapabilityMember>> members(CapabilityId) const;
 
     // Re-evaluates capability predicates after a member component's data changed.
     [[nodiscard]] Result<void> reevaluate_capabilities(ObjectId component);
@@ -740,7 +740,7 @@ public:
         ObjectId owner;
     };
 
-    using Admission = std::function<Result<void>(const World&, std::span<const AdmissionCandidate> candidates)>;
+    using Admission = std::function<Result<void>(const World&, Span<const AdmissionCandidate> candidates)>;
 
     [[nodiscard]] Result<void> add_admission(TypeId component_type, Admission);
 
@@ -760,20 +760,20 @@ public:
     class SpatialPass {
     public:
         // World matrix of a member Entity. An unusable space is reported on
-        // the failing Entity and yields nullopt; an error means the caller
+        // the failing Entity and yields empty Optional; an error means the caller
         // fails (halt policy or a World-level failure, see contain).
-        [[nodiscard]] Result<std::optional<math::Matrix4>> matrix(ObjectId entity);
+        [[nodiscard]] Result<Optional<math::Matrix4>> matrix(ObjectId entity);
 
         // True when the chain of `entity` has a zero scale axis or `world`, this
         // pass's matrix of it, is singular; one warning names the topmost
         // zero-scale node. Degenerate spaces are not object failures under any policy.
         [[nodiscard]] bool degenerate(ObjectId entity, const math::Matrix4& world, std::string_view message);
 
-        [[nodiscard]] Result<std::optional<Orientation>> orientation(ObjectId entity);
+        [[nodiscard]] Result<Optional<Orientation>> orientation(ObjectId entity);
 
         // Normalized local rotations composed along the actual spatial chain.
         // Scale magnitudes and signs do not participate; zero scale is valid.
-        [[nodiscard]] Result<std::optional<math::Quaterniond>> rotation(ObjectId entity);
+        [[nodiscard]] Result<Optional<math::Quaterniond>> rotation(ObjectId entity);
 
         // Spatial parent of a member Entity, null for world space; read from the same cache as matrix().
         [[nodiscard]] Result<ObjectId> parent(ObjectId entity);
@@ -836,7 +836,7 @@ public:
     // mementos or retain objects; a consumer needing them must already own roots.
     [[nodiscard]] Result<std::uint64_t> request(Request);
 
-    [[nodiscard]] Result<std::vector<RequestCompletion>> flush();
+    [[nodiscard]] Result<Array<RequestCompletion>> flush();
 
 private:
     friend struct detail::Access;

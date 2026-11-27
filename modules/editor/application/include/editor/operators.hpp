@@ -1,5 +1,8 @@
 #pragma once
+#include "foundation/array.hpp"
 #include "foundation/flags.hpp"
+#include "foundation/optional.hpp"
+#include "foundation/span.hpp"
 #include "editor/camera.hpp"
 #include "json/json.hpp"
 #include "editor/operator_parameters.hpp"
@@ -8,12 +11,9 @@
 #include "renderer/view_settings.hpp"
 #include <functional>
 #include <memory>
-#include <optional>
-#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 // Every editor action is an operator: menus, buttons, shortcuts and Control call
 // the same entry. See docs/modules/editor/operators.md.
@@ -36,14 +36,14 @@ inline constexpr bool atelier::enable_enum_flags<atelier::editor::OperatorFlag> 
 
 namespace atelier::editor {
 
-std::span<const std::string_view> region_names() noexcept; // Indexed by RegionKind.
+Span<const std::string_view> region_names() noexcept; // Indexed by RegionKind.
 
 struct SelectionContext {
     ObjectId active; // Active Entity.
 
     ObjectId object; // Inspected Entity or one of the active Entity's components.
 
-    std::vector<ObjectId> entities; // Selected Entities; active is the last when present.
+    Array<ObjectId> entities; // Selected Entities; active is the last when present.
 
     bool operator==(const SelectionContext&) const = default;
 };
@@ -71,9 +71,9 @@ struct Context {
 
     std::string selected_graph_node; // Selected node name in active_graph / network_graph; empty selects Graph root.
 
-    std::vector<std::string> selected_graph_nodes; // Multi-node selection in active_graph Network View.
+    Array<std::string> selected_graph_nodes; // Multi-node selection in active_graph Network View.
 
-    std::vector<std::string> locked_graphs; // Open .procgraph keys currently in Locked Preview.
+    Array<std::string> locked_graphs; // Open .procgraph keys currently in Locked Preview.
 
     HistoryState source_history; // The Code page's active document; both false without one.
 
@@ -114,11 +114,11 @@ struct Context {
 
 // Control replaces fields for one call; the document selection does not change.
 struct ContextOverride {
-    std::optional<SelectionContext> selection;
+    Optional<SelectionContext> selection;
 
-    std::optional<RegionKind> region;
+    Optional<RegionKind> region;
 
-    std::optional<std::string> asset{};
+    Optional<std::string> asset{};
 
     bool operator==(const ContextOverride&) const = default;
 };
@@ -164,10 +164,10 @@ public:
 
     void replace_document(DocumentRequest request) { replacement_ = std::move(request); }
 
-    std::optional<DocumentRequest> take_document_request() { return std::exchange(replacement_, {}); }
+    Optional<DocumentRequest> take_document_request() { return replacement_.take(); }
 
-    virtual Result<std::optional<std::filesystem::path>> choose_path(PathPurpose, const std::filesystem::path& initial,
-                                                                     std::wstring_view filename = {}) = 0;
+    virtual Result<Optional<std::filesystem::path>> choose_path(PathPurpose, const std::filesystem::path& initial,
+                                                                std::wstring_view filename = {}) = 0;
 
     // A successfully published resource becomes the browser's active resource.
     virtual void asset_created(std::string_view key, bool inspect_material) = 0;
@@ -254,20 +254,20 @@ public:
 
     virtual void select_graph_node(std::string_view key, std::string_view node_name) = 0;
 
-    virtual void select_graph_nodes(std::string_view key, std::span<const std::string> node_names) {
+    virtual void select_graph_nodes(std::string_view key, Span<const std::string> node_names) {
         select_graph_node(key, node_names.empty() ? std::string_view{} : std::string_view{node_names.back()});
     }
 
 private:
     bool cancelled_{};
 
-    std::optional<DocumentRequest> replacement_;
+    Optional<DocumentRequest> replacement_;
 };
 
 struct OperatorParameters {
     ValueInput value;
 
-    std::span<const PropertyPatch> patch; // @context.object; owned by call through execute.
+    Span<const PropertyPatch> patch; // @context.object; owned by call through execute.
 };
 
 // Queries use state/schema/inspection, not the gesture-retiring execute path.
@@ -295,7 +295,7 @@ struct OperatorInfo {
 
     std::string result{}; // Optional result record name; encoded before its Runtime can be replaced.
 
-    std::function<std::optional<bool>(const Context&, ValueInput)> state{};
+    std::function<Optional<bool>(const Context&, ValueInput)> state{};
 
     OperatorKind kind{OperatorKind::direct};
 
@@ -311,11 +311,12 @@ public:
 
     const OperatorInfo* find(std::string_view id) const noexcept;
 
-    std::span<const OperatorInfo> all() const noexcept { return operators_; }
+    Span<const OperatorInfo> all() const noexcept { return operators_; }
 
 private:
     Result<void> validate() const;
-    std::vector<OperatorInfo> operators_;
+
+    Array<OperatorInfo> operators_;
 };
 
 struct OperatorCall {
@@ -349,7 +350,7 @@ public:
 
     const OperatorCall request;
 
-    Result<std::optional<bool>> state(const OperatorRegistry&, const Context&);
+    Result<Optional<bool>> state(const OperatorRegistry&, const Context&);
 
 private:
     std::unique_ptr<detail::OperatorValue> parameters_;

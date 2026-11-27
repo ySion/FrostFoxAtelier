@@ -1,4 +1,5 @@
 #include "world/detail.hpp"
+#include "foundation/bit_vector.hpp"
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -8,20 +9,20 @@ using detail::Access;
 
 using detail::error;
 
-Result<std::vector<ObjectRoot>> children(Runtime& runtime, ObjectId object) {
-    return runtime.with_native<const Entity>(object, [&](const Entity& entity) -> Result<std::vector<ObjectRoot>> {
+Result<Array<ObjectRoot>> children(Runtime& runtime, ObjectId object) {
+    return runtime.with_native<const Entity>(object, [&](const Entity& entity) -> Result<Array<ObjectRoot>> {
         if (Access::transitioning(entity))
             return error(ErrorCode::busy, "Entity is transitioning.");
         if (auto* world = Access::member_world(entity))
             ATELIER_TRY(Access::state(*world).admit(false));
         ATELIER_TRY_BIND(field, runtime.reference_field(object, Access::children(entity)));
         ATELIER_TRY_BIND(count, runtime.sequence_size(*field));
-        std::vector<ObjectRoot> result;
+        Array<ObjectRoot> result;
         result.reserve(*count);
         for (std::size_t i = 0; i < *count; ++i) {
             ATELIER_TRY_BIND(reference, runtime.sequence_read(*field, i));
             ATELIER_TRY_BIND(held, runtime.hold(*reference));
-            result.push_back(std::move(*held));
+            result.add(std::move(*held));
         }
         return result;
     });
@@ -80,17 +81,17 @@ Result<bool> effective_enabled(Runtime& runtime, ObjectId object) {
     return true;
 }
 
-Result<std::optional<ObjectId>> space_reference(Runtime& runtime, ObjectId object) {
-    return runtime.with_native<const Entity>(object, [&](const Entity& entity) -> Result<std::optional<ObjectId>> {
+Result<Optional<ObjectId>> space_reference(Runtime& runtime, ObjectId object) {
+    return runtime.with_native<const Entity>(object, [&](const Entity& entity) -> Result<Optional<ObjectId>> {
         if (!Access::explicit_origin(entity))
-            return std::optional<ObjectId>{};
+            return Optional<ObjectId>{};
         if (Access::world_origin(entity))
-            return std::optional<ObjectId>{ObjectId{}};
+            return Optional<ObjectId>{ObjectId{}};
         const auto target = Access::origin(entity).id();
         auto valid = runtime.type_of(target);
         if (!valid)
             return error(ErrorCode::invalid_object, "Entity's explicit spatial origin is no longer valid.");
-        return std::optional<ObjectId>{target};
+        return Optional<ObjectId>{target};
     });
 }
 
@@ -160,7 +161,7 @@ Result<math::Matrix4> SpaceGraph::matrix(ObjectId object) {
         ATELIER_TRY_BIND(value, node(id));
         if (!(*value)->spatial)
             return error(ErrorCode::invalid_member, "Entity has no Transform.");
-        matrix_path.push_back(id);
+        matrix_path.add(id);
         ATELIER_TRY_BIND(next, parent(id));
         id = *next;
     }
@@ -245,7 +246,7 @@ Result<math::Matrix4> SpaceCache::matrix(ObjectId object) {
             }
             return std::unexpected(*failures.find(failed));
         }
-        path.push_back(id);
+        path.add(id);
         if ((*entry)->parent == ObjectId{})
             break;
         id = (*entry)->parent;
@@ -302,13 +303,13 @@ Result<math::Matrix4> SpaceCache::matrix(ObjectId object) {
     return entries.find(object)->world;
 }
 
-Result<std::vector<ObjectRoot>> subtree(Runtime& runtime, ObjectId object) {
-    std::vector<ObjectRoot> result;
-    std::vector<ObjectId> pending{object};
+Result<Array<ObjectRoot>> subtree(Runtime& runtime, ObjectId object) {
+    Array<ObjectRoot> result;
+    Array<ObjectId> pending{object};
     Set<ObjectId> seen;
     while (!pending.empty()) {
         const auto id = pending.back();
-        pending.pop_back();
+        pending.pop();
         if (!seen.add(id))
             return error(ErrorCode::invalid_member, "Composition contains a cycle or duplicate child.");
         ATELIER_TRY_BIND(type, runtime.native_type<Entity>());
@@ -318,14 +319,14 @@ Result<std::vector<ObjectRoot>> subtree(Runtime& runtime, ObjectId object) {
             ATELIER_TRY_BIND(parent, parent_entity(runtime, it->id()));
             if (*parent != id)
                 return error(ErrorCode::invalid_member, "Composition child has a different parent.");
-            pending.push_back(it->id());
+            pending.add(it->id());
         }
-        result.push_back(std::move(*held));
+        result.add(std::move(*held));
     }
     return result;
 }
 
-Result<void> requires_space(Runtime& runtime, ObjectId entity, std::span<const ObjectRoot> group) {
+Result<void> requires_space(Runtime& runtime, ObjectId entity, Span<const ObjectRoot> group) {
     ATELIER_TRY_BIND(spatial, has_transform(runtime, entity));
     if (*spatial)
         return {};
@@ -338,7 +339,7 @@ Result<void> requires_space(Runtime& runtime, ObjectId entity, std::span<const O
     return {};
 }
 
-Result<void> validate_tree(Runtime& runtime, ObjectId entity, std::span<const ObjectRoot> group) {
+Result<void> validate_tree(Runtime& runtime, ObjectId entity, Span<const ObjectRoot> group) {
     Set<ObjectId> seen;
     seen.reserve(group.size());
     for (const auto& item : group) {
@@ -411,11 +412,11 @@ namespace {
 Result<void> assign_parent(Runtime& runtime, ObjectId object, ObjectId parent, std::size_t index) {
     return runtime.with_native<Entity>(object, [&](Entity&) -> Result<void> {
         ATELIER_TRY_BIND(old_parent, parent_entity(runtime, object));
-        std::vector<ObjectRoot> old_roots;
-        std::vector<ObjectRoot> new_roots;
-        std::vector<ObjectReference> old_references;
-        std::vector<ObjectReference> new_references;
-        std::vector<ReferenceChange> changes;
+        Array<ObjectRoot> old_roots;
+        Array<ObjectRoot> new_roots;
+        Array<ObjectReference> old_references;
+        Array<ObjectReference> new_references;
+        Array<ReferenceChange> changes;
         const auto sequence = [&](ObjectId id) {
             return runtime.with_native<Entity>(
                 id, [&](Entity& value) { return runtime.reference_field(id, Access::children(value)); });
@@ -429,7 +430,7 @@ Result<void> assign_parent(Runtime& runtime, ObjectId object, ObjectId parent, s
                     found = true;
                     continue;
                 }
-                old_references.push_back(child.reference());
+                old_references.add(child.reference());
             }
             if (!found)
                 return error(ErrorCode::invalid_member, "Entity is absent from its parent's composition.");
@@ -439,19 +440,19 @@ Result<void> assign_parent(Runtime& runtime, ObjectId object, ObjectId parent, s
             new_roots = std::move(*next);
             for (const auto& child : new_roots)
                 if (child.id() != object)
-                    new_references.push_back(child.reference());
+                    new_references.add(child.reference());
             if (index == append)
                 index = new_references.size();
             if (index > new_references.size())
                 return error(ErrorCode::argument_mismatch, "Child insertion index is out of range.");
             ATELIER_TRY_BIND(held, runtime.hold(object));
-            new_references.insert(new_references.begin() + std::ptrdiff_t(index), held->reference());
+            new_references.insert(index, held->reference());
             ATELIER_TRY_BIND(field, sequence(parent));
-            changes.push_back(SequenceSplice{*field, 0, new_roots.size(), new_references});
+            changes.add(SequenceSplice{*field, 0, new_roots.size(), new_references});
         }
         if (*old_parent != ObjectId{} && *old_parent != parent) {
             ATELIER_TRY_BIND(field, sequence(*old_parent));
-            changes.push_back(SequenceSplice{*field, 0, old_roots.size(), old_references});
+            changes.add(SequenceSplice{*field, 0, old_roots.size(), old_references});
         }
         ATELIER_TRY_BIND(type, runtime.native_type<Entity>());
         ATELIER_TRY_BIND(reference, runtime.null_reference(*type, ValueForm::weak_reference));
@@ -463,12 +464,12 @@ Result<void> assign_parent(Runtime& runtime, ObjectId object, ObjectId parent, s
             object, [&](Entity& value) { return runtime.reference_field(object, Access::parent(value)); });
         if (!field)
             return std::unexpected(field.error());
-        changes.push_back(ReferenceWrite{*field, *reference});
+        changes.add(ReferenceWrite{*field, *reference});
         return runtime.apply_reference_changes(changes);
     });
 }
 
-Result<void> publish_transforms(Runtime& runtime, const std::vector<std::pair<ObjectId, Trs>>& values) {
+Result<void> publish_transforms(Runtime& runtime, Span<const std::pair<ObjectId, Trs>> values) {
     for (const auto& [id, value] : values) {
         // An unchanged pose keeps the Entity's write stamp, so change consumers skip it.
         auto same = runtime.with_native<const Entity>(id, [&](const Entity& entity) -> Result<bool> {
@@ -493,9 +494,9 @@ Result<void> publish_transforms(Runtime& runtime, const std::vector<std::pair<Ob
 
 // Only frontiers whose resolved origin changes need local compensation. Deeper
 // descendants keep their local values, including below nonspatial parents.
-Result<std::vector<std::pair<ObjectId, Trs>>> preserve_space(detail::SpaceGraph& before, detail::SpaceGraph& candidate,
-                                                             std::span<const ObjectRoot> affected, ReparentRule rule) {
-    std::vector<std::pair<ObjectId, Trs>> changes;
+Result<Array<std::pair<ObjectId, Trs>>> preserve_space(detail::SpaceGraph& before, detail::SpaceGraph& candidate,
+                                                       Span<const ObjectRoot> affected, ReparentRule rule) {
+    Array<std::pair<ObjectId, Trs>> changes;
     for (const auto& root : affected) {
         ATELIER_TRY_BIND(value, candidate.node(root.id()));
         if (!(*value)->spatial)
@@ -517,7 +518,7 @@ Result<std::vector<std::pair<ObjectId, Trs>>> preserve_space(detail::SpaceGraph&
                 ATELIER_TRY_BIND(local, relative_transform(*original, *origin, (*value)->local.scale));
                 (*value)->local = *local;
                 candidate.invalidate();
-                changes.emplace_back(root.id(), *local);
+                changes.emplace(root.id(), *local);
             }
         }
         ATELIER_TRY_BIND(valid, candidate.matrix(root.id()));
@@ -594,12 +595,12 @@ Result<void> World::remove_transform(ObjectId object) {
         }
     }
     ATELIER_TRY_BIND(all, detail::subtree(runtime(), root));
-    std::vector<ObjectId> candidates;
+    Array<ObjectId> candidates;
     for (const auto& item : *all)
-        candidates.push_back(item.id());
+        candidates.add(item.id());
     if (data->world)
         for (const auto& member : impl_->members)
-            candidates.push_back(member.id());
+            candidates.add(member.id());
     detail::SpaceGraph candidate{runtime()};
     ATELIER_TRY_BIND(parent, parent_entity(runtime(), object));
     // Removing space also repairs an expired former origin. Its old matrix is
@@ -627,7 +628,7 @@ Result<void> World::remove_transform(ObjectId object) {
     });
 }
 
-Result<Commit> World::set_space_reference(ObjectId object, std::optional<ObjectId> origin, ReparentRule rule) {
+Result<Commit> World::set_space_reference(ObjectId object, Optional<ObjectId> origin, ReparentRule rule) {
     ATELIER_TRY(impl_->admit());
     if (rule != ReparentRule::keep_local && rule != ReparentRule::keep_world)
         return error(ErrorCode::argument_mismatch, "Unknown reparent rule.");
@@ -680,21 +681,21 @@ Result<Commit> World::set_space_reference(ObjectId object, std::optional<ObjectI
     return Commit{true, {}};
 }
 
-Result<void> World::apply_simulation_transforms(std::span<const SimulationPose> poses,
-                                                std::vector<std::pair<ObjectId, Trs>>* written) {
+Result<void> World::apply_simulation_transforms(Span<const SimulationPose> poses,
+                                                Array<std::pair<ObjectId, Trs>>* written) {
     return impl_->apply_poses(poses, DiagnosticPhase::physics, written);
 }
 
-Result<void> World::Impl::apply_poses(std::span<const SimulationPose> poses, DiagnosticPhase phase,
-                                      std::vector<std::pair<ObjectId, Trs>>* written) {
+Result<void> World::Impl::apply_poses(Span<const SimulationPose> poses, DiagnosticPhase phase,
+                                      Array<std::pair<ObjectId, Trs>>* written) {
     ATELIER_TRY(admit());
     if (!running)
         return error(ErrorCode::busy, "Simulation writes require a running World.");
     // A rejected pose is reported and excluded; conversion then restarts so no
     // retained pose is expressed relative to a rejected parent's target.
-    std::vector<bool> rejected(poses.size());
+    BitVector rejected(poses.size());
     const auto reject = [&](std::size_t i, const Error& failure) {
-        rejected[i] = true;
+        rejected.set(i);
         return contain(failure, DiagnosticKind::command_rejected, phase, poses[i].entity, poses[i].entity, {},
                        Severity::warning);
     };
@@ -723,7 +724,7 @@ Result<void> World::Impl::apply_poses(std::span<const SimulationPose> poses, Dia
         }
         // Only a pose below another pose of this batch needs that one's target as
         // its origin; the others use the current parent matrix of this pass.
-        std::optional<detail::SpaceGraph> candidate;
+        Optional<detail::SpaceGraph> candidate;
         auto& locals = pose_locals;
         locals.clear();
         locals.reserve(poses.size());
@@ -767,7 +768,7 @@ Result<void> World::Impl::apply_poses(std::span<const SimulationPose> poses, Dia
                 restart = true;
                 continue;
             }
-            locals.emplace_back(pose.entity, *local);
+            locals.emplace(pose.entity, *local);
         }
         if (!restart) {
             ATELIER_TRY(publish_transforms(runtime, locals));
@@ -795,7 +796,7 @@ Result<Commit> World::reparent(ObjectId object, ObjectId parent, ReparentRule ru
         return Commit{};
     ObjectId root_before{};
     if (parent == ObjectId{} && data->world) {
-        std::vector<ObjectId> roots;
+        Array<ObjectId> roots;
         std::size_t old_index{};
         for (std::size_t i = 0; i < state.members.size(); i += state.states[i].size) {
             const auto id = state.members[i].id();
@@ -803,7 +804,7 @@ Result<Commit> World::reparent(ObjectId object, ObjectId parent, ReparentRule ru
                 old_index = roots.size();
                 continue;
             }
-            roots.push_back(id);
+            roots.add(id);
         }
         const auto destination = index == append ? roots.size() : index;
         if (destination > roots.size())
@@ -822,13 +823,13 @@ Result<Commit> World::reparent(ObjectId object, ObjectId parent, ReparentRule ru
     for (const auto& root : *owned)
         if (root.id() == parent)
             return error(ErrorCode::invalid_member, "Composition reparent would create a cycle.");
-    std::vector<bool> eligibility;
+    BitVector eligibility;
     eligibility.reserve(owned->size());
     for (const auto& root : *owned) {
         ATELIER_TRY_BIND(active, effective_enabled(runtime(), root.id()));
-        eligibility.push_back(*active);
+        eligibility.add(*active);
     }
-    std::vector<std::pair<ObjectId, Trs>> transforms;
+    Array<std::pair<ObjectId, Trs>> transforms;
     // Detached keep-local composition can precede its final spatial plans.
     // World publication checks that complete graph; keep-world must evaluate
     // the current and prospective matrices now to compute local compensation.
@@ -844,11 +845,11 @@ Result<Commit> World::reparent(ObjectId object, ObjectId parent, ReparentRule ru
     ObjectId next_sibling{};
     if (data->world && parent != ObjectId{}) {
         ATELIER_TRY_BIND(siblings, children(runtime(), parent));
-        std::vector<ObjectId> others;
+        Array<ObjectId> others;
         others.reserve(siblings->size());
         for (const auto& child : *siblings)
             if (child.id() != object)
-                others.push_back(child.id());
+                others.add(child.id());
         const auto at = index == append ? others.size() : index;
         if (at < others.size())
             next_sibling = others[at];
@@ -890,7 +891,7 @@ Result<Commit> World::reparent(ObjectId object, ObjectId parent, ReparentRule ru
         return state.finish(true, changed.error());
     if (!data->world)
         return Commit{true, {}};
-    std::optional<Error> failure;
+    Optional<Error> failure;
     if (state.running) {
         for (std::size_t i = owned->size(); i-- > 0;) {
             auto active = effective_enabled(runtime(), (*owned)[i].id());
@@ -925,36 +926,36 @@ Result<Commit> World::reparent(ObjectId object, ObjectId parent, ReparentRule ru
 
 Result<Commit> World::attach(ObjectId object, std::size_t index, ObjectId parent) {
     const EntityAttachment attachment{object, parent, index};
-    return attach_batch(std::span<const EntityAttachment>{&attachment, 1});
+    return attach_batch(Span<const EntityAttachment>{&attachment, 1});
 }
 
-Result<Commit> World::attach_batch(std::span<const ObjectId> roots, std::size_t index, ObjectId parent) {
-    std::vector<EntityAttachment> attachments;
+Result<Commit> World::attach_batch(Span<const ObjectId> roots, std::size_t index, ObjectId parent) {
+    Array<EntityAttachment> attachments;
     attachments.reserve(roots.size());
     for (const auto object : roots)
-        attachments.push_back({object, parent, index});
-    return attach_batch(std::span<const EntityAttachment>{attachments});
+        attachments.add({object, parent, index});
+    return attach_batch(Span<const EntityAttachment>{attachments});
 }
 
 namespace {
 struct AttachmentGraph {
     detail::SpaceGraph space;
 
-    std::vector<ObjectRoot> incoming;
+    Array<ObjectRoot> incoming;
 
-    std::vector<ObjectRoot> capabilities;
+    Array<ObjectRoot> capabilities;
 
-    std::vector<std::pair<std::size_t, std::size_t>> ranges;
+    Array<std::pair<std::size_t, std::size_t>> ranges;
 
     explicit AttachmentGraph(Runtime& runtime) : space(runtime) {}
 };
 
-Result<AttachmentGraph> prepare_attachment_graph(World& world, std::span<const EntityAttachment> attachments,
-                                                 std::span<const SpaceReference> spaces) {
+Result<AttachmentGraph> prepare_attachment_graph(World& world, Span<const EntityAttachment> attachments,
+                                                 Span<const SpaceReference> spaces) {
     auto& state = Access::state(world);
     auto& runtime = world.runtime();
     AttachmentGraph result{runtime};
-    Map<ObjectId, std::optional<ObjectId>> origins;
+    Map<ObjectId, Optional<ObjectId>> origins;
     origins.reserve(spaces.size());
     Map<ObjectId, std::size_t> parent_sizes;
     for (const auto& plan : spaces)
@@ -982,7 +983,7 @@ Result<AttachmentGraph> prepare_attachment_graph(World& world, std::span<const E
         if (*previous != ObjectId{})
             return error(ErrorCode::invalid_member, "Attach requires detached composition roots.");
         ATELIER_TRY_BIND(tree, detail::subtree(runtime, attachment.entity));
-        result.ranges.emplace_back(result.incoming.size(), tree->size());
+        result.ranges.emplace(result.incoming.size(), tree->size());
         for (auto& root : *tree) {
             if (!ids.add(root.id()))
                 return error(ErrorCode::invalid_member, "Attach contains overlapping subtrees.");
@@ -992,9 +993,9 @@ Result<AttachmentGraph> prepare_attachment_graph(World& world, std::span<const E
             ATELIER_TRY_BIND(group, components(runtime, root.id()));
             ATELIER_TRY(detail::validate_tree(runtime, root.id(), *group));
             for (auto& capability : *group)
-                result.capabilities.push_back(std::move(capability));
+                result.capabilities.add(std::move(capability));
             ATELIER_TRY_BIND(parent, parent_entity(runtime, root.id()));
-            std::optional<ObjectId> origin;
+            Optional<ObjectId> origin;
             const auto* planned = origins.find(root.id());
             if (planned)
                 origin = *planned;
@@ -1015,7 +1016,7 @@ Result<AttachmentGraph> prepare_attachment_graph(World& world, std::span<const E
             if (planned && !node->spatial)
                 return error(ErrorCode::invalid_member, "Spatial reference plan requires an Entity Transform.");
             result.space.nodes.emplace(root.id(), *node);
-            result.incoming.push_back(std::move(root));
+            result.incoming.add(std::move(root));
         }
     }
     for (const auto [object, origin] : origins) {
@@ -1033,21 +1034,21 @@ Result<AttachmentGraph> prepare_attachment_graph(World& world, std::span<const E
 }
 }
 
-Result<std::vector<std::pair<ObjectId, math::Matrix4>>>
-World::attachment_world_matrices(std::span<const EntityAttachment> attachments,
-                                 std::span<const SpaceReference> spaces) const {
+Result<Array<std::pair<ObjectId, math::Matrix4>>>
+World::attachment_world_matrices(Span<const EntityAttachment> attachments,
+                                 Span<const SpaceReference> spaces) const {
     ATELIER_TRY(impl_->admit(false));
     ATELIER_TRY_BIND(graph, prepare_attachment_graph(impl_->world, attachments, spaces));
-    std::vector<std::pair<ObjectId, math::Matrix4>> matrices;
+    Array<std::pair<ObjectId, math::Matrix4>> matrices;
     for (const auto& root : graph->incoming) {
         if (const auto* at = graph->space.matrices.find(root.id()))
-            matrices.emplace_back(root.id(), *at);
+            matrices.emplace(root.id(), *at);
     }
     return matrices;
 }
 
-Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments,
-                                   std::span<const SpaceReference> spaces) {
+Result<Commit> World::attach_batch(Span<const EntityAttachment> attachments,
+                                   Span<const SpaceReference> spaces) {
     auto& state = *impl_;
     ATELIER_TRY(state.admit());
     if (attachments.empty() && spaces.empty())
@@ -1058,13 +1059,13 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
     struct ParentPlan {
         ObjectId parent;
 
-        std::vector<ObjectRoot> existing;
+        Array<ObjectRoot> existing;
 
-        std::vector<std::pair<std::size_t, std::size_t>> insertions;
+        Array<std::pair<std::size_t, std::size_t>> insertions;
 
-        std::vector<ObjectReference> references;
+        Array<ObjectReference> references;
     };
-    std::vector<ParentPlan> parents;
+    Array<ParentPlan> parents;
     Map<ObjectId, std::size_t> parent_positions;
     for (std::size_t i = 0; i < attachments.size(); ++i) {
         const auto& attachment = attachments[i];
@@ -1074,24 +1075,24 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
             if (!at) {
                 ATELIER_TRY_BIND(existing, children(runtime(), parent));
                 const auto position = parents.size();
-                parents.push_back({parent, std::move(*existing), {}, {}});
+                parents.add({parent, std::move(*existing), {}, {}});
                 at = parent_positions.try_emplace(parent, position).value;
             }
             auto& plan = parents[*at];
             const auto index = attachment.index == append ? plan.existing.size() : attachment.index;
-            plan.insertions.emplace_back(index, i);
+            plan.insertions.emplace(index, i);
         }
     }
     // Derive arriving member state and final preorder positions before any
     // relation commits; the commit itself only moves prepared values.
     Map<ObjectId, std::size_t> arriving_index;
-    std::vector<Impl::MemberState> arriving;
+    Array<Impl::MemberState> arriving;
     arriving.reserve(incoming.size());
     arriving_index.reserve(incoming.size());
     for (std::size_t i = 0; i < incoming.size(); ++i) {
         const auto& node = candidate->space.nodes.at(incoming[i].id());
         ATELIER_TRY_BIND(derived, state.derive(incoming[i].id(), node.parent, node.origin.value_or(ObjectId{})));
-        arriving.push_back(std::move(*derived));
+        arriving.add(std::move(*derived));
         arriving_index.try_emplace(incoming[i].id(), i);
     }
     // Each incoming tree is preorder, so subtree sizes accumulate from its back.
@@ -1107,12 +1108,12 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
 
         std::size_t attachment;
     };
-    std::vector<Insertion> insertions;
+    Array<Insertion> insertions;
     insertions.reserve(attachments.size());
     for (std::size_t i = 0; i < attachments.size(); ++i) {
         const auto& attachment = attachments[i];
         if (attachment.parent == ObjectId{}) {
-            insertions.push_back({attachment.index == append ? state.members.size() : attachment.index, 0, i});
+            insertions.add({attachment.index == append ? state.members.size() : attachment.index, 0, i});
             continue;
         }
         ATELIER_TRY_BIND(parent, state.member(attachment.parent));
@@ -1124,7 +1125,7 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
         for (auto id = state.states[*parent].parent; id != ObjectId{};
              id = state.states[*state.positions.find(id)].parent)
             ++depth;
-        insertions.push_back({*at, depth, i});
+        insertions.add({*at, depth, i});
     }
     std::ranges::sort(insertions, [](const Insertion& left, const Insertion& right) {
         if (left.at != right.at)
@@ -1135,7 +1136,7 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
     });
     const auto total = state.members.size() + incoming.size();
     // Capacity is reserved so the in-place insertions inside the commit cannot fail.
-    std::vector<std::size_t> starts(attachments.size());
+    Array<std::size_t> starts(attachments.size());
     std::size_t inserted{};
     for (const auto& insertion : insertions) {
         starts[insertion.attachment] = insertion.at + inserted;
@@ -1154,31 +1155,31 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
         for (std::size_t index = 0; index <= plan.existing.size(); ++index) {
             while (insertion < plan.insertions.size() && plan.insertions[insertion].first == index) {
                 const auto attachment_index = plan.insertions[insertion++].second;
-                plan.references.push_back(incoming[tree_ranges[attachment_index].first].reference());
+                plan.references.add(incoming[tree_ranges[attachment_index].first].reference());
             }
             if (index < plan.existing.size())
-                plan.references.push_back(plan.existing[index].reference());
+                plan.references.add(plan.existing[index].reference());
         }
     }
-    std::vector<Member> arriving_members;
+    Array<Member> arriving_members;
     arriving_members.reserve(incoming.size());
     for (auto& root : incoming)
-        arriving_members.push_back({std::move(root)});
+        arriving_members.add({std::move(root)});
     // Borrow all native membership locations before the reference transaction.
     // The outer borrow keeps those addresses valid through the nonthrowing
     // membership writes and directory moves; no native pointer escapes it.
     auto published = runtime().with_native<Entity>(arriving_members.front().id(), [&](Entity&) -> Result<void> {
-        std::vector<Entity*> entities;
+        Array<Entity*> entities;
         entities.reserve(arriving_members.size());
         for (const auto& root : arriving_members) {
             auto borrowed = runtime().with_native<Entity>(root.id(), [&](Entity& entity) -> Result<void> {
-                entities.push_back(&entity);
+                entities.add(&entity);
                 return {};
             });
             if (!borrowed)
                 return borrowed;
         }
-        std::vector<ReferenceChange> relation_changes;
+        Array<ReferenceChange> relation_changes;
         relation_changes.reserve(parents.size() + attachments.size() + spaces.size());
         struct OriginFlags {
             Entity* entity;
@@ -1187,7 +1188,7 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
 
             bool world_origin;
         };
-        std::vector<OriginFlags> origin_flags;
+        Array<OriginFlags> origin_flags;
         origin_flags.reserve(spaces.size());
         for (const auto& plan : parents) {
             auto sequence = runtime().with_native<Entity>(plan.parent, [&](Entity& entity) {
@@ -1195,7 +1196,7 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
             });
             if (!sequence)
                 return std::unexpected(sequence.error());
-            relation_changes.push_back(SequenceSplice{*sequence, 0, plan.existing.size(), plan.references});
+            relation_changes.add(SequenceSplice{*sequence, 0, plan.existing.size(), plan.references});
         }
         for (const auto& attachment : attachments) {
             auto unchanged = runtime().with_native<Entity>(attachment.entity, [&](Entity& entity) -> Result<bool> {
@@ -1215,7 +1216,7 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
             });
             if (!slot)
                 return std::unexpected(slot.error());
-            relation_changes.push_back(ReferenceWrite{*slot, *reference});
+            relation_changes.add(ReferenceWrite{*slot, *reference});
         }
         for (const auto& plan : spaces) {
             ATELIER_TRY_BIND(reference, runtime().null_reference(types().entity, ValueForm::weak_reference));
@@ -1224,12 +1225,12 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
                 ATELIER_TRY(reference = runtime().observe(held->reference()));
             }
             auto slot = runtime().with_native<Entity>(plan.entity, [&](Entity& entity) {
-                origin_flags.push_back({&entity, plan.origin.has_value(), plan.origin && *plan.origin == ObjectId{}});
+                origin_flags.add({&entity, plan.origin.has_value(), plan.origin && *plan.origin == ObjectId{}});
                 return runtime().reference_field(plan.entity, Access::origin(entity));
             });
             if (!slot)
                 return std::unexpected(slot.error());
-            relation_changes.push_back(ReferenceWrite{*slot, *reference});
+            relation_changes.add(ReferenceWrite{*slot, *reference});
         }
         detail::FlagScope transition{state.transitioning};
         ATELIER_TRY(runtime().apply_reference_changes(relation_changes));
@@ -1242,13 +1243,14 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
         // Descending gaps leave earlier positions valid; equal gaps insert in reverse.
         for (auto it = insertions.rbegin(); it != insertions.rend(); ++it) {
             const auto [first, count] = tree_ranges[it->attachment];
-            const auto at = std::ptrdiff_t(it->at);
             const auto from = std::ptrdiff_t(first);
             const auto to = std::ptrdiff_t(first + count);
-            state.members.insert(state.members.begin() + at, std::make_move_iterator(arriving_members.begin() + from),
-                                 std::make_move_iterator(arriving_members.begin() + to));
-            state.states.insert(state.states.begin() + at, std::make_move_iterator(arriving.begin() + from),
-                                std::make_move_iterator(arriving.begin() + to));
+            state.members.insert_range(it->at,
+                                       std::ranges::subrange(std::make_move_iterator(arriving_members.begin() + from),
+                                                             std::make_move_iterator(arriving_members.begin() + to)));
+            state.states.insert_range(it->at,
+                                      std::ranges::subrange(std::make_move_iterator(arriving.begin() + from),
+                                                            std::make_move_iterator(arriving.begin() + to)));
         }
         state.reindex(insertions.front().at, total);
         for (std::size_t i = 0; i < attachments.size(); ++i) {
@@ -1262,11 +1264,11 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
     if (!published)
         return std::unexpected(published.error());
     // Callbacks observe arriving trees in final composition order.
-    std::vector<std::size_t> order;
+    Array<std::size_t> order;
     order.reserve(insertions.size());
     for (const auto& insertion : insertions)
-        order.push_back(insertion.attachment);
-    std::optional<Error> failure;
+        order.add(insertion.attachment);
+    Optional<Error> failure;
     for (const auto i : order)
         for (auto at = starts[i]; at < starts[i] + tree_ranges[i].second; ++at) {
             auto notified = state.notify(Lifecycle::attached, state.members[at].id());
@@ -1291,21 +1293,21 @@ Result<Commit> World::attach_batch(std::span<const EntityAttachment> attachments
 }
 
 Result<EntityRemoval> World::detach(ObjectId object) {
-    ATELIER_TRY_BIND(removed, detach_batch(std::span<const ObjectId>{&object, 1}));
+    ATELIER_TRY_BIND(removed, detach_batch(Span<const ObjectId>{&object, 1}));
     return std::move(removed->front());
 }
 
-Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId> roots) {
+Result<Array<EntityRemoval>> World::detach_batch(Span<const ObjectId> roots) {
     auto& state = *impl_;
     ATELIER_TRY(state.admit());
     if (roots.empty())
-        return std::vector<EntityRemoval>{};
+        return Array<EntityRemoval>{};
     struct ParentPlan {
         ObjectId parent;
 
-        std::vector<ObjectRoot> existing;
+        Array<ObjectRoot> existing;
 
-        std::vector<ObjectReference> references;
+        Array<ObjectReference> references;
     };
     struct Range {
         std::size_t at;
@@ -1314,11 +1316,11 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
 
         ObjectId parent;
     };
-    std::vector<ParentPlan> parents;
+    Array<ParentPlan> parents;
     Map<ObjectId, std::size_t> parent_positions;
-    std::vector<EntityRemoval> removals;
+    Array<EntityRemoval> removals;
     removals.reserve(roots.size());
-    std::vector<Range> ranges;
+    Array<Range> ranges;
     ranges.reserve(roots.size());
     Set<ObjectId> ids;
     Set<ObjectId> root_ids;
@@ -1339,7 +1341,7 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
             if (!plan) {
                 ATELIER_TRY_BIND(existing, children(runtime(), parent));
                 const auto position = parents.size();
-                parents.push_back({parent, std::move(*existing), {}});
+                parents.add({parent, std::move(*existing), {}});
                 plan = parent_positions.try_emplace(parent, position).value;
             }
             const auto& siblings = parents[*plan].existing;
@@ -1355,8 +1357,8 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
             ATELIER_TRY(state.composition_entity(id));
         }
         root_ids.add(object);
-        ranges.push_back({*at, count, parent});
-        removals.push_back(std::move(removal));
+        ranges.add({*at, count, parent});
+        removals.add(std::move(removal));
     }
     // Retained members must keep valid spatial targets. Departing objects keep
     // their authored weak origins even when Detached space cannot be evaluated;
@@ -1373,24 +1375,24 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
         plan.references.reserve(plan.existing.size());
         for (const auto& child : plan.existing)
             if (!root_ids.contains(child.id()))
-                plan.references.push_back(child.reference());
+                plan.references.add(child.reference());
     }
     ATELIER_TRY_BIND(null_parent, runtime().null_reference(types().entity, ValueForm::weak_reference));
     std::ranges::sort(ranges, {}, &Range::at);
-    std::vector<ObjectId> exiting;
+    Array<ObjectId> exiting;
     for (auto range = ranges.rbegin(); range != ranges.rend(); ++range)
         for (auto i = range->at + range->count; i-- > range->at;) {
             const auto& group = state.states[i].components;
             for (auto it = group.rbegin(); it != group.rend(); ++it)
-                exiting.push_back(it->id);
-            exiting.push_back(state.members[i].id());
+                exiting.add(it->id);
+            exiting.add(state.members[i].id());
         }
-    std::vector<Member> departed;
+    Array<Member> departed;
     departed.reserve(ids.size());
     for (const auto& range : ranges)
         for (auto i = range.at; i < range.at + range.count; ++i)
             state.cancel_tasks(state.members[i].id());
-    std::optional<Error> failure;
+    Optional<Error> failure;
     for (auto range = ranges.rbegin(); range != ranges.rend(); ++range) {
         auto ended = state.end(range->at, range->at + range->count);
         if (!failure)
@@ -1407,19 +1409,19 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
             }
     // All native locators and membership pointers stay within one outer borrow.
     auto published = runtime().with_native<Entity>(roots.front(), [&](Entity&) -> Result<void> {
-        std::vector<Entity*> entities;
+        Array<Entity*> entities;
         entities.reserve(ids.size());
         for (const auto& range : ranges)
             for (auto i = range.at; i < range.at + range.count; ++i) {
                 auto borrowed =
                     runtime().with_native<Entity>(state.members[i].id(), [&](Entity& entity) -> Result<void> {
-                        entities.push_back(&entity);
+                        entities.add(&entity);
                         return {};
                     });
                 if (!borrowed)
                     return borrowed;
             }
-        std::vector<ReferenceChange> changes;
+        Array<ReferenceChange> changes;
         changes.reserve(parents.size() + roots.size());
         for (const auto& plan : parents) {
             auto sequence = runtime().with_native<Entity>(plan.parent, [&](Entity& entity) {
@@ -1427,14 +1429,14 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
             });
             if (!sequence)
                 return std::unexpected(sequence.error());
-            changes.push_back(SequenceSplice{*sequence, 0, plan.existing.size(), plan.references});
+            changes.add(SequenceSplice{*sequence, 0, plan.existing.size(), plan.references});
         }
         for (const auto object : roots) {
             auto slot = runtime().with_native<Entity>(
                 object, [&](Entity& entity) { return runtime().reference_field(object, Access::parent(entity)); });
             if (!slot)
                 return std::unexpected(slot.error());
-            changes.push_back(ReferenceWrite{*slot, *null_parent});
+            changes.add(ReferenceWrite{*slot, *null_parent});
         }
         detail::FlagScope transition{state.transitioning};
         ATELIER_TRY(runtime().apply_reference_changes(changes));
@@ -1453,11 +1455,10 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
             const auto last = first + std::ptrdiff_t(range->count);
             for (auto it = first; it != last; ++it) {
                 state.positions.remove(it->id());
-                departed.push_back(std::move(*it));
+                departed.add(std::move(*it));
             }
-            state.members.erase(first, last);
-            state.states.erase(state.states.begin() + std::ptrdiff_t(range->at),
-                               state.states.begin() + std::ptrdiff_t(range->at + range->count));
+            state.members.remove_at(range->at, range->count);
+            state.states.remove_at(range->at, range->count);
         }
         state.reindex(ranges.front().at, state.members.size());
         for (const auto& range : ranges)
@@ -1483,24 +1484,24 @@ Result<std::vector<EntityRemoval>> World::detach_batch(std::span<const ObjectId>
 }
 
 Result<Commit> World::restore(const EntityRemoval& removal) {
-    return restore(std::span<const EntityRemoval>{&removal, 1});
+    return restore(Span<const EntityRemoval>{&removal, 1});
 }
 
-Result<Commit> World::restore(std::span<const EntityRemoval> removals) {
+Result<Commit> World::restore(Span<const EntityRemoval> removals) {
     ATELIER_TRY(impl_->admit());
-    std::vector<std::size_t> order;
+    Array<std::size_t> order;
     order.reserve(removals.size());
     for (std::size_t i = 0; i < removals.size(); ++i) {
         auto origin = removals[i].origin_.lock();
         if (!origin || !origin->open || origin != impl_->lifetime)
             return error(ErrorCode::invalid_member, "Removal does not belong to this open World's history.");
-        order.push_back(i);
+        order.add(i);
     }
     // Restore against the surviving pre-batch sequences. Earlier removals
     // collapsed their original positions; equal new anchors retain old order.
     std::stable_sort(order.begin(), order.end(),
                      [&](std::size_t left, std::size_t right) { return removals[left].index < removals[right].index; });
-    std::vector<EntityAttachment> attachments;
+    Array<EntityAttachment> attachments;
     attachments.reserve(removals.size());
     for (const auto i : order) {
         const auto& removal = removals[i];
@@ -1517,8 +1518,8 @@ Result<Commit> World::restore(std::span<const EntityRemoval> removals) {
                 return error(ErrorCode::invalid_member, "Removal positions are inconsistent.");
             preceding += count;
         }
-        attachments.push_back({removal.id(), removal.parent, original - preceding});
+        attachments.add({removal.id(), removal.parent, original - preceding});
     }
-    return attach_batch(std::span<const EntityAttachment>{attachments});
+    return attach_batch(Span<const EntityAttachment>{attachments});
 }
 }

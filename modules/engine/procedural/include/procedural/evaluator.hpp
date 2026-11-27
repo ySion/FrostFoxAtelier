@@ -1,10 +1,11 @@
 #pragma once
 
+#include "foundation/optional.hpp"
+#include "foundation/span.hpp"
 #include "procedural/graph.hpp"
 
 #include <chrono>
 #include <memory>
-#include <optional>
 
 namespace atelier::source {
 class Program;
@@ -43,11 +44,11 @@ struct AttributeBinding {
 
 struct NodeBindings {
     std::string_view mode;
-    std::vector<AttributeBinding> attributes;
+    Array<AttributeBinding> attributes;
 };
 
 struct NodeStatus {
-    std::optional<Error> error; // Set while the node or an input it reads fails.
+    Optional<Error> error; // Set while the node or an input it reads fails.
 
     ObjectId root_node{}; // Originating failed node in this graph when error is set.
 
@@ -58,7 +59,7 @@ struct NodeStatus {
 
     // The last actual node run, including argument setup and failures; empty if never run
     // or that run was unmeasured. Idle, cached and blocked nodes retain their previous time.
-    std::optional<std::chrono::nanoseconds> time;
+    Optional<std::chrono::nanoseconds> time;
 
     // Snapshot from the last actual Boolean invocation, including partial work on failure.
     std::shared_ptr<const BooleanStats> boolean_stats;
@@ -102,7 +103,7 @@ public:
     [[nodiscard]] std::shared_ptr<CachePool> cache_pool() const noexcept;
 
     // Supplies external Geometry inputs for `procedural.GraphInput` nodes when evaluating an AssetNode subgraph.
-    void set_external_inputs(std::span<const ExternalInput> inputs);
+    void set_external_inputs(Span<const ExternalInput> inputs);
 
     void clear_external_inputs() noexcept;
 
@@ -112,17 +113,17 @@ public:
     // context receive `*seed_override` without mutating the graph's authored seed or
     // overwriting last_valid_output().
     // Timing is opt-in diagnostics only: it neither changes keys nor forces nodes to run.
-    Result<void> evaluate(bool record_timings = false, std::optional<std::uint32_t> seed_override = {});
+    Result<void> evaluate(bool record_timings = false, Optional<std::uint32_t> seed_override = {});
 
     // Evaluates `node` and its upstream dependencies without changing output() or
     // last_valid_output(), so an editor can inspect a selected node independent of the display flag.
     Result<void> evaluate_node(ObjectId node, bool record_timings = false,
-                               std::optional<std::uint32_t> seed_override = {});
+                               Optional<std::uint32_t> seed_override = {});
 
     // Evaluates an explicit set of target nodes (e.g. ordered GraphOutput nodes) in one pass
     // without changing output() or last_valid_output().
-    Result<void> evaluate_targets(std::span<const ObjectId> targets, bool record_timings = false,
-                                  std::optional<std::uint32_t> seed_override = {});
+    Result<void> evaluate_targets(Span<const ObjectId> targets, bool record_timings = false,
+                                  Optional<std::uint32_t> seed_override = {});
 
     // The display node's first output when the latest evaluate() succeeded without display-chain
     // errors; null when the graph has no display node or the latest evaluation or display chain failed.
@@ -142,11 +143,11 @@ public:
     [[nodiscard]] bool has_display_node() const noexcept;
 
     // Root-cause error on the display chain when the latest evaluate() had a node failure.
-    [[nodiscard]] std::optional<Error> display_error() const;
+    [[nodiscard]] Optional<Error> display_error() const;
 
     // Deduplicated host resources read by the display node and its upstream chain on their
     // latest evaluations, including cached nodes and zero-instance MeshImport/variant reads.
-    [[nodiscard]] std::vector<Reference> display_dependencies() const;
+    [[nodiscard]] Array<Reference> display_dependencies() const;
 
     // Number of outputs produced by `node` on its latest successful evaluation, or 0 when
     // unevaluated, absent from the graph, or in an error state.
@@ -162,17 +163,17 @@ public:
     [[nodiscard]] Result<NodeBindings> inspect_bindings(ObjectId node);
 
     // Root-cause error on `node` or its upstream chain when its latest evaluation failed.
-    [[nodiscard]] std::optional<Error> target_error(ObjectId node) const;
+    [[nodiscard]] Optional<Error> target_error(ObjectId node) const;
 
     // Deduplicated host resources read by `targets` and their active upstream chains.
-    [[nodiscard]] std::vector<Reference> target_dependencies(std::span<const ObjectId> targets) const;
+    [[nodiscard]] Array<Reference> target_dependencies(Span<const ObjectId> targets) const;
 
     // Cooks the current inputs, then captures all outputs and their effective resource dependencies.
     [[nodiscard]] Result<std::shared_ptr<const FrozenOutput>>
-    freeze_snapshot(ObjectId node, std::optional<std::uint32_t> seed_override = {});
+    freeze_snapshot(ObjectId node, Optional<std::uint32_t> seed_override = {});
 
     // Session freezes that cut off upstream evaluation on the current display branch.
-    [[nodiscard]] std::vector<ObjectId> display_freezes() const;
+    [[nodiscard]] Array<ObjectId> display_freezes() const;
 
     // Null for nodes not in the graph at the last evaluation.
     [[nodiscard]] const NodeStatus* status(ObjectId node) const;

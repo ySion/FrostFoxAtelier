@@ -1,11 +1,12 @@
 #pragma once
 
+#include "foundation/span.hpp"
+
 #include <array>
 #include <chrono>
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
-#include <span>
 #include <string_view>
 
 // Always-on frame phase timing. Modules declare their own phase markers; the
@@ -49,7 +50,7 @@ private:
 
     friend class Scope;
 
-    friend void install(std::initializer_list<std::span<Marker* const>>) noexcept;
+    friend void install(std::initializer_list<Span<Marker* const>>) noexcept;
 
     friend void record(const Marker&, std::chrono::nanoseconds, std::uint32_t) noexcept;
 
@@ -72,10 +73,10 @@ inline constinit Marker frame{"frame", "Frame", nullptr};
 // These are compiled-in declarations, not runtime input. A second call, null or
 // repeated marker, duplicate key, parent not registered earlier, or more than
 // `capacity` markers is contract-fatal, with no rollback or retry.
-void install(std::initializer_list<std::span<Marker* const>> modules) noexcept;
+void install(std::initializer_list<Span<Marker* const>> modules) noexcept;
 
 // Installed markers in index order (frame first); empty before install().
-[[nodiscard]] std::span<const Marker* const> catalog() noexcept;
+[[nodiscard]] Span<const Marker* const> catalog() noexcept;
 
 [[nodiscard]] std::size_t depth(const Marker&) noexcept;
 

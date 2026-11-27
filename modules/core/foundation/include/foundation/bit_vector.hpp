@@ -45,6 +45,8 @@ public:
         std::swap(size_, other.size_);
     }
 
+    friend void swap(BitVector& left, BitVector& right) noexcept { left.swap(right); }
+
     [[nodiscard]] std::size_t size() const noexcept { return size_; }
 
     [[nodiscard]] bool empty() const noexcept { return size_ == 0; }

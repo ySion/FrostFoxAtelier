@@ -27,7 +27,8 @@ atelier::Result<int> host_main(int argc, wchar_t** argv, atelier::application::S
         return 0;
     }
     if (argc >= 2 && std::wstring_view(argv[1]) == L"--run-project")
-        return atelier::application::run_project_command({argv + 2, static_cast<std::size_t>(argc - 2)});
+        return atelier::application::run_project_command(
+            atelier::Span<wchar_t*>{argv + 2, static_cast<std::size_t>(argc - 2)});
     auto storage = atelier::control::default_directory();
     if (!storage)
         return std::unexpected(atelier::Error{atelier::ErrorCode::invalid_storage, storage.error().message});
@@ -35,8 +36,8 @@ atelier::Result<int> host_main(int argc, wchar_t** argv, atelier::application::S
     bool no_control{};
     bool no_activate{};
     bool gpu_validation{};
-    std::optional<atelier::ui::PixelExtent> initial_client;
-    std::optional<std::filesystem::path> profile_output;
+    atelier::Optional<atelier::ui::PixelExtent> initial_client;
+    atelier::Optional<std::filesystem::path> profile_output;
     bool profile_reload{};
     const auto dimension = [](std::wstring_view value) -> atelier::Result<std::uint32_t> {
         std::uint32_t pixels{};
@@ -49,7 +50,7 @@ atelier::Result<int> host_main(int argc, wchar_t** argv, atelier::application::S
             return invalid_argument("--client-size requires two integers in 1..32768 physical pixels.");
         return pixels;
     };
-    std::vector<wchar_t*> arguments{argv[0]};
+    atelier::Array<wchar_t*> arguments{argv[0]};
     for (int i = 1; i < argc; ++i) {
         const std::wstring_view option(argv[i]);
         if (option == L"--no-control")
@@ -79,7 +80,7 @@ atelier::Result<int> host_main(int argc, wchar_t** argv, atelier::application::S
                 return invalid_argument("Missing control directory");
             control_directory = argv[i];
         } else
-            arguments.push_back(argv[i]);
+            arguments.add(argv[i]);
     }
     argc = static_cast<int>(arguments.size());
     argv = arguments.data();
@@ -156,9 +157,9 @@ atelier::Result<int> host_main(int argc, wchar_t** argv, atelier::application::S
     return 0;
 }
 
-atelier::Result<std::vector<wchar_t*>> logging_arguments(int argc, wchar_t** argv,
-                                                         atelier::logging::RunOptions& options) {
-    std::vector<wchar_t*> arguments{argv[0]};
+atelier::Result<atelier::Array<wchar_t*>> logging_arguments(int argc, wchar_t** argv,
+                                                            atelier::logging::RunOptions& options) {
+    atelier::Array<wchar_t*> arguments{argv[0]};
     for (int i = 1; i < argc; ++i) {
         const std::wstring_view option = argv[i];
         if (option == L"--log-directory" || option == L"--parent-run") {
@@ -173,7 +174,7 @@ atelier::Result<std::vector<wchar_t*>> logging_arguments(int argc, wchar_t** arg
                 options.parent_run_id = std::move(*converted);
             }
         } else
-            arguments.push_back(argv[i]);
+            arguments.add(argv[i]);
     }
     options.process_name =
         arguments.size() >= 2 && std::wstring_view(arguments[1]) == L"--run-project" ? "runner" : "editor";
@@ -208,7 +209,7 @@ int wmain(int argc, wchar_t** argv) {
         if (entry) {
             entry->severity = log::Severity::critical;
             if (const auto field = recovery.diagnostic_field())
-                entry->fields.push_back(*field);
+                entry->fields.add(*field);
         }
         if (!entry || log::submit(std::move(*entry)).status != log::SubmitStatus::accepted)
             std::fprintf(stderr, "Host failure: %s\n", hosted.error().message.c_str());

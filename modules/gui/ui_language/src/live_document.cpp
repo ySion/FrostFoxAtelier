@@ -13,7 +13,7 @@ std::string utf8(const std::filesystem::path& path) {
     return {value.begin(), value.end()};
 }
 
-std::optional<std::string> read_source(const std::filesystem::path& path, std::uintmax_t size) {
+Optional<std::string> read_source(const std::filesystem::path& path, std::uintmax_t size) {
     std::ifstream file(path, std::ios::binary);
     std::string bytes(static_cast<std::size_t>(size), '\0');
     if (!file || !file.read(bytes.data(), static_cast<std::streamsize>(size)) ||
@@ -25,7 +25,7 @@ std::optional<std::string> read_source(const std::filesystem::path& path, std::u
 }
 
 LiveDocument::LiveDocument(Runtime& runtime, std::filesystem::path path, ui::ControlKey& keys,
-                           std::optional<std::string> recovery)
+                           Optional<std::string> recovery)
     : runtime_(runtime), path_(std::move(path)), next_key_(keys), recovery_source_(std::move(recovery)) {}
 
 void LiveDocument::recover_initial() {
@@ -37,8 +37,7 @@ void LiveDocument::recover_initial() {
         return;
     }
     candidate_ = std::move(*fallback);
-    candidate_source_ = std::move(recovery_source_);
-    recovery_source_.reset();
+    candidate_source_ = recovery_source_.take();
     candidate_failed_ = false;
 }
 
@@ -197,8 +196,8 @@ void LiveDocument::install(InFlight& job) {
     diagnostic_.clear();
 }
 
-Result<bool> LiveDocument::append(std::string_view name, ui::ControlKey parent, std::span<const KeyBinding> keys,
-                                  std::span<const InputValue> inputs, ControlOutput output) {
+Result<bool> LiveDocument::append(std::string_view name, ui::ControlKey parent, Span<const KeyBinding> keys,
+                                  Span<const InputValue> inputs, ControlOutput output) {
     const auto& module = candidate_ ? candidate_ : active_;
     const auto report = [&](const Error& error) -> Result<bool> {
         diagnostic_ = error.message;
@@ -218,10 +217,10 @@ Result<bool> LiveDocument::append(std::string_view name, ui::ControlKey parent, 
     if (!found) {
         if (!module->find(name))
             return report(Error{ErrorCode::invalid_definition, "UI module is missing component: " + std::string(name)});
-        found = regions_.try_emplace(std::string(name), Region{parent, {keys.begin(), keys.end()}, {}, {}, false}).value;
+        found = regions_.try_emplace(std::string(name), Region{parent, Array<KeyBinding>{keys}, {}, {}, false}).value;
     }
     auto& region = *found;
-    if (region.parent != parent || !std::ranges::equal(region.keys, keys)) {
+    if (region.parent != parent || region.keys.view() != keys) {
         if (region.instance) {
             region.instance->reject_controls(static_cast<bool>(candidate_));
             const auto controls = region.instance->controls();
@@ -241,7 +240,7 @@ Result<bool> LiveDocument::append(std::string_view name, ui::ControlKey parent, 
             auto instance = Instance::create(module->find(name), parent, next_key_, keys, inputs);
             if (!instance) {
                 if (!candidate_)
-                    region.rejected_inputs = std::vector<InputValue>(inputs.begin(), inputs.end());
+                    region.rejected_inputs = Array<InputValue>{inputs};
                 return report(instance.error());
             }
             region.instance = std::move(*instance);
@@ -249,7 +248,7 @@ Result<bool> LiveDocument::append(std::string_view name, ui::ControlKey parent, 
             auto updated = region.instance->update(blocked ? region.instance->inputs() : inputs, module->find(name));
             if (!updated) {
                 if (!candidate_)
-                    region.rejected_inputs = std::vector<InputValue>(inputs.begin(), inputs.end());
+                    region.rejected_inputs = Array<InputValue>{inputs};
                 region.instance->reject_controls(static_cast<bool>(candidate_));
                 const auto controls = region.instance->controls();
                 output.append(controls, 0);
@@ -311,7 +310,7 @@ bool LiveDocument::reject_controls(std::string message) {
         if (!region.accepted) {
             if (!source) {
                 const auto values = region.instance->inputs();
-                region.rejected_inputs = std::vector<InputValue>(values.begin(), values.end());
+                region.rejected_inputs = Array<InputValue>{values};
             }
             region.instance.reset();
             continue;
@@ -319,7 +318,7 @@ bool LiveDocument::reject_controls(std::string message) {
         if (source || region.instance->has_pending()) {
             if (!source) {
                 const auto values = region.instance->inputs();
-                region.rejected_inputs = std::vector<InputValue>(values.begin(), values.end());
+                region.rejected_inputs = Array<InputValue>{values};
             }
             region.instance->reject_controls(source);
             if (!source &&
@@ -349,7 +348,7 @@ void LiveDocument::commit_controls() {
             }
     if (candidate_) {
         active_ = std::move(candidate_);
-        active_source_ = std::move(candidate_source_);
+        active_source_ = candidate_source_.take();
         recovery_source_.reset();
         ++revision_;
         if (timing_ && timing_->compile_begin != Clock::time_point{}) {
@@ -360,8 +359,8 @@ void LiveDocument::commit_controls() {
     pending_submission_ = false;
 }
 
-std::optional<Statistics> LiveDocument::statistics(std::string_view name) const {
+Optional<Statistics> LiveDocument::statistics(std::string_view name) const {
     const auto* region = regions_.find(name);
-    return !region || !region->instance ? std::nullopt : std::optional{region->instance->statistics()};
+    return !region || !region->instance ? Optional<Statistics>{} : Optional{region->instance->statistics()};
 }
 }

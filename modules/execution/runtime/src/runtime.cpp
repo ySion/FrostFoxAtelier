@@ -1,5 +1,6 @@
 #include "foundation/inline_array.hpp"
 #include "foundation/map.hpp"
+#include "foundation/scope_exit.hpp"
 #include "foundation/sparse_array.hpp"
 #include "foundation/string.hpp"
 #include "runtime/runtime.hpp"
@@ -174,7 +175,7 @@ Result<std::size_t> aligned_size(std::size_t value, std::size_t alignment) {
     return (value + alignment - 1) & ~(alignment - 1);
 }
 
-Result<void> validate_storage(const TypeInfo& type, std::span<const std::byte> storage) {
+Result<void> validate_storage(const TypeInfo& type, Span<const std::byte> storage) {
     if (!storage.data() || storage.size() < type.size ||
         reinterpret_cast<std::uintptr_t>(storage.data()) % type.alignment != 0) {
         return failure(ErrorCode::invalid_storage, "Value storage is null, too small or misaligned.");
@@ -201,7 +202,7 @@ namespace detail {
 struct ValueRootStorage {
     TypeId type;
 
-    std::span<const std::byte> storage;
+    Span<const std::byte> storage;
 };
 
 struct RootState {
@@ -413,12 +414,12 @@ struct Runtime::Impl {
 
         const Type* type{};
 
-        std::vector<Scalar> default_leaves{};
+        Array<Scalar> default_leaves{};
 
         // Only fields with hard bounds allocate; the stable address backs Address and leaf pointers.
         std::unique_ptr<const FieldRange> hard{};
 
-        std::optional<std::string> default_text{};
+        Optional<std::string> default_text{};
     };
 
     // A hard-bounded scalar inside a record or object, reached through storage indices
@@ -426,11 +427,11 @@ struct Runtime::Impl {
     // With `array` set, `path` reaches an Array: `range` then bounds each scalar or vector
     // element, otherwise every element applies its own type's leaves.
     struct ConstrainedLeaf {
-        std::vector<std::uint32_t> path;
+        Array<std::uint32_t> path;
 
         const FieldRange* range;
 
-        std::vector<FieldId> field;
+        Array<FieldId> field;
 
         const Type* array{};
     };
@@ -438,9 +439,9 @@ struct Runtime::Impl {
     // A type validator for the value at `path`: an inline record, a base segment or the type
     // itself. With `array` set, every element runs its own type's validators instead.
     struct ValidatorStep {
-        std::vector<std::uint32_t> path;
+        Array<std::uint32_t> path;
 
-        std::vector<FieldId> field;
+        Array<FieldId> field;
 
         Result<void> (*validate)(const void*) noexcept;
 
@@ -467,7 +468,7 @@ struct Runtime::Impl {
         std::size_t base_root_offset{};
 
         // Own declarations, including hidden names, for inherited conflict checks.
-        std::vector<std::string> member_names;
+        Array<std::string> member_names;
 
         // An internal leading base segment reuses layout/lifetime/trace walkers.
         // Native constructors still own their complete C++ object themselves.
@@ -737,7 +738,7 @@ struct Runtime::Impl {
 
         const std::size_t base{stack.size()};
 
-        ~WalkScope() { stack.resize(base); }
+        ~WalkScope() { stack.truncate(base); }
     };
 
     Impl() {
@@ -1059,7 +1060,7 @@ struct Runtime::Impl {
         return storage;
     }
 
-    static void* leaf_storage(const Type& record, void* storage, std::span<const std::uint32_t> path) noexcept {
+    static void* leaf_storage(const Type& record, void* storage, Span<const std::uint32_t> path) noexcept {
         for (const auto* type = &record; const auto index : path) {
             const auto& access = type->fields[index];
             storage = access.address ? access.address(storage) : static_cast<std::byte*>(storage) + access.offset;
@@ -1076,7 +1077,7 @@ struct Runtime::Impl {
         return owner.member_names[member.index_ - (owner.base && owner.base->info.id != object ? 1 : 0)];
     }
 
-    void append_path(std::string& text, std::span<const FieldId> path) const {
+    void append_path(std::string& text, Span<const FieldId> path) const {
         for (const auto id : path) {
             auto name = member_name(id);
             if (name.front() != '[')
@@ -1086,7 +1087,7 @@ struct Runtime::Impl {
     }
 
     // Names the value as validation failures do: "Type.field[i].leaf: reason".
-    auto located(ErrorCode code, TypeId root, std::span<const FieldId> path, std::span<const FieldId> below,
+    auto located(ErrorCode code, TypeId root, Span<const FieldId> path, Span<const FieldId> below,
                  std::string_view reason) const {
         std::string text = lookup(root)->info.name;
         append_path(text, path);
@@ -1109,12 +1110,12 @@ struct Runtime::Impl {
     // Visits every hard-bounded scalar leaf with its range, expanding Array entries per
     // element, until `visit` returns false. A non-null `field` then holds that leaf's path.
     template <class Visit>
-    bool each_bounded(const Type& type, void* storage, std::vector<FieldId>* field, Visit& visit) const {
+    bool each_bounded(const Type& type, void* storage, Array<FieldId>* field, Visit& visit) const {
         for (const auto& leaf : type.constrained_leaves) {
             auto* data = static_cast<std::byte*>(leaf_storage(type, storage, leaf.path));
             const auto depth = field ? field->size() : 0;
             if (field)
-                field->insert(field->end(), leaf.field.begin(), leaf.field.end());
+                field->append(leaf.field);
             bool proceed = true;
             if (!leaf.array)
                 proceed = visit(*leaf.range, static_cast<void*>(data));
@@ -1125,7 +1126,7 @@ struct Runtime::Impl {
                 for (std::size_t i = 0; proceed && i != count; ++i) {
                     auto* item = items + i * element.info.size;
                     if (named)
-                        named->push_back(FieldId{leaf.array->info.id, static_cast<std::uint32_t>(i)});
+                        named->add(FieldId{leaf.array->info.id, static_cast<std::uint32_t>(i)});
                     if (!leaf.range)
                         proceed = each_bounded(element, item, named, visit);
                     else if (element.info.kind == TypeKind::scalar)
@@ -1134,20 +1135,20 @@ struct Runtime::Impl {
                         for (std::uint32_t component = 0; proceed && component != element.info.math.components();
                              ++component) {
                             if (named)
-                                named->push_back(FieldId{element.info.id, component});
+                                named->add(FieldId{element.info.id, component});
                             proceed = visit(*leaf.range,
                                             static_cast<void*>(item + component * element.info.math.scalar_size()));
                             if (proceed && named)
-                                named->pop_back();
+                                named->pop();
                         }
                     if (proceed && named)
-                        named->pop_back();
+                        named->pop();
                 }
             }
             if (!proceed)
                 return false;
             if (field)
-                field->resize(depth);
+                field->truncate(depth);
         }
         return true;
     }
@@ -1155,12 +1156,12 @@ struct Runtime::Impl {
     // Runs validators in post-order, expanding Array entries per element, until `visit`
     // returns false; a non-null `field` then holds the failing value's path.
     template <class Visit>
-    bool each_validator(const Type& type, void* storage, std::vector<FieldId>* field, Visit& visit) const {
+    bool each_validator(const Type& type, void* storage, Array<FieldId>* field, Visit& visit) const {
         for (const auto& step : type.validators) {
             auto* data = leaf_storage(type, storage, step.path);
             const auto depth = field ? field->size() : 0;
             if (field)
-                field->insert(field->end(), step.field.begin(), step.field.end());
+                field->append(step.field);
             bool proceed = true;
             if (!step.array)
                 proceed = visit(step.validate, data);
@@ -1170,16 +1171,16 @@ struct Runtime::Impl {
                 auto* named = count > selectable_elements ? nullptr : field;
                 for (std::size_t i = 0; proceed && i != count; ++i) {
                     if (named)
-                        named->push_back(FieldId{step.array->info.id, static_cast<std::uint32_t>(i)});
+                        named->add(FieldId{step.array->info.id, static_cast<std::uint32_t>(i)});
                     proceed = each_validator(element, items + i * element.info.size, named, visit);
                     if (proceed && named)
-                        named->pop_back();
+                        named->pop();
                 }
             }
             if (!proceed)
                 return false;
             if (field)
-                field->resize(depth);
+                field->truncate(depth);
         }
         return true;
     }
@@ -1209,8 +1210,8 @@ struct Runtime::Impl {
 
     // After constrain_value rejected a value: the selectors from `type` down to its first NaN
     // or infinite leaf. Only failures pay for the path.
-    std::vector<FieldId> rejected_leaf(const Type& type, const FieldRange* range, void* storage) const {
-        std::vector<FieldId> field;
+    Array<FieldId> rejected_leaf(const Type& type, const FieldRange* range, void* storage) const {
+        Array<FieldId> field;
         if (range && type.info.kind == TypeKind::array) {
             const auto& element = *lookup(*type.info.element);
             const auto [items, count] = elements(type, storage);
@@ -1219,9 +1220,9 @@ struct Runtime::Impl {
                 if (constrain_value(element, range, item, false))
                     continue;
                 if (i < selectable_elements) {
-                    field.push_back(FieldId{type.info.id, static_cast<std::uint32_t>(i)});
+                    field.add(FieldId{type.info.id, static_cast<std::uint32_t>(i)});
                     const auto below = rejected_leaf(element, range, item);
-                    field.insert(field.end(), below.begin(), below.end());
+                    field.append(below);
                 }
                 break;
             }
@@ -1231,7 +1232,7 @@ struct Runtime::Impl {
                     if (!constrain_storage(*range,
                                            static_cast<std::byte*>(storage) + component * type.info.math.scalar_size(),
                                            false)) {
-                        field.push_back(FieldId{type.info.id, component});
+                        field.add(FieldId{type.info.id, component});
                         break;
                     }
         } else {
@@ -1260,10 +1261,11 @@ struct Runtime::Impl {
         CallbackScope scope{callbacks};
         const auto* range = bounded ? bounded->range : nullptr;
         const bool constrained = bounded;
-        if (constrained && !constrain_value(type, range, const_cast<void*>(source), false))
-            return located(ErrorCode::argument_mismatch, bounded->root, bounded->path,
-                           rejected_leaf(type, range, const_cast<void*>(source)),
+        if (constrained && !constrain_value(type, range, const_cast<void*>(source), false)) {
+            const auto leaf = rejected_leaf(type, range, const_cast<void*>(source));
+            return located(ErrorCode::argument_mismatch, bounded->root, bounded->path, leaf,
                            "Hard-bounded fields reject NaN and infinity.");
+        }
         if (type.info.plain_value || type.info.kind == TypeKind::scalar) {
             std::memmove(destination, source, type.info.size);
             if (constrained)
@@ -1294,7 +1296,7 @@ struct Runtime::Impl {
 
     // Valid values, the common case, pass once without paths or allocation; a failure reruns
     // with paths to report it, so its validators run twice.
-    std::optional<ValidationFailure> check_rules(const Type& root, void* storage) {
+    Optional<ValidationFailure> check_rules(const Type& root, void* storage) {
         CallbackScope scope{callbacks};
         auto within = [](const FieldRange& range, void* data) {
             Scalar value;
@@ -1304,15 +1306,14 @@ struct Runtime::Impl {
             return validate(data).has_value();
         };
         if (each_bounded(root, storage, nullptr, within) && each_validator(root, storage, nullptr, passes))
-            return std::nullopt;
-        std::vector<FieldId> field;
-        std::optional<ValidationFailure> found;
-        const auto fail = [&](std::optional<Scalar> value, std::string reason,
-                              std::optional<SourceLocation> source = {}) {
+            return {};
+        Array<FieldId> field;
+        Optional<ValidationFailure> found;
+        const auto fail = [&](Optional<Scalar> value, std::string reason, Optional<SourceLocation> source = {}) {
             found = ValidationFailure{
                 field, {}, std::move(value), {ErrorCode::argument_mismatch, root.info.name, std::move(source)}};
             for (const auto id : field)
-                found->names.push_back(member_name(id));
+                found->names.add(member_name(id));
             append_path(found->error.message, field);
             found->error.message += ": " + reason;
             return false;
@@ -1331,7 +1332,7 @@ struct Runtime::Impl {
         return found;
     }
 
-    const Type* lookup(const TypeReference& reference, std::span<const std::unique_ptr<Type>> staged = {}) const {
+    const Type* lookup(const TypeReference& reference, Span<const std::unique_ptr<Type>> staged = {}) const {
         // Even inside a transaction, explicit IDs name only published types.
         if (const auto* id = std::get_if<TypeId>(&reference.target_))
             return lookup(*id);
@@ -1359,9 +1360,8 @@ struct Runtime::Impl {
         return index ? types[*index].get() : nullptr;
     }
 
-    Result<FunctionSignature> resolve_signature(const SignatureDefinition& definition,
-                                                std::optional<TypeId> owner = std::nullopt,
-                                                std::span<const std::unique_ptr<Type>> staged = {}) const {
+    Result<FunctionSignature> resolve_signature(const SignatureDefinition& definition, Optional<TypeId> owner = {},
+                                                Span<const std::unique_ptr<Type>> staged = {}) const {
         const auto resolve_value = [&](const ValueDefinition& value, bool borrow = false) -> Result<ValueDescription> {
             const auto* type = lookup(value.type, staged);
             if (!type)
@@ -1395,7 +1395,7 @@ struct Runtime::Impl {
                 return failure(ErrorCode::invalid_definition, "Unknown parameter passing mode.");
             if (definition.execution == FunctionExecution::coroutine && parameter.passing != ParameterPassing::value)
                 return failure(ErrorCode::invalid_definition, "Coroutine parameters cannot borrow caller storage.");
-            signature.parameters.push_back({*value, parameter.passing});
+            signature.parameters.add({*value, parameter.passing});
         }
         if (definition.result) {
             ATELIER_TRY_BIND(value, resolve_value(*definition.result));
@@ -1421,7 +1421,7 @@ struct Runtime::Impl {
         return is_live(id.index_, slot) && slot.generation == id.generation_ ? &slot : nullptr;
     }
 
-    Result<const Type*> value_type(TypeId id, std::span<const std::byte> storage) const {
+    Result<const Type*> value_type(TypeId id, Span<const std::byte> storage) const {
         const auto* type = lookup(id);
         if (!type || type->info.kind == TypeKind::object) {
             return failure(ErrorCode::invalid_type, "Value operations require a registered value type.");
@@ -1776,7 +1776,7 @@ struct Runtime::Impl {
         }
     }
 
-    static void apply_default_leaves(std::byte* destination, const std::vector<Scalar>& leaves) noexcept {
+    static void apply_default_leaves(std::byte* destination, Span<const Scalar> leaves) noexcept {
         auto* leaf = destination;
         for (const auto& value : leaves)
             std::visit(
@@ -2036,7 +2036,7 @@ struct Runtime::Impl {
     // layout information; every access still resolves the object's live slot.
     mutable std::array<TwoStepField, 16> two_step_fields{};
 
-    bool try_resolve_inline_field(std::uint32_t slot_index, std::span<const FieldId> path, void*& out_data,
+    bool try_resolve_inline_field(std::uint32_t slot_index, Span<const FieldId> path, void*& out_data,
                                   const Type*& out_type, const FieldRange*& out_range) const noexcept {
         const auto& slot = slots.data()[slot_index];
         const Type* root = types.data()[slot.type_index].get();
@@ -2145,7 +2145,7 @@ struct Runtime::Impl {
 
     Result<void> invoke_compiled(Runtime& self, std::uint32_t slot_index, ObjectId object, const Type& actual,
                                  const Type& type, const Type::CompiledMethod& compiled, void* slot_storage,
-                                 std::span<const ArgumentView> views, Scalar* output, ValueOutput value_output) {
+                                 Span<const ArgumentView> views, Scalar* output, ValueOutput value_output) {
         if (!compiled.receiver_read_only)
             stamp(slot_index);
         void* receiver = actual.native_base_depth > type.depth ? base_storage(actual, type, slot_storage)
@@ -2347,8 +2347,7 @@ Result<void> Runtime::begin_collection() {
         return failure(ErrorCode::busy, "Collection can begin only at an idle host safe point.");
     }
     impl_->trace_stack.reserve(impl_->maximum_trace_depth);
-    impl_->marked_slots.clear();
-    impl_->marked_slots.resize(impl_->slots.size(), false);
+    impl_->marked_slots.assign(impl_->slots.size(), false);
     impl_->cancel_cursor();
     impl_->marked = 0;
     impl_->pending = 0;
@@ -2408,8 +2407,8 @@ Runtime::~Runtime() {
 }
 
 Result<TypeId> Runtime::register_type(TypeDefinition definition) {
-    std::vector<TypeDefinition> definitions;
-    definitions.push_back(std::move(definition));
+    Array<TypeDefinition> definitions;
+    definitions.add(std::move(definition));
     ATELIER_TRY_BIND(published, register_types(std::move(definitions)));
     return published->front();
 }
@@ -2422,7 +2421,7 @@ struct detail::TypePublication::State {
     struct AddedMethods {
         std::uint32_t type_index{};
 
-        std::vector<std::string> names;
+        Array<std::string> names;
     };
 
     std::uint64_t context{};
@@ -2433,7 +2432,7 @@ struct detail::TypePublication::State {
 
     Array<const TypeInfo*> catalog;
 
-    std::vector<AddedMethods> added_methods;
+    Array<AddedMethods> added_methods;
 
     bool reserved{};
 
@@ -2445,11 +2444,11 @@ detail::TypePublication::TypePublication() : state_(std::make_unique<State>()) {
 detail::TypePublication::~TypePublication() = default;
 
 Result<std::shared_ptr<detail::TypePublication>>
-detail::TypePublication::prepare(Runtime& runtime, std::vector<TypeDefinition> definitions) {
+detail::TypePublication::prepare(Runtime& runtime, Array<TypeDefinition> definitions) {
     return runtime.prepare_types(std::move(definitions));
 }
 
-std::span<const TypeInfo* const> detail::TypePublication::catalog() const noexcept {
+Span<const TypeInfo* const> detail::TypePublication::catalog() const noexcept {
     return state_->catalog;
 }
 
@@ -2458,7 +2457,7 @@ Result<FunctionSignature> detail::TypePublication::resolve_signature(Runtime& ru
     if (state_->context != runtime.impl_->context || state_->committed ||
         state_->first_index != runtime.impl_->types.size())
         return failure(ErrorCode::invalid_definition, "Type candidate no longer matches its Runtime catalog.");
-    return runtime.impl_->resolve_signature(definition, std::nullopt, state_->staged);
+    return runtime.impl_->resolve_signature(definition, {}, state_->staged);
 }
 
 Result<void> detail::TypePublication::reserve_commit(Runtime& runtime) {
@@ -2513,19 +2512,19 @@ void detail::TypePublication::commit(Runtime& runtime) noexcept {
     }
     for (auto& ext : state_->added_methods) {
         auto& names = impl.types[ext.type_index]->member_names;
-        for (auto& name : ext.names)
-            names.push_back(std::move(name));
+        names.append(std::move(ext.names));
     }
     state_->staged.clear();
     state_->added_methods.clear();
     state_->committed = true;
 }
 
-Result<std::vector<TypeId>> Runtime::register_types(std::vector<TypeDefinition> definitions) {
+Result<Array<TypeId>> Runtime::register_types(Array<TypeDefinition> definitions) {
     ATELIER_TRY_BIND(publication, prepare_types(std::move(definitions)));
-    std::vector<TypeId> result;
+    Array<TypeId> result;
+    result.reserve((*publication)->state_->staged.size());
     for (const auto& type : (*publication)->state_->staged)
-        result.push_back(type->info.id);
+        result.add(type->info.id);
     ATELIER_TRY((*publication)->reserve_commit(*this));
     (*publication)->commit(*this);
     return result;
@@ -2564,7 +2563,7 @@ Result<void> FieldDefinition::normalize_metadata() {
 namespace {
 
 Result<void> validate_method_parameters(std::string_view type_name, const std::string& method_name, std::size_t count,
-                                        std::vector<std::string>& names, std::vector<MetadataList>& metadata) {
+                                        Array<std::string>& names, Array<MetadataList>& metadata) {
     const std::string qualified = std::string(type_name) + "." + method_name;
     if (!names.empty() && names.size() != count)
         return failure(ErrorCode::invalid_definition,
@@ -2591,7 +2590,7 @@ Result<void> validate_method_parameters(std::string_view type_name, const std::s
 }
 
 Result<void> detail::TypePublication::validate_methods(Runtime& runtime, TypeId existing,
-                                                       std::vector<DescribedMethodDefinition> methods,
+                                                       Array<DescribedMethodDefinition> methods,
                                                        std::shared_ptr<TypePublication>& publication) {
     assert_serial_access();
     auto& impl = *runtime.impl_;
@@ -2606,10 +2605,10 @@ Result<void> detail::TypePublication::validate_methods(Runtime& runtime, TypeId 
     const std::size_t own_fields =
         type->fields.size() - (type->base && type->base->info.id != impl.object ? std::size_t{1} : std::size_t{0});
     const std::size_t own_callable = type->compiled_methods.size();
-    const std::span<const std::unique_ptr<Runtime::Impl::Type>> staged =
-        publication ? std::span<const std::unique_ptr<Runtime::Impl::Type>>{publication->state_->staged}
-                    : std::span<const std::unique_ptr<Runtime::Impl::Type>>{};
-    std::vector<std::string> added_names;
+    const Span<const std::unique_ptr<Runtime::Impl::Type>> staged =
+        publication ? Span<const std::unique_ptr<Runtime::Impl::Type>>{publication->state_->staged}
+                    : Span<const std::unique_ptr<Runtime::Impl::Type>>{};
+    Array<std::string> added_names;
     const auto check_descendant = [&](const Runtime::Impl::Type& candidate,
                                       std::string_view method_name) -> Result<void> {
         if (&candidate != type && candidate.info.kind == TypeKind::object &&
@@ -2651,7 +2650,7 @@ Result<void> detail::TypePublication::validate_methods(Runtime& runtime, TypeId 
                 ATELIER_TRY(check_descendant(*candidate, method.name));
             for (const auto& candidate : staged)
                 ATELIER_TRY(check_descendant(*candidate, method.name));
-            added_names.push_back(method.name);
+            added_names.add(method.name);
         }
     }
     if (!added_names.empty()) {
@@ -2664,12 +2663,12 @@ Result<void> detail::TypePublication::validate_methods(Runtime& runtime, TypeId 
                 publication->state_->catalog.add(&published->info);
         }
         const std::uint32_t type_index = *impl.names.find(StringView{type->info.name});
-        publication->state_->added_methods.push_back({type_index, std::move(added_names)});
+        publication->state_->added_methods.add({type_index, std::move(added_names)});
     }
     return {};
 }
 
-Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vector<TypeDefinition> definitions) {
+Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(Array<TypeDefinition> definitions) {
     detail::assert_serial_access();
     // Preparation only reads the published catalog; reserve_commit checks the safe point.
     if (definitions.empty()) {
@@ -2957,7 +2956,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             }
         }
         for (auto& field : definition.fields) {
-            type.member_names.push_back(field.name);
+            type.member_names.add(field.name);
             const auto* target = resolve(field.value.type);
             if (!target) {
                 const auto* named = std::get_if<std::string>(&field.value.type.target_);
@@ -3068,7 +3067,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                 for (const auto* bound : {&range.ui_min, &range.ui_max, &range.hard_min, &range.hard_max})
                     if (*bound && (impl_->scalar_type(**bound) != leaf || !std::isfinite(range_value(**bound))))
                         return invalid("bounds must be finite values of the field's leaf scalar type");
-                const auto above = [](const std::optional<Scalar>& low, const std::optional<Scalar>& high) {
+                const auto above = [](const Optional<Scalar>& low, const Optional<Scalar>& high) {
                     return low && high && range_value(*high) < range_value(*low);
                 };
                 if (above(range.ui_min, range.ui_max) || above(range.hard_min, range.hard_max))
@@ -3078,7 +3077,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                         return invalid("UI bounds must lie within hard bounds");
                 if (range.constrains())
                     for (const auto& leaf : field.default_leaves) {
-                        const std::optional<Scalar> item{leaf};
+                        const Optional<Scalar> item{leaf};
                         if (above(range.hard_min, item) || above(item, range.hard_max))
                             return invalid("default lies outside hard bounds");
                     }
@@ -3091,20 +3090,20 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                              field.range.constrains() ? std::make_unique<const FieldRange>(field.range) : nullptr,
                              field.default_text});
             if (field.exposed)
-                type.info.fields.push_back({FieldId{id, index}, std::move(field.name), value, field.native_offset,
-                                            std::move(published_leaves), std::move(field.label),
-                                            std::move(field.category), std::move(field.description), field.range,
-                                            field.native_address, id, std::move(field.metadata),
-                                            std::move(field.default_text), field.transient, field.read_only});
+                type.info.fields.add({FieldId{id, index}, std::move(field.name), value, field.native_offset,
+                                      std::move(published_leaves), std::move(field.label),
+                                      std::move(field.category), std::move(field.description), field.range,
+                                      field.native_address, id, std::move(field.metadata),
+                                      std::move(field.default_text), field.transient, field.read_only});
         }
         const auto validate_parameters = [&](const std::string& method_name, std::size_t count,
-                                             std::vector<std::string>& names,
-                                             std::vector<MetadataList>& metadata) -> Result<void> {
+                                             Array<std::string>& names,
+                                             Array<MetadataList>& metadata) -> Result<void> {
             return validate_method_parameters(type.info.name, method_name, count, names, metadata);
         };
         type.info.methods.reserve(definition.methods.size());
         for (auto& method : definition.methods) {
-            type.member_names.push_back(method.name);
+            type.member_names.add(method.name);
             if (method.name.empty() || !method.invoke) {
                 return failure(ErrorCode::invalid_definition, "Methods require a name and implementation.");
             }
@@ -3165,14 +3164,14 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                 }
             }
             defaults.resize(signature->parameters.size());
-            type.info.methods.push_back({MethodId{id, static_cast<std::uint32_t>(type.info.methods.size())},
-                                         std::move(method.name), std::move(*signature), method.preserves_borrows,
-                                         std::move(method.description), std::move(names), method.native_entry,
-                                         std::move(defaults), std::move(metadata)});
+            type.info.methods.add({MethodId{id, static_cast<std::uint32_t>(type.info.methods.size())},
+                                   std::move(method.name), std::move(*signature), method.preserves_borrows,
+                                   std::move(method.description), std::move(names), method.native_entry,
+                                   std::move(defaults), std::move(metadata)});
         }
         type.info.described_methods.reserve(definition.described_methods.size());
         for (auto& method : definition.described_methods) {
-            type.member_names.push_back(method.name);
+            type.member_names.add(method.name);
             if (method.name.empty())
                 return failure(ErrorCode::invalid_definition, "Described methods require a name.");
             auto signature = impl_->resolve_signature(method.signature, id, staged);
@@ -3182,7 +3181,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
             auto& names = method.parameter_names;
             auto& metadata = method.parameter_metadata;
             ATELIER_TRY(validate_parameters(method.name, signature->parameters.size(), names, metadata));
-            type.info.described_methods.push_back(
+            type.info.described_methods.add(
                 {std::move(method.name), std::move(*signature), std::move(names), std::move(metadata)});
         }
     }
@@ -3245,10 +3244,8 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                 type.native_base_depth = custom_base ? type.depth : type.base->native_base_depth;
                 type.base_root_offset =
                     custom_base ? 0 : type.base->base_root_offset + type.native.base_offset.value_or(0);
-                type.info.fields.insert(type.info.fields.begin(), type.base->info.fields.begin(),
-                                        type.base->info.fields.end());
-                type.info.methods.insert(type.info.methods.begin(), type.base->info.methods.begin(),
-                                         type.base->info.methods.end());
+                type.info.fields.insert_range(0, type.base->info.fields);
+                type.info.methods.insert_range(0, type.base->info.methods);
             }
             if (type.info.element) {
                 const auto* element_type = resolved_type(*type.info.element);
@@ -3284,16 +3281,19 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(std::vec
                     const auto index = static_cast<std::uint32_t>(field_index);
                     // The base segment carries inherited fields under their declaring FieldIds.
                     const bool base_segment = field_index == 0 && type.base && type.base->info.id != impl_->object;
-                    const auto reported = [&](const std::vector<FieldId>& nested) {
-                        std::vector<FieldId> field;
+                    const auto reported = [&](const Array<FieldId>& nested) {
+                        Array<FieldId> field;
+                        field.reserve((base_segment ? 0u : 1u) + nested.size());
                         if (!base_segment)
-                            field.push_back(FieldId{type.info.id, index});
-                        field.insert(field.end(), nested.begin(), nested.end());
+                            field.add(FieldId{type.info.id, index});
+                        field.append(nested);
                         return field;
                     };
-                    const auto stored = [&](const std::vector<std::uint32_t>& nested) {
-                        std::vector<std::uint32_t> path{index};
-                        path.insert(path.end(), nested.begin(), nested.end());
+                    const auto stored = [&](const Array<std::uint32_t>& nested) {
+                        Array<std::uint32_t> path;
+                        path.reserve(1 + nested.size());
+                        path.add(index);
+                        path.append(nested);
                         return path;
                     };
                     if (const auto* range = type.fields[field_index].hard.get()) {
@@ -3625,13 +3625,13 @@ Result<const TypeInfo*> Runtime::describe(TypeId type) const {
     return &found->info;
 }
 
-std::vector<TypeId> Runtime::types(std::size_t first) const {
-    std::vector<TypeId> result;
+Array<TypeId> Runtime::types(std::size_t first) const {
+    Array<TypeId> result;
     if (first >= impl_->types.size())
         return result;
     result.reserve(impl_->types.size() - first);
     for (auto index = first; index < impl_->types.size(); ++index)
-        result.push_back(impl_->types[index]->info.id);
+        result.add(impl_->types[index]->info.id);
     return result;
 }
 
@@ -3709,7 +3709,7 @@ Runtime::NativeBorrow::~NativeBorrow() {
 }
 
 Result<Runtime::NativeBorrow> Runtime::borrow_native(ObjectId object, const void* representation,
-                                                     std::span<const FieldId> path, bool write) {
+                                                     Span<const FieldId> path, bool write) {
     detail::assert_serial_access();
     if (!impl_->roots->alive || impl_->roots->traversals != 0)
         return failure(ErrorCode::busy, "Native borrowing is unavailable during traversal or shutdown.");
@@ -3740,13 +3740,13 @@ Result<Runtime::NativeBorrow> Runtime::borrow_native(ObjectId object, const void
     return borrow;
 }
 
-Result<ReferenceField> Runtime::reference_field(ObjectId object, std::span<const FieldId> path) const {
+Result<ReferenceField> Runtime::reference_field(ObjectId object, Span<const FieldId> path) const {
     ATELIER_TRY_BIND(address, resolve_field(object, path));
     if (address->value.form == ValueForm::inline_value)
         return failure(ErrorCode::type_mismatch, "Field is not an object reference or reference sequence.");
     ReferenceField field;
     field.object_ = object;
-    field.path_.assign(path.begin(), path.end());
+    field.path_.assign(path);
     return field;
 }
 
@@ -3766,21 +3766,21 @@ Result<ReferenceField> Runtime::native_reference_field(ObjectId object, const vo
         std::size_t depth{};
     };
     Array<Cursor> cursors{{impl_->types.data()[slot.type_index].get(), slot.storage}};
-    std::vector<FieldId> path;
+    InlineArray<FieldId, 4> path;
     while (!cursors.empty()) {
         auto& cursor = cursors.back();
         if (cursor.next == cursor.type->fields.size()) {
             cursors.pop();
             continue;
         }
-        path.resize(cursor.depth);
+        path.truncate(cursor.depth);
         const auto field_index = static_cast<std::uint32_t>(cursor.next++);
         const auto& field = cursor.type->fields[field_index];
         auto* address =
             field.address ? field.address(cursor.storage) : static_cast<std::byte*>(cursor.storage) + field.offset;
         // A base segment changes the declaration owner, not the public path.
         if (field.value.form != ValueForm::inline_value || field.type->info.kind != TypeKind::object)
-            path.push_back(FieldId{cursor.type->info.id, field_index});
+            path.add(FieldId{cursor.type->info.id, field_index});
         if (field.value.form == ValueForm::inline_value) {
             if (field.type->info.contains_references)
                 cursors.add({field.type, address, 0, path.size()});
@@ -3835,18 +3835,13 @@ Result<ObjectReference> Runtime::sequence_read(const ReferenceField& field, std:
     return ObjectReference{{address->value.type, ValueForm::strong_reference}, objects[index]};
 }
 
-Result<void> Runtime::apply_reference_changes(std::span<const ReferenceChange> changes) {
+Result<void> Runtime::apply_reference_changes(Span<const ReferenceChange> changes) {
     detail::assert_serial_access();
     if (!impl_->roots->alive || impl_->roots->traversals || impl_->changing_references)
         return failure(ErrorCode::busy, "Reference mutation cannot reenter traversal, another batch or shutdown.");
     CallbackScope scope{impl_->callbacks};
-    struct MutationScope {
-        bool& active;
-
-        explicit MutationScope(bool& flag) : active(flag) { active = true; }
-
-        ~MutationScope() { active = false; }
-    } mutation{impl_->changing_references};
+    impl_->changing_references = true;
+    ScopeExit mutation{[this]() noexcept { impl_->changing_references = false; }};
     struct Prepared {
         ObjectId owner;
 
@@ -3885,7 +3880,7 @@ Result<void> Runtime::apply_reference_changes(std::span<const ReferenceChange> c
             const auto& sequence = static_cast<ReferenceSequence*>(address->data)->objects_;
             if (splice.first > sequence.size() || splice.erase_count > sequence.size() - splice.first)
                 return failure(ErrorCode::argument_mismatch, "Splice range is out of bounds.");
-            if (splice.inserted.size() > sequence.max_size() - (sequence.size() - splice.erase_count))
+            if (splice.inserted.size() > sequence.max_size - (sequence.size() - splice.erase_count))
                 return failure(ErrorCode::capacity_exceeded, "Splice exceeds sequence capacity.");
             plan.first = splice.first;
             plan.erased = splice.erase_count;
@@ -3932,7 +3927,7 @@ Result<void> Runtime::apply_reference_changes(std::span<const ReferenceChange> c
     return {};
 }
 
-Result<void> Runtime::initialize_value(TypeId type_id, std::span<std::byte> destination) {
+Result<void> Runtime::initialize_value(TypeId type_id, Span<std::byte> destination) {
     detail::assert_serial_access();
     if (impl_->roots->traversals != 0 || impl_->changing_references)
         return failure(ErrorCode::busy,
@@ -3946,8 +3941,8 @@ Result<void> Runtime::initialize_value(TypeId type_id, std::span<std::byte> dest
     return impl_->try_construct(**type, destination.data());
 }
 
-Result<void> Runtime::copy_construct_value(TypeId type_id, std::span<std::byte> destination,
-                                           std::span<const std::byte> source) {
+Result<void> Runtime::copy_construct_value(TypeId type_id, Span<std::byte> destination,
+                                           Span<const std::byte> source) {
     detail::assert_serial_access();
     if (impl_->roots->traversals != 0 || impl_->changing_references)
         return failure(ErrorCode::busy,
@@ -3970,8 +3965,8 @@ Result<void> Runtime::copy_construct_value(TypeId type_id, std::span<std::byte> 
     return impl_->try_construct(**type, destination.data(), source.data());
 }
 
-Result<void> Runtime::assign_value(TypeId type_id, std::span<std::byte> destination,
-                                   std::span<const std::byte> source) {
+Result<void> Runtime::assign_value(TypeId type_id, Span<std::byte> destination,
+                                   Span<const std::byte> source) {
     detail::assert_serial_access();
     if (impl_->roots->traversals != 0 || impl_->changing_references)
         return failure(ErrorCode::busy,
@@ -4000,7 +3995,7 @@ Result<void> Runtime::assign_value(TypeId type_id, std::span<std::byte> destinat
     return result;
 }
 
-Result<void> Runtime::destroy_value(TypeId type_id, std::span<std::byte> storage) {
+Result<void> Runtime::destroy_value(TypeId type_id, Span<std::byte> storage) {
     detail::assert_serial_access();
     if (impl_->roots->traversals != 0 || impl_->changing_references)
         return failure(ErrorCode::busy,
@@ -4019,8 +4014,8 @@ Result<void> Runtime::destroy_value(TypeId type_id, std::span<std::byte> storage
     return {};
 }
 
-Result<void> Runtime::mutate_sequence(TypeId type_id, std::span<std::byte> storage, SequenceMutation operation,
-                                      TypeId input_type, std::span<const std::byte> input, std::size_t count) {
+Result<void> Runtime::mutate_sequence(TypeId type_id, Span<std::byte> storage, SequenceMutation operation,
+                                      TypeId input_type, Span<const std::byte> input, std::size_t count) {
     detail::assert_serial_access();
     if (impl_->roots->traversals != 0 || impl_->changing_references)
         return failure(ErrorCode::busy, "Sequence mutation is not allowed during traversal or batch preparation.");
@@ -4186,18 +4181,18 @@ Result<ObjectRoot> Runtime::create(TypeId type_id) {
     ObjectRoot root{impl_->roots, root_index};
     if (index == impl_->slots.size()) {
         impl_->slots.emplace();
-        impl_->live_slots.resize(index + 1);
+        impl_->live_slots.add(true);
         impl_->gray_links.emplace();
         if (impl_->phase != CollectionPhase::idle)
             impl_->marked_slots.resize(index + 1);
     } else {
         impl_->free_head = impl_->slots.data()[index].next_free;
+        impl_->live_slots.set(index);
     }
     auto& slot = impl_->slots.data()[index];
     slot.type_index = type_id.index_;
     slot.storage = storage;
     slot.next_free = no_slot;
-    impl_->live_slots.set(index);
     impl_->stamp(index);
     ++impl_->live;
     if (impl_->phase == CollectionPhase::sweep) {
@@ -4250,7 +4245,7 @@ bool Runtime::changed_since(ObjectId object, std::uint64_t cursor) const noexcep
     return !impl_->is_live(object.index_, slot) || slot.generation != object.generation_ || slot.written > cursor;
 }
 
-void Runtime::changed_objects(std::uint64_t cursor, std::vector<ObjectId>& changed) const {
+void Runtime::changed_objects(std::uint64_t cursor, Array<ObjectId>& changed) const {
     changed.clear();
     if (impl_->live == 0)
         return;
@@ -4275,14 +4270,14 @@ void Runtime::changed_objects(std::uint64_t cursor, std::vector<ObjectId>& chang
                     cursor >= page.previous_epoch ? page.newest_mask : (page.newest_mask | page.previous_mask);
                 for (auto mask = dirty & live_words.data()[page_index]; mask != 0; mask &= mask - 1) {
                     const auto index = base_index + static_cast<std::uint32_t>(std::countr_zero(mask));
-                    changed.push_back(ObjectId{context, index, slots[index].generation});
+                    changed.add(ObjectId{context, index, slots[index].generation});
                 }
             } else {
                 for (auto mask = live_words.data()[page_index]; mask != 0; mask &= mask - 1) {
                     const auto index = base_index + static_cast<std::uint32_t>(std::countr_zero(mask));
                     const auto& slot = slots[index];
                     if (slot.written > cursor)
-                        changed.push_back(ObjectId{context, index, slot.generation});
+                        changed.add(ObjectId{context, index, slot.generation});
                 }
             }
         }
@@ -4398,16 +4393,16 @@ Result<ObjectReference> Runtime::try_acquire_reference(const ObjectReference& re
     return ObjectReference{{reference.description().type, ValueForm::strong_reference}, id};
 }
 
-Result<std::optional<ObjectRoot>> Runtime::try_acquire(const ObjectReference& reference) {
+Result<Optional<ObjectRoot>> Runtime::try_acquire(const ObjectReference& reference) {
     ATELIER_TRY_BIND(strong, try_acquire_reference(reference));
     if (strong->is_null())
-        return std::optional<ObjectRoot>{};
+        return Optional<ObjectRoot>{};
     if (!impl_->roots->has_capacity())
         return failure(ErrorCode::capacity_exceeded, "Root identity space exhausted.");
-    return std::optional<ObjectRoot>{ObjectRoot{impl_->roots, impl_->roots->add_object(*strong)}};
+    return Optional<ObjectRoot>{ObjectRoot{impl_->roots, impl_->roots->add_object(*strong)}};
 }
 
-Result<ValueRoot> Runtime::root_value(TypeId type_id, std::span<const std::byte> storage) {
+Result<ValueRoot> Runtime::root_value(TypeId type_id, Span<const std::byte> storage) {
     detail::assert_serial_access();
     if (!impl_->roots->alive || impl_->roots->traversals != 0) {
         return failure(ErrorCode::busy, "Cannot register value roots during shutdown or reference traversal.");
@@ -4457,7 +4452,7 @@ Result<void> Runtime::visit_references(ObjectId object, ReferenceVisitor visitor
         visitor, [&] { return impl_->trace(*impl_->types.data()[slot.type_index], slot.storage, visitor); });
 }
 
-Result<void> Runtime::visit_references(TypeId type_id, std::span<const std::byte> storage,
+Result<void> Runtime::visit_references(TypeId type_id, Span<const std::byte> storage,
                                        ReferenceVisitor visitor) const {
     const auto type = impl_->value_type(type_id, storage);
     if (!type)
@@ -4469,7 +4464,7 @@ std::size_t Runtime::root_count() const noexcept {
     return impl_->roots->object_entries.size() + impl_->roots->value_entries.size();
 }
 
-Result<Runtime::Address> Runtime::resolve_field(ObjectId object, std::span<const FieldId> path) const {
+Result<Runtime::Address> Runtime::resolve_field(ObjectId object, Span<const FieldId> path) const {
     const auto index = resolve_object(object);
     if (!index)
         return std::unexpected(index.error());
@@ -4477,7 +4472,7 @@ Result<Runtime::Address> Runtime::resolve_field(ObjectId object, std::span<const
     return resolve_path(TypeId{impl_->context, slot.type_index}, slot.storage, path);
 }
 
-Result<Runtime::Address> Runtime::resolve_path(TypeId type, void* storage, std::span<const FieldId> path) const {
+Result<Runtime::Address> Runtime::resolve_path(TypeId type, void* storage, Span<const FieldId> path) const {
     if (path.empty())
         return failure(ErrorCode::invalid_member, "Field path must not be empty.");
     CallbackScope scope{impl_->callbacks};
@@ -4575,14 +4570,14 @@ Result<void> Runtime::write_reference(ValueDescription value, ReferenceSlot& sto
     return write_reference_at({&storage, value}, reference);
 }
 
-Result<ObjectReference> Runtime::read_reference(ObjectId object, std::span<const FieldId> path) const {
+Result<ObjectReference> Runtime::read_reference(ObjectId object, Span<const FieldId> path) const {
     const auto address = resolve_field(object, path);
     if (!address)
         return std::unexpected(address.error());
     return read_reference_at(*address);
 }
 
-Result<void> Runtime::write_reference(ObjectId object, std::span<const FieldId> path,
+Result<void> Runtime::write_reference(ObjectId object, Span<const FieldId> path,
                                       const ObjectReference& reference) {
     detail::assert_serial_access();
     if (impl_->roots->traversals != 0)
@@ -4594,15 +4589,15 @@ Result<void> Runtime::write_reference(ObjectId object, std::span<const FieldId> 
     return write_reference_at(*address, reference);
 }
 
-Result<ObjectReference> Runtime::read_reference(TypeId type_id, std::span<const std::byte> storage,
-                                                std::span<const FieldId> path) const {
+Result<ObjectReference> Runtime::read_reference(TypeId type_id, Span<const std::byte> storage,
+                                                Span<const FieldId> path) const {
     const auto address = resolve_storage(type_id, storage, path);
     if (!address)
         return std::unexpected(address.error());
     return read_reference_at(*address);
 }
 
-Result<void> Runtime::write_reference(TypeId type_id, std::span<std::byte> storage, std::span<const FieldId> path,
+Result<void> Runtime::write_reference(TypeId type_id, Span<std::byte> storage, Span<const FieldId> path,
                                       const ObjectReference& reference) {
     detail::assert_serial_access();
     if (impl_->roots->traversals != 0)
@@ -4613,7 +4608,7 @@ Result<void> Runtime::write_reference(TypeId type_id, std::span<std::byte> stora
     return write_reference_at(*address, reference);
 }
 
-Result<Scalar> Runtime::read(ObjectId object, std::span<const FieldId> path) const {
+Result<Scalar> Runtime::read(ObjectId object, Span<const FieldId> path) const {
     if (!path.empty()) [[likely]] {
         const std::uint32_t slot_index = try_resolve_object(object);
         void* data = nullptr;
@@ -4629,7 +4624,7 @@ Result<Scalar> Runtime::read(ObjectId object, std::span<const FieldId> path) con
     return read_at(*address);
 }
 
-Result<void> Runtime::write(ObjectId object, std::span<const FieldId> path, Scalar value) {
+Result<void> Runtime::write(ObjectId object, Span<const FieldId> path, Scalar value) {
     detail::assert_serial_access();
     if (impl_->roots->traversals != 0) [[unlikely]]
         return failure(ErrorCode::busy, "Field mutation is not allowed during reference traversal.");
@@ -4663,14 +4658,14 @@ Result<void> Runtime::write(ObjectId object, std::span<const FieldId> path, Scal
     return write_at(*address, value);
 }
 
-Result<Scalar> Runtime::read(TypeId type, std::span<const std::byte> storage, std::span<const FieldId> path) const {
+Result<Scalar> Runtime::read(TypeId type, Span<const std::byte> storage, Span<const FieldId> path) const {
     const auto address = resolve_storage(type, storage, path);
     if (!address)
         return std::unexpected(address.error());
     return read_at(*address);
 }
 
-Result<void> Runtime::write(TypeId type, std::span<std::byte> storage, std::span<const FieldId> path, Scalar value) {
+Result<void> Runtime::write(TypeId type, Span<std::byte> storage, Span<const FieldId> path, Scalar value) {
     detail::assert_serial_access();
     if (impl_->roots->traversals != 0 || impl_->changing_references)
         return failure(ErrorCode::busy,
@@ -4681,8 +4676,8 @@ Result<void> Runtime::write(TypeId type, std::span<std::byte> storage, std::span
     return write_at(*address, value);
 }
 
-Result<Runtime::Address> Runtime::resolve_storage(TypeId type, std::span<const std::byte> storage,
-                                                  std::span<const FieldId> path) const {
+Result<Runtime::Address> Runtime::resolve_storage(TypeId type, Span<const std::byte> storage,
+                                                  Span<const FieldId> path) const {
     const auto valid = impl_->value_type(type, storage);
     if (!valid)
         return std::unexpected(valid.error());
@@ -4710,7 +4705,7 @@ Result<void> Runtime::write_at(const Address& address, Scalar value) {
     return {};
 }
 
-Result<Scalar> Runtime::constrain(TypeId type, std::span<const FieldId> path, Scalar value) const {
+Result<Scalar> Runtime::constrain(TypeId type, Span<const FieldId> path, Scalar value) const {
     if (!impl_->lookup(type))
         return failure(ErrorCode::invalid_type, "Constraint query requires a registered type.");
     const auto address = resolve_path(type, nullptr, path);
@@ -4726,24 +4721,23 @@ Result<Scalar> Runtime::constrain(TypeId type, std::span<const FieldId> path, Sc
     return value;
 }
 
-Result<std::optional<ValidationFailure>> Runtime::validate(ObjectId object) const {
+Result<Optional<ValidationFailure>> Runtime::validate(ObjectId object) const {
     const auto index = resolve_object(object);
     if (!index)
         return std::unexpected(index.error());
     const auto& slot = impl_->slots.data()[*index];
     const auto& type = *impl_->types.data()[slot.type_index];
     if (!type.info.has_validation_rules)
-        return std::nullopt;
+        return Optional<ValidationFailure>{};
     return impl_->check_rules(type, slot.storage);
 }
 
-Result<std::optional<ValidationFailure>> Runtime::validate_value(TypeId type_id,
-                                                                 std::span<const std::byte> storage) const {
+Result<Optional<ValidationFailure>> Runtime::validate_value(TypeId type_id, Span<const std::byte> storage) const {
     const auto type = impl_->value_type(type_id, storage);
     if (!type)
         return std::unexpected(type.error());
     if (!(*type)->info.has_validation_rules)
-        return std::nullopt;
+        return Optional<ValidationFailure>{};
     return impl_->check_rules(**type, const_cast<std::byte*>(storage.data()));
 }
 
@@ -4754,14 +4748,14 @@ Result<FieldId> Runtime::element(TypeId array, std::uint32_t index) const {
     return FieldId{array, index};
 }
 
-std::optional<std::uint32_t> Runtime::element_index(FieldId member) const {
+Optional<std::uint32_t> Runtime::element_index(FieldId member) const {
     const auto* owner = impl_->lookup(member.owner_);
     if (!owner || owner->info.kind != TypeKind::array)
-        return std::nullopt;
+        return {};
     return member.index_;
 }
 
-Result<Runtime::Address> Runtime::resolve_array(ObjectId object, std::span<const FieldId> path) const {
+Result<Runtime::Address> Runtime::resolve_array(ObjectId object, Span<const FieldId> path) const {
     ATELIER_TRY_BIND(address, resolve_field(object, path));
     if (address->value.form != ValueForm::inline_value ||
         impl_->lookup(address->value.type)->info.kind != TypeKind::array)
@@ -4769,28 +4763,28 @@ Result<Runtime::Address> Runtime::resolve_array(ObjectId object, std::span<const
     return address;
 }
 
-Result<std::size_t> Runtime::element_count(ObjectId object, std::span<const FieldId> array) const {
+Result<std::size_t> Runtime::element_count(ObjectId object, Span<const FieldId> array) const {
     const auto address = resolve_array(object, array);
     if (!address)
         return std::unexpected(address.error());
     return Impl::elements(*impl_->lookup(address->value.type), address->data).second;
 }
 
-Result<void> Runtime::insert_element(ObjectId object, std::span<const FieldId> array, std::size_t index,
+Result<void> Runtime::insert_element(ObjectId object, Span<const FieldId> array, std::size_t index,
                                      ValueInput value) {
     return mutate_elements(object, array, SequenceMutation::insert, index, 0, value);
 }
 
-Result<void> Runtime::remove_elements(ObjectId object, std::span<const FieldId> array, std::size_t first,
+Result<void> Runtime::remove_elements(ObjectId object, Span<const FieldId> array, std::size_t first,
                                       std::size_t count) {
     return mutate_elements(object, array, SequenceMutation::remove, first, count, {});
 }
 
-Result<void> Runtime::move_element(ObjectId object, std::span<const FieldId> array, std::size_t from, std::size_t to) {
+Result<void> Runtime::move_element(ObjectId object, Span<const FieldId> array, std::size_t from, std::size_t to) {
     return mutate_elements(object, array, SequenceMutation::move, from, to, {});
 }
 
-Result<void> Runtime::mutate_elements(ObjectId object, std::span<const FieldId> path, SequenceMutation operation,
+Result<void> Runtime::mutate_elements(ObjectId object, Span<const FieldId> path, SequenceMutation operation,
                                       std::size_t position, std::size_t operand, ValueInput value) {
     detail::assert_serial_access();
     // Borrowed element addresses (native borrows, method arguments) must not outlive a change.
@@ -4821,10 +4815,10 @@ Result<void> Runtime::mutate_elements(ObjectId object, std::span<const FieldId> 
         return failure(ErrorCode::invalid_storage, "Inserted value storage is null or misaligned.");
     CallbackScope scope{impl_->callbacks};
     if (copy && !impl_->constrain_value(element, address->range, const_cast<void*>(value.data), false)) {
-        std::vector<FieldId> leaf;
+        Array<FieldId> leaf;
         if (position < Impl::selectable_elements) {
             leaf = impl_->rejected_leaf(element, address->range, const_cast<void*>(value.data));
-            leaf.insert(leaf.begin(), FieldId{array.info.id, static_cast<std::uint32_t>(position)});
+            leaf.insert(0, FieldId{array.info.id, static_cast<std::uint32_t>(position)});
         }
         return impl_->located(ErrorCode::argument_mismatch, address->root, path, leaf,
                               "Hard-bounded fields reject NaN and infinity.");
@@ -4840,7 +4834,7 @@ Result<void> Runtime::mutate_elements(ObjectId object, std::span<const FieldId> 
     return {};
 }
 
-Result<void> Runtime::read(ObjectId object, std::span<const FieldId> path, ValueOutput output) const {
+Result<void> Runtime::read(ObjectId object, Span<const FieldId> path, ValueOutput output) const {
     if (!path.empty()) [[likely]] {
         const std::uint32_t slot_index = try_resolve_object(object);
         void* data = nullptr;
@@ -4864,7 +4858,7 @@ Result<void> Runtime::read(ObjectId object, std::span<const FieldId> path, Value
     return read_at(*address, output);
 }
 
-Result<void> Runtime::write(ObjectId object, std::span<const FieldId> path, ValueInput value) {
+Result<void> Runtime::write(ObjectId object, Span<const FieldId> path, ValueInput value) {
     detail::assert_serial_access();
     if (impl_->roots->traversals != 0) [[unlikely]]
         return failure(ErrorCode::busy, "Field mutation is not allowed during reference traversal.");
@@ -4897,7 +4891,7 @@ Result<void> Runtime::write(ObjectId object, std::span<const FieldId> path, Valu
     return write_at(*address, value, true);
 }
 
-Result<void> Runtime::read(TypeId type, std::span<const std::byte> storage, std::span<const FieldId> path,
+Result<void> Runtime::read(TypeId type, Span<const std::byte> storage, Span<const FieldId> path,
                            ValueOutput output) const {
     const auto address = resolve_storage(type, storage, path);
     if (!address)
@@ -4905,7 +4899,7 @@ Result<void> Runtime::read(TypeId type, std::span<const std::byte> storage, std:
     return read_at(*address, output);
 }
 
-Result<void> Runtime::write(TypeId type, std::span<std::byte> storage, std::span<const FieldId> path,
+Result<void> Runtime::write(TypeId type, Span<std::byte> storage, Span<const FieldId> path,
                             ValueInput value) {
     detail::assert_serial_access();
     if (impl_->roots->traversals != 0 || impl_->changing_references)
@@ -4958,14 +4952,14 @@ Result<void> Runtime::write_at(const Address& address, ValueInput value, bool ob
     return impl_->replace_value(*type, constrained ? &address : nullptr, address.data, value.data);
 }
 
-Result<void> Runtime::read_for_restore(ObjectId object, std::span<const FieldId> path, ValueOutput previous) const {
+Result<void> Runtime::read_for_restore(ObjectId object, Span<const FieldId> path, ValueOutput previous) const {
     const auto* type = impl_->lookup(previous.type);
     if (type && !type->info.plain_value && type->swap_parts.empty())
         return failure(ErrorCode::unsupported_operation, "Restore requires a value type with a non-throwing swap.");
     return read(object, path, previous);
 }
 
-Result<void> Runtime::restore(ObjectId object, std::span<const FieldId> path, ValueOutput previous) {
+Result<void> Runtime::restore(ObjectId object, Span<const FieldId> path, ValueOutput previous) {
     detail::assert_serial_access();
     if (impl_->roots->traversals != 0)
         return failure(ErrorCode::busy, "Field mutation is not allowed during reference traversal.");
@@ -4995,12 +4989,12 @@ Result<void> Runtime::restore(ObjectId object, std::span<const FieldId> path, Va
     return {};
 }
 
-Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, std::span<const Argument> arguments,
+Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, Span<const Argument> arguments,
                                         PreparedArguments& prepared) const {
     return prepare_arguments(signature, arguments, prepared, false);
 }
 
-Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, std::span<const Argument> arguments,
+Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, Span<const Argument> arguments,
                                         PreparedArguments& prepared, bool fields) const {
     detail::assert_serial_access();
     prepared.views_.clear();
@@ -5026,16 +5020,7 @@ Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, std:
     }
     auto* storage = prepared.storage_.prepare(copied_size, copied_alignment);
     prepared.views_.reserve(arguments.size());
-    struct ViewsGuard {
-        InlineArray<ArgumentView, 8>& views;
-
-        bool committed{};
-
-        ~ViewsGuard() {
-            if (!committed)
-                views.clear();
-        }
-    } guard{prepared.views_};
+    ScopeExit guard{[&]() noexcept { prepared.views_.clear(); }};
     std::size_t copied_offset{};
     for (std::size_t i = 0; i < arguments.size(); ++i) {
         const auto& argument = arguments[i];
@@ -5113,19 +5098,19 @@ Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, std:
         prepared.views_.add(
             {parameter.type, data, parameter.passing == ParameterPassing::reference ? writable : nullptr});
     }
-    guard.committed = true;
+    guard.release();
     return {};
 }
 
-Result<void> Runtime::call(ObjectId object, MethodId method, std::span<const Scalar> arguments, Scalar* output) {
+Result<void> Runtime::call(ObjectId object, MethodId method, Span<const Scalar> arguments, Scalar* output) {
     return call_scalars(object, method, arguments, output);
 }
 
-Result<void> Runtime::call(ObjectId object, MethodId method, std::span<const Scalar> arguments, ValueOutput output) {
+Result<void> Runtime::call(ObjectId object, MethodId method, Span<const Scalar> arguments, ValueOutput output) {
     return call_scalars(object, method, arguments, nullptr, output);
 }
 
-Result<void> Runtime::call_scalars(ObjectId object, MethodId method, std::span<const Scalar> arguments, Scalar* output,
+Result<void> Runtime::call_scalars(ObjectId object, MethodId method, Span<const Scalar> arguments, Scalar* output,
                                    ValueOutput value_output) {
     detail::assert_serial_access();
     if (impl_->roots->traversals != 0) [[unlikely]]
@@ -5173,7 +5158,7 @@ Result<void> Runtime::call_scalars(ObjectId object, MethodId method, std::span<c
                                   {views, param_count}, output, value_output);
 }
 
-Result<void> Runtime::call_arguments(ObjectId object, MethodId method, std::span<const Argument> arguments,
+Result<void> Runtime::call_arguments(ObjectId object, MethodId method, Span<const Argument> arguments,
                                      Scalar* output, ValueOutput value_output) {
     detail::assert_serial_access();
     if (impl_->roots->traversals != 0) [[unlikely]]
@@ -5258,11 +5243,10 @@ Result<void> Runtime::call_arguments(ObjectId object, MethodId method, std::span
     }
     PreparedArguments prepared;
     InlineArray<Argument, 8> expanded;
-    std::span<const Argument> effective_arguments = arguments;
+    Span<const Argument> effective_arguments = arguments;
     if (arguments.size() < signature.parameters.size() && method_info.parameter_defaults[arguments.size()]) {
         expanded.reserve(signature.parameters.size());
-        for (const auto& arg : arguments)
-            expanded.add(arg);
+        expanded.append(arguments);
         for (std::size_t p = arguments.size(); p < signature.parameters.size(); ++p)
             expanded.add(Argument{*method_info.parameter_defaults[p]});
         effective_arguments = expanded;

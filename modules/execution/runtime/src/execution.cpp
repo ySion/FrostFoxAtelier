@@ -41,10 +41,10 @@ ExecutionInspection::~ExecutionInspection() noexcept {
 ExecutionInspection::ExecutionInspection(ExecutionInspection&& other) noexcept
     : runtime_(std::exchange(other.runtime_, nullptr)) {}
 
-ExecutionFrame::ExecutionFrame(Runtime& runtime, std::span<ObjectRoot> slots) noexcept
+ExecutionFrame::ExecutionFrame(Runtime& runtime, Span<ObjectRoot> slots) noexcept
     : runtime_(runtime), slots_(slots) {}
 
-ExecutionFrame::ExecutionFrame(ExecutionScope& scope, std::span<ObjectReference> slots) noexcept
+ExecutionFrame::ExecutionFrame(ExecutionScope& scope, Span<ObjectReference> slots) noexcept
     : runtime_(*scope.runtime_), references_(slots) {}
 
 ExecutionFrame::~ExecutionFrame() {
@@ -201,9 +201,9 @@ struct Coroutine::Control {
 
     bool cancel_requested{};
 
-    std::optional<Scalar> result;
+    Optional<Scalar> result;
 
-    std::optional<Error> error;
+    Optional<Error> error;
 
     Control(Runtime& owner, std::unique_ptr<CoroutineFrame> body) : runtime(owner), frame(std::move(body)) {}
 
@@ -313,7 +313,7 @@ Result<CoroutineState> Coroutine::resume() noexcept {
     return active->state;
 }
 
-Result<std::optional<Scalar>> Coroutine::result() const {
+Result<Optional<Scalar>> Coroutine::result() const {
     if (control_ && control_->error)
         return std::unexpected(*control_->error);
     if (!control_ || control_->state != CoroutineState::completed)

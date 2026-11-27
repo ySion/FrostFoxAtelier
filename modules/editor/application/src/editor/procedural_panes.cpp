@@ -93,7 +93,7 @@ bool GeometryGroupGuide::resolve(const procedural::Geometry& geometry) {
         if (!column_.array()[i])
             continue;
         if (rank++ == samples_.size() * count_ / limit)
-            samples_.push_back(i);
+            samples_.add(i);
     }
     return true;
 }
@@ -216,47 +216,47 @@ const std::shared_ptr<const ui::TableData>& GeometrySpreadsheet::build_table(con
         return table_;
 
     auto data = std::make_shared<ui::TableData>();
-    std::vector<ColumnExtractor> extractors;
+    Array<ColumnExtractor> extractors;
 
-    extractors.push_back({L"#", 58.f, ui::TextAlign::right, [](std::size_t idx) { return std::to_wstring(idx); }});
+    extractors.add({L"#", 58.f, ui::TextAlign::right, [](std::size_t idx) { return std::to_wstring(idx); }});
 
     if (geometry) {
         if (layer_ == procedural::Layer::vertex) {
             if (filter_matches_column(L"point", L"Point", filter_)) {
                 const auto vp = geometry->vertex_points();
-                extractors.push_back(
+                extractors.add(
                     {L"Point", 68.f, ui::TextAlign::right, [vp](std::size_t idx) { return std::to_wstring(vp[idx]); }});
             }
         } else if (layer_ == procedural::Layer::primitive) {
             if (filter_matches_column(L"kind", L"Kind", filter_)) {
-                extractors.push_back({L"Kind", 78.f, ui::TextAlign::left, [geometry](std::size_t idx) {
-                                          const auto prim = geometry->primitive(static_cast<std::uint32_t>(idx));
-                                          return prim.kind == procedural::PrimitiveKind::polygon ? L"polygon"
-                                                                                                 : L"polyline";
-                                      }});
+                extractors.add({L"Kind", 78.f, ui::TextAlign::left, [geometry](std::size_t idx) {
+                                    const auto prim = geometry->primitive(static_cast<std::uint32_t>(idx));
+                                    return prim.kind == procedural::PrimitiveKind::polygon ? L"polygon"
+                                                                                           : L"polyline";
+                                }});
             }
             if (filter_matches_column(L"vertices", L"Vertices", filter_)) {
-                extractors.push_back({L"Vertices", 72.f, ui::TextAlign::right, [geometry](std::size_t idx) {
-                                          const auto prim = geometry->primitive(static_cast<std::uint32_t>(idx));
-                                          return std::to_wstring(prim.count);
-                                      }});
+                extractors.add({L"Vertices", 72.f, ui::TextAlign::right, [geometry](std::size_t idx) {
+                                    const auto prim = geometry->primitive(static_cast<std::uint32_t>(idx));
+                                    return std::to_wstring(prim.count);
+                                }});
             }
         } else if (layer_ == procedural::Layer::instance) {
             const auto refs = geometry->references();
             const auto& indices = geometry->instance_references();
             const auto& transforms = geometry->instance_transforms();
             if (filter_matches_column(L"reference", L"Reference", filter_)) {
-                extractors.push_back({L"Reference", 160.f, ui::TextAlign::left, [refs, &indices](std::size_t idx) {
-                                          const auto r = indices[idx];
-                                          return r < refs.size()
-                                                     ? platform::utf8_to_utf16_validated(refs[r].key.view().std_view())
-                                                     : L"<invalid>";
-                                      }});
+                extractors.add({L"Reference", 160.f, ui::TextAlign::left, [refs, &indices](std::size_t idx) {
+                                    const auto r = indices[idx];
+                                    return r < refs.size()
+                                               ? platform::utf8_to_utf16_validated(refs[r].key.view().std_view())
+                                               : L"<invalid>";
+                                }});
             }
             constexpr std::array<const wchar_t*, 3> tx_titles{L"Translate[x]", L"Translate[y]", L"Translate[z]"};
             for (std::size_t axis = 0; axis < 3; ++axis) {
                 if (filter_matches_column(L"translate", tx_titles[axis], filter_)) {
-                    extractors.push_back(
+                    extractors.add(
                         {tx_titles[axis], 90.f, ui::TextAlign::right,
                          [&transforms, axis](std::size_t idx) { return format_float(transforms[idx][12 + axis]); }});
                 }
@@ -271,19 +271,19 @@ const std::shared_ptr<const ui::TableData>& GeometrySpreadsheet::build_table(con
                 [&](const auto& col) {
                     using Shared = std::decay_t<decltype(col)>;
                     using T = typename Shared::Value;
-                    const std::span<const T> values = col.array();
+                    const Span<const T> values = col.array();
                     if constexpr (std::same_as<T, bool>) {
                         if (filter_matches_column(attr_name, attr_name, filter_))
-                            extractors.push_back({attr_name, 64.f, ui::TextAlign::right,
-                                                  [values](std::size_t idx) { return values[idx] ? L"1" : L"0"; }});
+                            extractors.add({attr_name, 64.f, ui::TextAlign::right,
+                                            [values](std::size_t idx) { return values[idx] ? L"1" : L"0"; }});
                     } else if constexpr (std::same_as<T, std::int32_t> || std::same_as<T, std::uint32_t>) {
                         if (filter_matches_column(attr_name, attr_name, filter_))
-                            extractors.push_back({attr_name, 74.f, ui::TextAlign::right,
-                                                  [values](std::size_t idx) { return std::to_wstring(values[idx]); }});
+                            extractors.add({attr_name, 74.f, ui::TextAlign::right,
+                                            [values](std::size_t idx) { return std::to_wstring(values[idx]); }});
                     } else if constexpr (std::same_as<T, float>) {
                         if (filter_matches_column(attr_name, attr_name, filter_))
-                            extractors.push_back({attr_name, 84.f, ui::TextAlign::right,
-                                                  [values](std::size_t idx) { return format_float(values[idx]); }});
+                            extractors.add({attr_name, 84.f, ui::TextAlign::right,
+                                            [values](std::size_t idx) { return format_float(values[idx]); }});
                     } else if constexpr (std::same_as<T, math::Vector2> || std::same_as<T, math::Vector3> ||
                                          std::same_as<T, math::Vector4>) {
                         constexpr std::size_t lanes = std::same_as<T, math::Vector2>   ? 2
@@ -296,9 +296,9 @@ const std::shared_ptr<const ui::TableData>& GeometrySpreadsheet::build_table(con
                             const auto title = attr_name + (is_color ? color_suffixes[lane] : suffixes[lane]);
                             if (!filter_matches_column(attr_name, title, filter_))
                                 continue;
-                            extractors.push_back({title, 82.f, ui::TextAlign::right, [values, lane](std::size_t idx) {
-                                                      return format_float(values[idx][lane]);
-                                                  }});
+                            extractors.add({title, 82.f, ui::TextAlign::right, [values, lane](std::size_t idx) {
+                                                return format_float(values[idx][lane]);
+                                            }});
                         }
                     } else if constexpr (std::same_as<T, math::Quaternion>) {
                         constexpr std::array suffixes{L"[x]", L"[y]", L"[z]", L"[w]"};
@@ -306,27 +306,26 @@ const std::shared_ptr<const ui::TableData>& GeometrySpreadsheet::build_table(con
                             const auto title = attr_name + suffixes[lane];
                             if (!filter_matches_column(attr_name, title, filter_))
                                 continue;
-                            extractors.push_back(
-                                {title, 82.f, ui::TextAlign::right, [values, lane](std::size_t idx) {
-                                     const auto& q = values[idx];
-                                     const float c = lane == 0 ? q.x : lane == 1 ? q.y : lane == 2 ? q.z : q.w;
-                                     return format_float(c);
-                                 }});
+                            extractors.add({title, 82.f, ui::TextAlign::right, [values, lane](std::size_t idx) {
+                                                const auto& q = values[idx];
+                                                const float c = lane == 0 ? q.x : lane == 1 ? q.y : lane == 2 ? q.z : q.w;
+                                                return format_float(c);
+                                            }});
                         }
                     } else if constexpr (std::same_as<T, math::Matrix4>) {
                         if (filter_matches_column(attr_name, attr_name, filter_)) {
-                            extractors.push_back({attr_name, 160.f, ui::TextAlign::left, [values](std::size_t idx) {
-                                                      const auto& m = values[idx];
-                                                      return L"t=(" + format_float(m[12]) + L", " +
-                                                             format_float(m[13]) + L", " + format_float(m[14]) + L")";
-                                                  }});
+                            extractors.add({attr_name, 160.f, ui::TextAlign::left, [values](std::size_t idx) {
+                                                const auto& m = values[idx];
+                                                return L"t=(" + format_float(m[12]) + L", " +
+                                                       format_float(m[13]) + L", " + format_float(m[14]) + L")";
+                                            }});
                         }
                     } else if constexpr (std::same_as<T, String>) {
                         if (filter_matches_column(attr_name, attr_name, filter_)) {
-                            extractors.push_back({attr_name, 130.f, ui::TextAlign::left, [values](std::size_t idx) {
-                                                      return platform::utf8_to_utf16_validated(
-                                                          values[idx].view().std_view());
-                                                  }});
+                            extractors.add({attr_name, 130.f, ui::TextAlign::left, [values](std::size_t idx) {
+                                                return platform::utf8_to_utf16_validated(
+                                                    values[idx].view().std_view());
+                                            }});
                         }
                     }
                 },
@@ -339,7 +338,7 @@ const std::shared_ptr<const ui::TableData>& GeometrySpreadsheet::build_table(con
         const auto& ext = extractors[col_idx];
         const auto* width_it = column_widths_.find(ext.title);
         const float width = width_it ? *width_it : ext.default_width;
-        data->columns.push_back(
+        data->columns.add(
             {spreadsheet_control::column_first + col_idx, ext.title, width, 42.f, ext.align, false});
     }
 
@@ -353,9 +352,9 @@ const std::shared_ptr<const ui::TableData>& GeometrySpreadsheet::build_table(con
             row.key = row_key;
             row.cells.reserve(extractors.size());
             for (std::size_t col_idx = 0; col_idx < extractors.size(); ++col_idx) {
-                row.cells.push_back({row_key * stride + col_idx + 1, extractors[col_idx].cell(idx)});
+                row.cells.add({row_key * stride + col_idx + 1, extractors[col_idx].cell(idx)});
             }
-            data->rows.push_back(std::move(row));
+            data->rows.add(std::move(row));
         }
     }
 
@@ -647,30 +646,30 @@ float point_wire_distance(std::array<float, 2> pt, std::array<float, 2> from_dip
 
 // Each layer emits bounded protocol batches directly, including when all geometry fits on screen.
 struct CanvasLayer {
-    std::vector<std::shared_ptr<ui::CanvasData>> batches{std::make_shared<ui::CanvasData>()};
+    Array<std::shared_ptr<ui::CanvasData>> batches{std::make_shared<ui::CanvasData>()};
 
     void box(ui::CanvasBox value) {
         if (batches.back()->boxes.size() == ui::CanvasData::max_boxes)
-            batches.push_back(std::make_shared<ui::CanvasData>());
-        batches.back()->boxes.push_back(value);
+            batches.add(std::make_shared<ui::CanvasData>());
+        batches.back()->boxes.add(value);
     }
 
     void shape(ui::CanvasNodeShape value) {
         if (batches.back()->shapes.size() == ui::CanvasData::max_shapes)
-            batches.push_back(std::make_shared<ui::CanvasData>());
-        batches.back()->shapes.push_back(value);
+            batches.add(std::make_shared<ui::CanvasData>());
+        batches.back()->shapes.add(value);
     }
 
     void arc(ui::CanvasArc value) {
         if (batches.back()->arcs.size() == ui::CanvasData::max_arcs)
-            batches.push_back(std::make_shared<ui::CanvasData>());
-        batches.back()->arcs.push_back(value);
+            batches.add(std::make_shared<ui::CanvasData>());
+        batches.back()->arcs.add(value);
     }
 
     void stroke(ui::CanvasStroke value) {
         if (batches.back()->strokes.size() == ui::CanvasData::max_strokes)
-            batches.push_back(std::make_shared<ui::CanvasData>());
-        batches.back()->strokes.push_back(value);
+            batches.add(std::make_shared<ui::CanvasData>());
+        batches.back()->strokes.add(value);
     }
 };
 
@@ -1045,9 +1044,9 @@ std::array<float, 2> NetworkCanvas::port_dip(const GraphNodeView& node, bool is_
     return {px, py};
 }
 
-void NetworkCanvas::sync_graph(std::string_view graph_key, std::span<const GraphNodeView> nodes,
-                               ui_layout::Size canvas_dip, std::span<const GraphNetworkBox> boxes,
-                               std::span<const GraphStickyNote> notes) {
+void NetworkCanvas::sync_graph(std::string_view graph_key, Span<const GraphNodeView> nodes,
+                               ui_layout::Size canvas_dip, Span<const GraphNetworkBox> boxes,
+                               Span<const GraphStickyNote> notes) {
     if (canvas_dip.width > 32.f && canvas_dip.height > 32.f)
         last_canvas_dip_ = canvas_dip;
     if (active_graph_ != graph_key) {
@@ -1110,7 +1109,7 @@ void NetworkCanvas::sync_graph(std::string_view graph_key, std::span<const Graph
             if (!has_node(popup_.target_name))
                 close_popup();
         } else {
-            std::erase_if(popup_.target_nodes, [&](const std::string& n) { return !has_node(n); });
+            popup_.target_nodes.remove_if([&](const std::string& n) { return !has_node(n); });
             if (!popup_.target_name.empty() && !has_node(popup_.target_name))
                 popup_.target_name.clear();
             if (!popup_.palette_floating && popup_.target_nodes.empty())
@@ -1150,9 +1149,9 @@ void NetworkCanvas::step_zoom(int delta_steps, float anchor_dip_x, float anchor_
     pan_y_ = std::clamp(anchor_dip_y - world[1] * z, -250000.f, 250000.f);
 }
 
-void NetworkCanvas::frame_nodes(std::span<const GraphNodeView> nodes, ui_layout::Size canvas_dip,
-                                std::span<const std::string> only_selected, std::span<const GraphNetworkBox> boxes,
-                                std::span<const GraphStickyNote> notes) {
+void NetworkCanvas::frame_nodes(Span<const GraphNodeView> nodes, ui_layout::Size canvas_dip,
+                                Span<const std::string> only_selected, Span<const GraphNetworkBox> boxes,
+                                Span<const GraphStickyNote> notes) {
     const float cw = canvas_dip.width > 32.f ? canvas_dip.width : last_canvas_dip_.width;
     const float ch = canvas_dip.height > 32.f ? canvas_dip.height : last_canvas_dip_.height;
     if (nodes.empty() && boxes.empty() && notes.empty()) {
@@ -1267,20 +1266,20 @@ void NetworkCanvas::move_tab_highlight(int delta, std::size_t count) noexcept {
     tab_search_.highlight = static_cast<std::size_t>(next);
 }
 
-std::vector<GraphNodeCatalogEntry> NetworkCanvas::filter_catalog(std::span<const GraphNodeCatalogEntry> catalog) const {
+Array<GraphNodeCatalogEntry> NetworkCanvas::filter_catalog(Span<const GraphNodeCatalogEntry> catalog) const {
     const auto q = lowercase_w(tab_search_.query);
     struct ScoredEntry {
         int score{};
 
         const GraphNodeCatalogEntry* entry{};
     };
-    std::vector<ScoredEntry> scored;
+    Array<ScoredEntry> scored;
     scored.reserve(catalog.size());
     for (const auto& item : catalog) {
         if (tab_search_.category != TabCategory::all && categorize_node_type(item) != tab_search_.category)
             continue;
         if (q.empty()) {
-            scored.push_back({100, &item});
+            scored.add({100, &item});
             continue;
         }
         const std::string sname = !item.asset_key.empty() && !item.display_label.empty()
@@ -1308,24 +1307,24 @@ std::vector<GraphNodeCatalogEntry> NetworkCanvas::filter_catalog(std::span<const
                  lowercase_w(platform::utf8_to_utf16_validated(item.description)).contains(q))
             score = 80;
         if (score > 0)
-            scored.push_back({score, &item});
+            scored.add({score, &item});
     }
     std::ranges::sort(scored, [](const ScoredEntry& a, const ScoredEntry& b) {
         if (a.score != b.score)
             return a.score > b.score;
         return a.entry->name < b.entry->name;
     });
-    std::vector<GraphNodeCatalogEntry> out;
+    Array<GraphNodeCatalogEntry> out;
     out.reserve(std::min(scored.size(), max_tab_results));
     for (std::size_t i = 0; i < scored.size() && i < max_tab_results; ++i)
-        out.push_back(*scored[i].entry);
+        out.add(*scored[i].entry);
     return out;
 }
 
 Result<std::string> NetworkCanvas::commit_tab_pick(Session& session, std::string_view graph_key,
-                                                   std::span<const GraphNodeCatalogEntry> catalog,
+                                                   Span<const GraphNodeCatalogEntry> catalog,
                                                    std::size_t pick_index, std::string& primary_selected,
-                                                   std::vector<std::string>& selected_nodes, bool set_display,
+                                                   Array<std::string>& selected_nodes, bool set_display,
                                                    Project* project) {
     const auto matches = filter_catalog(catalog);
     if (pick_index >= matches.size())
@@ -1341,8 +1340,8 @@ Result<std::string> NetworkCanvas::commit_tab_pick(Session& session, std::string
 }
 
 void NetworkCanvas::open_node_popup(PopupKind kind, const GraphInspectView& view, std::string_view primary_selected,
-                                    std::span<const std::string> selected_nodes, ui_layout::Size canvas_dip,
-                                    std::optional<std::array<float, 2>> anchor_dip) {
+                                    Span<const std::string> selected_nodes, ui_layout::Size canvas_dip,
+                                    Optional<std::array<float, 2>> anchor_dip) {
     const float cw = canvas_dip.width > 32.f ? canvas_dip.width : last_canvas_dip_.width;
     const float ch = canvas_dip.height > 32.f ? canvas_dip.height : last_canvas_dip_.height;
     std::string target = !primary_selected.empty() ? std::string(primary_selected)
@@ -1357,7 +1356,7 @@ void NetworkCanvas::open_node_popup(PopupKind kind, const GraphInspectView& view
     if (nv) {
         next.target_name = target;
         if (!selected_nodes.empty() && std::ranges::find(selected_nodes, target) != selected_nodes.end()) {
-            next.target_nodes.assign(selected_nodes.begin(), selected_nodes.end());
+            next.target_nodes.assign(selected_nodes);
         } else {
             next.target_nodes = {target};
         }
@@ -1380,7 +1379,7 @@ void NetworkCanvas::open_node_popup(PopupKind kind, const GraphInspectView& view
 }
 
 Result<bool> NetworkCanvas::apply_action(Session& session, std::string_view graph_key, std::string& primary_selected,
-                                         std::vector<std::string>& selected_nodes, ui_layout::Size canvas_dip,
+                                         Array<std::string>& selected_nodes, ui_layout::Size canvas_dip,
                                          const ui::Action& action, std::wstring& out_status, bool read_only) {
     const bool blocked = session.world().running() || read_only;
     if (action.key == network_control::tab_search_input) {
@@ -1407,7 +1406,7 @@ Result<bool> NetworkCanvas::apply_action(Session& session, std::string_view grap
         ATELIER_TRY_BIND(insp, session.graph_topology(graph_key));
         const bool sel_only = action.key == network_control::frame_selected;
         frame_nodes((*insp)->nodes, canvas_dip,
-                    sel_only ? std::span<const std::string>{selected_nodes} : std::span<const std::string>{},
+                    sel_only ? Span<const std::string>{selected_nodes} : Span<const std::string>{},
                     (*insp)->boxes, (*insp)->notes);
         out_status = (sel_only && !selected_nodes.empty()) ? L"Framed SOP selection" : L"Framed all SOP nodes";
         return true;
@@ -1419,7 +1418,7 @@ Result<bool> NetworkCanvas::apply_action(Session& session, std::string_view grap
         if (action.key == network_control::select_all_nodes) {
             selected_nodes.clear();
             for (const auto& n : (*insp)->nodes)
-                selected_nodes.push_back(n.name);
+                selected_nodes.add(n.name);
             primary_selected = selected_nodes.empty() ? std::string{} : selected_nodes.back();
             out_status = L"Selected all SOP nodes";
         } else if (action.key == network_control::deselect_all_nodes) {
@@ -1429,10 +1428,10 @@ Result<bool> NetworkCanvas::apply_action(Session& session, std::string_view grap
             selected_box_.clear();
             out_status = L"Cleared SOP selection";
         } else {
-            std::vector<std::string> inverted;
+            Array<std::string> inverted;
             for (const auto& n : (*insp)->nodes)
                 if (std::ranges::find(selected_nodes, n.name) == selected_nodes.end())
-                    inverted.push_back(n.name);
+                    inverted.add(n.name);
             selected_nodes = std::move(inverted);
             primary_selected = selected_nodes.empty() ? std::string{} : selected_nodes.back();
             out_status = L"Inverted SOP selection";
@@ -1522,7 +1521,7 @@ Result<bool> NetworkCanvas::apply_action(Session& session, std::string_view grap
     if (!popup_.open() || blocked)
         return false;
 
-    const auto active_style_targets = [&]() -> const std::vector<std::string>& {
+    const auto active_style_targets = [&]() -> const Array<std::string>& {
         return !selected_nodes.empty() ? selected_nodes : popup_.target_nodes;
     };
 
@@ -1546,7 +1545,7 @@ Result<bool> NetworkCanvas::apply_action(Session& session, std::string_view grap
     if (action.kind == ui::ActionKind::activate && action.key == network_control::color_reset_btn) {
         const auto& targets = active_style_targets();
         if (!targets.empty()) {
-            ATELIER_TRY(session.graph_set_node_appearance(graph_key, targets, {}, std::optional<std::uint32_t>{}, {}));
+            ATELIER_TRY(session.graph_set_node_appearance(graph_key, targets, {}, Optional<std::uint32_t>{}, {}));
             out_status = L"Reset node color to role default";
         }
         if (!popup_.palette_floating)
@@ -1567,7 +1566,7 @@ Result<bool> NetworkCanvas::apply_action(Session& session, std::string_view grap
             const auto& targets = active_style_targets();
             if (!targets.empty()) {
                 ATELIER_TRY(
-                    session.graph_set_node_appearance(graph_key, targets, {}, std::optional<std::uint32_t>{rgb}, {}));
+                    session.graph_set_node_appearance(graph_key, targets, {}, Optional<std::uint32_t>{rgb}, {}));
                 out_status = L"Updated node color: " + platform::utf8_to_utf16_validated(format_graph_hex_color(rgb));
                 if (!popup_.palette_floating)
                     close_popup();
@@ -1652,7 +1651,7 @@ Result<bool> NetworkCanvas::apply_action(Session& session, std::string_view grap
 
 Result<NetworkCanvas::InteractionOutcome>
 NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::string& primary_selected,
-                             std::vector<std::string>& selected_nodes, ui::Rect canvas_px, float dpi_scale,
+                             Array<std::string>& selected_nodes, ui::Rect canvas_px, float dpi_scale,
                              const ui::Event& event, Project* project, bool read_only) {
     InteractionOutcome out;
     const bool blocked = session.world().running() || read_only;
@@ -1672,10 +1671,10 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
     const auto& view = **inspected_res;
     sync_graph(graph_key, view.nodes, canvas_dip, view.boxes, view.notes);
 
-    const auto hit_port = [&](float x, float y, float radius, std::optional<bool> want_output = std::nullopt,
-                              std::string_view exclude_node = {}) -> std::optional<PortRef> {
+    const auto hit_port = [&](float x, float y, float radius, Optional<bool> want_output = {},
+                              std::string_view exclude_node = {}) -> Optional<PortRef> {
         float best_d2 = radius * radius;
-        std::optional<PortRef> best;
+        Optional<PortRef> best;
         for (const auto& node : view.nodes) {
             if (!exclude_node.empty() && node.name == exclude_node)
                 continue;
@@ -1742,12 +1741,11 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
                     selected_note_.clear();
                     selected_box_.clear();
                     if (shift) {
-                        if (const auto it = std::ranges::find(selected_nodes, clicked); it != selected_nodes.end()) {
-                            selected_nodes.erase(it);
+                        if (selected_nodes.remove(clicked)) {
                             if (primary_selected == clicked)
                                 primary_selected = selected_nodes.empty() ? std::string{} : selected_nodes.back();
                         } else {
-                            selected_nodes.push_back(clicked);
+                            selected_nodes.add(clicked);
                             primary_selected = clicked;
                         }
                         last_click_tick_ = 0;
@@ -1821,11 +1819,11 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
                     ? (event.kind == ui::EventKind::pointer_down && event.button == ui::PointerButton::primary)
                     : (event.kind == ui::EventKind::pointer_up && event.button == gesture_button_);
             if (commit) {
-                std::vector<std::pair<std::string, std::array<float, 2>>> moves;
+                Array<std::pair<std::string, std::array<float, 2>>> moves;
                 moves.reserve(drag_origins_.size());
                 for (const auto& [name, origin] : drag_origins_)
-                    moves.emplace_back(name, std::array{std::round(origin[0] + drag_world_delta_[0]),
-                                                        std::round(origin[1] + drag_world_delta_[1])});
+                    moves.emplace(name, std::array{std::round(origin[0] + drag_world_delta_[0]),
+                                                   std::round(origin[1] + drag_world_delta_[1])});
                 const auto splice = splice_wire_;
                 const bool amend = amend_duplicate_;
                 cancel_gesture();
@@ -1916,18 +1914,18 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
             if (event.kind == ui::EventKind::pointer_up && event.button == gesture_button_) {
                 const std::string target = active_annotation_;
                 const bool clicked_only = move_dist < 4.f;
-                std::vector<std::pair<std::string, std::array<float, 2>>> node_moves;
-                std::vector<std::pair<std::string, std::array<float, 2>>> note_moves;
-                std::vector<std::pair<std::string, std::array<float, 2>>> box_moves;
+                Array<std::pair<std::string, std::array<float, 2>>> node_moves;
+                Array<std::pair<std::string, std::array<float, 2>>> note_moves;
+                Array<std::pair<std::string, std::array<float, 2>>> box_moves;
                 for (const auto& [n, orig] : drag_origins_)
-                    node_moves.emplace_back(n, std::array{std::round(orig[0] + drag_world_delta_[0]),
-                                                          std::round(orig[1] + drag_world_delta_[1])});
+                    node_moves.emplace(n, std::array{std::round(orig[0] + drag_world_delta_[0]),
+                                                     std::round(orig[1] + drag_world_delta_[1])});
                 for (const auto& [n, orig] : drag_note_origins_)
-                    note_moves.emplace_back(n, std::array{std::round(orig[0] + drag_world_delta_[0]),
-                                                          std::round(orig[1] + drag_world_delta_[1])});
+                    note_moves.emplace(n, std::array{std::round(orig[0] + drag_world_delta_[0]),
+                                                     std::round(orig[1] + drag_world_delta_[1])});
                 for (const auto& [n, orig] : drag_box_origins_)
-                    box_moves.emplace_back(n, std::array{std::round(orig[0] + drag_world_delta_[0]),
-                                                         std::round(orig[1] + drag_world_delta_[1])});
+                    box_moves.emplace(n, std::array{std::round(orig[0] + drag_world_delta_[0]),
+                                                    std::round(orig[1] + drag_world_delta_[1])});
                 cancel_gesture();
                 out.capture_release = true;
                 out.cursor = ui::Cursor::arrow;
@@ -2032,7 +2030,7 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
                     if (tl[0] + node_width * z >= rx0 && tl[0] <= rx1 && tl[1] + node_height * z >= ry0 &&
                         tl[1] <= ry1) {
                         if (std::ranges::find(selected_nodes, node.name) == selected_nodes.end())
-                            selected_nodes.push_back(node.name);
+                            selected_nodes.add(node.name);
                     }
                 }
                 primary_selected = selected_nodes.empty() ? std::string{} : selected_nodes.back();
@@ -2081,7 +2079,7 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
                         ATELIER_TRY(session.graph_rewire(graph_key, *detached, snapped->node, snapped->port));
                         out.status = L"Rewired SOP port";
                     } else {
-                        ATELIER_TRY(session.graph_disconnect_edges(graph_key, std::span{&*detached, 1}));
+                        ATELIER_TRY(session.graph_disconnect_edges(graph_key, Span{&*detached, 1}));
                         out.status = L"Disconnected SOP wire";
                     }
                     return out;
@@ -2121,7 +2119,7 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
                 cancel_gesture();
                 out.capture_release = true;
                 out.cursor = cut_key_held_ ? ui::Cursor::crosshair : ui::Cursor::arrow;
-                std::vector<GraphConnectionView> cut_edges;
+                Array<GraphConnectionView> cut_edges;
                 for (const auto& conn : view.connections) {
                     const auto* src = view.find_node(conn.from_node);
                     const auto* dst = view.find_node(conn.to_node);
@@ -2129,7 +2127,7 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
                         continue;
                     if (wire_intersects_segment(port_dip(*src, true, conn.from_index),
                                                 port_dip(*dst, false, conn.to_index), z, cut_a, cut_b))
-                        cut_edges.push_back(conn);
+                        cut_edges.add(conn);
                 }
                 if (!cut_edges.empty()) {
                     ATELIER_TRY(session.graph_disconnect_edges(graph_key, cut_edges));
@@ -2218,7 +2216,7 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
     }
 
     const auto port_under = (body_interior || air_hit != AirButton::none)
-                                ? std::optional<PortRef>{}
+                                ? Optional<PortRef>{}
                                 : hit_port(lx, ly, std::clamp(22.f * z, 14.f, 30.f));
     if (port_under) {
         node_under.clear();
@@ -2384,10 +2382,10 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
             if (!event.shift && already_selected) {
                 for (const auto& sel : selected_nodes) {
                     if (const auto* nv = view.find_node(sel))
-                        drag_origins_.emplace_back(sel, nv->position);
+                        drag_origins_.emplace(sel, nv->position);
                 }
             } else if (const auto* nv = view.find_node(node_under)) {
-                drag_origins_.emplace_back(node_under, nv->position);
+                drag_origins_.emplace(node_under, nv->position);
             }
             drag_world_delta_ = {};
             gesture_ = Gesture::press_node;
@@ -2450,13 +2448,13 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
                     const float ncx = n.position[0] + node_width * .5f;
                     const float ncy = n.position[1] + node_height * .5f;
                     if (ncx >= bx0 && ncx <= bx1 && ncy >= by0 && ncy <= by1)
-                        drag_origins_.emplace_back(n.name, n.position);
+                        drag_origins_.emplace(n.name, n.position);
                 }
                 for (const auto& note : view.notes) {
                     const float ncx = note.position[0] + note.size[0] * .5f;
                     const float ncy = note.position[1] + note.size[1] * .5f;
                     if (ncx >= bx0 && ncx <= bx1 && ncy >= by0 && ncy <= by1)
-                        drag_note_origins_.emplace_back(note.name, note.position);
+                        drag_note_origins_.emplace(note.name, note.position);
                 }
             }
             drag_world_delta_ = {};
@@ -2479,7 +2477,7 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
 
 Result<NetworkCanvas::InteractionOutcome>
 NetworkCanvas::key_event(Session& session, std::string_view graph_key, std::string& primary_selected,
-                         std::vector<std::string>& selected_nodes, ui::Rect canvas_px, float dpi_scale,
+                         Array<std::string>& selected_nodes, ui::Rect canvas_px, float dpi_scale,
                          const ui::Event& event, std::uint32_t native_key, Project* project, bool read_only) {
     InteractionOutcome out;
     const bool blocked = session.world().running() || read_only;
@@ -2535,11 +2533,11 @@ NetworkCanvas::key_event(Session& session, std::string_view graph_key, std::stri
 
     if (active_gesture()) {
         if (event.key == ui::Key::enter && gesture_ == Gesture::move_nodes && keyboard_grab_) {
-            std::vector<std::pair<std::string, std::array<float, 2>>> moves;
+            Array<std::pair<std::string, std::array<float, 2>>> moves;
             moves.reserve(drag_origins_.size());
             for (const auto& [name, origin] : drag_origins_)
-                moves.emplace_back(name, std::array{std::round(origin[0] + drag_world_delta_[0]),
-                                                    std::round(origin[1] + drag_world_delta_[1])});
+                moves.emplace(name, std::array{std::round(origin[0] + drag_world_delta_[0]),
+                                               std::round(origin[1] + drag_world_delta_[1])});
             const auto splice = splice_wire_;
             const bool amend = amend_duplicate_;
             cancel_gesture();
@@ -2576,9 +2574,9 @@ NetworkCanvas::key_event(Session& session, std::string_view graph_key, std::stri
                                     : !air_node_.empty()   ? air_node_
                                                            : primary_selected;
     const auto resolve_targets = [&]() {
-        std::vector<std::string> targets = selected_nodes;
+        Array<std::string> targets = selected_nodes;
         if (targets.empty() && !target_node.empty())
-            targets.push_back(target_node);
+            targets.add(target_node);
         return targets;
     };
     const auto begin_keyboard_grab = [&](const GraphInspectView& gview, bool amend_dup) {
@@ -2587,7 +2585,7 @@ NetworkCanvas::key_event(Session& session, std::string_view graph_key, std::stri
         drag_box_origins_.clear();
         for (const auto& sel : selected_nodes) {
             if (const auto* nv = gview.find_node(sel))
-                drag_origins_.emplace_back(sel, nv->position);
+                drag_origins_.emplace(sel, nv->position);
         }
         start_dip_x_ =
             (current_dip_x_ > 0.f && current_dip_x_ < canvas_dip.width) ? current_dip_x_ : canvas_dip.width * .5f;
@@ -2641,16 +2639,16 @@ NetworkCanvas::key_event(Session& session, std::string_view graph_key, std::stri
         if (!event.repeat && (native_key == 'A' || event.key == ui::Key::a)) {
             selected_nodes.clear();
             for (const auto& n : view.nodes)
-                selected_nodes.push_back(n.name);
+                selected_nodes.add(n.name);
             primary_selected = selected_nodes.empty() ? std::string{} : selected_nodes.back();
             out.consumed = true;
             return out;
         }
         if (!event.repeat && native_key == 'I') {
-            std::vector<std::string> inverted;
+            Array<std::string> inverted;
             for (const auto& n : view.nodes) {
                 if (std::ranges::find(selected_nodes, n.name) == selected_nodes.end())
-                    inverted.push_back(n.name);
+                    inverted.add(n.name);
             }
             selected_nodes = std::move(inverted);
             primary_selected = selected_nodes.empty() ? std::string{} : selected_nodes.back();
@@ -2841,7 +2839,7 @@ NetworkCanvas::key_event(Session& session, std::string_view graph_key, std::stri
         } else {
             selected_nodes.clear();
             for (const auto& n : view.nodes)
-                selected_nodes.push_back(n.name);
+                selected_nodes.add(n.name);
             primary_selected = selected_nodes.empty() ? std::string{} : selected_nodes.back();
         }
         out.consumed = true;
@@ -2867,9 +2865,9 @@ NetworkCanvas::key_event(Session& session, std::string_view graph_key, std::stri
             out.status = L"Deleted Network Box";
             return out;
         }
-        std::vector<std::string> targets = selected_nodes;
+        Array<std::string> targets = selected_nodes;
         if (targets.empty() && !primary_selected.empty())
-            targets.push_back(primary_selected);
+            targets.add(primary_selected);
         if (!targets.empty()) {
             ATELIER_TRY(session.graph_remove_nodes(graph_key, targets));
             selected_nodes.clear();
@@ -2883,14 +2881,15 @@ NetworkCanvas::key_event(Session& session, std::string_view graph_key, std::stri
     return out;
 }
 
-void NetworkCanvas::append_tab_categories(std::vector<ui::Control>& controls, ui::ControlKey tab_box_key) const {
+void NetworkCanvas::append_tab_categories(Array<ui::Control>& controls, ui::ControlKey tab_box_key) const {
     if (!tab_search_.open)
         return;
     const auto search_it = std::ranges::find(controls, network_control::tab_search_input, &ui::Control::key);
     if (search_it == controls.end())
         return;
+    const auto insert_idx = static_cast<std::size_t>(search_it - controls.begin()) + 1;
 
-    std::vector<ui::Control> cat_controls;
+    Array<ui::Control> cat_controls;
     ui::Control row;
     row.key = network_control::tab_cat_row;
     row.parent = tab_box_key;
@@ -2901,7 +2900,7 @@ void NetworkCanvas::append_tab_categories(std::vector<ui::Control>& controls, ui
     row.layout.gap = 2.f;
     row.style.background = ui::Color{0, 0, 0, 0};
     row.style.border_width = 0.f;
-    cat_controls.push_back(std::move(row));
+    cat_controls.add(std::move(row));
 
     constexpr std::array<const wchar_t*, 7> labels{L"All", L"Prim", L"Attr", L"Scat", L"Util", L"Src", L"Asset"};
     for (std::size_t i = 0; i < labels.size(); ++i) {
@@ -2919,11 +2918,10 @@ void NetworkCanvas::append_tab_categories(std::vector<ui::Control>& controls, ui
         btn.style.font_size = 10.5f;
         btn.style.font_weight = active ? std::uint16_t{700} : std::uint16_t{400};
         btn.style.radius = {3.f, 3.f, 3.f, 3.f};
-        cat_controls.push_back(std::move(btn));
+        cat_controls.add(std::move(btn));
     }
 
-    controls.insert(search_it + 1, std::make_move_iterator(cat_controls.begin()),
-                    std::make_move_iterator(cat_controls.end()));
+    controls.insert_range(insert_idx, std::move(cat_controls));
 }
 
 std::array<float, 2> NetworkCanvas::prepare_wire_routes(const std::shared_ptr<const GraphInspectView>& topology,
@@ -2965,18 +2963,18 @@ std::array<float, 2> NetworkCanvas::prepare_wire_routes(const std::shared_ptr<co
         if (!wire_near_region(from, to, z, wire_routes_.region))
             continue;
         for_each_wire_segment(from, to, z, [&](auto a, auto b) {
-            wire_routes_.segments.push_back({a, b});
+            wire_routes_.segments.add({a, b});
             return false;
         });
-        wire_routes_.wires.push_back({i, wire_routes_.segments.size(), src->status && src->status->error.has_value()});
+        wire_routes_.wires.add({i, wire_routes_.segments.size(), src->status && src->status->error.has_value()});
     }
     return {};
 }
 
 void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::ControlKey canvas_parent,
                                   ui_layout::Size canvas_dip, const std::shared_ptr<const GraphInspectView>& topology,
-                                  std::span<const GraphNodeCatalogEntry> catalog, std::string_view primary_selected,
-                                  std::span<const std::string> selected_nodes, bool read_only) {
+                                  Span<const GraphNodeCatalogEntry> catalog, std::string_view primary_selected,
+                                  Span<const std::string> selected_nodes, bool read_only) {
     const auto& view = *topology;
     const auto& graph_key = view.key;
     sync_graph(graph_key, view.nodes, canvas_dip, view.boxes, view.notes);
@@ -2986,7 +2984,7 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
 
     // Active gestures can move nodes and reroute wires. Popups are appended separately from retained graph content.
     const bool settled = !active_gesture() && !detached_wire_ && !splice_wire_ && !snapped_port_;
-    std::optional<IdleCanvasState> idle;
+    Optional<IdleCanvasState> idle;
     if (settled) {
         idle.emplace(IdleCanvasState{canvas_parent,
                                      {cw, ch},
@@ -3009,14 +3007,14 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
                 output.append(idle_projection_->controls, idle_projection_->revision);
                 return;
             }
-            std::vector<ui::Control> controls = idle_projection_->controls;
+            Array<ui::Control> controls = idle_projection_->controls;
             append_canvas_popup(controls, canvas_parent, cw, ch, view, catalog, read_only);
             output.append(controls, 0);
             return;
         }
     }
     idle_projection_.reset();
-    std::vector<ui::Control> controls;
+    Array<ui::Control> controls;
 
     CanvasLayer backdrop;
     auto& grid = *backdrop.batches.front();
@@ -3080,7 +3078,7 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
             title_ctrl.style.font_size = std::clamp(std::round(11.5f * z), 7.f, 22.f);
             title_ctrl.style.font_weight = 700;
             title_ctrl.style.foreground = hex_color(0xf1f5f9);
-            controls.push_back(std::move(title_ctrl));
+            controls.add(std::move(title_ctrl));
         }
     }
 
@@ -3090,7 +3088,7 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
     std::size_t begin = 0;
     for (const auto& route : wire_routes_.wires) {
         const auto& conn = view.connections[route.connection];
-        const auto segments = std::span{wire_routes_.segments}.subspan(begin, route.end - begin);
+        const auto segments = Span{wire_routes_.segments}.slice(begin, route.end - begin);
         begin = route.end;
         if (detached_wire_ && conn.from_node == detached_wire_->from_node &&
             conn.from_port == detached_wire_->from_port && conn.to_node == detached_wire_->to_node &&
@@ -3158,7 +3156,7 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
             h_ctrl.style.font_size = std::clamp(std::round(11.f * z), 6.5f, 20.f);
             h_ctrl.style.font_weight = 700;
             h_ctrl.style.foreground = hex_color(0xfffbeb);
-            controls.push_back(std::move(h_ctrl));
+            controls.add(std::move(h_ctrl));
 
             if (nh > header_h + 10.f && !note.text.empty()) {
                 ui::Control body_ctrl;
@@ -3174,7 +3172,7 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
                 body_ctrl.style.border_width = 0.f;
                 body_ctrl.style.font_size = std::clamp(std::round(10.5f * z), 6.f, 19.f);
                 body_ctrl.style.foreground = hex_color(0xe5e0d5);
-                controls.push_back(std::move(body_ctrl));
+                controls.add(std::move(body_ctrl));
             }
         }
     }
@@ -3418,7 +3416,7 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
                                                              : (is_asset_node   ? hex_color(0xfcd34d, body_alpha)
                                                                 : is_source_sop ? hex_color(0x7dd3fc, body_alpha)
                                                                                 : hex_color(0xe2e8f0, body_alpha));
-            controls.push_back(std::move(icon_ctrl));
+            controls.add(std::move(icon_ctrl));
         }
 
         // External right-side Line 1: Bold Node Name (carries `base_key` & `tooltip` for hover):
@@ -3439,7 +3437,7 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
             title_ctrl.style.font_weight = is_selected ? std::uint16_t{700} : std::uint16_t{600};
             title_ctrl.style.foreground = is_selected ? hex_color(0xffffff) : hex_color(0xe6ebf0, body_alpha);
             title_ctrl.style.text_shadow = ui::Color{0.f, 0.f, 0.f, .68f};
-            controls.push_back(std::move(title_ctrl));
+            controls.add(std::move(title_ctrl));
         }
 
         // External right-side Line 2: ShortType · cook_ms / Comment / ERR:
@@ -3475,7 +3473,7 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
                                           : !node.comment.empty() ? hex_color(0x93c5fd)
                                                                   : hex_color(0x8c96a2);
             badge_ctrl.style.text_shadow = ui::Color{0.f, 0.f, 0.f, .65f};
-            controls.push_back(std::move(badge_ctrl));
+            controls.add(std::move(badge_ctrl));
         }
 
         // Wide Non-Overlapping Hover Air-Ring (r_in = 54, r_out = 72 DIP):
@@ -3543,7 +3541,7 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
                 gl.style.indicator_size = std::clamp(std::round(12.5f * z), 8.f, 21.f);
                 gl.style.indicator_foreground = s_fg;
                 gl.style.foreground = s_fg;
-                controls.push_back(std::move(gl));
+                controls.add(std::move(gl));
             }
         }
     }
@@ -3578,7 +3576,7 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
     }
 
     // Keep paint-only layers below the node hit controls. Extra batches have stable keys.
-    std::vector<ui::Control> layers;
+    Array<ui::Control> layers;
     const auto add_layer = [&](CanvasLayer& data, ui::ControlKey key, unsigned layer) {
         for (std::size_t i = 0; i < data.batches.size(); ++i) {
             ui::Control control;
@@ -3597,14 +3595,13 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
                 control.style.border_width = 0.f;
             }
             control.canvas = std::move(data.batches[i]);
-            layers.push_back(std::move(control));
+            layers.add(std::move(control));
         }
     };
     add_layer(backdrop, network_control::canvas_backdrop, 0);
     add_layer(bodies, network_control::canvas_nodes, 1);
     add_layer(overlay, network_control::canvas_overlay, 2);
-    controls.insert(controls.begin() + first_label, std::make_move_iterator(layers.begin()),
-                    std::make_move_iterator(layers.end()));
+    controls.insert_range(first_label, std::move(layers));
 
     // Instant hovered/snapped connector name badge:
     const auto active_port = snapped_port_ ? snapped_port_ : hovered_port_;
@@ -3633,7 +3630,7 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
             tag.style.text_vertical_align = ui::TextVerticalAlign::center;
             tag.style.font_size = 11.f;
             tag.style.foreground = hex_color(0xffeb80);
-            controls.push_back(std::move(tag));
+            controls.add(std::move(tag));
         }
     }
 
@@ -3643,8 +3640,8 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
         if (!popup_.open()) {
             idle_projection_.emplace(IdleProjection{topology,
                                                     std::move(*idle),
-                                                    {selected_nodes.begin(), selected_nodes.end()},
-                                                    {catalog.begin(), catalog.end()},
+                                                    Array<std::string>{selected_nodes},
+                                                    Array<GraphNodeCatalogEntry>{catalog},
                                                     std::move(controls),
                                                     revision});
             output.append(idle_projection_->controls, revision);
@@ -3652,8 +3649,8 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
         }
         idle_projection_.emplace(IdleProjection{topology,
                                                 std::move(*idle),
-                                                {selected_nodes.begin(), selected_nodes.end()},
-                                                {catalog.begin(), catalog.end()},
+                                                Array<std::string>{selected_nodes},
+                                                Array<GraphNodeCatalogEntry>{catalog},
                                                 controls,
                                                 revision});
     }
@@ -3661,9 +3658,9 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
     output.append(controls, 0);
 }
 
-void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::ControlKey canvas_parent, float cw,
+void NetworkCanvas::append_canvas_popup(Array<ui::Control>& controls, ui::ControlKey canvas_parent, float cw,
                                         float ch, const GraphInspectView& view,
-                                        std::span<const GraphNodeCatalogEntry> catalog, bool read_only) const {
+                                        Span<const GraphNodeCatalogEntry> catalog, bool read_only) const {
     if (popup_.open()) {
         std::size_t aux_idx = 0;
         const auto next_aux = [&]() { return network_control::popup_aux_first + (aux_idx++); };
@@ -3685,7 +3682,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
         card.style.border = hex_color(0x4b5563);
         card.style.border_width = 1.f;
         card.style.radius = {6.f, 6.f, 6.f, 6.f};
-        controls.push_back(std::move(card));
+        controls.add(std::move(card));
 
         // Popup header row:
         ui::Control hrow;
@@ -3697,7 +3694,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
         hrow.layout.width = ui_layout::Axis::expand();
         hrow.layout.gap = 4.f;
         hrow.style.background = ui::Color{0, 0, 0, 0};
-        controls.push_back(std::move(hrow));
+        controls.add(std::move(hrow));
 
         ui::Control htitle;
         htitle.key = next_aux();
@@ -3716,7 +3713,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
         htitle.style.font_weight = 700;
         htitle.style.foreground = hex_color(0xf8fafc);
         htitle.style.text_vertical_align = ui::TextVerticalAlign::center;
-        controls.push_back(std::move(htitle));
+        controls.add(std::move(htitle));
 
         if (popup_.kind == PopupKind::shape_picker || popup_.kind == PopupKind::color_picker) {
             ui::Control sw_btn;
@@ -3729,7 +3726,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
             sw_btn.layout = ui_layout::NodeInput::box(64.f, 20.f);
             sw_btn.style.font_size = 10.5f;
             sw_btn.style.radius = {3.f, 3.f, 3.f, 3.f};
-            controls.push_back(std::move(sw_btn));
+            controls.add(std::move(sw_btn));
         }
 
         if (popup_.kind == PopupKind::edit_note || popup_.kind == PopupKind::edit_box) {
@@ -3742,7 +3739,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
             del_btn.classes = {"ghost-tool"};
             del_btn.layout = ui_layout::NodeInput::box(22.f, 20.f);
             del_btn.style.radius = {3.f, 3.f, 3.f, 3.f};
-            controls.push_back(std::move(del_btn));
+            controls.add(std::move(del_btn));
         }
 
         ui::Control close_btn;
@@ -3753,7 +3750,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
         close_btn.classes = {"ghost-tool"};
         close_btn.layout = ui_layout::NodeInput::box(22.f, 20.f);
         close_btn.style.radius = {3.f, 3.f, 3.f, 3.f};
-        controls.push_back(std::move(close_btn));
+        controls.add(std::move(close_btn));
 
         if (popup_.kind == PopupKind::shape_picker) {
             const auto* target_nv = view.find_node(popup_.target_name);
@@ -3778,7 +3775,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
             auto_btn.style.foreground = hex_color(0xe2e8f0);
             auto_btn.style.text_align = ui::TextAlign::center;
             auto_btn.style.text_vertical_align = ui::TextVerticalAlign::center;
-            controls.push_back(std::move(auto_btn));
+            controls.add(std::move(auto_btn));
 
             constexpr std::array<const wchar_t*, 8> shape_titles{L"Pill",    L"Rect",   L"Domed",   L"Trap",
                                                                  L"Hexagon", L"Ribbon", L"Diamond", L"Circle"};
@@ -3807,7 +3804,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
                 srow.layout.kind = ui_layout::Kind::row;
                 srow.layout.width = ui_layout::Axis::expand();
                 srow.layout.gap = 4.f;
-                controls.push_back(std::move(srow));
+                controls.add(std::move(srow));
 
                 for (std::size_t col_i = 0; col_i < 4; ++col_i) {
                     const std::size_t idx = row_i * 4 + col_i;
@@ -3823,7 +3820,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
                     wrap.layout = ui_layout::NodeInput::overlay();
                     wrap.layout.width = ui_layout::Axis::expand();
                     wrap.layout.height = ui_layout::Axis::fixed(38.f);
-                    controls.push_back(std::move(wrap));
+                    controls.add(std::move(wrap));
 
                     ui::Control cell;
                     cell.key = bkey;
@@ -3845,7 +3842,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
                     cell.style.foreground = hex_color(0xcbd5e1);
                     cell.style.text_align = ui::TextAlign::center;
                     cell.style.text_vertical_align = ui::TextVerticalAlign::center;
-                    controls.push_back(std::move(cell));
+                    controls.add(std::move(cell));
 
                     // Miniature analytic SDF preview overlaid on the shape cell:
                     ui::Control preview;
@@ -3857,16 +3854,16 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
                     auto cv = std::make_shared<ui::CanvasData>();
                     const float pw_mini = idx == 7 ? 24.f : 40.f;
                     const float px_mini = idx == 7 ? 9.f : 1.f;
-                    cv->shapes.push_back({{px_mini, 1.f, pw_mini, 13.f},
-                                          static_cast<std::uint8_t>(idx),
-                                          0,
-                                          0.f,
-                                          0.f,
-                                          hex_color(0x94a3b8),
-                                          1.f,
-                                          hex_color(0x0f172a)});
+                    cv->shapes.add({{px_mini, 1.f, pw_mini, 13.f},
+                                    static_cast<std::uint8_t>(idx),
+                                    0,
+                                    0.f,
+                                    0.f,
+                                    hex_color(0x94a3b8),
+                                    1.f,
+                                    hex_color(0x0f172a)});
                     preview.canvas = std::move(cv);
-                    controls.push_back(std::move(preview));
+                    controls.add(std::move(preview));
                 }
             }
         } else if (popup_.kind == PopupKind::color_picker) {
@@ -3888,7 +3885,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
                 crow.layout.kind = ui_layout::Kind::row;
                 crow.layout.width = ui_layout::Axis::expand();
                 crow.layout.gap = 4.f;
-                controls.push_back(std::move(crow));
+                controls.add(std::move(crow));
 
                 for (std::size_t col_i = 0; col_i < 6; ++col_i) {
                     const std::size_t idx = row_i * 6 + col_i;
@@ -3906,7 +3903,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
                     sw_btn.style.background = hex_color(rgb);
                     sw_btn.style.border = hex_color(0x0f172a, .8f);
                     sw_btn.style.border_width = 1.f;
-                    controls.push_back(std::move(sw_btn));
+                    controls.add(std::move(sw_btn));
                 }
             }
 
@@ -3927,7 +3924,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
             rst_btn.style.foreground = hex_color(0xcbd5e1);
             rst_btn.style.text_align = ui::TextAlign::center;
             rst_btn.style.text_vertical_align = ui::TextVerticalAlign::center;
-            controls.push_back(std::move(rst_btn));
+            controls.add(std::move(rst_btn));
         } else if (popup_.kind == PopupKind::node_info) {
             if (const auto* nv = view.find_node(popup_.target_name)) {
                 const auto cat_it = std::ranges::find(catalog, nv->type, &GraphNodeCatalogEntry::name);
@@ -3963,7 +3960,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
                 stats.layout.width = ui_layout::Axis::expand();
                 stats.style.font_size = 10.5f;
                 stats.style.foreground = hex_color(0xcbd5e1);
-                controls.push_back(std::move(stats));
+                controls.add(std::move(stats));
 
                 ui::Control clabel;
                 clabel.key = next_aux();
@@ -3975,7 +3972,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
                 clabel.layout.width = ui_layout::Axis::expand();
                 clabel.style.font_size = 10.5f;
                 clabel.style.foreground = hex_color(0x94a3b8);
-                controls.push_back(std::move(clabel));
+                controls.add(std::move(clabel));
 
                 ui::Control cedit;
                 cedit.key = network_control::info_comment_input;
@@ -3986,7 +3983,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
                 cedit.layout = ui_layout::NodeInput::box(0.f, 23.f);
                 cedit.layout.width = ui_layout::Axis::expand();
                 cedit.classes = {"field"};
-                controls.push_back(std::move(cedit));
+                controls.add(std::move(cedit));
             }
         } else if (popup_.kind == PopupKind::edit_note || popup_.kind == PopupKind::edit_box) {
             const bool is_note = popup_.kind == PopupKind::edit_note;
@@ -3999,7 +3996,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
             tedit.layout = ui_layout::NodeInput::box(0.f, 23.f);
             tedit.layout.width = ui_layout::Axis::expand();
             tedit.classes = {"field"};
-            controls.push_back(std::move(tedit));
+            controls.add(std::move(tedit));
 
             if (is_note) {
                 ui::Control blabel;
@@ -4012,7 +4009,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
                 blabel.layout.width = ui_layout::Axis::expand();
                 blabel.style.font_size = 10.f;
                 blabel.style.foreground = hex_color(0x94a3b8);
-                controls.push_back(std::move(blabel));
+                controls.add(std::move(blabel));
 
                 ui::Control bedit;
                 bedit.key = network_control::note_body_input;
@@ -4023,7 +4020,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
                 bedit.layout = ui_layout::NodeInput::box(0.f, 23.f);
                 bedit.layout.width = ui_layout::Axis::expand();
                 bedit.classes = {"field"};
-                controls.push_back(std::move(bedit));
+                controls.add(std::move(bedit));
             }
 
             const ui::ControlKey crow_key = next_aux();
@@ -4035,7 +4032,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
             crow.layout.kind = ui_layout::Kind::row;
             crow.layout.width = ui_layout::Axis::expand();
             crow.layout.gap = 4.f;
-            controls.push_back(std::move(crow));
+            controls.add(std::move(crow));
 
             constexpr std::array<std::size_t, 6> quick_swatches{3, 1, 7, 11, 14, 20};
             for (const std::size_t sw_i : quick_swatches) {
@@ -4050,7 +4047,7 @@ void NetworkCanvas::append_canvas_popup(std::vector<ui::Control>& controls, ui::
                 sw.style.background = hex_color(color_palette[sw_i]);
                 sw.style.border = hex_color(0x0f172a, .8f);
                 sw.style.border_width = 1.f;
-                controls.push_back(std::move(sw));
+                controls.add(std::move(sw));
             }
         }
     }

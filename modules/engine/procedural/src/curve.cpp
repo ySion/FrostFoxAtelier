@@ -19,13 +19,13 @@ using math::Vector3d;
 
 namespace {
 std::unexpected<Error> primitive_failure(std::uint32_t p, std::string message) {
-    std::optional<ErrorElement> element;
+    Optional<ErrorElement> element;
     if (p != 0xffffffffu)
         element = ErrorElement{"primitive", p};
-    return std::unexpected(Error{ErrorCode::argument_mismatch, std::move(message), std::nullopt, std::move(element)});
+    return std::unexpected(Error{ErrorCode::argument_mismatch, std::move(message), {}, std::move(element)});
 }
 
-Result<double> measure_polyline(const Geometry& input, std::uint32_t p, std::vector<ArcEdge>* edges) {
+Result<double> measure_polyline(const Geometry& input, std::uint32_t p, Array<ArcEdge>* edges) {
     if (p >= input.count(Layer::primitive))
         return primitive_failure(p, "Polyline primitive index " + std::to_string(p) + " is out of bounds.");
     const auto prim = input.primitive(p);
@@ -44,7 +44,7 @@ Result<double> measure_polyline(const Geometry& input, std::uint32_t p, std::vec
                                             std::to_string(p) + ".");
         length = next;
         if (edges)
-            edges->push_back({v, length});
+            edges->add({v, length});
     }
     if (length == 0.)
         return primitive_failure(p, "Zero-length polyline at primitive " + std::to_string(p) + ".");
@@ -96,9 +96,9 @@ Result<Slice> slice_interval(const PolylineArc& arc, float start, float end, boo
     const double a = arc.distance(start);
     const double b = end_from_tip ? arc.length() - arc.distance(end) : arc.distance(end);
     if (!(start >= 0.f && end >= 0.f && a >= 0. && a < b && b <= arc.length()))
-        return std::unexpected(Error{ErrorCode::argument_mismatch,
-                                     "Curve slice requires 0 <= start < end <= polyline length.", std::nullopt,
-                                     std::move(element)});
+        return std::unexpected(
+            Error{ErrorCode::argument_mismatch, "Curve slice requires 0 <= start < end <= polyline length.", {},
+                  std::move(element)});
     const auto lo = arc.edge_at(a);
     const auto hi = arc.edge_at(b);
     // Each retained edge end is strictly inside the interval. Values that round to the
@@ -114,9 +114,9 @@ Result<Slice> slice_interval(const PolylineArc& arc, float start, float end, boo
     if (first < stop && arc.position(arc.corner_after(stop - 1)) == pb)
         --stop;
     if (first == stop && pa == pb)
-        return std::unexpected(Error{ErrorCode::argument_mismatch,
-                                     "Curve slice endpoints collapse at output precision.", std::nullopt,
-                                     std::move(element)});
+        return std::unexpected(
+            Error{ErrorCode::argument_mismatch, "Curve slice endpoints collapse at output precision.", {},
+                  std::move(element)});
     return Slice{a, b, lo, hi, first, stop};
 }
 
@@ -141,7 +141,7 @@ Result<void> PolylineArcs::measure() {
     offsets.reserve(std::size_t(count) + 1);
     for (std::uint32_t p = 0; p < count; ++p) {
         ATELIER_TRY(measure_polyline(source, p, &edges));
-        offsets.push_back(edges.size());
+        offsets.add(edges.size());
     }
     return {};
 }
@@ -167,7 +167,7 @@ void CurveOutput::reserve(std::uint64_t points, std::uint64_t vertices) {
 
 Result<void> CurveOutput::emit(const PolylineArc& arc, ArcStation donor, double distance, Vector3 tangent, bool close) {
     if (need_donors_)
-        donors_.push_back(donor);
+        donors_.add(donor);
     if (close) {
         if (positions_.back() == positions_[first_point_])
             return failure("Curve samples collapse at the closed seam.");
@@ -255,7 +255,7 @@ Result<Geometry> slice_curves(const Geometry& input, float start, float end, boo
     PolylineArcs curves{input};
     ATELIER_TRY(curves.measure());
     const auto prim_count = input.count(Layer::primitive);
-    std::vector<Slice> slices;
+    Array<Slice> slices;
     slices.reserve(prim_count);
     std::uint64_t points{};
     std::uint64_t vertices{};
@@ -266,7 +266,7 @@ Result<Geometry> slice_curves(const Geometry& input, float start, float end, boo
         if (vertices > element_limit)
             return failure("Curve slices exceed the Geometry vertex limit.");
         points += slice->count() - (arc.closed() && slice->start == 0. && slice->end == arc.length());
-        slices.push_back(*slice);
+        slices.add(*slice);
     }
     CurveOutput output(input, false);
     output.reserve(points, vertices);
@@ -291,10 +291,10 @@ Result<float> polyline_length(const Geometry& curves, std::uint32_t primitive) {
 // Measure once per batch. Locate each boundary logarithmically and visit only retained corners.
 Result<void> read_curve_slices(const Geometry& curves, std::uint32_t primitive, const Array<math::Vector2>& intervals,
                                Array<Vector3>& positions, Array<std::uint32_t>& offsets) {
-    std::vector<ArcEdge> edges;
+    Array<ArcEdge> edges;
     ATELIER_TRY(measure_polyline(curves, primitive, &edges));
     const PolylineArc arc{curves, curves.primitive(primitive), edges};
-    std::vector<Slice> slices;
+    Array<Slice> slices;
     slices.reserve(intervals.size());
     std::uint64_t count{};
     for (std::uint32_t i = 0; i < intervals.size(); ++i) {
@@ -303,7 +303,7 @@ Result<void> read_curve_slices(const Geometry& curves, std::uint32_t primitive, 
         count += slice->count();
         if (count > element_limit)
             return failure("Curve slices exceed the Geometry vertex limit.");
-        slices.push_back(*slice);
+        slices.add(*slice);
     }
     Array<Vector3> result_points;
     Array<std::uint32_t> result_offsets{0};

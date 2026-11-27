@@ -1,14 +1,14 @@
 #pragma once
+#include "foundation/array.hpp"
 #include "foundation/frame_timing.hpp"
+#include "foundation/optional.hpp"
+#include "foundation/span.hpp"
 #include "renderer/renderer.hpp"
 #include "ui/controls.hpp"
 #include <array>
 #include <chrono>
 #include <memory>
-#include <optional>
-#include <span>
 #include <string_view>
-#include <vector>
 
 namespace atelier::editor {
 // One CPU+GPU frame pipeline. CPU samples are the host's frame timing records of
@@ -53,7 +53,7 @@ public:
 
         double max{};
 
-        std::optional<double> share;
+        Optional<double> share;
 
         std::size_t active_samples{};
 
@@ -68,16 +68,16 @@ public:
         std::uint64_t frame_id{}; // Recorder sequence and accepted UI frame of the latest sample.
 
         // By catalog index; empty until the phase is entered in this domain.
-        std::array<std::optional<Timing>, timing::capacity> phases{};
+        std::array<Optional<Timing>, timing::capacity> phases{};
 
         std::array<std::uint32_t, timing::capacity> current_entries{};
 
-        std::optional<Timing> unattributed; // The frame minus its direct children.
+        Optional<Timing> unattributed; // The frame minus its direct children.
 
         // Between consecutive sampled steps; cleared immediately on an unsampled step or sequence gap.
-        std::optional<Timing> interval;
+        Optional<Timing> interval;
 
-        std::optional<double> recent_interval; // Mean of the consecutive intervals in the last half second.
+        Optional<double> recent_interval; // Mean of the consecutive intervals in the last half second.
     };
 
     struct Snapshot {
@@ -103,9 +103,9 @@ public:
 
         bool ddgi{};
 
-        std::optional<std::uint64_t> resource_bytes;
+        Optional<std::uint64_t> resource_bytes;
 
-        std::array<std::optional<Timing>, pass_count> timings{};
+        std::array<Optional<Timing>, pass_count> timings{};
 
         Cpu cpu;
     };
@@ -115,7 +115,7 @@ public:
     void observe(const renderer::Frame&, const renderer::FrameResult&, Clock::time_point now = Clock::now());
 
     // Every host step. A sampled step was accepted without capture and names its UI frame.
-    void observe(const timing::FrameRecord&, std::optional<std::uint64_t> sampled_frame,
+    void observe(const timing::FrameRecord&, Optional<std::uint64_t> sampled_frame,
                  Clock::time_point now = Clock::now());
 
     void publish(Clock::time_point now = Clock::now());
@@ -124,7 +124,7 @@ public:
 
     bool apply(const ui::Action&);
 
-    static std::span<const Pass> passes();
+    static Span<const Pass> passes();
 
     const Snapshot& snapshot() const noexcept { return published_; }
 
@@ -164,7 +164,7 @@ private:
         double unattributed{};
     };
 
-    std::optional<Domain> domain_;
+    Optional<Domain> domain_;
 
     std::uint64_t first_frame_{};
 
@@ -180,7 +180,7 @@ private:
 
     std::size_t count_{};
 
-    std::vector<CpuSample> cpu_; // window_size entries, allocated once.
+    Array<CpuSample> cpu_; // window_size entries, allocated once.
 
     std::array<std::uint32_t, timing::capacity> cpu_entries_{};
 
@@ -202,15 +202,15 @@ private:
 
     std::size_t interval_count_{};
 
-    std::optional<std::pair<std::uint64_t, Clock::time_point>> previous_sample_; // Sequence and begin in this domain.
+    Optional<std::pair<std::uint64_t, Clock::time_point>> previous_sample_; // Sequence and begin in this domain.
 
     std::uint64_t structure_errors_{};
 
     const timing::Marker* first_structure_error_{};
 
-    std::vector<const timing::Marker*> cpu_rows_; // Catalog in depth-first order, without the frame.
+    Array<const timing::Marker*> cpu_rows_; // Catalog in depth-first order, without the frame.
 
-    std::optional<std::uint64_t> resource_bytes_;
+    Optional<std::uint64_t> resource_bytes_;
 
     Clock::time_point next_publish_{};
 

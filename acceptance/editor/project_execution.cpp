@@ -64,7 +64,8 @@ void run(const std::filesystem::path& root) {
         link.open(std::move(pipe), root / "Cache/play-changes");
         document.set_live_forwarding(true);
         take(document.rename(entity, L"Renamed in Play"));
-        link.forward(take(document.take_live_ops()));
+        const auto live_ops = take(document.take_live_ops());
+        link.forward(live_ops);
         require(link.unacknowledged() == 1, "The editor did not queue the scene rename.");
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
         while (link.unacknowledged() && link.divergence().empty() && child.running() &&
@@ -77,11 +78,11 @@ void run(const std::filesystem::path& root) {
                 "The child did not acknowledge the scene rename.");
         child.stop();
         wait_exit(child);
-        require(child.exit_code() == 0 && !child.forced(), "Live Play did not stop cleanly.");
+        require(child.exit_code() == 0u && !child.forced(), "Live Play did not stop cleanly.");
         auto restored = editor::load_project_scene(project, take(assets::read_file(report)));
-        require(restored.session &&
-                    restored.session->name(take(restored.session->local_object(*document.document_identity(entity)))) ==
-                        L"Renamed in Play",
+        const auto entity_id = document.document_identity(entity);
+        require(restored.session && entity_id &&
+                    restored.session->name(take(restored.session->local_object(*entity_id))) == L"Renamed in Play",
                 "The child report lost the acknowledged rename or its identity.");
     }
     complete(document.close());
@@ -95,7 +96,7 @@ void run(const std::filesystem::path& root) {
         application::PlayProcess child;
         take(child.start(root, snapshot, true, 1));
         wait_exit(child);
-        require(child.exit_code() == 1, "A failed scene build did not reject the Play run.");
+        require(child.exit_code() == 1u, "A failed scene build did not reject the Play run.");
         editor::Output output;
         const auto refused = output.add_run(snapshot);
         require(!refused && refused.error().code == logging::ErrorCode::invalid_options &&
@@ -173,7 +174,8 @@ void verify_network_control_reuse(const std::filesystem::path& root) {
         if constexpr (!std::is_void_v<T>)
             return std::move(*value);
     };
-    take_ui(ui_session.initialize(take(application::editor_fonts())));
+    const auto fonts = take(application::editor_fonts());
+    take_ui(ui_session.initialize(fonts));
     take_ui(ui_session.set_style_sheet(take(application::editor_styles())));
     take_ui(ui_session.set_surface({{1400, 900}, 1.f, 1}));
 

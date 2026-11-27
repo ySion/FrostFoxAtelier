@@ -5,10 +5,10 @@ namespace atelier::editor {
 void ControlWorkbench::remember() {
     if (values_ == history_[cursor_])
         return;
-    history_.erase(history_.begin() + static_cast<std::ptrdiff_t>(cursor_ + 1), history_.end());
-    history_.push_back(values_);
+    history_.truncate(cursor_ + 1);
+    history_.add(values_);
     if (history_.size() > 65)
-        history_.erase(history_.begin());
+        history_.remove_at(0);
     cursor_ = history_.size() - 1;
 }
 
@@ -127,13 +127,13 @@ void ControlWorkbench::append(ui_language::ControlOutput controls, ui::ControlKe
     constexpr std::array colors{L"Red", L"Green", L"Blue"};
     for (std::size_t axis = 0; axis < 4; ++axis) {
         const auto channel = static_cast<ui::VectorAxis>(axis + 1);
-        vector.fields.push_back({vector4_x + axis, names[axis], values_.vector4[axis], defaults.vector4[axis], -10000,
-                                 10000, .01, .001, channel});
+        vector.fields.add({vector4_x + axis, names[axis], values_.vector4[axis], defaults.vector4[axis], -10000, 10000,
+                           .01, .001, channel});
         if (axis == 3)
             continue;
-        position.fields.push_back(
+        position.fields.add(
             {position_x + axis, names[axis], values_.position[axis], 0, -10000, 10000, .01, .001, channel});
-        color.fields.push_back(
+        color.fields.add(
             {red + axis, colors[axis], values_.color[axis], defaults.color[axis], 0, 1, .01, .001, channel});
     }
     EditBinding exposure{scalar_reset,

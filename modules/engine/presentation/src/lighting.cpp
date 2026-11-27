@@ -78,7 +78,7 @@ Result<void> EnvironmentComponent::validate() const {
 
 world::World::Admission detail::unique_environment(world::CapabilityId environments) {
     return [environments](const world::World& world,
-                          std::span<const world::World::AdmissionCandidate> candidates) -> Result<void> {
+                          Span<const world::World::AdmissionCandidate> candidates) -> Result<void> {
         ATELIER_TRY_BIND(members, world.members(environments));
         ObjectId first;
         const auto visit = [&](ObjectId object) -> Result<void> {
@@ -132,7 +132,7 @@ Result<void> set_value(world::World& world, ObjectId object, std::string_view na
     ATELIER_TRY_BIND(owner, runtime.native_type<Owner>());
     ATELIER_TRY_BIND(type, runtime.native_type<T>());
     ATELIER_TRY_BIND(field, runtime.find_field(*owner, name));
-    return world.write(object, std::span{&*field, 1}, ValueInput{*type, &value});
+    return world.write(object, Span{&*field, 1}, ValueInput{*type, &value});
 }
 }
 
@@ -166,12 +166,12 @@ Result<SkyMapBinding> read_sky_map(Runtime& runtime, ObjectId object) {
         });
 }
 
-Result<std::vector<LightRenderItem>> Scene::light_items() const {
+Result<Array<LightRenderItem>> Scene::light_items() const {
     return extract_lights(nullptr);
 }
 
-Result<std::vector<LightRenderItem>> Scene::extract_lights(const detail::Presented* presented, bool* failed,
-                                                           bool* moved) const {
+Result<Array<LightRenderItem>> Scene::extract_lights(const detail::Presented* presented, bool* failed,
+                                                     bool* moved) const {
     bool unused{};
     if (!failed)
         failed = &unused;
@@ -179,7 +179,7 @@ Result<std::vector<LightRenderItem>> Scene::extract_lights(const detail::Present
         moved = &unused;
     ATELIER_TRY_BIND(pass, world_->spatial_pass(DiagnosticPhase::lighting));
     auto& runtime = world_->runtime();
-    std::vector<LightRenderItem> result;
+    Array<LightRenderItem> result;
     ATELIER_TRY_BIND(lights, world_->members(lights_));
     valid_lights_.resize(lights->size());
     {
@@ -198,8 +198,7 @@ Result<std::vector<LightRenderItem>> Scene::extract_lights(const detail::Present
                 continue;
             }
             if (!valid_lights_.contains(slot, *settings)) {
-                ATELIER_TRY_BIND(
-                    invalid, runtime.validate_value(types_.light_settings, std::as_bytes(std::span{&*settings, 1})));
+                ATELIER_TRY_BIND(invalid, runtime.validate_value(types_.light_settings, as_bytes(Span{&*settings, 1})));
                 if (*invalid) {
                     const auto& failure = **invalid;
                     if (!world_->contain(failure.error, world::validation_diagnostic(failure, DiagnosticPhase::lighting,
@@ -244,7 +243,7 @@ Result<std::vector<LightRenderItem>> Scene::extract_lights(const detail::Present
                     item.up = math::rotate(turn, item.up);
                 }
             }
-            result.push_back(item);
+            result.add(item);
         }
     }
     return result;

@@ -86,7 +86,7 @@ bool is_contract_method(const Runtime& runtime, std::string_view base_name, std:
     const auto base = runtime.find_type(base_name);
     if (!base || language::editor_reserved(base_name))
         return false;
-    for (std::optional<TypeId> current = *base; current;) {
+    for (Optional<TypeId> current = *base; current;) {
         const auto info = runtime.describe(*current);
         if (!info)
             break;
@@ -131,17 +131,17 @@ bool keeps_class(const Runtime& runtime, const language::ClassDeclaration& publi
     return true;
 }
 
-template <class T>
-const T* find_named(const std::vector<T>& values, std::string_view name) {
-    const auto found = std::ranges::find(values, name, &T::name);
-    return found == values.end() ? nullptr : &*found;
+template <std::ranges::contiguous_range R>
+const std::ranges::range_value_t<R>* find_named(const R& values, std::string_view name) {
+    const auto found = std::ranges::find(values, name, &std::ranges::range_value_t<R>::name);
+    return found == std::ranges::end(values) ? nullptr : &*found;
 }
 
 // A class field's Runtime definition. Defaults and bounds fold against the field's leaf type: each
 // component of a vector; an enum default names one item and becomes its underlying integer.
 Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const language::ClassDeclaration& owner,
                                     const language::ClassField& field,
-                                    const std::vector<language::TypeDeclaration>& declarations, const Binding& binding,
+                                    Span<const language::TypeDeclaration> declarations, const Binding& binding,
                                     Runtime& runtime) {
     const auto at = [&](language::SourcePosition position, std::string message) {
         return std::unexpected(source_error(snapshot, owner.file, position, std::move(message)));
@@ -156,7 +156,7 @@ Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const langua
     result.name = field.name;
     std::string_view leaf; // empty for an enum
     const BoundValue* vector{};
-    const std::vector<std::pair<std::string, std::uint32_t>>* items{};
+    Optional<Span<const std::pair<std::string, std::uint32_t>>> items;
     bool signed_items{};
     bool flags_items{};
     const auto names_vector = [&](std::string_view name) {
@@ -174,7 +174,7 @@ Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const langua
         if (!declared->enumeration)
             return unsupported();
         result.value = {TypeReference{field.type}};
-        items = &declared->enumerators;
+        items = Span<const std::pair<std::string, std::uint32_t>>{declared->enumerators};
         signed_items = declared->signed_enum;
         flags_items = declared->flags;
     } else if (const auto found = std::ranges::find_if(
@@ -191,7 +191,7 @@ Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const langua
         if (info->kind == TypeKind::string)
             result.default_text.emplace();
         else if (info->enumeration) {
-            items = &info->enumeration->values;
+            items = info->enumeration->values;
             signed_items = info->enumeration->underlying == binding.i32;
             flags_items = info->enumeration->flags;
         } else
@@ -205,7 +205,7 @@ Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const langua
             if (!field.initializer_text)
                 return std::unexpected(mapped_error(snapshot, initializer, {},
                                                     "String field defaults require one ordinary string literal."));
-            result.default_text = field.initializer_text;
+            result.default_text = *field.initializer_text;
         }
     } else if (items) {
         std::uint32_t bits = 0;
@@ -215,11 +215,11 @@ Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const langua
             if (!field.initializer_item.empty() && field.initializer_name == field.type && item != items->end()) {
                 bits = item->second;
             } else if (flags_items) {
-                std::vector<language::EnumItem> enum_items;
+                Array<language::EnumItem> enum_items;
                 enum_items.reserve(items->size());
                 std::uint32_t declared_mask = 0;
                 for (const auto& [name, val] : *items) {
-                    enum_items.push_back({name, val});
+                    enum_items.add({name, val});
                     declared_mask |= val;
                 }
                 const language::EnumBinding enum_binding{field.type, language::ValueType::u32, enum_items, true};
@@ -247,7 +247,7 @@ Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const langua
                                                         " with one constant per component."));
             for (const auto& argument : arguments) {
                 ATELIER_TRY_BIND(value, fold_scalar(snapshot, argument, leaf));
-                result.default_leaves.push_back(*value);
+                result.default_leaves.add(*value);
             }
         }
         if (result.default_leaves.size() < components)
@@ -274,7 +274,7 @@ Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const langua
     result.label = field.label;
     result.category = field.category;
     result.description = field.description;
-    result.metadata = field.metadata;
+    result.metadata.assign(field.metadata);
     result.transient = field.transient;
     result.read_only = field.read_only;
     const auto normalized = result.normalize_metadata();
@@ -285,7 +285,7 @@ Result<FieldDefinition> class_field(const SourceSnapshot& snapshot, const langua
 
 Result<DescribedMethodDefinition> class_method(const SourceSnapshot& snapshot, const language::ClassDeclaration& owner,
                                                const language::ClassMethod& method,
-                                               const std::vector<language::TypeDeclaration>& declarations,
+                                               Span<const language::TypeDeclaration> declarations,
                                                const Binding& binding, Runtime& runtime) {
     const auto at = [&](language::SourcePosition position, std::string message) {
         return std::unexpected(source_error(snapshot, owner.file, position, std::move(message)));
@@ -394,16 +394,16 @@ Result<DescribedMethodDefinition> class_method(const SourceSnapshot& snapshot, c
     result.parameter_metadata.reserve(method.parameters.size());
     for (const auto& parameter : method.parameters) {
         ATELIER_TRY_BIND(resolved, resolve_type(parameter.type, parameter.position, false));
-        result.signature.parameters.push_back({ValueDefinition{std::move(*resolved)}, parameter.passing});
-        result.parameter_names.push_back(parameter.name);
-        result.parameter_metadata.push_back(parameter.metadata);
+        result.signature.parameters.add({ValueDefinition{std::move(*resolved)}, parameter.passing});
+        result.parameter_names.add(parameter.name);
+        result.parameter_metadata.emplace(parameter.metadata);
     }
     return result;
 }
 
 // Published field definitions compare decoded contents, not source spacing or attribute order.
 bool same_field(const FieldDefinition& a, const FieldDefinition& b) {
-    const auto same = [](const std::optional<Scalar>& x, const std::optional<Scalar>& y) {
+    const auto same = [](const Optional<Scalar>& x, const Optional<Scalar>& y) {
         return x && y ? same_scalar(*x, *y) : x.has_value() == y.has_value();
     };
     return same_leaves(a.default_leaves, b.default_leaves) && same(a.range.ui_min, b.range.ui_min) &&
@@ -473,23 +473,23 @@ std::string format_source_value_type(const Binding& binding, language::ValueType
     }
 }
 
-Result<std::vector<FunctionInfo>> inspect_unit_functions(const SourceSnapshot& snapshot,
-                                                         const language::MappedSource& text,
-                                                         std::string_view source_name, const Binding& binding,
-                                                         std::string_view unit_engine) {
-    std::vector<std::vector<language::EnumItem>> enum_items;
-    std::vector<language::EnumBinding> enumerations;
+Result<Array<FunctionInfo>> inspect_unit_functions(const SourceSnapshot& snapshot,
+                                                   const language::MappedSource& text,
+                                                   std::string_view source_name, const Binding& binding,
+                                                   std::string_view unit_engine) {
+    Array<Array<language::EnumItem>> enum_items;
+    Array<language::EnumBinding> enumerations;
     enum_items.reserve(binding.enumerations.size());
     enumerations.reserve(binding.enumerations.size());
     for (const auto& enumeration : binding.enumerations) {
-        auto& items = enum_items.emplace_back();
+        auto& items = enum_items.emplace();
         items.reserve(enumeration.values.size());
         for (const auto& [name, bits] : enumeration.values)
-            items.push_back({name, bits});
-        enumerations.push_back(
+            items.add({name, bits});
+        enumerations.add(
             {enumeration.name, binding_value_type({enumeration.underlying, 0}), items, enumeration.flags});
     }
-    std::vector<language::ValueLayout> values;
+    Array<language::ValueLayout> values;
     values.reserve(binding.values.size());
     for (std::uint32_t i = 0; i < binding.values.size(); ++i) {
         const auto& value = binding.values[i];
@@ -508,18 +508,18 @@ Result<std::vector<FunctionInfo>> inspect_unit_functions(const SourceSnapshot& s
                                      value.math,
                                      value.plain_value,
                                      value.zero_default,
-                                     value.initial_value};
+                                     std::vector<std::byte>(value.initial_value.begin(), value.initial_value.end())};
         layout.fields.reserve(value.fields.size());
         for (const auto& field : value.fields)
             layout.fields.push_back({field.name, binding_value_type(field.type), field.offset});
-        values.push_back(std::move(layout));
+        values.add(std::move(layout));
     }
     const language::Environment env{{}, {}, {}, enumerations, values};
     auto parsed = language::compile_source(source_name, text.text, env, {}, true);
     if (!parsed)
         return std::unexpected(mapped_error(snapshot, text, parsed.error().position, parsed.error().message));
 
-    std::vector<FunctionInfo> result;
+    Array<FunctionInfo> result;
     if (unit_engine.empty())
         return result;
     for (const auto& fn : parsed->functions) {
@@ -535,10 +535,10 @@ Result<std::vector<FunctionInfo>> inspect_unit_functions(const SourceSnapshot& s
         info.parameters.reserve(fn.parameters.size());
         for (std::size_t p = 0; p < fn.parameters.size(); ++p) {
             const auto& param = fn.parameters[p];
-            info.parameters.push_back({fn.locals[p].name, format_source_value_type(binding, param.type), param.passing,
-                                       param.mutates_structure});
+            info.parameters.add({fn.locals[p].name, format_source_value_type(binding, param.type), param.passing,
+                                 param.mutates_structure});
         }
-        result.push_back(std::move(info));
+        result.add(std::move(info));
     }
     return result;
 }
@@ -548,21 +548,21 @@ std::shared_ptr<const SourceSnapshot> Program::SourceRequest::snapshot() const {
     return module_ ? module_->snapshot : nullptr;
 }
 
-std::span<const ClassInfo> Program::classes() const noexcept {
-    return state_->module ? std::span<const ClassInfo>{state_->module->classes} : std::span<const ClassInfo>{};
+Span<const ClassInfo> Program::classes() const noexcept {
+    return state_->module ? Span<const ClassInfo>{state_->module->classes} : Span<const ClassInfo>{};
 }
 
-std::span<const EntryInfo> Program::entries() const noexcept {
-    return state_->module ? std::span<const EntryInfo>{state_->module->entries} : std::span<const EntryInfo>{};
+Span<const EntryInfo> Program::entries() const noexcept {
+    return state_->module ? Span<const EntryInfo>{state_->module->entries} : Span<const EntryInfo>{};
 }
 
-std::span<const FunctionInfo> Program::functions() const noexcept {
-    return state_->module ? std::span<const FunctionInfo>{state_->module->functions} : std::span<const FunctionInfo>{};
+Span<const FunctionInfo> Program::functions() const noexcept {
+    return state_->module ? Span<const FunctionInfo>{state_->module->functions} : Span<const FunctionInfo>{};
 }
 
-std::span<const std::string> Program::engine_modules() const noexcept {
-    return state_->module ? std::span<const std::string>{state_->module->request->source.engine_modules}
-                          : std::span<const std::string>{};
+Span<const std::string> Program::engine_modules() const noexcept {
+    return state_->module ? Span<const std::string>{state_->module->request->source.engine_modules}
+                          : Span<const std::string>{};
 }
 
 std::uint64_t Program::revision() const noexcept {
@@ -713,29 +713,30 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
                              "Published source class description changed; rebuild the Runtime context: " + cls.name});
         }
     }
-    std::vector<language::TypeName> array_uses;
+    Array<language::TypeName> array_uses;
     for (std::uint32_t file_index = 0; file_index < input.files.size(); ++file_index) {
         auto uses = language::collect_array_types(input.files[file_index].source);
         if (!uses)
             return fail(source_error(input, file_index, uses.error().position, uses.error().message));
-        array_uses.insert(array_uses.end(), uses->begin(), uses->end());
+        array_uses.append(*uses);
     }
-    auto definitions = type_definitions(module.source.types, array_uses, *current_binding);
+    auto definitions =
+        type_definitions(Span<const language::TypeDeclaration>{module.source.types}, array_uses, *current_binding);
     if (!definitions)
         return fail(definitions.error());
     // Existing source types stay published; new ones still reference them by name.
     if (published)
-        std::erase_if(*definitions,
-                      [&](const auto& definition) { return find_named(published->source.types, definition.name); });
-    std::erase_if(*definitions, [&](const auto& definition) {
+        definitions->remove_if(
+            [&](const auto& definition) { return find_named(published->source.types, definition.name) != nullptr; });
+    definitions->remove_if([&](const auto& definition) {
         return language::synthesized_array_name(definition.name) && runtime.find_type(definition.name).has_value();
     });
     struct KeptClass {
         TypeId id;
 
-        std::vector<DescribedMethodDefinition> methods;
+        Array<DescribedMethodDefinition> methods;
     };
-    std::vector<KeptClass> kept_classes;
+    Array<KeptClass> kept_classes;
     for (const auto& cls : module.source.classes) {
         if (std::ranges::any_of(current_binding->values, [&](const auto& value) {
                 return value.math && cls.name == math::short_name(value.math);
@@ -754,20 +755,22 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
         definition.kind = TypeKind::object;
         definition.name = cls.name;
         definition.base = *base;
-        std::vector<FieldDefinition> fields;
+        Array<FieldDefinition> fields;
         for (const auto& field : cls.fields) {
-            auto declared = class_field(input, cls, field, module.source.types, *current_binding, runtime);
+            auto declared = class_field(input, cls, field, Span<const language::TypeDeclaration>{module.source.types},
+                                        *current_binding, runtime);
             if (!declared)
                 return fail(declared.error());
-            fields.push_back(std::move(*declared));
+            fields.add(std::move(*declared));
         }
-        std::vector<DescribedMethodDefinition> methods;
+        Array<DescribedMethodDefinition> methods;
         methods.reserve(cls.methods.size());
         for (const auto& method : cls.methods) {
-            auto declared = class_method(input, cls, method, module.source.types, *current_binding, runtime);
+            auto declared = class_method(input, cls, method, Span<const language::TypeDeclaration>{module.source.types},
+                                         *current_binding, runtime);
             if (!declared)
                 return fail(declared.error());
-            methods.push_back(std::move(*declared));
+            methods.add(std::move(*declared));
         }
         const auto* kept = published ? find_named(published->source.classes, cls.name) : nullptr;
         if (kept) {
@@ -783,14 +786,14 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
             if (!existing)
                 return fail(
                     source_error(input, cls.file, cls.position, "Source class has no prepared Runtime layout."));
-            kept_classes.push_back({*existing, std::move(methods)});
+            kept_classes.add({*existing, std::move(methods)});
         } else {
             definition.description = cls.description;
             definition.described_methods = std::move(methods);
             definition.fields = fields;
-            definitions->push_back(std::move(definition));
+            definitions->add(std::move(definition));
         }
-        module.class_fields.push_back(std::move(fields));
+        module.class_fields.add(std::move(fields));
     }
     const auto map_member_error = [&](const Error& error) -> Error {
         // Runtime member rules end with `Class.member` or `Class.member hides ...`; report them at that member.
@@ -820,7 +823,7 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
             return fail(map_member_error(checked.error()));
     }
     const auto catalog =
-        request->type_publication_ ? request->type_publication_->catalog() : std::span<const TypeInfo* const>{};
+        request->type_publication_ ? request->type_publication_->catalog() : Span<const TypeInfo* const>{};
     auto binding = bind_type(runtime, {}, catalog);
     if (!binding)
         return fail(std::move(binding.error()));
@@ -829,24 +832,24 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
     // declaration is checked in its home unit: the project's, whose functions are the global
     // entries, or its engine module's, which only checks.
     const auto home = [&](std::string_view engine) {
-        std::vector<std::uint32_t> roots;
+        Array<std::uint32_t> roots;
         for (std::uint32_t i = 0; i < module.source.declarations.size(); ++i)
             if (module.source.declarations[i].engine == engine)
-                roots.push_back(i);
+                roots.add(i);
         return roots;
     };
     if (const auto roots = home({}); !roots.empty()) {
         ModuleRequest::Unit unit{request->compilation_contract_, module.source.closure(roots), {}, {}, {}, {}, false};
         for (const auto& function : module.source.functions) {
-            unit.names.push_back(function.name);
-            unit.parameter_names.push_back(function.parameters);
-            unit.parameter_metadata.emplace_back(function.parameters.size());
+            unit.names.add(function.name);
+            unit.parameter_names.emplace(function.parameters);
+            unit.parameter_metadata.emplace(function.parameters.size());
         }
-        module.units.push_back(std::move(unit));
+        module.units.add(std::move(unit));
     }
     for (const auto& engine : module.source.engine_modules)
         if (const auto roots = home(engine); !roots.empty())
-            module.units.push_back(
+            module.units.add(
                 {request->compilation_contract_, module.source.closure(roots), {}, "engine/" + engine, {}, {}, false});
     for (const auto& cls : module.source.classes) {
         const TypeInfo* info{};
@@ -862,7 +865,7 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
                 }
         if (!info || !info->base)
             return fail(source_error(input, cls.file, cls.position, "Source class has no prepared Runtime layout."));
-        module.classes.push_back({cls.name, info->id, *info->base});
+        module.classes.add({cls.name, info->id, *info->base});
         if (cls.methods.empty())
             continue;
         auto binding = bind_type(runtime, info->id, catalog);
@@ -877,19 +880,19 @@ Result<Program::Request> Program::request(SourceSnapshot snapshot, CompileOption
                                  true};
         for (const auto& method : cls.methods) {
             unit.source.append(method.source);
-            unit.names.push_back(method.name);
-            std::vector<std::string> names;
-            std::vector<MetadataList> meta;
+            unit.names.add(method.name);
+            Array<std::string> names;
+            Array<MetadataList> meta;
             names.reserve(method.parameters.size());
             meta.reserve(method.parameters.size());
             for (const auto& parameter : method.parameters) {
-                names.push_back(parameter.name);
-                meta.push_back(parameter.metadata);
+                names.add(parameter.name);
+                meta.emplace(parameter.metadata);
             }
-            unit.parameter_names.push_back(std::move(names));
-            unit.parameter_metadata.push_back(std::move(meta));
+            unit.parameter_names.add(std::move(names));
+            unit.parameter_metadata.add(std::move(meta));
         }
-        module.units.push_back(std::move(unit));
+        module.units.add(std::move(unit));
     }
     return request;
 }
@@ -905,15 +908,15 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
     // file; otherwise a Version maps only its failing site. Export views share the
     // unit tables, while completed captures own no project snapshot.
     const auto& snapshot = *request->module_->snapshot;
-    std::vector<std::vector<std::size_t>> line_starts(snapshot.files.size());
+    Array<Array<std::size_t>> line_starts(snapshot.files.size());
     if (request->options.diagnostics || request->options.debugging) {
         for (std::size_t file = 0; file < snapshot.files.size(); ++file) {
             auto& lines = line_starts[file];
-            lines.push_back(0);
+            lines.add(0);
             const auto& source = snapshot.files[file].source;
             for (std::size_t i = 0; i < source.size(); ++i)
                 if (is_line_break(source, i))
-                    lines.push_back(i + 1);
+                    lines.add(i + 1);
         }
     }
     for (const auto& unit : request->module_->units) {
@@ -938,18 +941,18 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
             return static_cast<std::size_t>(std::ranges::find(kept->entries, name, &EntryInfo::name) -
                                             kept->entries.begin());
         };
-        std::vector<std::shared_ptr<BusinessCode>> codes;
+        Array<std::shared_ptr<BusinessCode>> codes;
         codes.reserve(unit.names.size());
         const std::string_view unit_engine = !unit.receiver && unit.owner.starts_with("engine/")
                                                  ? std::string_view{unit.owner}.substr(7)
                                                  : std::string_view{};
         if (kept) {
             for (const auto& method : unit.names)
-                codes.push_back(kept->versions[kept_index(entry_name(method))]->code);
+                codes.add(kept->versions[kept_index(entry_name(method))]->code);
             if (!unit.receiver) {
                 for (const auto& fn : kept->functions)
                     if (fn.engine_module == unit_engine)
-                        module->functions.push_back(fn);
+                        module->functions.add(fn);
             }
         } else {
             if (!unit.receiver && unit.names.empty()) {
@@ -957,16 +960,17 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
                                  inspect_unit_functions(*request->module_->snapshot, text, request->source_name,
                                                         unit.contract->binding, unit_engine));
                 for (auto& fn : *unit_functions)
-                    module->functions.push_back(std::move(fn));
+                    module->functions.add(std::move(fn));
                 continue;
             }
             const EnvironmentView storage(unit.contract->binding);
             const auto environment = storage.view(unit.contract->type_name.c_str());
-            std::vector<const char*> names;
+            InlineArray<const char*, 16> names;
+            names.reserve(unit.names.size());
             for (const auto& name : unit.names)
-                names.push_back(name.c_str());
-            std::vector<BusinessCode*> output(names.size());
-            std::vector<CodeOwner> owned;
+                names.add(name.c_str());
+            InlineArray<BusinessCode*, 16> output(names.size());
+            Array<CodeOwner> owned;
             owned.reserve(names.size());
             CompileLocation location{};
             char diagnostic[2048]{};
@@ -976,7 +980,7 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
                 static_cast<std::uint32_t>(names.size()), unit.receiver, output.data(), &location, diagnostic,
                 sizeof(diagnostic), request->options);
             for (auto* code : output)
-                owned.emplace_back(code, &atelier_destroy_business);
+                owned.emplace(code, &atelier_destroy_business);
             if (status)
                 return std::unexpected(
                     mapped_error(*request->module_->snapshot, text,
@@ -984,10 +988,11 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
                                   static_cast<std::size_t>(location.column)},
                                  diagnostic));
             for (auto& code : owned)
-                codes.push_back(std::move(code));
+                codes.add(std::move(code));
         }
-        auto map = std::make_shared<const SourceMap>(SourceMap{request->module_->snapshot, text.pieces});
-        std::shared_ptr<const std::vector<DiagnosticLocation>> locations;
+        auto map = std::make_shared<const SourceMap>(
+            SourceMap{request->module_->snapshot, Array<language::SourcePiece>{text.pieces}});
+        std::shared_ptr<const Array<DiagnosticLocation>> locations;
         std::shared_ptr<const DebugTables> debug_tables;
         if (!codes.empty()) {
             const auto info = atelier_business_info(codes.front().get());
@@ -1009,12 +1014,12 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
                 fn_info.parameters.reserve(info.signature.parameter_count);
                 for (std::uint32_t p = 0; p < info.signature.parameter_count; ++p) {
                     const auto& param = info.signature.parameters[p];
-                    fn_info.parameters.push_back(
+                    fn_info.parameters.add(
                         {unit.parameter_names[i][p],
                          format_source_value_type(unit.contract->binding, binding_value_type(param.type)),
                          param.passing, param.mutates_structure});
                 }
-                module->functions.push_back(std::move(fn_info));
+                module->functions.add(std::move(fn_info));
             }
             if (unit.receiver) {
                 const bool tick = method == "tick" || method == "post_physics_tick" || method == "late_tick";
@@ -1030,13 +1035,13 @@ Result<Program::Candidate> Program::prepare_module(const Request& request) {
             const auto name = entry_name(method);
             const auto code =
                 kept ? kept->entries[kept_index(name)].code : next_entry_code.fetch_add(1, std::memory_order_relaxed);
-            module->entries.push_back({name, *signature, unit.parameter_names[i], code, unit.parameter_metadata[i]});
+            module->entries.add({name, *signature, unit.parameter_names[i], code, unit.parameter_metadata[i]});
             auto declaration =
                 std::make_shared<const Declaration>(Declaration{info.function_name, std::move(*signature)});
             auto metadata = std::make_shared<const DiagnosticMetadata>(
                 DiagnosticMetadata{owner->id, request->sequence, name, request->source_name, locations});
             auto debug = make_debug_metadata(*metadata, info, debug_tables);
-            module->versions.push_back(std::shared_ptr<const Version>{
+            module->versions.add(std::shared_ptr<const Version>{
                 new Version(unit.contract, std::move(declaration), request->sequence, std::move(metadata),
                             std::move(debug), std::move(codes[i]), map),
                 &Version::retire});

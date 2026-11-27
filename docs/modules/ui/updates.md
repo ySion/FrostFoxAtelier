@@ -1,6 +1,6 @@
 # 持久实例与稀疏属性更新
 
-`Session`持有唯一控件状态和布局节点。初装或增删、重排、改父关系使用`set_controls(span<const Control>)`；属性绑定用`update_controls(span<const Control>)`提交发生变化的完整Control值。两入口使用同一校验、交互清理和描述提交实现。
+`Session`持有唯一控件状态和布局节点。初装或增删、重排、改父关系使用`set_controls(Span<const Control>)`；属性绑定用`update_controls(Span<const Control>)`提交发生变化的完整Control值。两入口使用同一校验、交互清理和描述提交实现。
 
 持续生成有序描述的宿主可复用一个 `ControlList`。每次 `begin` 后按绘制顺序追加区段，再 `finish` 并交给 `Session::set_controls`。非零区段版本标识相同的控件内容；版本、位置和长度都匹配时沿用已收集的值。宿主附加提示等派生属性的外部输入改变时，须同时更新 `begin` 的装饰版本。Session 仅在自身描述版本与上次成功提交的基线一致时采用增量。调用者始终可以从列表读取完整描述。
 
@@ -19,7 +19,7 @@
 
 ```cpp
 field.value = model_value;
-auto changed = ui.update_controls(std::span<const ui::Control>(&field, 1));
+auto changed = ui.update_controls(Span<const ui::Control>{&field, 1});
 if (!changed) return report(changed.error());
 apply_effects(*changed);
 ```

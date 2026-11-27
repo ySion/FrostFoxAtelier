@@ -184,7 +184,7 @@ MethodDefinition native_method(std::string name, bool preserves_borrows = false,
     if constexpr (!std::same_as<Return, void>)
         method.signature.result = ValueDefinition{TypeReference::native<Return>()};
     [&]<std::size_t... I>(std::index_sequence<I...>) {
-        (method.signature.parameters.push_back(
+        (method.signature.parameters.add(
              {{TypeReference::native<std::remove_cvref_t<std::tuple_element_t<I, Args>>>()},
               parameter_passing<std::tuple_element_t<I, Args>>}),
          ...);
@@ -299,15 +299,15 @@ public:
         auto& enumeration = *definition_.enumeration;
         if (!label.empty() || !description.empty() || !enumeration.metadata.empty()) {
             enumeration.metadata.resize(enumeration.values.size());
-            enumeration.metadata.push_back({std::move(label), std::move(description)});
+            enumeration.metadata.add({std::move(label), std::move(description)});
         }
-        enumeration.values.emplace_back(std::move(name), static_cast<std::uint32_t>(value));
+        enumeration.values.emplace(std::move(name), static_cast<std::uint32_t>(value));
         return *this;
     }
 
     template <class Base>
         requires std::derived_from<T, Base>
-    NativeRegistration& base(std::optional<std::size_t> offset = std::nullopt) {
+    NativeRegistration& base(Optional<std::size_t> offset = {}) {
         definition_.base = TypeReference::native<Base>();
         definition_.native.base_address = [](void* storage) noexcept -> void* {
             return static_cast<Base*>(static_cast<T*>(storage));
@@ -325,19 +325,19 @@ public:
     template <auto Pointer>
     NativeRegistration& field(std::string name, std::string description = {}) {
         using Value = typename detail::Member<decltype(Pointer)>::Value;
-        return field<Pointer>(std::move(name), {TypeReference::native<Value>()}, std::nullopt, {}, {},
+        return field<Pointer>(std::move(name), {TypeReference::native<Value>()}, {}, {}, {},
                               std::move(description));
     }
 
     // Explicit descriptions allow references to definitions in the same batch.
     template <auto Pointer>
-    NativeRegistration& field(std::string name, ValueDefinition value, std::optional<std::size_t> offset = std::nullopt,
+    NativeRegistration& field(std::string name, ValueDefinition value, Optional<std::size_t> offset = {},
                               std::string label = {}, std::string category = {}, std::string description = {}) {
         using Traits = detail::Member<decltype(Pointer)>;
         using Value = typename Traits::Value;
         static_assert(std::same_as<typename Traits::Owner, T>);
         static_assert(!std::is_const_v<Value> && !std::is_volatile_v<Value>);
-        definition_.fields.push_back(
+        definition_.fields.add(
             {std::move(name),
              std::move(value),
              [](void* object) noexcept -> void* { return std::addressof(static_cast<T*>(object)->*Pointer); },
@@ -353,7 +353,7 @@ public:
 
     template <auto Pointer>
     NativeRegistration& hidden_field(std::string name, ValueDefinition value,
-                                     std::optional<std::size_t> offset = std::nullopt, std::string label = {},
+                                     Optional<std::size_t> offset = {}, std::string label = {},
                                      std::string category = {}, std::string description = {}) {
         field<Pointer>(std::move(name), std::move(value), offset, std::move(label), std::move(category),
                        std::move(description));
@@ -364,7 +364,7 @@ public:
     template <auto Pointer>
     NativeRegistration& hidden_field(std::string name, std::string description = {}) {
         using Value = typename detail::Member<decltype(Pointer)>::Value;
-        return hidden_field<Pointer>(std::move(name), {TypeReference::native<Value>()}, std::nullopt, {}, {},
+        return hidden_field<Pointer>(std::move(name), {TypeReference::native<Value>()}, {}, {}, {},
                                      std::move(description));
     }
 
@@ -375,7 +375,7 @@ public:
     }
 
     // Applies to the most recently declared field; Runtime validates and owns the values.
-    NativeRegistration& metadata(std::vector<std::pair<std::string, std::string>> values) {
+    NativeRegistration& metadata(MetadataList values) {
         definition_.fields.back().metadata = std::move(values);
         return *this;
     }
@@ -406,25 +406,25 @@ public:
     NativeRegistration& method(std::string name, bool preserves_borrows = false, std::string description = {}) {
         using Traits = detail::Method<decltype(Pointer)>;
         static_assert(std::same_as<typename Traits::Owner, T>);
-        definition_.methods.push_back(
+        definition_.methods.add(
             native_method<Pointer>(std::move(name), preserves_borrows, std::move(description)));
         return *this;
     }
 
     // Applies to the most recently declared method; one name per parameter.
-    NativeRegistration& parameter_names(std::vector<std::string> names) {
+    NativeRegistration& parameter_names(Array<std::string> names) {
         definition_.methods.back().parameter_names = std::move(names);
         return *this;
     }
 
     // Applies to the most recently declared method; one optional default per parameter.
-    NativeRegistration& parameter_defaults(std::vector<std::optional<Scalar>> defaults) {
+    NativeRegistration& parameter_defaults(Array<Optional<Scalar>> defaults) {
         definition_.methods.back().parameter_defaults = std::move(defaults);
         return *this;
     }
 
     // Applies to the most recently declared method; one metadata list per parameter.
-    NativeRegistration& parameter_metadata(std::vector<MetadataList> metadata) {
+    NativeRegistration& parameter_metadata(Array<MetadataList> metadata) {
         definition_.methods.back().parameter_metadata = std::move(metadata);
         return *this;
     }

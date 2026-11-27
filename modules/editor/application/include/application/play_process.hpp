@@ -1,11 +1,11 @@
 #pragma once
 #include "application/play_link.hpp"
+#include "foundation/optional.hpp"
 #include "runtime/runtime.hpp"
 #include <Windows.h>
 #include <array>
 #include <chrono>
 #include <filesystem>
-#include <optional>
 #include <string>
 
 namespace atelier::application {
@@ -91,7 +91,7 @@ public:
 
     bool forced() const noexcept { return forced_; }
 
-    std::optional<DWORD> exit_code() const noexcept { return exit_code_; }
+    Optional<DWORD> exit_code() const noexcept { return exit_code_; }
 
     const std::filesystem::path& log_directory() const noexcept { return log_directory_; }
 
@@ -130,7 +130,7 @@ private:
 
     bool closing_{};
 
-    std::optional<DWORD> exit_code_;
+    Optional<DWORD> exit_code_;
 
     std::chrono::steady_clock::time_point stop_began_{};
 

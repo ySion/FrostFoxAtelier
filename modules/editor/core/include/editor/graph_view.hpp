@@ -1,30 +1,32 @@
 #pragma once
 
 #include "editor/graph_format.hpp"
+#include "foundation/array.hpp"
+#include "foundation/optional.hpp"
 #include "procedural/evaluator.hpp"
 #include "procedural/geometry.hpp"
 #include <algorithm>
 #include <array>
-#include <optional>
 #include <string>
 #include <utility>
-#include <vector>
 
 namespace atelier::editor {
 
 struct GraphPortInfo {
-    std::vector<std::string> inputs;
+    Array<std::string> inputs;
 
-    std::vector<bool> multiple;
+    Array<bool> multiple;
 
-    std::vector<std::string> outputs;
+    Array<std::string> outputs;
 
     bool operator==(const GraphPortInfo&) const = default;
 };
 
 struct GraphNodeHelp {
-    std::vector<procedural::PortDescription> ports;
-    std::vector<procedural::AttributeRule> attributes;
+    Array<procedural::PortDescription> ports;
+
+    Array<procedural::AttributeRule> attributes;
+
     std::string text;
 };
 
@@ -89,19 +91,19 @@ struct GraphNodeView {
 
     GraphNodeShape shape{GraphNodeShape::auto_role};
 
-    std::optional<std::uint32_t> color{};
+    Optional<std::uint32_t> color{};
 
     std::string comment{};
 
     GraphPortInfo ports;
 
-    std::optional<procedural::NodeStatus> status;
+    Optional<procedural::NodeStatus> status;
 
     std::string root_error_node{};
 };
 
 struct GraphAttributeStats {
-    std::optional<std::size_t> selected_count; // Exact membership for boolean columns.
+    Optional<std::size_t> selected_count; // Exact membership for boolean columns.
 
     std::string name;
 
@@ -113,13 +115,13 @@ struct GraphAttributeStats {
 
     std::size_t non_finite_count{};
 
-    std::vector<double> minimum;
+    Array<double> minimum;
 
-    std::vector<double> maximum;
+    Array<double> maximum;
 
-    std::vector<double> mean;
+    Array<double> mean;
 
-    std::vector<std::string> sample_values;
+    Array<std::string> sample_values;
 };
 
 struct GraphTopologyHealth {
@@ -197,13 +199,13 @@ struct GraphSurfaceClearanceStats {
 };
 
 struct GraphSpatialDiagnostics {
-    std::optional<GraphTopologyHealth> topology;
+    Optional<GraphTopologyHealth> topology;
 
-    std::optional<GraphSpacingStats> spacing;
+    Optional<GraphSpacingStats> spacing;
 
-    std::optional<GraphInstanceOverlapStats> instance_overlaps;
+    Optional<GraphInstanceOverlapStats> instance_overlaps;
 
-    std::optional<GraphSurfaceClearanceStats> surface_clearance;
+    Optional<GraphSurfaceClearanceStats> surface_clearance;
 };
 
 struct OpenGraphSnapshot {
@@ -227,11 +229,11 @@ struct GraphGeometrySummary {
 
     math::Vector3 bounds_max{};
 
-    std::array<std::vector<GraphAttributeStats>, 5> attributes{};
+    std::array<Array<GraphAttributeStats>, 5> attributes{};
 
-    std::vector<std::pair<std::string, std::size_t>> instance_references;
+    Array<std::pair<std::string, std::size_t>> instance_references;
 
-    std::optional<GraphSpatialDiagnostics> spatial;
+    Optional<GraphSpatialDiagnostics> spatial;
 };
 
 struct GraphEvaluation {
@@ -253,11 +255,11 @@ struct GraphEvaluation {
 
     std::uint64_t generation{};
 
-    std::optional<Error> display_error;
+    Optional<Error> display_error;
 
     std::string display_error_node{};
 
-    std::optional<Error> inspected_error;
+    Optional<Error> inspected_error;
 
     std::string inspected_error_node{};
 };
@@ -279,44 +281,44 @@ struct GraphInspectView {
 
     GraphPortInfo external_ports;
 
-    std::vector<GraphPromotedParameter> parameters;
+    Array<GraphPromotedParameter> parameters;
 
-    std::vector<GraphNodeView> nodes; // Document name order.
+    Array<GraphNodeView> nodes; // Document name order.
 
     const GraphNodeView* find_node(std::string_view name) const noexcept {
         const auto it = std::ranges::lower_bound(nodes, name, {}, &GraphNodeView::name);
         return it != nodes.end() && it->name == name ? &*it : nullptr;
     }
 
-    std::vector<GraphStickyNote> notes;
+    Array<GraphStickyNote> notes;
 
     const GraphStickyNote* find_note(std::string_view name) const noexcept {
         const auto it = std::ranges::lower_bound(notes, name, {}, &GraphStickyNote::name);
         return it != notes.end() && it->name == name ? &*it : nullptr;
     }
 
-    std::vector<GraphNetworkBox> boxes;
+    Array<GraphNetworkBox> boxes;
 
     const GraphNetworkBox* find_box(std::string_view name) const noexcept {
         const auto it = std::ranges::lower_bound(boxes, name, {}, &GraphNetworkBox::name);
         return it != boxes.end() && it->name == name ? &*it : nullptr;
     }
 
-    std::vector<GraphConnectionView> connections;
+    Array<GraphConnectionView> connections;
 
-    std::vector<world::Diagnostic> issues;
+    Array<world::Diagnostic> issues;
 
-    std::optional<Error> display_error;
+    Optional<Error> display_error;
 
     std::string display_error_node{};
 
-    std::optional<Error> inspected_error;
+    Optional<Error> inspected_error;
 
     std::string inspected_error_node{};
 
     GraphGeometrySummary display_summary;
 
-    std::optional<GraphGeometrySummary> inspected_summary;
+    Optional<GraphGeometrySummary> inspected_summary;
 };
 
 inline void append_error_coordinates(std::string& out, const Error& error) {

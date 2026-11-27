@@ -196,7 +196,7 @@ Result<V> unproject(const M& inverse, double x, double y, double z) {
 // the current one: while their redraw waits for budget the shader selects
 // faces from it, so for every receiver the light now reaches, the faces it
 // lies in as seen from there are kept too.
-Result<Request> point_request(const Frame& frame, const GpuLightSource& source, std::span<const ShadowCaster> receivers,
+Result<Request> point_request(const Frame& frame, const GpuLightSource& source, Span<const ShadowCaster> receivers,
                               const M& camera_view, const math::Vector3* drawn) {
     Request request;
     request.kind = 1;
@@ -265,8 +265,8 @@ Result<Request> point_request(const Frame& frame, const GpuLightSource& source, 
 // fit is the measured receiver range [near, far] in camera view Z. Without
 // it, splits are fixed fractions of the conservative receiver bound.
 Result<Request> directional_request(const Frame& frame, const GpuLightSource& source,
-                                    std::span<const ShadowCaster> receivers, std::span<const ShadowCaster> casters,
-                                    const M& camera_view, std::optional<std::array<double, 2>> fit) {
+                                    Span<const ShadowCaster> receivers, Span<const ShadowCaster> casters,
+                                    const M& camera_view, Optional<std::array<double, 2>> fit) {
     Request request;
     request.kind = 2;
     request.count = 4;
@@ -462,23 +462,23 @@ struct ShadowCache::State {
         Face previous;
     };
 
-    std::vector<Light> lights;
+    Array<Light> lights;
 
-    std::vector<ReservationUndo> reservation_undo;
+    Array<ReservationUndo> reservation_undo;
 
-    std::vector<Light> previous_lights;
+    Array<Light> previous_lights;
 
-    std::vector<Request> requests;
+    Array<Request> requests;
 
-    std::vector<std::uint32_t> sizes;
+    Array<std::uint32_t> sizes;
 
-    std::vector<std::uint32_t> order;
+    Array<std::uint32_t> order;
 
-    std::vector<Redraw> redraws;
+    Array<Redraw> redraws;
 
-    std::vector<std::uint8_t> queued; // Per light: 1 has redraws, 2 also has an undrawn face.
+    Array<std::uint8_t> queued; // Per light: 1 has redraws, 2 also has an undrawn face.
 
-    std::vector<ShadowCaster> receivers;
+    Array<ShadowCaster> receivers;
 
     std::array<bool, grid_size * grid_size> occupied{};
 
@@ -517,7 +517,7 @@ struct ShadowCache::State {
         bool valid{};
     } fit;
 
-    void measure(const std::optional<ShadowReceiverDepth>& depth) {
+    void measure(const Optional<ShadowReceiverDepth>& depth) {
         if (!depth || !(depth->minimum > 0) || !(depth->maximum >= depth->minimum) || !std::isfinite(depth->maximum)) {
             fit = {};
             return;
@@ -549,7 +549,7 @@ struct ShadowCache::State {
         track(fit.upper, upper, 1);
     }
 
-    std::optional<std::array<double, 2>> fitted() const {
+    Optional<std::array<double, 2>> fitted() const {
         if (!fit.valid)
             return {};
         return std::array{std::exp2(fit.lower.value / 4.0), std::exp2(fit.upper.value / 4.0)};
@@ -609,7 +609,7 @@ struct ShadowCache::State {
                     oldest = &face;
         if (!oldest)
             return false;
-        reservation_undo.push_back({oldest, *oldest});
+        reservation_undo.add({oldest, *oldest});
         release(*oldest);
         return true;
     }
@@ -637,7 +637,7 @@ struct ShadowCache::State {
         // across calls instead of copying the complete light table per source.
         for (std::uint32_t i = 0; i < request.count; ++i)
             if (request.needed[i])
-                reservation_undo.push_back({&light.faces[i], light.faces[i]});
+                reservation_undo.add({&light.faces[i], light.faces[i]});
         for (std::uint32_t i = 0; i < request.count; ++i)
             if (request.needed[i])
                 light.faces[i].pinned = plan_serial;
@@ -695,7 +695,7 @@ struct ShadowCache::State {
         gpu_light.meta = {request.kind, static_cast<std::uint32_t>(plan.faces.size()), request.count, 0};
         gpu_light.splits = request.splits;
         for (std::uint32_t i = 0; i < request.count; ++i) {
-            plan.faces.emplace_back();
+            plan.faces.emplace();
             auto& gpu = plan.faces.back();
             gpu.meta = {0, 0, source, i};
             if (!request.needed[i])
@@ -715,12 +715,12 @@ struct ShadowCache::State {
                     continue;
                 }
             }
-            redraws.push_back({source, i, static_cast<std::uint32_t>(plan.faces.size() - 1), size, rank, exempt});
+            redraws.add({source, i, static_cast<std::uint32_t>(plan.faces.size() - 1), size, rank, exempt});
         }
         return {};
     }
 
-    Result<void> redraw(const Redraw& item, const Request& request, std::span<const ShadowCaster> casters) {
+    Result<void> redraw(const Redraw& item, const Request& request, Span<const ShadowCaster> casters) {
         auto& face = lights[item.source].faces[item.face];
         const auto vp = request_projection(request, item.face, item.size);
         const auto draw_vp = expanded_projection(vp, item.size);
@@ -749,14 +749,14 @@ struct ShadowCache::State {
             job.view_projection = *draw_projection;
             for (const auto& caster : casters)
                 if (caster.dynamic == (layer == ShadowLayer::dynamic) && intersects(caster.bounds, draw_vp))
-                    job.instances.push_back(caster.instance);
+                    job.instances.add(caster.instance);
             if (layer == ShadowLayer::dynamic) {
                 face.dynamic_nonempty = !job.instances.empty();
                 ++plan.stats.dynamic_updates;
             } else
                 ++plan.stats.static_updates;
             plan.stats.rendered_instances += static_cast<std::uint32_t>(job.instances.size());
-            plan.updates.push_back(std::move(job));
+            plan.updates.add(std::move(job));
             valid = true;
         }
         face.drawn = true;
@@ -767,7 +767,7 @@ struct ShadowCache::State {
     // A light's stale faces redraw together, so every drawn face of a cube
     // shares one origin; the shader selects and projects faces from it. A
     // light whose redraw does not fit the remaining budget waits whole.
-    Result<void> schedule(std::span<const Request> requests, std::span<const ShadowCaster> casters) {
+    Result<void> schedule(Span<const Request> requests, Span<const ShadowCaster> casters) {
         queued.assign(lights.size(), 0);
         for (const auto& item : redraws)
             queued[item.source] =
@@ -872,9 +872,9 @@ void ShadowCache::commit() noexcept {
 }
 
 Result<const ShadowFramePlan*> ShadowCache::prepare(const Frame& frame, const LightFrame& sources,
-                                                    std::span<const ShadowCaster> casters,
-                                                    std::span<const ShadowChange> changes,
-                                                    std::optional<ShadowReceiverDepth> depth, std::uint64_t sequence) {
+                                                    Span<const ShadowCaster> casters,
+                                                    Span<const ShadowChange> changes,
+                                                    Optional<ShadowReceiverDepth> depth, std::uint64_t sequence) {
     auto& s = *state_;
     if (s.plan_ready && s.initialized && s.scene == frame.scene_identity && s.sequence == sequence)
         return &s.plan;
@@ -927,7 +927,7 @@ Result<const ShadowFramePlan*> ShadowCache::prepare(const Frame& frame, const Li
             check(math::is_finite(caster.bounds) && !math::is_empty(caster.bounds), "Invalid shadow caster bounds"));
         ATELIER_TRY(check(caster.instance < frame.meshes.size(), "Shadow caster instance exceeds current frame"));
         if (intersects(caster.bounds, camera_vp, camera_padding, frame.camera.far_depth))
-            receivers.push_back(caster);
+            receivers.add(caster);
     }
     auto& requests = s.requests;
     requests.assign(s.lights.size(), {});
@@ -972,7 +972,7 @@ Result<const ShadowFramePlan*> ShadowCache::prepare(const Frame& frame, const Li
     order.clear();
     for (std::uint32_t index = 0; index < s.lights.size(); ++index)
         if (requests[index].kind == 1)
-            order.push_back(index);
+            order.add(index);
     const auto ranked = [&](std::uint32_t index) {
         return requests[index].importance * (s.lights[index].high_tier ? 1.25 : 1.);
     };
@@ -1022,7 +1022,7 @@ Result<const ShadowFramePlan*> ShadowCache::prepare(const Frame& frame, const Li
     order.clear();
     for (std::uint32_t index = 0; index < s.lights.size(); ++index)
         if (requests[index].kind)
-            order.push_back(index);
+            order.add(index);
     std::ranges::sort(order, [&](std::uint32_t a, std::uint32_t b) {
         const auto& ra = requests[a];
         const auto& rb = requests[b];

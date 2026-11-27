@@ -2,6 +2,7 @@
 #include "detail/native_cook.hpp"
 #include "detail/node_plan.hpp"
 #include "detail/triangles.hpp"
+#include "foundation/bit_vector.hpp"
 #include "foundation/result.hpp"
 #include "procedural/bvh.hpp"
 #include "procedural/nodes.hpp"
@@ -18,7 +19,7 @@ namespace detail {
 struct Access {
     static Result<Contents> contents(Runtime&, ObjectId);
 
-    static Result<std::vector<Input>> inputs(Runtime&, ObjectId);
+    static Result<Array<Input>> inputs(Runtime&, ObjectId);
 
     template <class N>
     static auto& inputs(N& node) {
@@ -86,11 +87,11 @@ Result<bool> member(Runtime& runtime, ObjectId graph, ObjectId node) {
 
 // True when `target` is `from` or feeds it through any path of connections.
 Result<bool> upstream(Runtime& runtime, const Contents& graph, ObjectId from, ObjectId target) {
-    std::vector<ObjectId> pending{from};
+    Array<ObjectId> pending{from};
     Map<ObjectId, std::uint8_t> seen;
     while (!pending.empty()) {
         const auto node = pending.back();
-        pending.pop_back();
+        pending.pop();
         if (node == target)
             return true;
         if (!seen.try_emplace(node, std::uint8_t{1}).inserted)
@@ -99,16 +100,16 @@ Result<bool> upstream(Runtime& runtime, const Contents& graph, ObjectId from, Ob
         if (!into)
             return std::unexpected(into.error());
         for (const auto& input : *into)
-            pending.push_back(input.from);
+            pending.add(input.from);
     }
     return false;
 }
 
-std::optional<Layer> parse_layer_name(std::string_view text) noexcept {
+Optional<Layer> parse_layer_name(std::string_view text) noexcept {
     constexpr std::array<std::string_view, 5> names{"point", "vertex", "primitive", "detail", "instance"};
     const auto found = std::ranges::find(names, text);
     if (found == names.end())
-        return std::nullopt;
+        return {};
     return static_cast<Layer>(found - names.begin());
 }
 
@@ -125,7 +126,7 @@ Result<Reference> Context::mesh(StringView key) const noexcept {
         return failure("Mesh resource key requires valid UTF-8.");
     Reference reference{std::move(*name), std::move(*mesh)};
     if (std::ranges::find(*dependencies_, reference.key, &Reference::key) == dependencies_->end())
-        dependencies_->push_back(reference);
+        dependencies_->add(reference);
     return reference;
 }
 
@@ -177,9 +178,9 @@ Result<void> set_output_column(const Node& self, const String& name, Layer layer
 
 Result<PrimitiveRange> checked_primitive(const Geometry& geometry, std::uint32_t primitive) noexcept {
     if (primitive >= geometry.count(Layer::primitive))
-        return std::unexpected(Error{ErrorCode::invocation_failed,
-                                     "Primitive index " + std::to_string(primitive) + " is out of bounds.",
-                                     std::nullopt, ErrorElement{"primitive", primitive}});
+        return std::unexpected(
+            Error{ErrorCode::invocation_failed, "Primitive index " + std::to_string(primitive) + " is out of bounds.",
+                  {}, ErrorElement{"primitive", primitive}});
     return geometry.primitive(primitive);
 }
 
@@ -200,7 +201,7 @@ Result<PrimitiveSpan> Node::primitive_span(const Geometry& geometry, std::uint32
 Result<void> Node::read_primitive_points(const Geometry& geometry, std::uint32_t primitive,
                                          Array<std::uint32_t>& points) const noexcept {
     ATELIER_TRY_BIND(range, checked_primitive(geometry, primitive));
-    const auto span = geometry.vertex_points().subspan(range->first, range->count);
+    const auto span = geometry.vertex_points().slice(range->first, range->count);
     points.clear();
     points.append({span.data(), span.size()});
     return {};
@@ -298,15 +299,15 @@ Result<void> Node::set_quat(const String& name, Layer layer, const Array<math::Q
 Result<void> register_types(Runtime& runtime) {
     if (runtime.native_type<Graph>())
         return {};
-    std::vector<TypeDefinition> definitions;
+    Array<TypeDefinition> definitions;
     if (!runtime.native_type<String>())
-        definitions.push_back(string_definition(runtime));
+        definitions.add(string_definition(runtime));
     if (!runtime.native_type<Array<String>>())
-        definitions.push_back(array_definition<String>(runtime, "procedural.Strings"));
+        definitions.add(array_definition<String>(runtime, "procedural.Strings"));
     // Every attribute column type, so Source and native nodes can borrow columns.
     const auto column = [&]<class T>(std::type_identity<T>, const char* name) {
         if (!runtime.native_type<Array<T>>())
-            definitions.push_back(array_definition<T>(runtime, name));
+            definitions.add(array_definition<T>(runtime, name));
     };
     column(std::type_identity<bool>{}, "procedural.Bools");
     column(std::type_identity<std::int32_t>{}, "procedural.Ints");
@@ -317,31 +318,31 @@ Result<void> register_types(Runtime& runtime) {
     column(std::type_identity<math::Vector4>{}, "procedural.Vector4s");
     column(std::type_identity<math::Quaternion>{}, "procedural.Quaternions");
     column(std::type_identity<math::Matrix4>{}, "procedural.Matrix4s");
-    definitions.push_back(reflection::Definition<Layer>::build(runtime));
-    definitions.push_back(reflection::Definition<Reduce>::build(runtime));
-    definitions.push_back(reflection::Definition<BooleanOperation>::build(runtime));
-    definitions.push_back(reflection::Definition<SweepProfile>::build(runtime));
-    definitions.push_back(reflection::Definition<GroupCriterion>::build(runtime));
-    definitions.push_back(reflection::Definition<GroupOperation>::build(runtime));
-    definitions.push_back(reflection::Definition<ResampleMode>::build(runtime));
-    definitions.push_back(reflection::Definition<OrientationPlane>::build(runtime));
-    definitions.push_back(reflection::Definition<GridPrimitive>::build(runtime));
-    definitions.push_back(reflection::Definition<CirclePrimitive>::build(runtime));
-    definitions.push_back(reflection::Definition<AxisJustify>::build(runtime));
-    definitions.push_back(reflection::Definition<PrimitiveType>::build(runtime));
-    definitions.push_back(reflection::Definition<RayMode>::build(runtime));
-    definitions.push_back(reflection::Definition<PreviewFallback>::build(runtime));
+    definitions.add(reflection::Definition<Layer>::build(runtime));
+    definitions.add(reflection::Definition<Reduce>::build(runtime));
+    definitions.add(reflection::Definition<BooleanOperation>::build(runtime));
+    definitions.add(reflection::Definition<SweepProfile>::build(runtime));
+    definitions.add(reflection::Definition<GroupCriterion>::build(runtime));
+    definitions.add(reflection::Definition<GroupOperation>::build(runtime));
+    definitions.add(reflection::Definition<ResampleMode>::build(runtime));
+    definitions.add(reflection::Definition<OrientationPlane>::build(runtime));
+    definitions.add(reflection::Definition<GridPrimitive>::build(runtime));
+    definitions.add(reflection::Definition<CirclePrimitive>::build(runtime));
+    definitions.add(reflection::Definition<AxisJustify>::build(runtime));
+    definitions.add(reflection::Definition<PrimitiveType>::build(runtime));
+    definitions.add(reflection::Definition<RayMode>::build(runtime));
+    definitions.add(reflection::Definition<PreviewFallback>::build(runtime));
     {
         auto span_def = reflection::Definition<PrimitiveSpan>::build(runtime);
         span_def.native.value_operations_preserve_borrows = true;
         span_def.native.prototype_constructor = span_def.native.construct;
-        definitions.push_back(std::move(span_def));
+        definitions.add(std::move(span_def));
     }
     {
         auto node_def = reflection::Definition<SpatialNode>::build(runtime);
         node_def.native.value_operations_preserve_borrows = true;
         node_def.native.prototype_constructor = node_def.native.construct;
-        definitions.push_back(std::move(node_def));
+        definitions.add(std::move(node_def));
     }
     {
         auto spatial_def = NativeRegistration<Spatial>{runtime, "procedural.Spatial", TypeKind::array}.build();
@@ -355,53 +356,53 @@ Result<void> register_types(Runtime& runtime) {
             *size = array.size();
         };
         spatial_def.native.value_operations_preserve_borrows = true;
-        definitions.push_back(std::move(spatial_def));
+        definitions.add(std::move(spatial_def));
     }
-    definitions.push_back(reflection::Definition<Geometry>::build(runtime));
-    definitions.push_back(array_definition<Geometry>(runtime, "procedural.Geometries"));
-    definitions.push_back(reflection::Definition<Context>::build(runtime));
-    definitions.push_back(reflection::Definition<Node>::build(runtime));
-    definitions.push_back(reflection::Definition<Graph>::build(runtime));
-    definitions.push_back(reflection::Definition<MeshImport>::build(runtime));
-    definitions.push_back(reflection::Definition<Grid>::build(runtime));
-    definitions.push_back(reflection::Definition<Line>::build(runtime));
-    definitions.push_back(reflection::Definition<Box>::build(runtime));
-    definitions.push_back(reflection::Definition<Sphere>::build(runtime));
-    definitions.push_back(reflection::Definition<Tube>::build(runtime));
-    definitions.push_back(reflection::Definition<Wedge>::build(runtime));
-    definitions.push_back(reflection::Definition<Circle>::build(runtime));
-    definitions.push_back(reflection::Definition<Torus>::build(runtime));
-    definitions.push_back(reflection::Definition<Polyline>::build(runtime));
-    definitions.push_back(reflection::Definition<Resample>::build(runtime));
-    definitions.push_back(reflection::Definition<SampleCurve>::build(runtime));
-    definitions.push_back(reflection::Definition<SliceCurve>::build(runtime));
-    definitions.push_back(reflection::Definition<Group>::build(runtime));
-    definitions.push_back(reflection::Definition<GroupBox>::build(runtime));
-    definitions.push_back(reflection::Definition<Boolean>::build(runtime));
-    definitions.push_back(reflection::Definition<Connectivity>::build(runtime));
-    definitions.push_back(reflection::Definition<Scatter>::build(runtime));
-    definitions.push_back(reflection::Definition<VolumeScatter>::build(runtime));
-    definitions.push_back(reflection::Definition<Transform>::build(runtime));
-    definitions.push_back(reflection::Definition<MatchSize>::build(runtime));
-    definitions.push_back(reflection::Definition<Promote>::build(runtime));
-    definitions.push_back(reflection::Definition<Remove>::build(runtime));
-    definitions.push_back(reflection::Definition<Merge>::build(runtime));
-    definitions.push_back(reflection::Definition<Ray>::build(runtime));
-    definitions.push_back(reflection::Definition<CopyToPoints>::build(runtime));
-    definitions.push_back(reflection::Definition<Realize>::build(runtime));
-    definitions.push_back(reflection::Definition<Extrude>::build(runtime));
-    definitions.push_back(reflection::Definition<Bevel>::build(runtime));
-    definitions.push_back(reflection::Definition<Sweep>::build(runtime));
-    definitions.push_back(reflection::Definition<Null>::build(runtime));
-    definitions.push_back(reflection::Definition<GraphInput>::build(runtime));
-    definitions.push_back(reflection::Definition<GraphOutput>::build(runtime));
-    definitions.push_back(reflection::Definition<AssetNode>::build(runtime));
+    definitions.add(reflection::Definition<Geometry>::build(runtime));
+    definitions.add(array_definition<Geometry>(runtime, "procedural.Geometries"));
+    definitions.add(reflection::Definition<Context>::build(runtime));
+    definitions.add(reflection::Definition<Node>::build(runtime));
+    definitions.add(reflection::Definition<Graph>::build(runtime));
+    definitions.add(reflection::Definition<MeshImport>::build(runtime));
+    definitions.add(reflection::Definition<Grid>::build(runtime));
+    definitions.add(reflection::Definition<Line>::build(runtime));
+    definitions.add(reflection::Definition<Box>::build(runtime));
+    definitions.add(reflection::Definition<Sphere>::build(runtime));
+    definitions.add(reflection::Definition<Tube>::build(runtime));
+    definitions.add(reflection::Definition<Wedge>::build(runtime));
+    definitions.add(reflection::Definition<Circle>::build(runtime));
+    definitions.add(reflection::Definition<Torus>::build(runtime));
+    definitions.add(reflection::Definition<Polyline>::build(runtime));
+    definitions.add(reflection::Definition<Resample>::build(runtime));
+    definitions.add(reflection::Definition<SampleCurve>::build(runtime));
+    definitions.add(reflection::Definition<SliceCurve>::build(runtime));
+    definitions.add(reflection::Definition<Group>::build(runtime));
+    definitions.add(reflection::Definition<GroupBox>::build(runtime));
+    definitions.add(reflection::Definition<Boolean>::build(runtime));
+    definitions.add(reflection::Definition<Connectivity>::build(runtime));
+    definitions.add(reflection::Definition<Scatter>::build(runtime));
+    definitions.add(reflection::Definition<VolumeScatter>::build(runtime));
+    definitions.add(reflection::Definition<Transform>::build(runtime));
+    definitions.add(reflection::Definition<MatchSize>::build(runtime));
+    definitions.add(reflection::Definition<Promote>::build(runtime));
+    definitions.add(reflection::Definition<Remove>::build(runtime));
+    definitions.add(reflection::Definition<Merge>::build(runtime));
+    definitions.add(reflection::Definition<Ray>::build(runtime));
+    definitions.add(reflection::Definition<CopyToPoints>::build(runtime));
+    definitions.add(reflection::Definition<Realize>::build(runtime));
+    definitions.add(reflection::Definition<Extrude>::build(runtime));
+    definitions.add(reflection::Definition<Bevel>::build(runtime));
+    definitions.add(reflection::Definition<Sweep>::build(runtime));
+    definitions.add(reflection::Definition<Null>::build(runtime));
+    definitions.add(reflection::Definition<GraphInput>::build(runtime));
+    definitions.add(reflection::Definition<GraphOutput>::build(runtime));
+    definitions.add(reflection::Definition<AssetNode>::build(runtime));
     ATELIER_TRY(runtime.register_types(std::move(definitions)));
     return {};
 }
 
 Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
-                                              std::vector<PortDescription>* port_descriptions) {
+                                              Array<PortDescription>* port_descriptions) {
     ATELIER_TRY_BIND(node_base, runtime.native_type<Node>());
     ATELIER_TRY_BIND(derived, runtime.is_a(type, *node_base));
     ATELIER_TRY_BIND(info, runtime.describe(type));
@@ -438,8 +439,8 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
 
     NodePlan plan;
     const FunctionSignature* signature{};
-    std::span<const std::string> parameter_names;
-    std::span<const MetadataList> parameter_metadata;
+    Span<const std::string> parameter_names;
+    Span<const MetadataList> parameter_metadata;
 
     if ((*info)->native_storage) {
         const auto found = std::ranges::find_if((*info)->methods, [&](const MethodInfo& m) {
@@ -502,7 +503,8 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
 
         std::string_view purpose;
     };
-    std::vector<ParsedMeta> parsed_meta(signature->parameters.size());
+    Array<ParsedMeta> parsed_meta;
+    parsed_meta.resize(signature->parameters.size());
     for (std::size_t i = 0; i < signature->parameters.size(); ++i) {
         auto& meta = parsed_meta[i];
         if (i >= parameter_metadata.size())
@@ -534,12 +536,12 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
             plan.uses_primary_stream = true;
     }
 
-    std::vector<bool> explicit_input_port;
+    BitVector explicit_input_port;
     if (plan.uses_primary_stream) {
-        plan.ports.inputs.push_back("input");
-        plan.ports.multiple.push_back(false);
-        explicit_input_port.push_back(false);
-        plan.ports.outputs.push_back("output");
+        plan.ports.inputs.add("input");
+        plan.ports.multiple.add(false);
+        explicit_input_port.add(false);
+        plan.ports.outputs.add("output");
     }
 
     const auto bind_input_port = [&](std::string_view port_name, bool is_explicit,
@@ -551,7 +553,7 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
                 if (explicit_input_port[existing_idx] || is_multi || plan.ports.multiple[existing_idx])
                     return error(ErrorCode::invalid_definition,
                                  name + ".process has duplicate input port '" + std::string(port_name) + "'.");
-                explicit_input_port[existing_idx] = true;
+                explicit_input_port.set(existing_idx);
             } else if (plan.ports.multiple[existing_idx]) {
                 return error(ErrorCode::invalid_definition,
                              name + ".process: Port cannot bind to multi-input Geometries port '" +
@@ -560,9 +562,9 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
             return static_cast<std::uint32_t>(existing_idx);
         }
         const auto index = static_cast<std::uint32_t>(plan.ports.inputs.size());
-        plan.ports.inputs.emplace_back(port_name);
-        plan.ports.multiple.push_back(is_multi);
-        explicit_input_port.push_back(is_explicit);
+        plan.ports.inputs.emplace(port_name);
+        plan.ports.multiple.add(is_multi);
+        explicit_input_port.add(is_explicit);
         return index;
     };
 
@@ -584,7 +586,7 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
             if (plan.uses_context)
                 return error(ErrorCode::invalid_definition, name + ".process accepts at most one Context parameter.");
             plan.uses_context = true;
-            plan.arguments.push_back({.kind = ArgKind::context, .type = param.type});
+            plan.arguments.add({.kind = ArgKind::context, .type = param.type});
             continue;
         }
 
@@ -592,7 +594,7 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
             if (meta.has_name || !meta.from.empty() || !meta.layer.empty() || !meta.port.empty() || meta.optional)
                 return error(ErrorCode::invalid_definition,
                              name + ".process port parameter " + std::to_string(i) + " accepts no column options.");
-            std::optional<ArgKind> port_kind;
+            Optional<ArgKind> port_kind;
             if (param.type == *geometry_type && read)
                 port_kind = ArgKind::port_input;
             else if (param.type == *geometries_type && read)
@@ -609,18 +611,17 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
                 return error(ErrorCode::invalid_definition, name + ".process port parameter " + std::to_string(i) +
                                                                 " requires a valid identifier name.");
             if (port_descriptions && !meta.purpose.empty())
-                port_descriptions->push_back(
-                    {param_name, *port_kind == ArgKind::port_output, std::string(meta.purpose)});
+                port_descriptions->add({param_name, *port_kind == ArgKind::port_output, std::string(meta.purpose)});
             if (*port_kind == ArgKind::port_output) {
                 if (std::ranges::find(plan.ports.outputs, param_name) != plan.ports.outputs.end())
                     return error(ErrorCode::invalid_definition,
                                  name + ".process has duplicate output port '" + param_name + "'.");
                 const auto index = static_cast<std::uint32_t>(plan.ports.outputs.size());
-                plan.ports.outputs.push_back(param_name);
-                plan.arguments.push_back({.kind = *port_kind, .type = param.type, .port_index = index});
+                plan.ports.outputs.add(param_name);
+                plan.arguments.add({.kind = *port_kind, .type = param.type, .port_index = index});
             } else {
                 ATELIER_TRY_BIND(index, bind_input_port(param_name, true, *port_kind == ArgKind::port_inputs));
-                plan.arguments.push_back({.kind = *port_kind, .type = param.type, .port_index = *index});
+                plan.arguments.add({.kind = *port_kind, .type = param.type, .port_index = *index});
             }
             continue;
         }
@@ -715,7 +716,7 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
                                                                     "' more than once.");
         }
 
-        plan.arguments.push_back(std::move(arg));
+        plan.arguments.add(std::move(arg));
     }
 
     if (plan.ports.outputs.empty())
@@ -733,7 +734,7 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
             const auto binding = std::ranges::find(parsed_meta, port, &ParsedMeta::port);
             if (binding != parsed_meta.end() && !binding->purpose.empty() &&
                 std::ranges::find(binding + 1, parsed_meta.end(), port, &ParsedMeta::port) == parsed_meta.end())
-                port_descriptions->push_back({port, false, std::string(binding->purpose)});
+                port_descriptions->add({port, false, std::string(binding->purpose)});
         }
     }
     return plan;
@@ -749,8 +750,8 @@ std::string_view access_name(AttributeAccess access) noexcept {
     return names[static_cast<std::size_t>(access)];
 }
 
-std::vector<AttributeRule> detail::attribute_rules(const NodePlan& plan, const TypeInfo& type) {
-    std::vector<AttributeRule> result;
+Array<AttributeRule> detail::attribute_rules(const NodePlan& plan, const TypeInfo& type) {
+    Array<AttributeRule> result;
     if (plan.native)
         append_native_rules(result, type.name);
     const auto field_name = [&](FieldId id) -> std::string {
@@ -782,11 +783,11 @@ std::vector<AttributeRule> detail::attribute_rules(const NodePlan& plan, const T
         default:
             continue;
         }
-        result.push_back({access == AttributeAccess::write ? plan.ports.outputs[0] : plan.ports.inputs[arg.port_index],
-                          std::string(arg.static_name.view().std_view()), field_name(arg.name_selector),
-                          arg.fixed_layer ? std::string(layer_name(*arg.fixed_layer)) : std::string{},
-                          arg.fixed_layer ? std::string{} : field_name(plan.run_over_field),
-                          elements[arg.column_variant], access, missing, arg.purpose});
+        result.add({access == AttributeAccess::write ? plan.ports.outputs[0] : plan.ports.inputs[arg.port_index],
+                    std::string(arg.static_name.view().std_view()), field_name(arg.name_selector),
+                    arg.fixed_layer ? std::string(layer_name(*arg.fixed_layer)) : std::string{},
+                    arg.fixed_layer ? std::string{} : field_name(plan.run_over_field), elements[arg.column_variant],
+                    access, missing, arg.purpose});
     }
     return result;
 }
@@ -863,8 +864,8 @@ Result<void> set_asset_subgraph(Runtime& runtime, ObjectId node, AssetSubgraph s
     });
 }
 
-Result<std::vector<Input>> detail::Access::inputs(Runtime& runtime, ObjectId node) {
-    return runtime.with_native<const Node>(node, [&](const Node& value) -> Result<std::vector<Input>> {
+Result<Array<Input>> detail::Access::inputs(Runtime& runtime, ObjectId node) {
+    return runtime.with_native<const Node>(node, [&](const Node& value) -> Result<Array<Input>> {
         auto field = runtime.reference_field(node, Access::inputs(value));
         if (!field)
             return std::unexpected(field.error());
@@ -872,13 +873,13 @@ Result<std::vector<Input>> detail::Access::inputs(Runtime& runtime, ObjectId nod
         ATELIER_TRY_BIND(count, runtime.sequence_size(*field));
         if (*count != connections.size())
             return error(ErrorCode::argument_mismatch, "Graph input references do not match its connections.");
-        std::vector<Input> result;
+        Array<Input> result;
         result.reserve(connections.size());
         for (std::size_t i = 0; i < connections.size(); ++i) {
             auto from = runtime.sequence_read(*field, i);
             if (!from)
                 return std::unexpected(from.error());
-            result.push_back({from->id(), connections[i].output, connections[i].input});
+            result.add({from->id(), connections[i].output, connections[i].input});
         }
         return result;
     });
@@ -899,7 +900,7 @@ Result<Contents> detail::Access::contents(Runtime& runtime, ObjectId graph) {
             auto node = runtime.sequence_read(*field, i);
             if (!node)
                 return std::unexpected(node.error());
-            result.nodes_.push_back(node->id());
+            result.nodes_.add(node->id());
             result.members_.insert_or_assign(node->id(), std::uint8_t{1});
         }
         auto slot = runtime.reference_field(graph, Access::display(value));
@@ -913,7 +914,7 @@ Result<Contents> detail::Access::contents(Runtime& runtime, ObjectId graph) {
     });
 }
 
-Result<void> Contents::check(std::span<const Input> connections) const {
+Result<void> Contents::check(Span<const Input> connections) const {
     for (const auto& input : connections)
         if (!contains(input.from))
             return error(ErrorCode::argument_mismatch, "Graph input connects a node outside this graph.");
@@ -927,7 +928,7 @@ Result<Contents> contents(Runtime& runtime, ObjectId graph) {
     return std::move(*result);
 }
 
-Result<std::vector<Input>> inputs(Runtime& runtime, const Contents& graph, ObjectId node) {
+Result<Array<Input>> inputs(Runtime& runtime, const Contents& graph, ObjectId node) {
     if (!graph.contains(node))
         return error(ErrorCode::argument_mismatch, "The node is not in this graph.");
     ATELIER_TRY_BIND(result, Access::inputs(runtime, node));
@@ -1001,21 +1002,21 @@ Result<void> remove_node(Runtime& runtime, ObjectId graph, ObjectId node) {
             if (!field)
                 return std::unexpected(field.error());
             auto& connections = Access::connections(value);
-            std::vector<ObjectReference> kept;
-            std::vector<Connection> remaining;
+            Array<ObjectReference> kept;
+            Array<Connection> remaining;
             for (std::size_t i = 0; i < connections.size(); ++i) {
                 auto from = runtime.sequence_read(*field, i);
                 if (!from)
                     return std::unexpected(from.error());
                 if (from->id() == node)
                     continue;
-                kept.push_back(*from);
-                remaining.push_back(connections[i]);
+                kept.add(*from);
+                remaining.add(connections[i]);
             }
             const ReferenceChange change = SequenceSplice{*field, 0, connections.size(), kept};
             if (auto applied = runtime.apply_reference_changes({&change, 1}); !applied)
                 return applied;
-            connections.swap(remaining);
+            connections = std::move(remaining);
             return {};
         });
         if (!cleared)
@@ -1034,10 +1035,10 @@ Result<void> remove_node(Runtime& runtime, ObjectId graph, ObjectId node) {
         auto slot = runtime.reference_field(graph, Access::display(value));
         if (!slot)
             return std::unexpected(slot.error());
-        std::vector<ReferenceChange> changes{
+        InlineArray<ReferenceChange, 2> changes{
             SequenceSplice{*field, std::size_t(position - listed->nodes().begin()), 1, {}}};
         if (listed->display() == node)
-            changes.push_back(ReferenceWrite{*slot, *none});
+            changes.add(ReferenceWrite{*slot, *none});
         return runtime.apply_reference_changes(changes);
     });
 }
@@ -1091,7 +1092,7 @@ Result<void> connect(Runtime& runtime, ObjectId graph, ObjectId from, std::uint3
         const ReferenceChange change = SequenceSplice{*field, position, 0, {&reference, 1}};
         if (auto applied = runtime.apply_reference_changes({&change, 1}); !applied)
             return applied;
-        connections.insert(connections.begin() + std::ptrdiff_t(position), connection);
+        connections.insert(position, connection);
         return {};
     });
 }
@@ -1114,7 +1115,7 @@ Result<void> disconnect(Runtime& runtime, ObjectId from, std::uint32_t output, O
         if (auto applied = runtime.apply_reference_changes({&change, 1}); !applied)
             return applied;
         auto& connections = Access::connections(value);
-        connections.erase(connections.begin() + std::ptrdiff_t(position));
+        connections.remove_at(position);
         return {};
     });
 }

@@ -1,6 +1,9 @@
 #pragma once
 
+#include "foundation/array.hpp"
+#include "foundation/optional.hpp"
 #include "foundation/set.hpp"
+#include "foundation/span.hpp"
 #include "material/program.hpp"
 #include "material/image.hpp"
 #include "source/material_program.hpp"
@@ -77,25 +80,25 @@ public:
     const Policy& policy() const noexcept { return policy_; }
 
     // Normalized to program().textures() order, not the caller's author order.
-    std::span<const TextureDefault> textures() const noexcept { return textures_; }
+    Span<const TextureDefault> textures() const noexcept { return textures_; }
 
 private:
     friend Result<std::shared_ptr<const SourceDefinition>>
-        make_definition(std::shared_ptr<const source::MaterialProgram>, Policy, std::span<const TextureDefault>);
+        make_definition(std::shared_ptr<const source::MaterialProgram>, Policy, Span<const TextureDefault>);
 
-    SourceDefinition(std::shared_ptr<const source::MaterialProgram>, Policy, std::vector<TextureDefault>);
+    SourceDefinition(std::shared_ptr<const source::MaterialProgram>, Policy, Array<TextureDefault>);
 
     std::shared_ptr<const source::MaterialProgram> program_;
 
     Policy policy_;
 
-    std::vector<TextureDefault> textures_;
+    Array<TextureDefault> textures_;
 };
 
 using DefinitionRef = std::shared_ptr<const SourceDefinition>;
 
 Result<DefinitionRef> make_definition(std::shared_ptr<const source::MaterialProgram>, Policy,
-                                      std::span<const TextureDefault>);
+                                      Span<const TextureDefault>);
 
 struct SurfaceInput {
     ImageRef image;
@@ -123,14 +126,14 @@ public:
 
     const Policy& policy() const noexcept { return definition_->policy(); }
 
-    std::span<const std::byte> parameters() const noexcept { return parameters_; }
+    Span<const std::byte> parameters() const noexcept { return parameters_; }
 
     // Same order as program().textures(); use that descriptor's slot, not index.
-    std::span<const SurfaceInput> inputs() const noexcept { return inputs_; }
+    Span<const SurfaceInput> inputs() const noexcept { return inputs_; }
 
     // Diagnostics belong to this exact resolved content, including ancestors.
     // They do not certify strict asset validity or rewrite any author state.
-    std::span<const AuthorDiagnostic> diagnostics() const noexcept { return diagnostics_; }
+    Span<const AuthorDiagnostic> diagnostics() const noexcept { return diagnostics_; }
 
     bool uses_default_material() const noexcept { return default_material_; }
 
@@ -141,18 +144,17 @@ public:
 private:
     friend struct detail::ProgramAccess;
 
-    ProgramSurface(DefinitionRef, std::vector<std::byte>, std::vector<SurfaceInput>, std::vector<AuthorDiagnostic>,
-                   bool);
+    ProgramSurface(DefinitionRef, Array<std::byte>, Array<SurfaceInput>, Array<AuthorDiagnostic>, bool);
 
     DefinitionRef definition_;
 
-    std::vector<std::byte> parameters_;
+    Array<std::byte> parameters_;
 
-    std::vector<SurfaceInput> inputs_;
+    Array<SurfaceInput> inputs_;
 
-    std::vector<AuthorDiagnostic> diagnostics_;
+    Array<AuthorDiagnostic> diagnostics_;
 
-    std::vector<source::MaterialTexture> samplers_;
+    Array<source::MaterialTexture> samplers_;
 
     bool default_material_{};
 };
@@ -181,10 +183,10 @@ Result<ProgramSurfaceRef> default_world_surface();
 // Supplied images must be the exact requested content, never substitute pixels.
 // A null definition plus an empty image table explicitly requests the engine
 // default. The host retains the original compiler/source error separately.
-Result<ProgramSurfaceRef> resolve_source(DefinitionRef, std::span<const ImageRef>);
+Result<ProgramSurfaceRef> resolve_source(DefinitionRef, Span<const ImageRef>);
 
-Result<ProgramSurfaceRef> resolve_instance(ProgramSurfaceRef parent, std::span<const Override>,
-                                           std::span<const ImageRef> local_images);
+Result<ProgramSurfaceRef> resolve_instance(ProgramSurfaceRef parent, Span<const Override>,
+                                           Span<const ImageRef> local_images);
 
 // The nonempty shared role contains the actual resource edges and publication.
 // Runtime constructs/destroys the real registered type; no virtual interface.
@@ -211,9 +213,9 @@ private:
 
     // Identities validated at publication distinguish later destruction from
     // out-of-band edits to the formal reference fields. These are not roots.
-    std::vector<ObjectId> texture_ids_;
+    Array<ObjectId> texture_ids_;
 
-    std::vector<ImageRef> images_;
+    Array<ImageRef> images_;
 
     ProgramSurfaceRef published_;
 };
@@ -257,7 +259,7 @@ private:
 
     ObjectId parent_id_;
 
-    std::vector<Override> entries_;
+    Array<Override> entries_;
 
     ProgramSurfaceRef parent_surface_;
 };
@@ -268,7 +270,7 @@ struct SourceState {
     DefinitionRef definition;
 
     // Size and order must match definition->textures()'s normalized order.
-    std::vector<ObjectRoot> default_textures;
+    Array<ObjectRoot> default_textures;
 };
 
 struct InstanceState {
@@ -277,13 +279,13 @@ struct InstanceState {
     // default. A supplied unrelated invalid/foreign identity remains an error.
     ObjectRoot parent;
 
-    std::vector<Override> entries;
+    Array<Override> entries;
 
     // One slot per entry, in author order (never program slot order), null for
     // numeric/cleared inputs or when no resource root has yet been resolved.
     // Declaration mismatch does not clear an existing root: dormant/deleted-
     // parameter entries retain captured roots as formal strong edges unchanged.
-    std::vector<ObjectRoot> textures;
+    Array<ObjectRoot> textures;
 };
 
 Result<void> register_resource_types(Runtime&);

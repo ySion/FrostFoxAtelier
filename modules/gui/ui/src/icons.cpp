@@ -12,7 +12,7 @@ struct Run {
     std::uint8_t alpha;
 };
 #include "detail/icon_data.inl"
-std::span<const Run> data(Icon icon) {
+Span<const Run> data(Icon icon) {
     switch (icon) {
     case Icon::pointer:
         return pointer_runs;
@@ -99,7 +99,7 @@ std::span<const Run> data(Icon icon) {
 }
 }
 
-void raster_icon(Icon icon, std::uint32_t pixels, std::span<std::uint8_t> alpha) {
+void raster_icon(Icon icon, std::uint32_t pixels, Span<std::uint8_t> alpha) {
     if (!pixels || pixels > 256 || alpha.size() != std::size_t(pixels) * pixels)
         fatal("Invalid UI icon raster extent");
     constexpr unsigned source_size = icon_source_size;

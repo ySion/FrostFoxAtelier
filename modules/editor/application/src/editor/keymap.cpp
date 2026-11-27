@@ -2,7 +2,7 @@
 #include <Windows.h>
 
 namespace atelier::editor {
-std::span<const KeymapEntry> keymap() {
+Span<const KeymapEntry> keymap() {
     using enum RegionKind;
     using enum KeyPhase;
     static const KeymapEntry entries[]{

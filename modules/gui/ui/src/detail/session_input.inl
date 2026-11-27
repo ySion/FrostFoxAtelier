@@ -509,7 +509,7 @@ Reply Session::input(const Event& event) {
     if (event.kind == EventKind::key_down && event.key == Key::tab) {
         if (!self.finish_edit(reply, true))
             return reply;
-        std::vector<ControlKey> keys;
+        Array<ControlKey> keys;
         Map<ControlKey, ControlKey> tree_stops;
         for (const auto& box : self.published->controls)
             if (box.kind == ControlKind::tree_item && self.current(box) && visible(box.bounds, box.clip)) {
@@ -524,16 +524,15 @@ Reply Session::input(const Event& event) {
                 if (!control.selection_group || box.selected) {
                     const auto* stop = box.kind == ControlKind::tree_item ? tree_stops.find(box.parent) : nullptr;
                     if (box.kind != ControlKind::tree_item || (stop && *stop == box.key))
-                        keys.push_back(box.key);
+                        keys.add(box.key);
                 }
             }
         if (!keys.empty()) {
-            const auto at = std::find(keys.begin(), keys.end(), self.focus);
+            const auto at = keys.find(self.focus);
             const auto index =
-                at == keys.end()
+                at == keys.npos
                     ? (event.shift ? keys.size() - 1 : 0)
-                    : (static_cast<std::size_t>(at - keys.begin()) + keys.size() + (event.shift ? -1 : 1)) %
-                          keys.size();
+                    : (at + keys.size() + (event.shift ? -1 : 1)) % keys.size();
             self.set_focus(reply, keys[index]);
             if (text_field(self.states.at(self.focus).control.kind) && !self.begin_edit(reply, self.focus, true, true))
                 return reply;
@@ -549,14 +548,13 @@ Reply Session::input(const Event& event) {
         return reply;
     if (focused->control.selection_group && event.kind == EventKind::key_down && !event.control && !event.alt &&
         (event.key == Key::left || event.key == Key::right || event.key == Key::home || event.key == Key::end)) {
-        std::vector<const ControlBox*> keys;
+        Array<const ControlBox*> keys;
         for (const auto& box : self.published->controls)
             if (self.current(box) && visible(box.bounds, box.clip) &&
                 self.states.at(box.key).control.selection_group == focused->control.selection_group)
-                keys.push_back(&box);
-        const auto found = std::find(keys.begin(), keys.end(), focused_box);
-        if (!keys.empty() && found != keys.end()) {
-            const auto at = static_cast<std::size_t>(found - keys.begin());
+                keys.add(&box);
+        const auto at = keys.find(focused_box);
+        if (!keys.empty() && at != keys.npos) {
             const auto next = event.key == Key::home ? 0
                               : event.key == Key::end
                                   ? keys.size() - 1

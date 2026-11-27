@@ -27,7 +27,7 @@ void verify_reflection() {
     {
         Runtime runtime;
         take(NativeRegistration<Base>{runtime, "reflection.AlignedBase", TypeKind::object}.publish());
-        for (const auto offset : {std::optional<std::size_t>{}, std::optional<std::size_t>{0}}) {
+        for (const auto offset : {Optional<std::size_t>{}, Optional<std::size_t>{0}}) {
             const auto packed =
                 NativeRegistration<Packed>{runtime, "reflection.Packed", TypeKind::object}.base<Base>(offset).publish();
             require(!packed && packed.error().code == ErrorCode::invalid_definition &&
@@ -50,10 +50,10 @@ void verify_reflection() {
             MethodDefinition callable{"process", {}, {}, true};
             callable.signature.receiver = ReceiverDefinition{TypeReference{"reflection.CollidingDescribed"}, true};
             callable.invoke = [](CallContext&) noexcept -> Result<void> { return {}; };
-            colliding_described.methods.push_back(std::move(callable));
+            colliding_described.methods.add(std::move(callable));
             DescribedMethodDefinition described{"process", {}};
             described.signature.receiver = ReceiverDefinition{TypeReference{"reflection.CollidingDescribed"}, false};
-            colliding_described.described_methods.push_back(std::move(described));
+            colliding_described.described_methods.add(std::move(described));
             const auto colliding = runtime.register_type(std::move(colliding_described));
             require(!colliding && colliding.error().code == ErrorCode::duplicate_name,
                     "Runtime accepted same-name callable and described methods on one type.");
@@ -67,7 +67,7 @@ void verify_reflection() {
             ctx.result_written = true;
             return {};
         };
-        derived_def.methods.push_back(std::move(partial_method));
+        derived_def.methods.add(std::move(partial_method));
         const auto types = take(
             runtime.register_types({mode_def, payload_def, atelier::reflection::Definition<LayerMask>::build(runtime),
                                     atelier::reflection::Definition<Sample>::build(runtime),
@@ -92,13 +92,13 @@ void verify_reflection() {
         auto object = take(runtime.create(types[5]));
         require(Counter::live == 1, "Generated constructor did not run.");
         const FieldId step = derived_info->fields[0].id;
-        take(runtime.write(object.id(), std::span{&step, 1}, Scalar{4.5f}));
-        require(std::get<float>(take(runtime.read(object.id(), std::span{&step, 1}))) == 4.5f,
+        take(runtime.write(object.id(), Span{&step, 1}, Scalar{4.5f}));
+        require(std::get<float>(take(runtime.read(object.id(), Span{&step, 1}))) == 4.5f,
                 "Direct-offset reflected object field round-trip failed.");
         require(!take(runtime.validate(object.id())).has_value(), "Valid reflected object failed validation.");
-        take(runtime.write(object.id(), std::span{&step, 1}, Scalar{0.0f}));
+        take(runtime.write(object.id(), Span{&step, 1}, Scalar{0.0f}));
         require(take(runtime.validate(object.id())).has_value(), "Reflected Validate hook did not reject step=0.");
-        take(runtime.write(object.id(), std::span{&step, 1}, Scalar{2.0f}));
+        take(runtime.write(object.id(), Span{&step, 1}, Scalar{2.0f}));
         const MethodId advance = take(runtime.find_method(types[5], "advance"));
         const upstream::Payload input{3.0f};
         const std::array args{Argument{Scalar{EnumValue{types[0], 0u}}}, Argument::borrow(input)};
@@ -111,14 +111,14 @@ void verify_reflection() {
         require(std::get<float>(call_out) == 13.0f, "Explicit enum/scalar overrides on AFUNCTION failed.");
         const MethodId partial_rotation = take(runtime.find_method(types[5], "partial_rotation"));
         math::Quaternion rotation{9.0f, 9.0f, 9.0f, 9.0f};
-        take(runtime.call(object.id(), partial_rotation, std::span<const Scalar>{}, ValueOutput{quat_type, &rotation}));
+        take(runtime.call(object.id(), partial_rotation, Span<const Scalar>{}, ValueOutput{quat_type, &rotation}));
         require(rotation == math::Quaternion{0.5f, 0.0f, 0.0f, 1.0f},
                 "Plain record staging did not start from a live default-constructed value.");
         take(runtime.destroy(object.id()));
         require(Counter::live == 0, "Generated destructor did not run.");
     }
-    const std::vector<std::pair<std::string, std::string>> expected{{"test.binding", "evaluate.values"},
-                                                                    {"test.note", std::string{"分组\0尾", 10}}};
+    const MetadataList expected{{"test.binding", "evaluate.values"},
+                                {"test.note", std::string{"分组\0尾", 10}}};
     const MetadataList expected_type_meta{{"source.contract_method", "advance"}, {"test.order", "second"}};
     const MetadataList expected_run_over{{"procedural.role", "run_over"}};
     const MetadataList expected_param{{"procedural.layer", "point"},

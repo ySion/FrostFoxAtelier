@@ -14,13 +14,13 @@
 #include <limits>
 
 namespace atelier::source::detail {
-Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInfo* const> catalog) noexcept {
-    std::vector<const TypeInfo*> published;
+Result<Binding> bind_type(Runtime& runtime, TypeId type, Span<const TypeInfo* const> catalog) noexcept {
+    Array<const TypeInfo*> published;
     if (catalog.empty()) {
         const auto ids = runtime.types();
         published.reserve(ids.size());
         for (const auto id : ids)
-            published.push_back(*runtime.describe(id));
+            published.add(*runtime.describe(id));
         catalog = published;
     }
     Map<TypeId, const TypeInfo*> info_by_id;
@@ -61,7 +61,7 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInf
         const auto id = enumeration->id;
         if (!enumeration->enumeration || language::editor_reserved(enumeration->name))
             continue;
-        binding.enumerations.push_back(
+        binding.enumerations.add(
             {id, enumeration->name,
              enumeration->enumeration->underlying == binding.i32 ? ValueKind::i32 : ValueKind::u32,
              enumeration->enumeration->values, enumeration->enumeration->flags});
@@ -71,7 +71,7 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInf
     for (std::uint32_t i = 0; i < binding.enumerations.size(); ++i)
         kind_by_id.insert_or_assign(binding.enumerations[i].type, BusinessType{ValueKind::enumeration, i});
     const auto append_value = [&](const TypeInfo& value, ValueKind kind) {
-        binding.values.push_back(
+        binding.values.add(
             {value.id,
              value.name,
              kind,
@@ -87,11 +87,11 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInf
              value.plain_value,
              value.zero_default,
              (!value.zero_default && value.prototype)
-                 ? std::vector<std::byte>(value.prototype, value.prototype + value.size)
-                 : std::vector<std::byte>{}});
+                 ? Array<std::byte>(value.prototype, value.prototype + value.size)
+                 : Array<std::byte>{}});
         kind_by_id.insert_or_assign(value.id, BusinessType{kind, 0});
     };
-    std::vector<const TypeInfo*> pending_arrays;
+    Array<const TypeInfo*> pending_arrays;
     for (const auto* value : catalog) {
         if (value->contains_references || language::editor_reserved(value->name))
             continue;
@@ -100,11 +100,11 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInf
         else if (value->kind == TypeKind::string && value->sequence_view)
             append_value(*value, ValueKind::string);
         else if (value->kind == TypeKind::array && value->sequence_view)
-            pending_arrays.push_back(value);
+            pending_arrays.add(value);
     }
     // A legal Runtime value need not expose a source projection. Admit arrays
     // only after their elements, leaving unavailable dependency chains opaque.
-    while (std::erase_if(pending_arrays, [&](const TypeInfo* value) {
+    while (pending_arrays.remove_if([&](const TypeInfo* value) {
                if (!kind_by_id.contains(*value->element))
                    return false;
                append_value(*value, ValueKind::array);
@@ -130,20 +130,20 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInf
                 continue;
             const auto kind = lookup_kind(field.value.type);
             if (kind != ValueKind::void_value)
-                value.fields.push_back({field.name, kind, *field.offset});
+                value.fields.add({field.name, kind, *field.offset});
         }
     }
     if (type == TypeId{})
         return binding;
     binding.name = info->name;
-    const auto append_base = [&](const TypeInfo* actual, TypeId owner, std::vector<BusinessAddressStep>& access) {
+    const auto append_base = [&](const TypeInfo* actual, TypeId owner, auto& access) {
         while (actual->id != owner) {
             assert(actual->base.has_value());
             if (actual->base_offset) {
                 if (*actual->base_offset)
-                    access.push_back({nullptr, *actual->base_offset});
+                    access.add({nullptr, *actual->base_offset});
             } else if (actual->base_address)
-                access.push_back({actual->base_address});
+                access.add({actual->base_address});
             actual = describe(*actual->base);
         }
     };
@@ -162,26 +162,26 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInf
 
         FieldRange range{};
     };
-    std::vector<FieldCursor> cursors{{info}};
-    std::vector<FieldId> path;
-    std::vector<BusinessAddressStep> access;
+    InlineArray<FieldCursor, 8> cursors{{info}};
+    InlineArray<FieldId, 8> path;
+    InlineArray<BusinessAddressStep, 8> access;
     std::string prefix;
     while (!cursors.empty()) {
         auto& cursor = cursors.back();
         if (cursor.next == cursor.type->fields.size()) {
-            cursors.pop_back();
+            cursors.pop();
             continue;
         }
-        path.resize(cursor.depth);
+        path.truncate(cursor.depth);
         prefix.resize(cursor.prefix_length);
-        access.resize(cursor.access_depth);
+        access.truncate(cursor.access_depth);
         const auto& field = cursor.type->fields[cursor.next++];
         if (field.value.form != ValueForm::inline_value)
             continue;
         append_base(cursor.type, field.owner, access);
         assert(field.offset.has_value() || field.native_address);
-        access.push_back({field.offset ? nullptr : field.native_address, field.offset.value_or(0)});
-        path.push_back(field.id);
+        access.add({field.offset ? nullptr : field.native_address, field.offset.value_or(0)});
+        path.add(field.id);
         prefix += field.name;
         const auto field_kind = lookup_kind(field.value.type);
         const bool typed_field = field_kind.kind == ValueKind::record && binding.values[field_kind.type_index].math;
@@ -189,17 +189,18 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInf
         const bool constrained = cursor.constrained || field.range.constrains();
         const auto range = field.range.constrains() ? field.range : cursor.type->math ? cursor.range : FieldRange{};
         if (field_kind != ValueKind::void_value && (!aggregate(field_kind) || typed_field || string_field)) {
-            binding.fields.push_back({prefix, path, field_kind, constrained, access,
-                                      range.hard_min ? scalar(*range.hard_min, binding).bits : 0,
-                                      range.hard_max ? scalar(*range.hard_max, binding).bits : 0,
-                                      (range.hard_min ? 1u : 0u) | (range.hard_max ? 2u : 0u)});
+            binding.fields.add({prefix, Array<FieldId>{path}, field_kind, constrained,
+                                Array<BusinessAddressStep>{access},
+                                range.hard_min ? scalar(*range.hard_min, binding).bits : 0,
+                                range.hard_max ? scalar(*range.hard_max, binding).bits : 0,
+                                (range.hard_min ? 1u : 0u) | (range.hard_max ? 2u : 0u)});
         }
         if (field_kind == ValueKind::void_value || aggregate(field_kind)) {
             const auto* nested = describe(field.value.type);
             if (nested->kind != TypeKind::record)
                 continue;
             prefix += '.';
-            cursors.push_back({nested, 0, path.size(), prefix.size(), constrained, access.size(), range});
+            cursors.add({nested, 0, path.size(), prefix.size(), constrained, access.size(), range});
         }
     }
     for (const auto& method : info->methods) {
@@ -222,9 +223,9 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, std::span<const TypeInf
             const auto parameter = signature.parameters[p];
             const bool has_default = p < method.parameter_defaults.size() && method.parameter_defaults[p].has_value();
             const std::uint64_t default_bits = has_default ? scalar(*method.parameter_defaults[p], binding).bits : 0;
-            bound.parameters.push_back({lookup_kind(parameter.type), parameter.passing, has_default, default_bits});
+            bound.parameters.add({lookup_kind(parameter.type), parameter.passing, has_default, default_bits});
         }
-        binding.methods.push_back(std::move(bound));
+        binding.methods.add(std::move(bound));
     }
     if (binding.fields.size() > std::numeric_limits<std::uint32_t>::max() ||
         binding.methods.size() > std::numeric_limits<std::uint32_t>::max())
@@ -291,31 +292,35 @@ EnvironmentView::EnvironmentView(const Binding& binding) noexcept {
     enum_items.reserve(binding.enumerations.size());
     enumerations.reserve(binding.enumerations.size());
     for (const auto& enumeration : binding.enumerations) {
-        auto& items = enum_items.emplace_back();
+        auto& items = enum_items.emplace();
+        items.reserve(enumeration.values.size());
         for (const auto& [name, bits] : enumeration.values)
-            items.push_back({name.c_str(), bits});
-        enumerations.push_back({enumeration.name.c_str(), enumeration.underlying, items.data(),
-                                static_cast<std::uint32_t>(items.size()), enumeration.flags});
+            items.add({name.c_str(), bits});
+        enumerations.add({enumeration.name.c_str(), enumeration.underlying, items.data(),
+                          static_cast<std::uint32_t>(items.size()), enumeration.flags});
     }
     value_fields.reserve(binding.values.size());
     values.reserve(binding.values.size());
     for (const auto& value : binding.values) {
-        auto& fields = value_fields.emplace_back();
+        auto& fields = value_fields.emplace();
+        fields.reserve(value.fields.size());
         for (const auto& field : value.fields)
-            fields.push_back({field.name.c_str(), field.type, field.offset});
-        values.push_back({value.name.c_str(), value.kind, value.size, value.alignment, value.element, fields.data(),
-                          static_cast<std::uint32_t>(fields.size()), value.sequence_view, value.can_own,
-                          value.can_mutate, value.standard_array_layout, value.math, value.plain_value,
-                          value.zero_default, value.initial_value.empty() ? nullptr : value.initial_value.data()});
+            fields.add({field.name.c_str(), field.type, field.offset});
+        values.add({value.name.c_str(), value.kind, value.size, value.alignment, value.element, fields.data(),
+                    static_cast<std::uint32_t>(fields.size()), value.sequence_view, value.can_own,
+                    value.can_mutate, value.standard_array_layout, value.math, value.plain_value,
+                    value.zero_default, value.initial_value.empty() ? nullptr : value.initial_value.data()});
     }
+    fields.reserve(binding.fields.size());
     for (const auto& field : binding.fields)
-        fields.push_back({field.name.c_str(), field.kind, field.constrained, field.access.data(),
-                          static_cast<std::uint32_t>(field.access.size()), field.minimum, field.maximum, field.bounds});
+        fields.add({field.name.c_str(), field.kind, field.constrained, field.access.data(),
+                    static_cast<std::uint32_t>(field.access.size()), field.minimum, field.maximum, field.bounds});
+    methods.reserve(binding.methods.size());
     for (const auto& method : binding.methods) {
-        methods.push_back({method.name.c_str(), method.parameters.data(),
-                           static_cast<std::uint32_t>(method.parameters.size()), method.result,
-                           method.receiver_read_only, method.preserves_borrows, method.entry,
-                           method.receiver_access.data(), static_cast<std::uint32_t>(method.receiver_access.size())});
+        methods.add({method.name.c_str(), method.parameters.data(),
+                     static_cast<std::uint32_t>(method.parameters.size()), method.result,
+                     method.receiver_read_only, method.preserves_borrows, method.entry,
+                     method.receiver_access.data(), static_cast<std::uint32_t>(method.receiver_access.size())});
     }
 }
 
@@ -331,16 +336,16 @@ BusinessEnvironment EnvironmentView::view(const char* object_type_name) const {
             static_cast<std::uint32_t>(values.size())};
 }
 
-std::optional<Scalar> scalar_value(BusinessValue value, const Binding* binding) {
+Optional<Scalar> scalar_value(BusinessValue value, const Binding* binding) {
     if (value.storage != ArgumentStorage::value)
-        return std::nullopt;
+        return {};
     if (value.kind == ValueKind::boolean) {
         if (value.bits > 1)
-            return std::nullopt;
+            return {};
         return value.bits != 0;
     }
     if (value.kind != ValueKind::f64 && value.bits > std::numeric_limits<std::uint32_t>::max())
-        return std::nullopt;
+        return {};
     if (value.kind == ValueKind::f32)
         return std::bit_cast<float>(static_cast<std::uint32_t>(value.bits));
     if (value.kind == ValueKind::f64)
@@ -351,23 +356,18 @@ std::optional<Scalar> scalar_value(BusinessValue value, const Binding* binding) 
         return std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(value.bits));
     if (binding && value.kind.kind == ValueKind::enumeration && value.kind.type_index < binding->enumerations.size())
         return EnumValue{binding->enumerations[value.kind.type_index].type, static_cast<std::uint32_t>(value.bits)};
-    return std::nullopt;
+    return {};
 }
 
 namespace {
 template <class T, std::size_t N>
 InlineArray<T, N> sized_slots(std::size_t count) noexcept {
-    InlineArray<T, N> slots;
-    if (count) {
-        slots.reserve(count);
-        slots.resize(count);
-    }
-    return slots;
+    return InlineArray<T, N>(count);
 }
 }
 
 AbiArguments::AbiArguments(const Binding& binding, const FunctionSignature& signature,
-                           const BusinessSignature& compiled, std::span<const Scalar> arguments) {
+                           const BusinessSignature& compiled, Span<const Scalar> arguments) {
     atelier::detail::assert_serial_access();
     if (arguments.size() != signature.parameters.size()) {
         status = std::unexpected(Error{ErrorCode::argument_mismatch, "Incorrect argument count."});
@@ -381,7 +381,7 @@ AbiArguments::AbiArguments(const Binding& binding, const FunctionSignature& sign
         }
     }
     if (direct_scalars) {
-        values.resize(arguments.size());
+        values.reserve(arguments.size());
         for (std::size_t i = 0; i < arguments.size(); ++i) {
             const auto expected = signature.parameters[i].type;
             const auto kind = compiled.parameters[i].type;
@@ -429,24 +429,24 @@ AbiArguments::AbiArguments(const Binding& binding, const FunctionSignature& sign
                     Error{ErrorCode::argument_mismatch, "Argument type does not match parameter " + std::to_string(i)});
                 return;
             }
-            values[i] = encoded;
+            values.add(encoded);
         }
         return;
     }
     InlineArray<Argument, 8> input;
-    input.resize(arguments.size());
+    input.reserve(arguments.size());
     for (std::size_t i = 0; i < arguments.size(); ++i)
-        input[i] = Argument{arguments[i]};
+        input.emplace(arguments[i]);
     initialize(binding, signature, compiled, input);
 }
 
 AbiArguments::AbiArguments(const Binding& binding, const FunctionSignature& signature,
-                           const BusinessSignature& compiled, std::span<const Argument> arguments) {
+                           const BusinessSignature& compiled, Span<const Argument> arguments) {
     initialize(binding, signature, compiled, arguments);
 }
 
 void AbiArguments::initialize(const Binding& binding, const FunctionSignature& signature,
-                              const BusinessSignature& compiled, std::span<const Argument> arguments) {
+                              const BusinessSignature& compiled, Span<const Argument> arguments) {
     status = binding.runtime->prepare_arguments(signature, arguments, prepared);
     if (!status)
         return;
@@ -697,7 +697,7 @@ std::uint32_t construct_value(void* context, std::uint32_t type, void* target, c
     auto& invocation = *static_cast<Invocation*>(context);
     return bridge(invocation, [&]() -> Result<void> {
         const auto& value = owned_value(invocation, type);
-        auto storage = std::span{static_cast<std::byte*>(target), value.size};
+        const Span<std::byte> storage{static_cast<std::byte*>(target), value.size};
         auto result = source ? invocation.runtime.copy_construct_value(
                                    value.type, storage, {static_cast<const std::byte*>(source), value.size})
                              : invocation.runtime.initialize_value(value.type, storage);
@@ -875,7 +875,7 @@ bool same_environment(const Binding& binding, const BusinessEnvironment& environ
             expected.constrained != actual.constrained || expected.minimum != actual.minimum ||
             expected.maximum != actual.maximum || expected.bounds != actual.bounds ||
             expected.access.size() != actual.access_count || (actual.access_count && !actual.access) ||
-            !std::ranges::equal(expected.access, std::span{actual.access, actual.access_count}))
+            expected.access.view() != Span<const BusinessAddressStep>{actual.access, actual.access_count})
             return false;
     }
     for (std::size_t i = 0; i < binding.methods.size(); ++i) {
@@ -886,8 +886,8 @@ bool same_environment(const Binding& binding, const BusinessEnvironment& environ
             expected.preserves_borrows != actual.preserves_borrows || expected.entry != actual.entry ||
             expected.receiver_access.size() != actual.receiver_access_count ||
             (actual.receiver_access_count && !actual.receiver_access) ||
-            !std::ranges::equal(expected.receiver_access,
-                                std::span{actual.receiver_access, actual.receiver_access_count}))
+            expected.receiver_access.view() !=
+                Span<const BusinessAddressStep>{actual.receiver_access, actual.receiver_access_count})
             return false;
         for (std::size_t j = 0; j < expected.parameters.size(); ++j)
             if (expected.parameters[j] != actual.parameters[j])
@@ -937,9 +937,9 @@ std::string_view resolve_failure_layer_view(const Binding& binding, std::uint32_
     return {};
 }
 
-std::optional<ErrorElement> resolve_failure_element(const Binding& binding, const BusinessFailure& failure) {
+Optional<ErrorElement> resolve_failure_element(const Binding& binding, const BusinessFailure& failure) {
     if (failure.element == no_failure_element)
-        return std::nullopt;
+        return {};
     return ErrorElement{resolve_failure_layer_view(binding, failure.layer), failure.element};
 }
 
@@ -947,15 +947,15 @@ Error execution_error(const Invocation* invocation, const Binding& binding, cons
                       const BusinessFailureMessage* failure_messages, std::uint32_t failure_message_count,
                       std::string_view fallback_message) {
     if (invocation && invocation->failed) {
-        std::optional<ErrorElement> element;
-        if (invocation->error_storage.element != no_failure_element)
-            element = ErrorElement{invocation->error_storage.layer, invocation->error_storage.element};
-        return Error{invocation->error_code(), std::string(invocation->error_message()), std::nullopt,
-                     std::move(element)};
+        return Error{invocation->error_code(), std::string(invocation->error_message()), {},
+                     invocation->error_storage.element != no_failure_element
+                         ? Optional<ErrorElement>{std::in_place, invocation->error_storage.layer,
+                                                  invocation->error_storage.element}
+                         : Optional<ErrorElement>{}};
     }
     const auto resolved = failure_message(failure.reason, failure_messages, failure_message_count);
-    return Error{ErrorCode::invocation_failed, resolved ? std::string(*resolved) : std::string(fallback_message),
-                 std::nullopt, resolve_failure_element(binding, failure)};
+    return Error{ErrorCode::invocation_failed, resolved ? std::string(*resolved) : std::string(fallback_message), {},
+                 resolve_failure_element(binding, failure)};
 }
 
 Result<void> finish_invocation(Invocation& invocation, std::uint32_t status, const BusinessFailure& failure,
@@ -999,12 +999,12 @@ Result<void> execute_invocation(ExecutionScope& scope, Runtime& runtime, const B
 
 Result<BusinessValue> execute_admitted(ExecutionScope& scope, Runtime& runtime, const Binding& binding,
                                        const BusinessCodeInfo& info, BusinessFrameLayout layout, bool requires_receiver,
-                                       ObjectId receiver, std::span<const BusinessValue> arguments, void* result_data,
+                                       ObjectId receiver, Span<const BusinessValue> arguments, void* result_data,
                                        BusinessTrace* trace, DebugSessionState* debugger, std::uint32_t* failure_site) {
     struct Call {
         const BusinessCodeInfo& info;
 
-        std::span<const BusinessValue> arguments;
+        Span<const BusinessValue> arguments;
 
         void* result_data;
 

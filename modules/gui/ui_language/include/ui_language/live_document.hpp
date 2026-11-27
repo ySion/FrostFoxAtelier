@@ -9,7 +9,7 @@ namespace atelier::ui_language {
 struct ControlRegion {
     ui::ControlList* target{};
 
-    std::span<const ui::Control> controls{};
+    Span<const ui::Control> controls{};
 
     std::uint64_t revision{};
 };
@@ -17,7 +17,7 @@ struct ControlRegion {
 // A snapshot consumer copies descriptors; a retained host can reuse the same authored region.
 class ControlOutput {
 public:
-    ControlOutput(std::vector<ui::Control>& values) : flat_(&values) {}
+    ControlOutput(Array<ui::Control>& values) : flat_(&values) {}
 
     ControlOutput(ui::ControlList& list) : list_(&list) {}
 
@@ -30,18 +30,18 @@ public:
             region_->target->require_full_submission();
     }
 
-    void append(std::span<const ui::Control> controls, std::uint64_t revision) const {
+    void append(Span<const ui::Control> controls, std::uint64_t revision) const {
         if (list_)
             list_->append(controls, revision);
         else if (region_) {
             region_->controls = controls;
             region_->revision = revision;
         } else
-            flat_->insert(flat_->end(), controls.begin(), controls.end());
+            flat_->append(controls);
     }
 
 private:
-    std::vector<ui::Control>* flat_{};
+    Array<ui::Control>* flat_{};
 
     ui::ControlList* list_{};
 
@@ -96,7 +96,7 @@ public:
     // Last attempted file reload. Borrow valid until sampling is disabled or the document closes.
     const ReloadTiming* profile_reloads(Profile);
 
-    LiveDocument(Runtime&, std::filesystem::path, ui::ControlKey&, std::optional<std::string> recovery_source = {});
+    LiveDocument(Runtime&, std::filesystem::path, ui::ControlKey&, Optional<std::string> recovery_source = {});
 
     void poll(Clock::time_point now = Clock::now());
 
@@ -106,8 +106,8 @@ public:
     // error, output contains the accepted snapshot and that input is suppressed
     // until it changes; the accepted scopes can still handle their own events.
     // A successful false means the region used its accepted fallback for suppressed inputs.
-    Result<bool> append(std::string_view component, ui::ControlKey parent, std::span<const KeyBinding>,
-                        std::span<const InputValue>, ControlOutput);
+    Result<bool> append(std::string_view component, ui::ControlKey parent, Span<const KeyBinding>,
+                        Span<const InputValue>, ControlOutput);
 
     Result<bool> event(const ui::Action&);
 
@@ -119,14 +119,14 @@ public:
 
     void commit_controls();
 
-    std::optional<Statistics> statistics(std::string_view component) const;
+    Optional<Statistics> statistics(std::string_view component) const;
 
     std::string_view diagnostic() const noexcept { return diagnostic_; }
 
-    const std::optional<std::string>& committed_source() const noexcept { return active_source_; }
+    const Optional<std::string>& committed_source() const noexcept { return active_source_; }
 
-    std::optional<std::string_view> attempted_source() const noexcept {
-        return attempted_source_ ? std::optional<std::string_view>{*attempted_source_} : std::nullopt;
+    Optional<std::string_view> attempted_source() const noexcept {
+        return attempted_source_ ? Optional<std::string_view>{*attempted_source_} : Optional<std::string_view>{};
     }
 
     const std::filesystem::path& path() const noexcept { return path_; }
@@ -143,11 +143,11 @@ private:
     struct Region {
         ui::ControlKey parent{};
 
-        std::vector<KeyBinding> keys;
+        Array<KeyBinding> keys;
 
         std::unique_ptr<Instance> instance;
 
-        std::optional<std::vector<InputValue>> rejected_inputs;
+        Optional<Array<InputValue>> rejected_inputs;
 
         bool accepted{};
 
@@ -178,7 +178,7 @@ private:
 
     std::shared_ptr<Module> candidate_;
 
-    std::optional<Stamp> stamp_;
+    Optional<Stamp> stamp_;
 
     Clock::time_point next_poll_{};
 
@@ -188,13 +188,13 @@ private:
 
     bool profile_components_{};
 
-    std::optional<std::string> attempted_source_;
+    Optional<std::string> attempted_source_;
 
-    std::optional<std::string> active_source_;
+    Optional<std::string> active_source_;
 
-    std::optional<std::string> candidate_source_;
+    Optional<std::string> candidate_source_;
 
-    std::optional<std::string> recovery_source_;
+    Optional<std::string> recovery_source_;
 
     void recover_initial();
 

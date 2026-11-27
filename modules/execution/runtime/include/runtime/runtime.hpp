@@ -2,8 +2,10 @@
 
 #include "runtime/parameter.hpp"
 #include "runtime/detail/value_storage.hpp"
+#include "foundation/array.hpp"
 #include "foundation/hash.hpp"
 #include "foundation/inline_array.hpp"
+#include "foundation/optional.hpp"
 #include "foundation/result.hpp"
 #include "foundation/string.hpp"
 #include "math/type.hpp"
@@ -20,22 +22,16 @@
 #include <functional>
 #include <memory>
 #include <new>
-#include <optional>
-#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <variant>
 #include <utility>
-#include <vector>
 
 namespace atelier {
 namespace source {
 class Program;
 }
-
-template <class T>
-class Span;
 
 enum class ErrorCode {
     invalid_type,
@@ -159,9 +155,9 @@ struct Error {
 
     std::string message;
 
-    std::optional<SourceLocation> source{};
+    Optional<SourceLocation> source{};
 
-    std::optional<ErrorElement> element{};
+    Optional<ErrorElement> element{};
 };
 
 template <class T>
@@ -300,11 +296,11 @@ struct ReceiverDescription {
 enum class FunctionExecution { synchronous, coroutine };
 
 struct FunctionSignature {
-    std::vector<ParameterDescription> parameters;
+    Array<ParameterDescription> parameters;
 
-    std::optional<ValueDescription> result;
+    Optional<ValueDescription> result;
 
-    std::optional<ReceiverDescription> receiver;
+    Optional<ReceiverDescription> receiver;
 
     FunctionExecution execution{FunctionExecution::synchronous};
 
@@ -367,10 +363,10 @@ struct CallContext {
     // Borrowed for this synchronous invocation only. Native bindings are trusted code.
     void* storage;
 
-    std::span<const ArgumentView> arguments;
+    Span<const ArgumentView> arguments;
 
     // Staged business value. Runtime commits it only after successful validation.
-    std::optional<Scalar> result{};
+    Optional<Scalar> result{};
 
     // Runtime-owned staging for plain record results. An invoker fills the live
     // exact value, then sets result_written; it must not retain or replace storage.
@@ -489,7 +485,7 @@ public:
 private:
     friend class Runtime;
 
-    std::vector<ObjectId> objects_;
+    Array<ObjectId> objects_;
 };
 
 // Owns the lookup path, not the object. Every access revalidates its identity.
@@ -503,7 +499,7 @@ private:
 
     ObjectId object_;
 
-    std::vector<FieldId> path_;
+    InlineArray<FieldId, 4> path_;
 
     bool native_only_{};
 };
@@ -515,7 +511,7 @@ struct SequenceSplice {
 
     std::size_t erase_count{};
 
-    std::span<const ObjectReference> inserted;
+    Span<const ObjectReference> inserted;
 };
 
 struct ReferenceWrite {
@@ -659,7 +655,7 @@ class Argument {
 
     ObjectId object_;
 
-    std::span<const FieldId> path_;
+    Span<const FieldId> path_;
 
 public:
     Argument() = default;
@@ -689,7 +685,7 @@ public:
         return result;
     }
 
-    static Argument field(ObjectId object, std::span<const FieldId> path) {
+    static Argument field(ObjectId object, Span<const FieldId> path) {
         Argument result;
         result.object_ = object;
         result.path_ = path;
@@ -716,7 +712,7 @@ public:
 
     PreparedArguments& operator=(const PreparedArguments&) = delete;
 
-    [[nodiscard]] std::span<const ArgumentView> values() const noexcept { return views_; }
+    [[nodiscard]] Span<const ArgumentView> values() const noexcept { return views_; }
 };
 
 struct ReceiverDefinition {
@@ -726,11 +722,11 @@ struct ReceiverDefinition {
 };
 
 struct SignatureDefinition {
-    std::vector<ParameterDefinition> parameters;
+    Array<ParameterDefinition> parameters;
 
-    std::optional<ValueDefinition> result{};
+    Optional<ValueDefinition> result{};
 
-    std::optional<ReceiverDefinition> receiver{};
+    Optional<ReceiverDefinition> receiver{};
 
     FunctionExecution execution{FunctionExecution::synchronous};
 };
@@ -761,7 +757,7 @@ struct NativeLayout {
     void* (*base_address)(void*) noexcept {};
 
     // Optional direct byte offset to a non-virtual native base subobject.
-    std::optional<std::size_t> base_offset{};
+    Optional<std::size_t> base_offset{};
 
     // Array element representation, checked against the same registered value type.
     const void* element_representation{};
@@ -795,18 +791,23 @@ struct NativeLayout {
 // editors. Hard bounds are enforced by every Runtime write: values clamp to the closed
 // range, and NaN/Inf are rejected before any byte changes.
 struct FieldRange {
-    std::optional<Scalar> ui_min{};
+    Optional<Scalar> ui_min{};
 
-    std::optional<Scalar> ui_max{};
+    Optional<Scalar> ui_max{};
 
-    std::optional<Scalar> hard_min{};
+    Optional<Scalar> hard_min{};
 
-    std::optional<Scalar> hard_max{};
+    Optional<Scalar> hard_max{};
 
     [[nodiscard]] bool constrains() const noexcept { return hard_min || hard_max; }
 
     bool operator==(const FieldRange&) const = default;
 };
+
+using MetadataList = Array<std::pair<std::string, std::string>>;
+
+// Shared cold-path normalization for native publication and Source comparisons.
+Result<void> normalize_metadata_entries(MetadataList& metadata);
 
 struct FieldDefinition {
     std::string name;
@@ -825,12 +826,12 @@ struct FieldDefinition {
 
     // Optional direct byte offset to a naturally aligned native field, supplied by
     // AST layout generation or trusted native bindings.
-    std::optional<std::size_t> native_offset{};
+    Optional<std::size_t> native_offset{};
 
     // Described object fields only: one finite leaf per scalar component in storage order, of the exact
     // scalar type; an enum gives its underlying integer. Construction writes them after the field's
     // own construction; copy construction copies the source instead. Native constructors own defaults.
-    std::vector<Scalar> default_leaves{};
+    Array<Scalar> default_leaves{};
 
     // Optional presentation text; never part of field identity or value layout.
     // Empty text leaves display-name/group fallback to the consumer.
@@ -847,11 +848,11 @@ struct FieldDefinition {
 
     // Owned UTF-8 values under dotted ASCII identifier keys. Publication sorts
     // keys and rejects duplicates; consumers interpret their own namespaces.
-    std::vector<std::pair<std::string, std::string>> metadata{};
+    MetadataList metadata{};
 
     // Described object String fields only. Publication canonicalizes an omitted
     // value to empty text; construction uses one String constructor, not assignment.
-    std::optional<std::string> default_text{};
+    Optional<std::string> default_text{};
 
     // Excluded from scene/document property serialization while remaining in TypeInfo::fields.
     bool transient{};
@@ -862,11 +863,6 @@ struct FieldDefinition {
     // Shared cold-path normalization for native publication and Source comparisons.
     Result<void> normalize_metadata();
 };
-
-using MetadataList = std::vector<std::pair<std::string, std::string>>;
-
-// Shared cold-path normalization for native publication and Source comparisons.
-Result<void> normalize_metadata_entries(MetadataList& metadata);
 
 struct EnumeratorMetadata {
     std::string label{};
@@ -890,7 +886,7 @@ struct MethodDefinition {
     std::string description{};
 
     // Empty, or one per parameter; an empty name is unnamed. Not part of the signature.
-    std::vector<std::string> parameter_names{};
+    Array<std::string> parameter_names{};
 
     // Process-local typed native entry, produced from the same C++ signature as
     // invoke. Zero means dynamic-host-only, never a generated-call fallback.
@@ -898,10 +894,10 @@ struct MethodDefinition {
 
     // Empty, or one per parameter covering a trailing suffix of value/read_only scalar or enum parameters.
     // Enum defaults may supply the underlying integer (for batch forward references) or EnumValue.
-    std::vector<std::optional<Scalar>> parameter_defaults{};
+    Array<Optional<Scalar>> parameter_defaults{};
 
     // Empty, or one key-value list per parameter; normalized and key-sorted on publication.
-    std::vector<MetadataList> parameter_metadata{};
+    Array<MetadataList> parameter_metadata{};
 };
 
 // Declared method contract of a non-native (described) object type. Execution lives in its code host.
@@ -910,9 +906,9 @@ struct DescribedMethodDefinition {
 
     SignatureDefinition signature;
 
-    std::vector<std::string> parameter_names{};
+    Array<std::string> parameter_names{};
 
-    std::vector<MetadataList> parameter_metadata{};
+    Array<MetadataList> parameter_metadata{};
 };
 
 struct TypeDefinition {
@@ -920,29 +916,29 @@ struct TypeDefinition {
 
     TypeKind kind{TypeKind::object};
 
-    std::vector<FieldDefinition> fields;
+    Array<FieldDefinition> fields;
 
-    std::vector<MethodDefinition> methods;
+    Array<MethodDefinition> methods;
 
     NativeLayout native;
 
     // Objects default to core.Object. Records cannot declare a base.
-    std::optional<TypeReference> base{};
+    Optional<TypeReference> base{};
 
     struct Enumeration {
         TypeReference underlying;
 
-        std::vector<std::pair<std::string, std::uint32_t>> values;
+        Array<std::pair<std::string, std::uint32_t>> values;
 
         bool flags{};
 
         // Empty, or one per value; normalized and expanded to values.size() on publication.
-        std::vector<EnumeratorMetadata> metadata{};
+        Array<EnumeratorMetadata> metadata{};
     };
 
-    std::optional<Enumeration> enumeration{};
+    Optional<Enumeration> enumeration{};
 
-    std::optional<TypeReference> element{};
+    Optional<TypeReference> element{};
 
     std::string description{};
 
@@ -950,7 +946,7 @@ struct TypeDefinition {
     // and never on writes; it must not call the Runtime or throw. Rejection uses Result.
     Result<void> (*validate)(const void* storage) noexcept {};
 
-    std::vector<DescribedMethodDefinition> described_methods{};
+    Array<DescribedMethodDefinition> described_methods{};
 
     // Owned UTF-8 values under dotted ASCII identifier keys; normalized and key-sorted on publication.
     MetadataList metadata{};
@@ -963,10 +959,10 @@ struct FieldInfo {
 
     ValueDescription value;
 
-    std::optional<std::size_t> offset{};
+    Optional<std::size_t> offset{};
 
     // The defined leaves; an enum's leaf is published as its EnumValue.
-    std::vector<Scalar> default_leaves{};
+    Array<Scalar> default_leaves{};
 
     // Owned by the type descriptor, including inherited field copies.
     std::string label{};
@@ -983,10 +979,10 @@ struct FieldInfo {
     TypeId owner{};
 
     // Immutable, key-sorted copy of the declaration, also retained on inherited fields.
-    std::vector<std::pair<std::string, std::string>> metadata{};
+    MetadataList metadata{};
 
     // Owned decoded String default; absent for native fields and other value types.
-    std::optional<std::string> default_text{};
+    Optional<std::string> default_text{};
 
     bool transient{};
 
@@ -1005,15 +1001,15 @@ struct MethodInfo {
     std::string description{};
 
     // One per signature parameter; empty when the producer gave no name.
-    std::vector<std::string> parameter_names{};
+    Array<std::string> parameter_names{};
 
     std::uintptr_t native_entry{};
 
     // One per signature parameter; EnumValue defaults carry the resolved Runtime enum TypeId.
-    std::vector<std::optional<Scalar>> parameter_defaults{};
+    Array<Optional<Scalar>> parameter_defaults{};
 
     // One key-sorted metadata list per signature parameter.
-    std::vector<MetadataList> parameter_metadata{};
+    Array<MetadataList> parameter_metadata{};
 };
 
 struct DescribedMethodInfo {
@@ -1021,9 +1017,9 @@ struct DescribedMethodInfo {
 
     FunctionSignature signature;
 
-    std::vector<std::string> parameter_names{};
+    Array<std::string> parameter_names{};
 
-    std::vector<MetadataList> parameter_metadata{};
+    Array<MetadataList> parameter_metadata{};
 };
 
 struct TypeInfo {
@@ -1037,9 +1033,9 @@ struct TypeInfo {
 
     std::size_t alignment;
 
-    std::vector<FieldInfo> fields;
+    Array<FieldInfo> fields;
 
-    std::vector<MethodInfo> methods;
+    Array<MethodInfo> methods;
 
     bool copy_constructible{};
 
@@ -1052,24 +1048,24 @@ struct TypeInfo {
     bool contains_references{};
 
     // Public member lists include ancestors, preserving declaration IDs/signatures.
-    std::optional<TypeId> base{};
+    Optional<TypeId> base{};
 
     struct Enumeration {
         TypeId underlying;
 
-        std::vector<std::pair<std::string, std::uint32_t>> values;
+        Array<std::pair<std::string, std::uint32_t>> values;
 
         bool flags{};
 
         // One per value after publication.
-        std::vector<EnumeratorMetadata> metadata{};
+        Array<EnumeratorMetadata> metadata{};
 
         bool operator==(const Enumeration&) const = default;
     };
 
-    std::optional<Enumeration> enumeration{};
+    Optional<Enumeration> enumeration{};
 
-    std::optional<TypeId> element{};
+    Optional<TypeId> element{};
 
     bool native_storage{};
 
@@ -1098,11 +1094,11 @@ struct TypeInfo {
 
     void* (*base_address)(void*) noexcept {};
 
-    std::optional<std::size_t> base_offset{};
+    Optional<std::size_t> base_offset{};
 
     // Initial method contract frozen when a described object type is first registered; empty for native types.
     // Live executable entries across compatible hot reloads are queried from the code host (Program::entries).
-    std::vector<DescribedMethodInfo> described_methods{};
+    Array<DescribedMethodInfo> described_methods{};
 
     // Immutable, key-sorted copy of the type's own declared metadata.
     MetadataList metadata{};
@@ -1112,11 +1108,11 @@ struct TypeInfo {
 // the record for a type validator, and empty for the validated type's own validator;
 // `names` spells the same path. `value` holds the offending leaf of a hard-bound failure.
 struct ValidationFailure {
-    std::vector<FieldId> field;
+    Array<FieldId> field;
 
-    std::vector<std::string> names;
+    Array<std::string> names;
 
-    std::optional<Scalar> value{};
+    Optional<Scalar> value{};
 
     // argument_mismatch with a readable message and the failing value's path.
     Error error;
@@ -1165,11 +1161,11 @@ public:
     // Publication needs a type safe point: check_code_publication() plus an idle
     // collector, otherwise busy. Published types never change or unregister, so
     // their TypeInfo addresses stay valid for the Runtime's lifetime.
-    [[nodiscard]] Result<std::vector<TypeId>> register_types(std::vector<TypeDefinition> definitions);
+    [[nodiscard]] Result<Array<TypeId>> register_types(Array<TypeDefinition> definitions);
 
     // The catalog only grows, in publication order. Cache type_count() and pass it
     // as first to scan only types published since.
-    [[nodiscard]] std::vector<TypeId> types(std::size_t first = 0) const;
+    [[nodiscard]] Array<TypeId> types(std::size_t first = 0) const;
 
     [[nodiscard]] std::size_t type_count() const noexcept;
 
@@ -1208,14 +1204,14 @@ public:
     // The same protected borrow can target an inline field in native or described objects.
     template <class T, class F>
         requires std::invocable<F, T&> && detail::NativeCallbackResult<std::invoke_result_t<F, T&>>::supported
-    [[nodiscard]] std::invoke_result_t<F, T&> with_native(ObjectId object, std::span<const FieldId> path,
+    [[nodiscard]] std::invoke_result_t<F, T&> with_native(ObjectId object, Span<const FieldId> path,
                                                           F&& callback) noexcept {
         ATELIER_TRY_BIND(
             borrowed, borrow_native(object, detail::representation<std::remove_cv_t<T>>(), path, !std::is_const_v<T>));
         return std::invoke(std::forward<F>(callback), *static_cast<T*>(borrowed->storage));
     }
 
-    [[nodiscard]] Result<ReferenceField> reference_field(ObjectId, std::span<const FieldId>) const;
+    [[nodiscard]] Result<ReferenceField> reference_field(ObjectId, Span<const FieldId>) const;
 
     [[nodiscard]] Result<ReferenceField> reference_field(ObjectId object, FieldId field) const {
         return reference_field(object, {&field, 1});
@@ -1236,7 +1232,7 @@ public:
     // One splice per sequence and one write per slot. All validation, input
     // copying and capacity preparation precede any logical change. Commit has
     // no allocations or callbacks; preparation may propagate allocation errors.
-    [[nodiscard]] Result<void> apply_reference_changes(std::span<const ReferenceChange>);
+    [[nodiscard]] Result<void> apply_reference_changes(Span<const ReferenceChange>);
 
     template <class T>
     [[nodiscard]] Result<TypeId> native_type() const {
@@ -1250,21 +1246,21 @@ public:
     // Failed construction leaves no live destination; failed assignment may partially update it.
     // Copy construction forbids overlap. Supported assignment permits exact self-assignment
     // as a no-op, but rejects partial overlap. Invalid requests do not enter value operations.
-    [[nodiscard]] Result<void> initialize_value(TypeId type, std::span<std::byte> destination);
+    [[nodiscard]] Result<void> initialize_value(TypeId type, Span<std::byte> destination);
 
-    [[nodiscard]] Result<void> copy_construct_value(TypeId type, std::span<std::byte> destination,
-                                                    std::span<const std::byte> source);
+    [[nodiscard]] Result<void> copy_construct_value(TypeId type, Span<std::byte> destination,
+                                                    Span<const std::byte> source);
 
-    [[nodiscard]] Result<void> assign_value(TypeId type, std::span<std::byte> destination,
-                                            std::span<const std::byte> source);
+    [[nodiscard]] Result<void> assign_value(TypeId type, Span<std::byte> destination,
+                                            Span<const std::byte> source);
 
-    [[nodiscard]] Result<void> destroy_value(TypeId type, std::span<std::byte> storage);
+    [[nodiscard]] Result<void> destroy_value(TypeId type, Span<std::byte> storage);
 
     // Mutates caller-owned live foundation storage under the same callback
     // protection as other value operations. Input is an element, same sequence,
     // or UTF-8 bytes according to operation; count is used by capacity operations.
-    [[nodiscard]] Result<void> mutate_sequence(TypeId type, std::span<std::byte> storage, SequenceMutation operation,
-                                               TypeId input_type = {}, std::span<const std::byte> input = {},
+    [[nodiscard]] Result<void> mutate_sequence(TypeId type, Span<std::byte> storage, SequenceMutation operation,
+                                               TypeId input_type = {}, Span<const std::byte> input = {},
                                                std::size_t count = 0);
 
     // Creation publishes an external root before returning. Roots do not prevent
@@ -1282,9 +1278,9 @@ public:
     [[nodiscard]] Result<ObjectReference> null_reference(TypeId type,
                                                          ValueForm form = ValueForm::strong_reference) const;
 
-    [[nodiscard]] Result<std::optional<ObjectRoot>> try_acquire(const ObjectReference& reference);
+    [[nodiscard]] Result<Optional<ObjectRoot>> try_acquire(const ObjectReference& reference);
 
-    [[nodiscard]] Result<ValueRoot> root_value(TypeId type, std::span<const std::byte> storage);
+    [[nodiscard]] Result<ValueRoot> root_value(TypeId type, Span<const std::byte> storage);
 
     [[nodiscard]] Result<void> destroy(ObjectId object);
 
@@ -1306,26 +1302,26 @@ public:
 
     // Replaces `changed` with the live objects stamped after `cursor`, in slot order. Destroyed
     // and collected objects are absent; changed_since reports their stale identities.
-    void changed_objects(std::uint64_t cursor, std::vector<ObjectId>& changed) const;
+    void changed_objects(std::uint64_t cursor, Array<ObjectId>& changed) const;
 
     // A field path traverses inline records and Array elements. Scalar and plain record
     // fields share the same path resolution and exact-type checks.
     // Writes apply FieldRange hard bounds, including to a math vector's components,
     // to the elements of a ranged Array, and to constrained leaves inside a written record.
-    [[nodiscard]] Result<Scalar> read(ObjectId object, std::span<const FieldId> path) const;
+    [[nodiscard]] Result<Scalar> read(ObjectId object, Span<const FieldId> path) const;
 
-    [[nodiscard]] Result<void> write(ObjectId object, std::span<const FieldId> path, Scalar value);
+    [[nodiscard]] Result<void> write(ObjectId object, Span<const FieldId> path, Scalar value);
 
     // Whole values: plain values, or copyable values whose operations preserve borrows and that
     // hold no GC references (String, Array, records of them). Non-trivial writes prepare a clamped
     // copy and swap it in, so a failure leaves the field unchanged; on objects they are busy during
     // callbacks and native borrows. Reads copy into a live value of the exact type.
-    [[nodiscard]] Result<void> read(ObjectId object, std::span<const FieldId> path, ValueOutput output) const;
+    [[nodiscard]] Result<void> read(ObjectId object, Span<const FieldId> path, ValueOutput output) const;
 
-    [[nodiscard]] Result<void> write(ObjectId object, std::span<const FieldId> path, ValueInput value);
+    [[nodiscard]] Result<void> write(ObjectId object, Span<const FieldId> path, ValueInput value);
 
     // Read an exact backup before a reversible write. Rejects a type that restore cannot exchange.
-    [[nodiscard]] Result<void> read_for_restore(ObjectId object, std::span<const FieldId> path,
+    [[nodiscard]] Result<void> read_for_restore(ObjectId object, Span<const FieldId> path,
                                                 ValueOutput previous) const;
 
     // Undoes the caller's own write: `previous` must hold the value the caller read from this
@@ -1335,52 +1331,52 @@ public:
     // for bit. Paths, exact types, object and busy checks match write(ValueInput); GC references
     // are a type_mismatch, a non-plain type without a non-throwing swap is unsupported_operation,
     // and a failure changes neither side.
-    [[nodiscard]] Result<void> restore(ObjectId object, std::span<const FieldId> path, ValueOutput previous);
+    [[nodiscard]] Result<void> restore(ObjectId object, Span<const FieldId> path, ValueOutput previous);
 
     // The same accesses on a caller-owned live value of `type`, under the value-operation trust rules.
-    [[nodiscard]] Result<Scalar> read(TypeId type, std::span<const std::byte> storage,
-                                      std::span<const FieldId> path) const;
+    [[nodiscard]] Result<Scalar> read(TypeId type, Span<const std::byte> storage,
+                                      Span<const FieldId> path) const;
 
-    [[nodiscard]] Result<void> write(TypeId type, std::span<std::byte> storage, std::span<const FieldId> path,
+    [[nodiscard]] Result<void> write(TypeId type, Span<std::byte> storage, Span<const FieldId> path,
                                      Scalar value);
 
-    [[nodiscard]] Result<void> read(TypeId type, std::span<const std::byte> storage, std::span<const FieldId> path,
+    [[nodiscard]] Result<void> read(TypeId type, Span<const std::byte> storage, Span<const FieldId> path,
                                     ValueOutput output) const;
 
-    [[nodiscard]] Result<void> write(TypeId type, std::span<std::byte> storage, std::span<const FieldId> path,
+    [[nodiscard]] Result<void> write(TypeId type, Span<std::byte> storage, Span<const FieldId> path,
                                      ValueInput value);
 
     // The value a scalar write to this path of `type` would store, without an object:
     // clamped to hard bounds, argument_mismatch for NaN/Inf under a hard bound.
-    [[nodiscard]] Result<Scalar> constrain(TypeId type, std::span<const FieldId> path, Scalar value) const;
+    [[nodiscard]] Result<Scalar> constrain(TypeId type, Span<const FieldId> path, Scalar value) const;
 
     // Checks, without changing anything: every hard bound, then type validators of inline
     // records innermost first, then the inheritance chain base first. Reports the first
     // failure; the outer error only means the object, type or storage is invalid.
-    [[nodiscard]] Result<std::optional<ValidationFailure>> validate(ObjectId object) const;
+    [[nodiscard]] Result<Optional<ValidationFailure>> validate(ObjectId object) const;
 
-    [[nodiscard]] Result<std::optional<ValidationFailure>> validate_value(TypeId type,
-                                                                          std::span<const std::byte> storage) const;
+    [[nodiscard]] Result<Optional<ValidationFailure>> validate_value(TypeId type,
+                                                                     Span<const std::byte> storage) const;
 
     // Selects element `index` of an Array type. Out-of-range selectors fail when resolved.
     [[nodiscard]] Result<FieldId> element(TypeId array, std::uint32_t index) const;
 
     // The index of an element selector; empty for a field selector or unknown owner.
-    [[nodiscard]] std::optional<std::uint32_t> element_index(FieldId member) const;
+    [[nodiscard]] Optional<std::uint32_t> element_index(FieldId member) const;
 
     // Structural changes to an inline Array field. Every check precedes the change and a
     // failure leaves the array unchanged. Busy during callbacks, native borrows and traversal,
     // so no borrowed element address outlives a change. Inserted copies are clamped to hard
     // bounds; a null ValueInput default-constructs the element.
-    [[nodiscard]] Result<std::size_t> element_count(ObjectId object, std::span<const FieldId> array) const;
+    [[nodiscard]] Result<std::size_t> element_count(ObjectId object, Span<const FieldId> array) const;
 
-    [[nodiscard]] Result<void> insert_element(ObjectId object, std::span<const FieldId> array, std::size_t index,
+    [[nodiscard]] Result<void> insert_element(ObjectId object, Span<const FieldId> array, std::size_t index,
                                               ValueInput value = {});
 
-    [[nodiscard]] Result<void> remove_elements(ObjectId object, std::span<const FieldId> array, std::size_t first,
+    [[nodiscard]] Result<void> remove_elements(ObjectId object, Span<const FieldId> array, std::size_t first,
                                                std::size_t count = 1);
 
-    [[nodiscard]] Result<void> move_element(ObjectId object, std::span<const FieldId> array, std::size_t from,
+    [[nodiscard]] Result<void> move_element(ObjectId object, Span<const FieldId> array, std::size_t from,
                                             std::size_t to);
 
     [[nodiscard]] Result<Scalar> read(ObjectId object, FieldId field) const { return read(object, {&field, 1}); }
@@ -1397,9 +1393,9 @@ public:
         return write(object, {&field, 1}, value);
     }
 
-    [[nodiscard]] Result<ObjectReference> read_reference(ObjectId object, std::span<const FieldId> path) const;
+    [[nodiscard]] Result<ObjectReference> read_reference(ObjectId object, Span<const FieldId> path) const;
 
-    [[nodiscard]] Result<void> write_reference(ObjectId object, std::span<const FieldId> path,
+    [[nodiscard]] Result<void> write_reference(ObjectId object, Span<const FieldId> path,
                                                const ObjectReference& reference);
 
     [[nodiscard]] Result<ObjectReference> read_reference(ObjectId object, FieldId field) const {
@@ -1410,10 +1406,10 @@ public:
         return write_reference(object, {&field, 1}, reference);
     }
 
-    [[nodiscard]] Result<ObjectReference> read_reference(TypeId type, std::span<const std::byte> storage,
-                                                         std::span<const FieldId> path) const;
+    [[nodiscard]] Result<ObjectReference> read_reference(TypeId type, Span<const std::byte> storage,
+                                                         Span<const FieldId> path) const;
 
-    [[nodiscard]] Result<void> write_reference(TypeId type, std::span<std::byte> storage, std::span<const FieldId> path,
+    [[nodiscard]] Result<void> write_reference(TypeId type, Span<std::byte> storage, Span<const FieldId> path,
                                                const ObjectReference& reference);
 
     // Trusted native slots: the caller supplies the slot's declared description
@@ -1430,7 +1426,7 @@ public:
 
     [[nodiscard]] Result<void> visit_references(ObjectId object, ReferenceVisitor visitor) const;
 
-    [[nodiscard]] Result<void> visit_references(TypeId type, std::span<const std::byte> storage,
+    [[nodiscard]] Result<void> visit_references(TypeId type, Span<const std::byte> storage,
                                                 ReferenceVisitor visitor) const;
 
     [[nodiscard]] std::size_t root_count() const noexcept;
@@ -1446,27 +1442,30 @@ public:
     // Non-void methods require output; void permits null and never writes output.
     // Failure preserves output, including a callback's missing/wrong/fabricated result.
     // User-code side effects are not rolled back. Native borrows still forbid source entry.
-    [[nodiscard]] Result<void> call(ObjectId object, MethodId method, std::span<const Scalar> arguments,
+    [[nodiscard]] Result<void> call(ObjectId object, MethodId method, Span<const Scalar> arguments,
                                     Scalar* output = nullptr);
 
-    [[nodiscard]] Result<void> call(ObjectId object, MethodId method, std::span<const Scalar> arguments,
+    [[nodiscard]] Result<void> call(ObjectId object, MethodId method, Span<const Scalar> arguments,
                                     ValueOutput output);
 
     template <std::ranges::contiguous_range R>
         requires std::same_as<std::ranges::range_value_t<R>, Argument>
     [[nodiscard]] Result<void> call(ObjectId object, MethodId method, const R& arguments, Scalar* output = nullptr) {
-        return call_arguments(object, method, std::span<const Argument>{arguments}, output);
+        return call_arguments(object, method,
+                              Span<const Argument>{std::ranges::data(arguments), std::ranges::size(arguments)}, output);
     }
 
     template <std::ranges::contiguous_range R>
         requires std::same_as<std::ranges::range_value_t<R>, Argument>
     [[nodiscard]] Result<void> call(ObjectId object, MethodId method, const R& arguments, ValueOutput output) {
-        return call_arguments(object, method, std::span<const Argument>{arguments}, nullptr, output);
+        return call_arguments(object, method,
+                              Span<const Argument>{std::ranges::data(arguments), std::ranges::size(arguments)}, nullptr,
+                              output);
     }
 
     // Source adapters use this before entry. Field operands are rejected here:
     // their addresses may only be borrowed inside a protected native call.
-    [[nodiscard]] Result<void> prepare_arguments(const FunctionSignature&, std::span<const Argument>,
+    [[nodiscard]] Result<void> prepare_arguments(const FunctionSignature&, Span<const Argument>,
                                                  PreparedArguments&) const;
 
     [[nodiscard]] std::size_t live_objects() const noexcept;
@@ -1485,13 +1484,13 @@ public:
 private:
     friend class detail::TypePublication;
 
-    Result<std::shared_ptr<detail::TypePublication>> prepare_types(std::vector<TypeDefinition>);
+    Result<std::shared_ptr<detail::TypePublication>> prepare_types(Array<TypeDefinition>);
 
-    [[nodiscard]] Result<void> call_scalars(ObjectId, MethodId, std::span<const Scalar>, Scalar*, ValueOutput = {});
+    [[nodiscard]] Result<void> call_scalars(ObjectId, MethodId, Span<const Scalar>, Scalar*, ValueOutput = {});
 
-    [[nodiscard]] Result<void> call_arguments(ObjectId, MethodId, std::span<const Argument>, Scalar*, ValueOutput = {});
+    [[nodiscard]] Result<void> call_arguments(ObjectId, MethodId, Span<const Argument>, Scalar*, ValueOutput = {});
 
-    [[nodiscard]] Result<void> prepare_arguments(const FunctionSignature&, std::span<const Argument>,
+    [[nodiscard]] Result<void> prepare_arguments(const FunctionSignature&, Span<const Argument>,
                                                  PreparedArguments&, bool fields) const;
 
     friend class ExecutionScope;
@@ -1537,7 +1536,7 @@ private:
 
         TypeId root{};
 
-        std::span<const FieldId> path{};
+        Span<const FieldId> path{};
     };
 
     struct NativeBorrow {
@@ -1556,7 +1555,7 @@ private:
 
     std::unique_ptr<Impl> impl_;
 
-    [[nodiscard]] Result<NativeBorrow> borrow_native(ObjectId, const void* representation, std::span<const FieldId>,
+    [[nodiscard]] Result<NativeBorrow> borrow_native(ObjectId, const void* representation, Span<const FieldId>,
                                                      bool write);
 
     [[nodiscard]] Result<ReferenceField> native_reference_field(ObjectId, const void*, bool sequence) const;
@@ -1569,18 +1568,18 @@ private:
 
     [[nodiscard]] Result<std::uint32_t> resolve_object(ObjectId object) const;
 
-    [[nodiscard]] Result<Address> resolve_field(ObjectId object, std::span<const FieldId> path) const;
+    [[nodiscard]] Result<Address> resolve_field(ObjectId object, Span<const FieldId> path) const;
 
-    [[nodiscard]] Result<Address> resolve_array(ObjectId object, std::span<const FieldId> path) const;
+    [[nodiscard]] Result<Address> resolve_array(ObjectId object, Span<const FieldId> path) const;
 
-    [[nodiscard]] Result<void> mutate_elements(ObjectId object, std::span<const FieldId> path,
+    [[nodiscard]] Result<void> mutate_elements(ObjectId object, Span<const FieldId> path,
                                                SequenceMutation operation, std::size_t position, std::size_t operand,
                                                ValueInput value);
 
-    [[nodiscard]] Result<Address> resolve_path(TypeId type, void* storage, std::span<const FieldId> path) const;
+    [[nodiscard]] Result<Address> resolve_path(TypeId type, void* storage, Span<const FieldId> path) const;
 
-    [[nodiscard]] Result<Address> resolve_storage(TypeId type, std::span<const std::byte> storage,
-                                                  std::span<const FieldId> path) const;
+    [[nodiscard]] Result<Address> resolve_storage(TypeId type, Span<const std::byte> storage,
+                                                  Span<const FieldId> path) const;
 
     // One implementation for object and caller-owned targets; `object` selects the borrow rule.
     [[nodiscard]] Result<Scalar> read_at(const Address& address) const;

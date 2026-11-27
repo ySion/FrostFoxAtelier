@@ -76,8 +76,7 @@ void verify_graph_format() {
     take(procedural::register_types(runtime));
     auto program = take(source::Program::create(runtime));
     {
-        auto req =
-            take(program->request({"graph_doc", 1, take(source::engine_sources(source::default_engine_root()))}));
+        auto req = take(program->request("graph_doc", 1, take(source::engine_sources(source::default_engine_root()))));
         auto cand = take(source::Program::prepare(req));
         take(program->try_publish(cand));
     }
@@ -274,14 +273,14 @@ Result<void> verify_roof_group(editor::Session& doc, editor::Project& project, e
     const auto center = [](const procedural::Geometry& g, std::uint32_t index) {
         const auto face = g.primitive(index);
         math::Vector3 sum{};
-        for (auto p : g.vertex_points().subspan(face.first, face.count))
+        for (auto p : g.vertex_points().slice(face.first, face.count))
             sum += g.positions()[p];
         return sum / static_cast<float>(face.count);
     };
     editor::Camera camera;
     camera.frame({}, 3.f);
     const auto view = editor::ViewportView::make(camera, {0, 0, 800, 600}, 1.f);
-    std::vector<renderer::OverlayShape> overlay;
+    Array<renderer::OverlayShape> overlay;
     application::append_procedural_guides(*original, view, {.group = &workspace.sop_group}, overlay);
     const auto screen = view.project(center(*original, 2));
     require(screen && overlay.size() == 5 && std::abs(overlay.front().points[0] - screen->x) < .01f &&
@@ -467,9 +466,9 @@ class game.DiagnosticSop : procedural.Node {
 
         Host(editor::Session& d, editor::Project& p, editor::Workspace& w) : doc(d), proj(p), ws(w) {}
 
-        Result<std::optional<std::filesystem::path>> choose_path(editor::PathPurpose, const std::filesystem::path&,
-                                                                 std::wstring_view) override {
-            return std::optional<std::filesystem::path>{};
+        Result<Optional<std::filesystem::path>> choose_path(editor::PathPurpose, const std::filesystem::path&,
+                                                            std::wstring_view) override {
+            return Optional<std::filesystem::path>{};
         }
 
         void asset_created(std::string_view, bool) override {}
@@ -704,7 +703,7 @@ class game.DiagnosticSop : procedural.Node {
             "build_procedural_surface_mesh did not emit polar triangle (7) and quad boundary edge_masks (5, 3).");
     invoke("view.frame_all");
     const auto view = editor::ViewportView::make(host.camera(), {0, 0, 800, 600}, 1.f);
-    std::vector<renderer::OverlayShape> guides;
+    Array<renderer::OverlayShape> guides;
     application::append_procedural_guides(*eval_terrace.inspected_output, view,
                                           {.show_points = true,
                                            .show_point_normals = true,
@@ -714,7 +713,7 @@ class game.DiagnosticSop : procedural.Node {
                                            .chunk_size = 4.f},
                                           guides);
     require(!guides.empty(), "append_procedural_guides emitted zero OverlayShapes for framed SOP geometry.");
-    std::vector<renderer::OverlayShape> gnomon_shapes;
+    Array<renderer::OverlayShape> gnomon_shapes;
     application::append_orientation_gnomon(view, gnomon_shapes);
     require(gnomon_shapes.size() > 6, "append_orientation_gnomon did not emit 3D XYZ axis lines and tip glyphs.");
 
@@ -766,7 +765,8 @@ class game.DiagnosticSop : procedural.Node {
 
     // Full Workspace UI composition across 2D Network Canvas, Geometry Spreadsheet, Parameters and Scene View:
     ui::Session ui_session;
-    take_ui(ui_session.initialize(take(application::editor_fonts())));
+    const auto fonts = take(application::editor_fonts());
+    take_ui(ui_session.initialize(fonts));
     const auto styles = take(application::editor_styles());
     take_ui(ui_session.set_style_sheet(styles));
     take_ui(ui_session.set_surface({{1400, 900}, 1.f, 1}));
@@ -900,7 +900,7 @@ class game.DiagnosticSop : procedural.Node {
         send_ptr(ui::EventKind::pointer_down, sphere_body[0], sphere_body[1]);
         send_ptr(ui::EventKind::pointer_up, sphere_body[0], sphere_body[1]);
         require(workspace.selected_graph_node == "sphere" &&
-                    workspace.selected_graph_nodes == std::vector<std::string>{"sphere"},
+                    workspace.selected_graph_nodes == Array<std::string>{"sphere"},
                 "Clicking an unselected SOP node without dragging did not select it.");
 
         const auto out_pin = workspace.network.port_dip(*sphere_it, true, 0);
@@ -1117,7 +1117,7 @@ class game.DiagnosticSop : procedural.Node {
     {
         editor::Camera vcam;
         auto vview = editor::ViewportView::make(vcam, {0.f, 0.f, 800.f, 600.f}, 1.f);
-        std::vector<renderer::OverlayShape> tmpl_overlay;
+        Array<renderer::OverlayShape> tmpl_overlay;
         application::append_template_wireframe(*tmpl_eval.template_output, vview, tmpl_overlay);
         require(!tmpl_overlay.empty(), "append_template_wireframe emitted no ghosted wireframe segments.");
 
@@ -1873,8 +1873,8 @@ class game.DiagnosticSop : procedural.Node {
             take(doc.graph_add_node(nested_key, "asset:" + court_key, "court", {0.f, 0.f}, &project));
             take(doc.graph_set_display(nested_key, "court"));
             take(doc.save_graph(project, nested_key));
-            const std::vector<std::string> nested_field{"nodes", "court",   "asset",     court_key,
-                                                        "nodes", "pillars", "overrides", "obsolete_depth"};
+            const Array<std::string> nested_field{"nodes", "court",   "asset",     court_key,
+                                                  "nodes", "pillars", "overrides", "obsolete_depth"};
             for (int cook = 0; cook < 2; ++cook) {
                 (void)take(doc.evaluate_graph(nested_key, &project));
                 const auto nested_view = take(doc.inspect_graph(nested_key, &project));
@@ -1887,7 +1887,8 @@ class game.DiagnosticSop : procedural.Node {
                 take(component(doc, doc.selection().entity, doc.presentation_types().procedural_generator_component));
             take(doc.sync_procedural_generators(&project));
             auto generator_field = nested_field;
-            generator_field.insert(generator_field.begin(), {"graph", nested_key});
+            const std::string graph_prefix[]{"graph", nested_key};
+            generator_field.insert_range(0, graph_prefix);
             const auto generator_issues = doc.take_diagnostics();
             require(std::ranges::count_if(generator_issues,
                                           [&](const world::Diagnostic& issue) {
@@ -2132,12 +2133,12 @@ Result<void> verify_scene_recovery() {
                 finished.health.rejected_invalid_record == 0 && finished.health.rejected_record_too_large == 0,
             "Logging rejected or failed to flush the scene recovery record.");
     auto reader = take(logging::Reader::open(log_dir));
-    std::vector<logging::Record> records;
+    Array<logging::Record> records;
     bool reader_done = false;
     for (unsigned polls = 0; polls < 200 && !reader_done; ++polls) {
         auto batch = reader->poll({1024 * 1024, 4096, std::chrono::milliseconds{50}});
         for (auto& r : batch.records)
-            records.push_back(std::move(r));
+            records.add(std::move(r));
         reader_done = batch.status.finished;
     }
     require(reader_done, "Logging Reader did not finish reading recovery run.");

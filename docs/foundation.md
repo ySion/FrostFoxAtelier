@@ -48,8 +48,8 @@ names.squeeze();                    // 显式收紧容量；空数组释放缓�
 ```
 
 - `size/capacity/empty` 查询状态，`data/begin/end/rbegin/rend/view/slice` 提供连续访问与子区间借用；支持计数默认构造 `Array(count)`、计数填充构造 `Array(count, value)`、连续或输入迭代器区间构造 `Array(first, last)` 与通用输入范围构造 `explicit Array(range)`（对非借用型右值范围自动按移动语义转移元素，保持初始精确容量）。`operator[]` 与 `front/back` 在所有构建中检查索引；`try_at` 在越界时返回空指针。`find` 返回索引或 `npos`，`contains` 返回是否存在；提供同构及与 `Span` 的 `operator==` / `operator<=>`。
-- `reserve(n)` 只准备容量；`resize(n)` 对新增元素做值初始化（全零位表示的标量与无填充平凡类型直接批量清零），`resize(n, value)` 从 value 复制构造新增元素（1/2/4/8/16 字节平凡无填充类型走 `memset` 或双路 SSE2 广播填充），value 可以是本数组的元素；`resize_uninitialized(n)` 仅对隐式生命周期且平凡析构类型开放，保留已有活前缀而不清零新增尾部；`assign` 支持计数填充、`Span`、初值列表、迭代器区间与输入范围原地复用容量重置（含自元素与自切片安全保护）；`append` 支持 `Span`、初值列表与输入范围追加。`emplace` 直接构造新增元素。`release()` 清空并释放缓冲。删除不自动缩容。
-- 扩容为几何增长；只构造实际元素，不构造预留槽位。元素要求不抛异常析构，并提供不抛异常的移动构造或复制构造。支持 move-only 元素，但此时复制 Array 的接口不可用。
+- `reserve(n)` 只准备容量；`resize(n)` 对新增元素做值初始化（全零位表示的标量与无填充平凡类型直接批量清零），`resize(n, value)` 从 value 复制构造新增元素（1/2/4/8/16 字节平凡无填充类型走 `memset` 或双路 SSE2 广播填充），value 可以是本数组的元素；`resize_uninitialized(n)` 仅对隐式生命周期且平凡析构类型开放，保留已有活前缀而不清零新增尾部；`truncate(n)` 只收缩并析构尾部多余元素，不要求元素默认可构造；`assign` 支持计数填充、`Span`、初值列表、迭代器区间与输入范围原地复用容量重置（空数组首次分配采用精确容量，已持有缓冲再次超容重置时按几何增长避免逐次重分配，含自元素与自切片安全保护）；`append` 支持计数填充、`Span`、初值列表与输入范围追加；`insert_range` 与 `deduplicate` 支持按位搬移或通用区间插入及相邻去重。`emplace` 直接构造新增元素。`release()` 清空并释放缓冲。删除不自动缩容。
+- 扩容为几何增长；只构造实际元素，不构造预留槽位。元素要求不抛异常析构，并提供不抛异常的移动构造或复制构造。`Array<T>` 支持未完成自引用元素类型（如树节点 `Array<Node>`）；支持 move-only 元素，对 move-only 元素实例化复制构造或复制赋值在编译期静态拒绝。
 - 扩容优先不抛异常移动，否则复制。复制、追加与扩容只在类型 trivially-copyable 且实际选中的构造也平凡时批量复制；有序删除另外要求平凡移动赋值，使用可重叠的 memmove。类型标签不会跳过选中模板构造或赋值的副作用。
 - 复制赋值在容量足够、元素可平凡复制构造且平凡复制赋值时复用缓冲，包括空值、变短和重新增长；其他情况先构造完整副本再替换。可复制但不可赋值的元素仍然可用。String、智能指针和其他资源类型保留逐元素构析；不抛异常的非平凡赋值不自动取得字节搬运或容量复用资格。
 - 预留容量中的单元素 emplace 直接构造并在成功后增加大小。符合 realloc 条件时，增长前先保存候选值或自视图区间偏移，增长后重新定位，保留自身元素、子对象或视图作为来源的合同；其余增长先构造新增后缀，再处理旧前缀。remove_if 仍逐元素交替调用谓词与搬移，谓词可以观察之前已经压缩的位置。
@@ -235,12 +235,12 @@ Span 构造、索引和切片均 constexpr/noexcept（字节重解释转换除�
 
 [platform/windows_path.hpp](../modules/core/platform/include/platform/windows_path.hpp) 的唯一 `windows_file_path` 返回 `expected<filesystem::path, error_code>`：绝对化失败显式返回，成功后规范化并保留已有扩展前缀、转换 UNC 或添加长路径前缀。它只处理拼写，不承担存在性、包含关系和链接验证。[platform/error.hpp](../modules/core/platform/include/platform/error.hpp) 的 `error_message` 对系统错误使用 FormatMessageW 和严格 UTF-8 输出，避免 filesystem 异常 `what()` 中的 ANSI 路径；非系统类别保留原类别消息，未知系统码保留数字身份。
 
-[foundation/sha256.hpp](../modules/core/foundation/include/foundation/sha256.hpp) 的 `Sha256` 构造、`add`、`finish` 和 `sha256(bytes)` 均 noexcept（同时接受 `std::span<const std::byte>` 与 `Span<const std::byte>` / `Span<std::byte>`）；内存哈希没有可恢复的输入失败，CNG 原语失败直接 fatal。流式对象在最后一次 `add` 后只调用一次 `finish`。仅 `sha256_file` 返回 `expected<std::string, std::string>`，报告路径、打开和读取失败；上层自行映射业务码。内存哈希复用 CNG SHA-256 伪句柄，不逐次打开算法 provider。
+[foundation/sha256.hpp](../modules/core/foundation/include/foundation/sha256.hpp) 的 `Sha256` 构造、`add`、`finish` 和 `sha256(bytes)` 均 noexcept（接受 `Span<const std::byte>` 与 `Span<std::byte>`）；内存哈希没有可恢复的输入失败，CNG 原语失败直接 fatal。流式对象在最后一次 `add` 后只调用一次 `finish`。仅 `sha256_file` 返回 `expected<std::string, std::string>`，报告路径、打开和读取失败；上层自行映射业务码。内存哈希复用 CNG SHA-256 伪句柄，不逐次打开算法 provider。
 
 ## 同步借用与作用域工具
 
 - [FunctionRef](../modules/core/foundation/include/foundation/function_ref.hpp) 的 `FunctionRef<R(Args...)>` 和 `FunctionRef<R(Args...) noexcept>` 是两字借用，不复制闭包、不分配、不提供空态；空函数指针为 contract-fatal。支持左值和右值 callable、普通函数指针、move-only 捕获及 `std::invoke` 语义。noexcept 特化仅接受调用及结果转换不抛的 callable。只作同步参数使用，不能存为成员或跨调用保存；临时闭包只保证活到整个调用表达式结束。`Window::poll` 已采用此接口，现有四处临时 lambda 无需命名或复制，窗口不保存回调。
-- [ScopeExit](../modules/core/foundation/include/foundation/scope_exit.hpp) 拥有一个无参、不抛的清理动作，禁止复制；移动转移清理义务，`release()` 放弃自动执行。正常 return（包括 Result 失败）析构执行一次，fatal 不保证清理。构造、移动和析构的 callable 操作都须不抛。此为 C 类预留：首个计划消费者是 W4 CONTROL 的结果化 Security；当前无提前返回的 Security 不作无效迁移。
+- [ScopeExit](../modules/core/foundation/include/foundation/scope_exit.hpp) 拥有一个无参、不抛的清理动作，禁止复制；移动转移清理义务，`release()` 放弃自动执行。正常 return（包括 Result 失败）析构执行一次，fatal 不保证清理。构造、移动和析构的 callable 操作都须不抛。真实消费者包括图像解码的 COM 套间初始化回退与编辑器文档/材质加载的事务恢复守卫。
 - [flags](../modules/core/foundation/include/foundation/flags.hpp) 以 `enable_enum_flags<E> = true` 显式启用枚举，提供 `flags_or/flags_and/flags_xor/flags_without/has_any/has_all`，均 constexpr/noexcept，不添加全局运算符，不屏蔽未知位。零 mask 的 any 为 false、all 为 true。OperatorFlag 与 StyleState 已显式启用并直接消费共用函数；操作标记使用 any，样式选择器使用 all。旧 has_flag、StyleState operator| 和手写集合运算已删除；非法外部样式状态仍由解析/创建边界返回错误，flags 不替业务校验。
 
 ## Optional 的原生合同

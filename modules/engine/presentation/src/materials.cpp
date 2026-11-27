@@ -8,21 +8,21 @@ using detail::error;
 namespace {
 
 template <class ComponentT>
-Result<std::vector<MaterialBinding>> read_bindings_of(Runtime& runtime, ObjectId id, const ComponentT& value) {
+Result<Array<MaterialBinding>> read_bindings_of(Runtime& runtime, ObjectId id, const ComponentT& value) {
     ATELIER_TRY_BIND(field, runtime.reference_field(id, Access::materials(value)));
-    std::vector<MaterialBinding> result;
+    Array<MaterialBinding> result;
     result.reserve(Access::material_slots(value).size());
     for (std::size_t i = 0; i < Access::material_slots(value).size(); ++i) {
         ATELIER_TRY_BIND(reference, runtime.sequence_read(*field, i));
         ATELIER_TRY_BIND(root, runtime.hold(*reference));
-        result.push_back({Access::material_slots(value)[i], std::move(*root), Access::material_overrides(value)[i]});
+        result.add({Access::material_slots(value)[i], std::move(*root), Access::material_overrides(value)[i]});
     }
     return result;
 }
 
 template <class ComponentT>
-Result<void> write_bindings_of(Runtime& runtime, ObjectId id, ComponentT& value, std::vector<std::string> names,
-                               std::vector<bool> flags, std::span<const ObjectReference> references) {
+Result<void> write_bindings_of(Runtime& runtime, ObjectId id, ComponentT& value, Array<std::string> names,
+                               BitVector flags, Span<const ObjectReference> references) {
     ATELIER_TRY_BIND(field, runtime.reference_field(id, Access::materials(value)));
     ATELIER_TRY_BIND(size, runtime.sequence_size(*field));
     const ReferenceChange change = SequenceSplice{*field, 0, *size, references};
@@ -45,7 +45,7 @@ Result<material::ProgramSurfaceRef> capture_slot_surface(Runtime& runtime, const
 
 } // namespace
 
-Result<std::vector<MaterialBinding>> read_material_bindings(Runtime& runtime, ObjectId id) {
+Result<Array<MaterialBinding>> read_material_bindings(Runtime& runtime, ObjectId id) {
     ATELIER_TRY_BIND(type, runtime.type_of(id));
     ATELIER_TRY_BIND(mesh_type, runtime.native_type<StaticMeshComponent>());
     ATELIER_TRY_BIND(mesh, runtime.is_a(*type, *mesh_type));
@@ -56,7 +56,7 @@ Result<std::vector<MaterialBinding>> read_material_bindings(Runtime& runtime, Ob
         id, [&](const ProceduralGeneratorComponent& value) { return read_bindings_of(runtime, id, value); });
 }
 
-Result<void> set_material_bindings(Runtime& runtime, ObjectId id, std::span<const MaterialBinding> bindings) {
+Result<void> set_material_bindings(Runtime& runtime, ObjectId id, Span<const MaterialBinding> bindings) {
     ATELIER_TRY(runtime.check_code_publication());
     ATELIER_TRY_BIND(component, world::inspect_component(runtime, id));
     if (!component->valid)
@@ -67,18 +67,18 @@ Result<void> set_material_bindings(Runtime& runtime, ObjectId id, std::span<cons
         return runtime.with_native<ProceduralGeneratorComponent>(id, [&](auto& value) -> Result<void> {
             if (bindings.size() > 1)
                 return error(ErrorCode::argument_mismatch, "Too many material slot bindings.");
-            std::vector<std::string> names;
-            std::vector<bool> flags;
-            std::vector<ObjectReference> references;
+            Array<std::string> names;
+            BitVector flags;
+            Array<ObjectReference> references;
             for (const auto& binding : bindings) {
                 if (binding.slot != "default")
                     return error(ErrorCode::argument_mismatch,
                                  "Material slot is missing or ambiguous: " + binding.slot);
                 ATELIER_TRY_BIND(held, runtime.hold(binding.resource.reference()));
                 ATELIER_TRY(material::capture_program(runtime, held->id()));
-                names.push_back(binding.slot);
-                flags.push_back(binding.overridden);
-                references.push_back(held->reference());
+                names.add(binding.slot);
+                flags.add(binding.overridden);
+                references.add(held->reference());
             }
             return write_bindings_of(runtime, id, value, std::move(names), std::move(flags), references);
         });
@@ -87,9 +87,9 @@ Result<void> set_material_bindings(Runtime& runtime, ObjectId id, std::span<cons
         const auto& mesh = Access::geometry(value);
         if (bindings.size() > (mesh ? mesh->materials().size() : 0))
             return error(ErrorCode::argument_mismatch, "Too many material slot bindings.");
-        std::vector<std::string> names;
-        std::vector<bool> flags;
-        std::vector<ObjectReference> references;
+        Array<std::string> names;
+        BitVector flags;
+        Array<ObjectReference> references;
         names.reserve(bindings.size());
         flags.reserve(bindings.size());
         references.reserve(bindings.size());
@@ -105,16 +105,15 @@ Result<void> set_material_bindings(Runtime& runtime, ObjectId id, std::span<cons
                 return error(ErrorCode::argument_mismatch, "Material slot is missing or ambiguous: " + binding.slot);
             ATELIER_TRY_BIND(held, runtime.hold(binding.resource.reference()));
             ATELIER_TRY(material::capture_program(runtime, held->id()));
-            names.push_back(binding.slot);
-            flags.push_back(binding.overridden);
-            references.push_back(held->reference());
+            names.add(binding.slot);
+            flags.add(binding.overridden);
+            references.add(held->reference());
         }
         return write_bindings_of(runtime, id, value, std::move(names), std::move(flags), references);
     });
 }
 
-Result<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>> material_surfaces(Runtime& runtime,
-                                                                                          ObjectId id) {
+Result<std::shared_ptr<const Array<material::ProgramSurfaceRef>>> material_surfaces(Runtime& runtime, ObjectId id) {
     const auto gen_type = runtime.native_type<ProceduralGeneratorComponent>();
     const auto obj_type = runtime.type_of(id);
     if (gen_type && obj_type && runtime.is_a(*obj_type, *gen_type).value_or(false)) {
@@ -137,7 +136,7 @@ Result<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>> material
 }
 
 Result<void> detail::store_surfaces(Runtime& runtime, ObjectId id,
-                                    std::shared_ptr<const std::vector<material::ProgramSurfaceRef>> snapshot) {
+                                    std::shared_ptr<const Array<material::ProgramSurfaceRef>> snapshot) {
     auto cached = runtime.with_native<const StaticMeshComponent>(
         id, [&](const StaticMeshComponent& value) -> Result<bool> { return Access::surfaces(value) == snapshot; });
     if (!cached)
@@ -151,10 +150,10 @@ Result<void> detail::store_surfaces(Runtime& runtime, ObjectId id,
     });
 }
 
-Result<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>>
+Result<std::shared_ptr<const Array<material::ProgramSurfaceRef>>>
 detail::material_surfaces(Runtime& runtime, ObjectId id, const StaticMeshComponent& value,
                           Set<ObjectId>* dependencies) {
-    using Snapshot = std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>;
+    using Snapshot = std::shared_ptr<const Array<material::ProgramSurfaceRef>>;
     const auto& mesh = Access::geometry(value);
     if (!mesh)
         return Snapshot{};
@@ -164,8 +163,8 @@ detail::material_surfaces(Runtime& runtime, ObjectId id, const StaticMeshCompone
     const auto& defaults = Access::default_slots(value);
     if (!base_changed && slots.empty() && defaults.empty())
         return cached;
-    std::optional<ReferenceField> explicit_field;
-    std::optional<ReferenceField> default_field;
+    Optional<ReferenceField> explicit_field;
+    Optional<ReferenceField> default_field;
     if (!slots.empty()) {
         ATELIER_TRY_BIND(references, runtime.reference_field(id, Access::materials(value)));
         explicit_field = std::move(*references);
@@ -174,11 +173,11 @@ detail::material_surfaces(Runtime& runtime, ObjectId id, const StaticMeshCompone
         ATELIER_TRY_BIND(references, runtime.reference_field(id, Access::default_materials(value)));
         default_field = std::move(*references);
     }
-    std::shared_ptr<std::vector<material::ProgramSurfaceRef>> next;
+    std::shared_ptr<Array<material::ProgramSurfaceRef>> next;
     const auto writable = [&]() -> auto& {
         if (!next)
-            next = base_changed ? std::make_shared<std::vector<material::ProgramSurfaceRef>>(mesh->materials().size())
-                                : std::make_shared<std::vector<material::ProgramSurfaceRef>>(*cached);
+            next = base_changed ? std::make_shared<Array<material::ProgramSurfaceRef>>(mesh->materials().size())
+                                : std::make_shared<Array<material::ProgramSurfaceRef>>(*cached);
         return *next;
     };
     for (std::size_t i = 0; i < mesh->materials().size(); ++i) {
@@ -234,8 +233,8 @@ Result<detail::GeneratorCapturedSurfaces> detail::generator_surfaces(Runtime& ru
             if (cached_surf && cached_surf->size() == 1 && (*cached_surf)[0] == surf) {
                 result.surface = cached_surf;
             } else {
-                result.surface = std::make_shared<const std::vector<material::ProgramSurfaceRef>>(
-                    std::vector<material::ProgramSurfaceRef>{std::move(surf)});
+                result.surface = std::make_shared<const Array<material::ProgramSurfaceRef>>(
+                    Array<material::ProgramSurfaceRef>{std::move(surf)});
                 result.uncached = true;
             }
         }
@@ -245,7 +244,7 @@ Result<detail::GeneratorCapturedSurfaces> detail::generator_surfaces(Runtime& ru
         const auto& cached_assets = Access::instance_surfaces(value);
         const bool same_output =
             Access::instance_output(value) == output && cached_assets.size() == output->assets.size();
-        std::optional<ReferenceField> inst_field;
+        Optional<ReferenceField> inst_field;
         ATELIER_TRY_BIND(references, runtime.reference_field(id, Access::instance_materials(value)));
         inst_field = std::move(*references);
         result.assets.resize(output->assets.size());
@@ -257,7 +256,7 @@ Result<detail::GeneratorCapturedSurfaces> detail::generator_surfaces(Runtime& ru
                 result.assets[a] = cached_assets[a];
                 continue;
             }
-            std::vector<material::ProgramSurfaceRef> list(asset.mesh->materials().size());
+            Array<material::ProgramSurfaceRef> list(asset.mesh->materials().size());
             for (std::size_t m = 0; m < asset.mesh->materials().size(); ++m) {
                 const auto slot_name = material_slot_name(*asset.mesh, m);
                 const auto at = std::ranges::find(asset.default_slots, slot_name);
@@ -274,7 +273,7 @@ Result<detail::GeneratorCapturedSurfaces> detail::generator_surfaces(Runtime& ru
             if (same_output && cached_assets[a] && *cached_assets[a] == list) {
                 result.assets[a] = cached_assets[a];
             } else {
-                result.assets[a] = std::make_shared<const std::vector<material::ProgramSurfaceRef>>(std::move(list));
+                result.assets[a] = std::make_shared<const Array<material::ProgramSurfaceRef>>(std::move(list));
                 result.uncached = true;
             }
         }

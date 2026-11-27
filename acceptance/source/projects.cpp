@@ -1,4 +1,5 @@
 #include "../helpers.hpp"
+#include "foundation/scope_exit.hpp"
 #include "source/program.hpp"
 #include "runtime/native.hpp"
 #include "runtime/foundation.hpp"
@@ -8,7 +9,6 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
-#include <span>
 #include <windows.h>
 
 namespace {
@@ -28,14 +28,10 @@ void publish(Program& program, source::SourceSnapshot snapshot) {
 void verify_project_engine_sources() {
     const auto root =
         std::filesystem::temp_directory_path() / ("atelier-engine-sources-" + std::to_string(GetCurrentProcessId()));
-    struct Cleanup {
-        std::filesystem::path path;
-
-        ~Cleanup() {
-            std::error_code ignored;
-            std::filesystem::remove_all(path, ignored);
-        }
-    } cleanup{root};
+    ScopeExit cleanup{[&]() noexcept {
+        std::error_code ignored;
+        std::filesystem::remove_all(root, ignored);
+    }};
     std::filesystem::create_directories(root);
     const std::string text =
         "const uint procedural.SEED = 7;\nuint procedural.hash(uint x) { return x * 31 + procedural.SEED; }\n";
@@ -105,7 +101,8 @@ void verify_world_project() {
     auto owner = take(w::create_entity(runtime));
     auto instance = take(w::create_component(runtime, type));
     take(world.set_transform(owner.id(), {}));
-    const auto composed = take(world.attach_components(owner.id(), std::array{w::Attachment{instance.id()}}));
+    const std::array attachments{w::Attachment{instance.id()}};
+    const auto composed = take(world.attach_components(owner.id(), attachments));
     require(!composed.notification_error, "Source class capability assembly failed.");
     require(!take(world.attach(owner.id())).notification_error, "Source owner attachment failed.");
     const auto tick = take(program->entry("game.Move.tick"));
@@ -133,8 +130,8 @@ void verify_world_project() {
             "Source class field did not publish Transient, ReadOnly or Flags enum field.");
     const FieldId moved_id = moved_field->id;
     const FieldId layers_id = layers_field->id;
-    require(x() == 1.f && std::get<float>(take(runtime.read(instance.id(), std::span{&moved_id, 1}))) == 1.f &&
-                std::get<EnumValue>(take(runtime.read(instance.id(), std::span{&layers_id, 1}))).bits == 5u,
+    require(x() == 1.f && std::get<float>(take(runtime.read(instance.id(), Span{&moved_id, 1}))) == 1.f &&
+                std::get<EnumValue>(take(runtime.read(instance.id(), Span{&layers_id, 1}))).bits == 5u,
             "Cross-file helper, Flags enum ops, default-arg native call or transient/read-only Source write failed.");
     require(!take(world.stop()).notification_error, "Source lifecycle stop failed.");
     program->close();
@@ -173,7 +170,7 @@ void verify_frontend_and_pod_evaluation() {
             .field<&NonZeroPlain::bias>("bias", {TypeReference::native<std::int32_t>()}, offsetof(NonZeroPlain, bias))
             .build();
     non_zero_def.native.value_operations_preserve_borrows = true;
-    take(runtime.register_types(std::vector<TypeDefinition>{
+    take(runtime.register_types(Array<TypeDefinition>{
         string_definition(runtime), array_definition<std::int32_t>(runtime, "test.IntArray"),
         NativeRegistration<PlainPair>(runtime, "test.PlainPair", TypeKind::record)
             .field<&PlainPair::x>("x", {TypeReference::native<std::int32_t>()}, offsetof(PlainPair, x))
@@ -309,7 +306,7 @@ class test.SopNode : test.ContractHost {
     const auto ord_proc =
         std::ranges::find(described_prog->entries(), "test.Ordinary.process", &source::EntryInfo::name);
     require(ord_proc != described_prog->entries().end() &&
-                ord_proc->parameter_names == std::vector<std::string>{"renamed_dt"},
+                ord_proc->parameter_names == Array<std::string>{"renamed_dt"},
             "Ordinary class process hot-reload or EntryInfo::parameter_names update failed.");
     // Host-registered Runtime descendants of a Source class must also obey cold/warm hiding parity in both orders:
     // (1) warm-added `process` on `test.Ordinary` blocks registering a child with member `process`;
@@ -319,7 +316,7 @@ class test.SopNode : test.ContractHost {
         bad_child.name = "test.BadManagedChild";
         bad_child.kind = TypeKind::object;
         bad_child.base = TypeReference{"test.Ordinary"};
-        bad_child.fields.push_back({"process", {TypeReference::native<std::int32_t>()}});
+        bad_child.fields.add({"process", {TypeReference::native<std::int32_t>()}});
         const auto rejected_child = runtime.register_type(std::move(bad_child));
         require(!rejected_child && rejected_child.error().code == ErrorCode::invalid_definition &&
                     rejected_child.error().message.contains("test.BadManagedChild.process hides test.Ordinary.process"),
@@ -329,7 +326,7 @@ class test.SopNode : test.ContractHost {
         ok_child.name = "test.OkManagedChild";
         ok_child.kind = TypeKind::object;
         ok_child.base = TypeReference{"test.Ordinary"};
-        ok_child.fields.push_back({"child_slot", {TypeReference::native<std::int32_t>()}});
+        ok_child.fields.add({"child_slot", {TypeReference::native<std::int32_t>()}});
         take(runtime.register_type(std::move(ok_child)));
 
         const std::string warm_clash_child = R"(class test.Ordinary : test.PairHost {
@@ -512,7 +509,7 @@ int run_checked(int x) {
 
     // 2. Multi-chunk `parallel_for`, `self` field snapshot, `const Record&` + LUT reads, `[i]` writes,
     //    diagnostics owned-value cleanup on parallel failure, and runtime `parallel_alias` verification.
-    take(runtime.register_types(std::vector<TypeDefinition>{
+    take(runtime.register_types(Array<TypeDefinition>{
         array_definition<bool>(runtime, "test.BoolArray"), array_definition<PlainPair>(runtime, "test.PairArray"),
         NativeRegistration<SeqHolder>(runtime, "test.SeqHolder", TypeKind::record)
             .field<&SeqHolder::lut>("lut", {TypeReference::native<Array<std::int32_t>>()}, offsetof(SeqHolder, lut))
@@ -772,7 +769,7 @@ void run_scalar_val_capture(Array<int>& xs) {
     add_val_bias(xs[0], xs);
 }
 )";
-        using IntView = std::span<const std::int32_t>;
+        using IntView = Span<const std::int32_t>;
         auto view_type = NativeRegistration<IntView>(runtime, "test.IntView", TypeKind::array).build();
         view_type.element = TypeReference::native<std::int32_t>();
         view_type.native.element_representation = detail::representation<std::int32_t>();
@@ -826,7 +823,7 @@ void increment(const test.IntView& input, test.IntArray& output) {
             take(increment(full));
             require(xs[0] == 4 && xs[1] == 8 && xs[2] == 12,
                     "Same-element projections over the full buffer failed to increment in place.");
-            for (const auto partial : {full.first(2), full.subspan(1)}) {
+            for (const auto partial : {full.first(2), full.slice(1)}) {
                 const auto rejected = increment(partial);
                 require(!rejected && rejected.error().code == ErrorCode::invocation_failed &&
                             rejected.error().message.contains("overlaps") && xs[0] == 4 && xs[1] == 8 && xs[2] == 12,
@@ -915,7 +912,7 @@ int serial_caller(int v) {
                 }
                 return stop.command(source::DebugAction::step_into);
             }};
-            const auto aborted = spin_prog->entry().invoke(ObjectId{}, std::span<const Scalar>{}, nullptr, &abort_dbg);
+            const auto aborted = spin_prog->entry().invoke(ObjectId{}, Span<const Scalar>{}, nullptr, &abort_dbg);
             require(!aborted && aborted.error().code == ErrorCode::execution_aborted && i_in_scope_at_header &&
                         header_stops == 1,
                     "Debugger did not expose `i` at parallel_for header or failed to abort empty parallel_for.");
@@ -928,7 +925,7 @@ int serial_caller(int v) {
             const std::string_view nul_src = R"(void fail_nul() { fail("A\0B"); })";
             auto nul_prog = take(Program::create(runtime));
             publish_single(*nul_prog, "nul.source", nul_src);
-            const auto sync_nul = nul_prog->entry().invoke(ObjectId{}, std::span<const Scalar>{});
+            const auto sync_nul = nul_prog->entry().invoke(ObjectId{}, Span<const Scalar>{});
             require(!sync_nul && sync_nul.error().message.size() == 3 && sync_nul.error().message == expected_nul,
                     "Sync fail(...) truncated at embedded NUL byte.");
             const auto direct_nul = take(nul_prog->entry().bind<void>()).invoke(ObjectId{});
@@ -946,7 +943,7 @@ int serial_caller(int v) {
             }};
             source::Diagnostics diagnostics;
             const auto dbg_nul =
-                dbg_nul_prog->entry().invoke(ObjectId{}, std::span<const Scalar>{}, &diagnostics, &nul_dbg);
+                dbg_nul_prog->entry().invoke(ObjectId{}, Span<const Scalar>{}, &diagnostics, &nul_dbg);
             const auto nul_report = diagnostics.snapshot();
             require(!dbg_nul && dbg_nul.error().message == expected_nul && stopped_msg == expected_nul &&
                         nul_report.error && nul_report.error->message == expected_nul,
@@ -988,10 +985,10 @@ struct ErgHost {
             std::string long_layer;
             for (int i = 0; i < 11; ++i)
                 long_layer += "\xe5\xb1\x82"; // 11 * 3 = 33 bytes; byte 31 splits the 11th codepoint.
-            return std::unexpected(Error{ErrorCode::invocation_failed, std::move(long_cjk), std::nullopt,
+            return std::unexpected(Error{ErrorCode::invocation_failed, std::move(long_cjk), {},
                                          ErrorElement{std::move(long_layer), index}});
         }
-        return std::unexpected(Error{ErrorCode::invocation_failed, "native interval failed", std::nullopt,
+        return std::unexpected(Error{ErrorCode::invocation_failed, "native interval failed", {},
                                      ErrorElement{"interval", index}});
     }
 };
@@ -999,12 +996,12 @@ struct ErgHost {
 void verify_language_ergonomics() {
     const auto register_erg_host = [](Runtime& rt) {
         take(rt.register_types(
-            std::vector<TypeDefinition>{string_definition(rt), array_definition<std::int32_t>(rt, "test.IntArray"),
-                                        NativeRegistration<ErgHost>(rt, "test.PairHost", TypeKind::object)
-                                            .field<&ErgHost::scale>("scale")
-                                            .method<&ErgHost::native_grow>("native_grow", true)
-                                            .method<&ErgHost::native_fail_at>("native_fail_at", true)
-                                            .build()}));
+            Array<TypeDefinition>{string_definition(rt), array_definition<std::int32_t>(rt, "test.IntArray"),
+                                  NativeRegistration<ErgHost>(rt, "test.PairHost", TypeKind::object)
+                                      .field<&ErgHost::scale>("scale")
+                                      .method<&ErgHost::native_grow>("native_grow", true)
+                                      .method<&ErgHost::native_fail_at>("native_fail_at", true)
+                                      .build()}));
     };
     Runtime runtime;
     register_erg_host(runtime);
@@ -1023,7 +1020,7 @@ void verify_language_ergonomics() {
         auto host = take(runtime.create(host_type));
         auto host_bump = take(Program::create(runtime, host_type));
         publish_single(*host_bump, "bump_host.source", "int bump() { self.scale += 3; return self.scale; }", "bump");
-        const auto bumped = take(host_bump->entry().invoke(host.id(), std::span<const Scalar>{}));
+        const auto bumped = take(host_bump->entry().invoke(host.id(), Span<const Scalar>{}));
         require(bumped && std::get<std::int32_t>(*bumped) == 12, "Compound assignment on self.scale failed.");
 
         const std::string_view src = R"(
@@ -1275,7 +1272,7 @@ int hot.run() {
         auto mod_prog = take(Program::create(runtime));
         auto c1 = take(Program::prepare(take(mod_prog->request(v1))));
         take(mod_prog->try_publish(c1));
-        const auto r1 = take(take(mod_prog->entry("hot.run")).invoke(ObjectId{}, std::span<const Scalar>{}));
+        const auto r1 = take(take(mod_prog->entry("hot.run")).invoke(ObjectId{}, Span<const Scalar>{}));
         require(r1 && std::get<std::int32_t>(*r1) == 6, "HotArray v1 result mismatch.");
 
         // Verify SOP [InOut] column can call element-only `Array<int>&` helper.
@@ -1321,7 +1318,7 @@ int hot.run() {
 )";
         auto c2 = take(Program::prepare(take(mod_prog->request(v2))));
         take(mod_prog->try_publish(c2));
-        const auto r2 = take(take(mod_prog->entry("hot.run")).invoke(ObjectId{}, std::span<const Scalar>{}));
+        const auto r2 = take(take(mod_prog->entry("hot.run")).invoke(ObjectId{}, Span<const Scalar>{}));
         require(r2 && std::get<std::int32_t>(*r2) == 9, "Hot-reloaded synthesized Array<hot.Item> failed.");
     }
 
@@ -1472,12 +1469,14 @@ class diag.Runner : test.PairHost {
         const std::array<Scalar, 2> args_unmatched{EnumValue{dom_type, 999u}, std::uint32_t{5u}};
         source::Diagnostics sync_diag;
         const auto e_unmatched = f3.invoke(ObjectId{}, args_unmatched, &sync_diag);
-        require(!e_unmatched && !e_unmatched.error().element.has_value() && sync_diag.snapshot().error &&
-                    !sync_diag.snapshot().error->element.has_value(),
+        const auto unmatched_snap = sync_diag.snapshot();
+        require(!e_unmatched && !e_unmatched.error().element.has_value() && unmatched_snap.error &&
+                    !unmatched_snap.error->element.has_value(),
                 "Unmatched 3-arg enum bits fabricated a 2-arg empty-layer ErrorElement.");
         const auto e_with_diag = f3.invoke(ObjectId{}, args_3, &sync_diag);
-        require(!e_with_diag && sync_diag.snapshot().error &&
-                    sync_diag.snapshot().error->element == ErrorElement{"Primitive", 42u},
+        const auto with_diag_snap = sync_diag.snapshot();
+        require(!e_with_diag && with_diag_snap.error &&
+                    with_diag_snap.error->element == ErrorElement{"Primitive", 42u},
                 "Diagnostics::snapshot() dropped Error::element on sync failure.");
 
         // Debugger-enabled Program preserves Error::element in both DebugSnapshot and final Result/Diagnostics:
@@ -1491,7 +1490,7 @@ class diag.Runner : test.PairHost {
             const auto dbg_dom_type = take(dbg_rt.find_type("diag.Domain"));
             const std::array<Scalar, 2> dbg_args_3{EnumValue{dbg_dom_type, 25u}, std::uint32_t{42u}};
             const auto dbg_f3 = take(dbg_prog->entry("diag.fail_three"));
-            std::optional<ErrorElement> stopped_element;
+            Optional<ErrorElement> stopped_element;
             source::Debugger stop_dbg{[&](const source::DebugSnapshot& stop) noexcept -> Result<source::DebugCommand> {
                                           if (stop.error)
                                               stopped_element = stop.error->element;
@@ -1500,9 +1499,10 @@ class diag.Runner : test.PairHost {
                                       {.break_on_entry = false, .break_on_error = true}};
             source::Diagnostics dbg_diag;
             const auto e_dbg_stop = dbg_f3.invoke(ObjectId{}, dbg_args_3, &dbg_diag, &stop_dbg);
+            const auto dbg_snap = dbg_diag.snapshot();
             require(!e_dbg_stop && stopped_element == ErrorElement{"Primitive", 42u} &&
-                        e_dbg_stop.error().element == ErrorElement{"Primitive", 42u} && dbg_diag.snapshot().error &&
-                        dbg_diag.snapshot().error->element == ErrorElement{"Primitive", 42u},
+                        e_dbg_stop.error().element == ErrorElement{"Primitive", 42u} && dbg_snap.error &&
+                        dbg_snap.error->element == ErrorElement{"Primitive", 42u},
                     "Debugger break_on_error dropped Error::element in DebugSnapshot, Result, or Diagnostics.");
             source::Debugger pass_dbg{[](const source::DebugSnapshot& stop) noexcept -> Result<source::DebugCommand> {
                                           return stop.command(source::DebugAction::continue_execution);
@@ -1546,10 +1546,11 @@ class diag.Runner : test.PairHost {
         auto coro = take(coro_prog->entry().start(ObjectId{}, coro_args, &coro_diag));
         require(take(coro.resume()) == CoroutineState::suspended, "fail_coro did not suspend.");
         const auto coro_failed = coro.resume();
+        const auto coro_snap = coro_diag.snapshot();
         require(!coro_failed && coro_failed.error().message == "coro element failure" &&
                     coro_failed.error().source.has_value() &&
-                    coro_failed.error().element == ErrorElement{"Primitive", 9u} && coro_diag.snapshot().error &&
-                    coro_diag.snapshot().error->element == ErrorElement{"Primitive", 9u},
+                    coro_failed.error().element == ErrorElement{"Primitive", 9u} && coro_snap.error &&
+                    coro_snap.error->element == ErrorElement{"Primitive", 9u},
                 "Coroutine fail(...) or Diagnostics::snapshot() did not preserve ErrorElement and SourceLocation.");
 
         // parallel_for captures outer enum + local and atomically records 16B first failure:
@@ -1665,8 +1666,8 @@ double tab.parallel_sum(uint n) {
         Runtime b4_rt;
         register_erg_host(b4_rt);
         take(b4_rt.register_types(
-            std::vector<TypeDefinition>{array_definition<float>(b4_rt, "test.FloatArray"),
-                                        array_definition<math::Vector2>(b4_rt, "test.Vec2Array")}));
+            Array<TypeDefinition>{array_definition<float>(b4_rt, "test.FloatArray"),
+                                  array_definition<math::Vector2>(b4_rt, "test.Vec2Array")}));
         auto b4_prog = take(Program::create(b4_rt));
         source::CompileOptions opts{};
         opts.artifacts = true;
@@ -1744,7 +1745,7 @@ float read_prof_y(uint idx) {
 
         // Verify Program::functions() metadata & DESC-only hot reload compatibility:
         const auto fns_v1 = b4_prog->functions();
-        const auto find_fn = [](std::span<const source::FunctionInfo> list, std::string_view name) {
+        const auto find_fn = [](Span<const source::FunctionInfo> list, std::string_view name) {
             const auto it = std::ranges::find(list, name, &source::FunctionInfo::name);
             return it == list.end() ? nullptr : &*it;
         };
@@ -1792,7 +1793,7 @@ float read_prof_y(uint idx) {
                     return static_cast<std::int32_t>(xs.size());
                 }
             };
-            using CustomSpan = std::span<const double>;
+            using CustomSpan = Span<const double>;
             Runtime r3_rt;
             auto span_def = NativeRegistration<CustomSpan>(r3_rt, "test.DoubleSpan", TypeKind::array).build();
             span_def.element = TypeReference::native<double>();
@@ -1803,7 +1804,7 @@ float read_prof_y(uint idx) {
                 *data = view.data();
                 *size = view.size();
             };
-            take(r3_rt.register_types(std::vector<TypeDefinition>{
+            take(r3_rt.register_types(Array<TypeDefinition>{
                 std::move(span_def), array_definition<std::int32_t>(r3_rt, "test.IntArray"),
                 NativeRegistration<PlainPair>(r3_rt, "test.PlainPair", TypeKind::record)
                     .field<&PlainPair::x>("x", {TypeReference::native<std::int32_t>()}, offsetof(PlainPair, x))
@@ -1889,10 +1890,12 @@ int run() {
                 auto coro_cand = take(Program::prepare(coro_req));
                 take(coro_p->try_publish(coro_cand));
                 auto host_obj = take(r3_rt.create(host_type));
-                auto task = take(coro_p->entry().start(host_obj.id(), std::span<const Scalar>{}));
+                auto task = take(coro_p->entry().start(host_obj.id(), Span<const Scalar>{}));
                 require(take(task.resume()) == CoroutineState::suspended &&
-                            take(task.resume()) == CoroutineState::completed &&
-                            std::get<std::int32_t>(*take(task.result())) == 13,
+                            take(task.resume()) == CoroutineState::completed,
+                        "Frame-local scalar borrow in async coroutine after reading .rdata constant did not complete.");
+                const auto task_res = take(task.result());
+                require(task_res && std::get<std::int32_t>(*task_res) == 13,
                         "Frame-local scalar borrow in async coroutine after reading .rdata constant failed.");
             }
             // source::source_type_name enforces the exact Source value/enum projection contract:
@@ -1903,9 +1906,8 @@ int run() {
                 FieldDefinition hidden_field;
                 hidden_field.name = "x";
                 hidden_field.value = {take(r3_rt.native_type<std::int32_t>())};
-                editor_rec.fields.push_back(std::move(hidden_field));
-                take(
-                    r3_rt.register_types(std::vector<TypeDefinition>{string_definition(r3_rt), std::move(editor_rec)}));
+                editor_rec.fields.add(std::move(hidden_field));
+                take(r3_rt.register_types(Array<TypeDefinition>{string_definition(r3_rt), std::move(editor_rec)}));
                 const auto hidden_id = take(r3_rt.find_type("editor.HiddenPair"));
                 require(take(source::source_type_name(r3_rt, take(r3_rt.native_type<std::int32_t>()))) == "int" &&
                             take(source::source_type_name(r3_rt, take(r3_rt.native_type<String>()))) == "String" &&

@@ -1,6 +1,6 @@
 #pragma once
+#include "foundation/span.hpp"
 #include <cstdint>
-#include <span>
 
 namespace atelier::ui {
 enum class Icon {
@@ -49,5 +49,5 @@ enum class Icon {
 // Rasterizes the bundled Tabler mask into tightly packed R8 alpha. Requires a
 // declared Icon, 1..256 pixels and exactly pixels*pixels bytes; violations are fatal.
 // Call on a cache miss, never per frame. No window or text backend is required.
-void raster_icon(Icon, std::uint32_t pixels, std::span<std::uint8_t> alpha);
+void raster_icon(Icon, std::uint32_t pixels, Span<std::uint8_t> alpha);
 }

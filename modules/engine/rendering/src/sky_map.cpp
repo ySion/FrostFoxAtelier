@@ -51,7 +51,7 @@ std::size_t cube_texel(double x, double y, double z) noexcept {
 }
 }
 
-Result<SkyMapRef> SkyMap::create(std::uint32_t width, std::uint32_t height, std::span<const float> rgb) {
+Result<SkyMapRef> SkyMap::create(std::uint32_t width, std::uint32_t height, Span<const float> rgb) {
     if (!height || width > source_width_limit || width != 2ull * height ||
         rgb.size() != std::size_t(width) * height * 3)
         return std::unexpected(Error{ErrorCode::invalid_argument,
@@ -67,7 +67,7 @@ Result<SkyMapRef> SkyMap::create(std::uint32_t width, std::uint32_t height, std:
     return SkyMapRef(new SkyMap(width, height, rgb));
 }
 
-SkyMap::SkyMap(std::uint32_t width, std::uint32_t height, std::span<const float> rgb) {
+SkyMap::SkyMap(std::uint32_t width, std::uint32_t height, Span<const float> rgb) {
     constexpr double pi = std::numbers::pi;
 
     math::Vector3d sum{};
@@ -91,9 +91,11 @@ SkyMap::SkyMap(std::uint32_t width, std::uint32_t height, std::span<const float>
     const std::uint32_t split = std::max<std::uint32_t>(1, (720 + width - 1) / width);
     const std::uint32_t columns = width * split;
     const std::uint32_t rows = height * split;
-    std::vector<double> splat(std::size_t(6) * cube_size * cube_size * 4);
-    std::vector<double> column_sin(columns);
-    std::vector<double> column_cos(columns);
+    Array<double> splat(std::size_t(6) * cube_size * cube_size * 4);
+    Array<double> column_sin;
+    column_sin.resize_uninitialized(columns);
+    Array<double> column_cos;
+    column_cos.resize_uninitialized(columns);
     for (std::uint32_t x = 0; x < columns; ++x) {
         const double longitude = 2 * pi * ((x + .5) / columns - .5);
         column_sin[x] = std::sin(longitude);
@@ -114,19 +116,19 @@ SkyMap::SkyMap(std::uint32_t width, std::uint32_t height, std::span<const float>
             target[3] += solid_angle;
         }
     }
-    cube_.resize(splat.size());
+    cube_.resize_uninitialized(splat.size());
     for (std::size_t i = 0; i < splat.size(); i += 4) {
         for (std::size_t c = 0; c < 3; ++c)
             cube_[i + c] = static_cast<float>(splat[i + c] / splat[i + 3]);
         cube_[i + 3] = 1;
     }
 
-    std::vector<float> halved;
-    std::span<const float> stored = rgb;
+    Array<float> halved;
+    Span<const float> stored = rgb;
     if (width > width_limit) {
         width_ = width / 2;
         height_ = height / 2;
-        halved.resize(std::size_t(width_) * height_ * 3);
+        halved.resize_uninitialized(std::size_t(width_) * height_ * 3);
         for (std::uint32_t y = 0; y < height_; ++y)
             for (std::uint32_t x = 0; x < width_; ++x)
                 for (std::size_t c = 0; c < 3; ++c) {
@@ -145,7 +147,7 @@ SkyMap::SkyMap(std::uint32_t width, std::uint32_t height, std::span<const float>
     const float stored_peak = *std::max_element(stored.begin(), stored.end());
     while (std::ldexp(stored_peak, -scale_exponent_) > 65504.f)
         ++scale_exponent_;
-    pixels_.resize(std::size_t(width_) * height_ * 4);
+    pixels_.resize_uninitialized(std::size_t(width_) * height_ * 4);
     for (std::size_t i = 0, texels = std::size_t(width_) * height_; i < texels; ++i) {
         for (std::size_t c = 0; c < 3; ++c)
             pixels_[i * 4 + c] = half_bits(std::ldexp(stored[i * 3 + c], -scale_exponent_));
@@ -213,8 +215,10 @@ Result<SkyMapRef> decode_radiance_hdr(std::string_view bytes) {
             return std::unexpected(Error{ErrorCode::invalid_storage, "Truncated Radiance HDR scanline data."});
         return static_cast<std::uint8_t>(bytes[at++]);
     };
-    std::vector<float> rgb(std::size_t(width) * height * 3);
-    std::vector<std::uint8_t> scanline(std::size_t(width) * 4);
+    Array<float> rgb;
+    rgb.resize_uninitialized(std::size_t(width) * height * 3);
+    Array<std::uint8_t> scanline;
+    scanline.resize_uninitialized(std::size_t(width) * 4);
     for (std::uint32_t y = 0; y < height; ++y) {
         // New-style scanlines start with 2, 2 and the width; anything else is flat or old RLE.
         if (width >= 8 && width < 32768 && bytes.size() - at >= 4 && bytes[at] == 2 && bytes[at + 1] == 2 &&

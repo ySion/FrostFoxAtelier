@@ -50,7 +50,7 @@ void verify_math_abi() {
     take(program->try_publish(candidate));
     auto object = take(runtime.create(type));
     math::Vector3d output{};
-    take(program->entry().invoke(object.id(), std::span<const Scalar>{},
+    take(program->entry().invoke(object.id(), Span<const Scalar>{},
                                  ValueOutput{take(runtime.native_type<math::Vector3d>()), &output}));
     require(output == math::Vector3d{6.5, 0, 1.5}, "Native aggregate result or JIT sret changed coordinates.");
 

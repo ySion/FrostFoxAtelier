@@ -46,7 +46,11 @@ Result<std::string> read_bytes(const std::filesystem::path& path) {
     return assets::read_file(path, std::string{}.max_size());
 }
 
-Result<void> write_bytes(const std::filesystem::path& path, std::span<const char> bytes) {
+Result<void> write_bytes(const std::filesystem::path& path, std::string_view bytes) {
+    return editor::write_file(path, bytes);
+}
+
+Result<void> write_bytes(const std::filesystem::path& path, const Array<char>& bytes) {
     return editor::write_file(path, {bytes.data(), bytes.size()});
 }
 
@@ -351,7 +355,7 @@ struct SmokeLog {
 
     atelier::logging::ReadBatch latest;
 
-    std::vector<atelier::logging::Record> records;
+    Array<atelier::logging::Record> records;
 
     static Result<SmokeLog> open(const std::filesystem::path& path) {
         const auto text = platform::utf16_to_utf8(path.native());
@@ -380,7 +384,7 @@ struct SmokeLog {
                               "run=" + record.run_id + " pid=" + std::to_string(record.process_id) +
                                   " record=" + std::to_string(record.record_sequence) + " " + record.entry.event_code +
                                   ": " + record.entry.message));
-            records.push_back(std::move(record));
+            records.add(std::move(record));
         }
         latest.records.clear();
 
@@ -599,7 +603,7 @@ Result<void> prune_passed_smoke_runs(const std::filesystem::path& base, std::siz
 
         std::filesystem::file_time_type modified{};
     };
-    std::vector<Entry> passed;
+    Array<Entry> passed;
     std::error_code error;
     for (std::filesystem::directory_iterator it(base, error), end; !error && it != end; it.increment(error)) {
         const auto& item = *it;
@@ -614,7 +618,7 @@ Result<void> prune_passed_smoke_runs(const std::filesystem::path& base, std::siz
             const auto timestamp = std::filesystem::last_write_time(marker, error);
             if (error)
                 return std::unexpected(acceptance::file_error(error));
-            passed.push_back({item.path(), timestamp});
+            passed.add({item.path(), timestamp});
         }
     }
     if (error)
@@ -1167,7 +1171,7 @@ Result<void> verify_repro_open(Driver& driver, const std::filesystem::path& exam
         if (file.string({"path"}) == file_path) {
             if (!listing.set(file, "bytes", bytes.size()))
                 return fixture_failure("Could not update scene length");
-            listing.set_validated(file, "sha256", foundation::sha256(std::as_bytes(std::span(bytes))));
+            listing.set_validated(file, "sha256", foundation::sha256(as_bytes(Span{bytes})));
             updated = true;
             break;
         }
@@ -1399,14 +1403,14 @@ Result<void> verify_editor_trees(application::Application& app, editor::Session&
         bool operator==(const VisibleRow&) const = default;
     };
     const auto visible = [&](ui::ControlKey tree) {
-        std::vector<VisibleRow> rows;
+        Array<VisibleRow> rows;
         const auto& frame = *app.presented();
         for (const auto& row : frame.tree_rows)
             if (frame.find(row.key)->parent == tree)
-                rows.emplace_back(row.key, row.index, row.depth, row.expanded);
+                rows.emplace(row.key, row.index, row.depth, row.expanded);
         return rows;
     };
-    std::optional<world::EntityRemoval> deep_branch;
+    Optional<world::EntityRemoval> deep_branch;
     for (const bool structure : {false, true}) {
         const auto tree = structure ? editor::control::structure_tree : editor::control::entity_tree;
         const auto tab = structure ? "structure" : "scene_tree";
@@ -1642,11 +1646,11 @@ Result<void> verify_graph_write_examples(ControlCli& cli, json::Value examples) 
 Result<void> verify_graph_discovery_cli(ControlCli& cli) {
     ATELIER_TRY_BIND(profile, cli.call("capabilities", 0, json::Document::literal<R"({"scope":"graph"})">()));
     const auto ops = *profile->root().at("result")->at("operations")->array();
-    std::vector<std::string> names;
-    std::optional<json::Value> write_examples;
+    Array<std::string> names;
+    Optional<json::Value> write_examples;
     for (const auto item : ops) {
         const auto op = *item.string({"op"});
-        names.emplace_back(op == "op.call" ? *item.string({"id"}) : op);
+        names.emplace(op == "op.call" ? *item.string({"id"}) : op);
         if (!*item.find("args") || !*item.find("requires_state_token"))
             return fixture_failure("Graph tool is missing its invocation contract");
         if (op == "graph.apply") {
@@ -1654,8 +1658,8 @@ Result<void> verify_graph_discovery_cli(ControlCli& cli) {
             write_examples = *examples;
         }
     }
-    if (names != std::vector<std::string>{"asset.new_procedural_graph", "graph.open", "graph.inspect", "graph.apply",
-                                          "graph.save", "graph.create_scratch"})
+    if (names != Array<std::string>{"asset.new_procedural_graph", "graph.open", "graph.inspect", "graph.apply",
+                                    "graph.save", "graph.create_scratch"})
         return fixture_failure("Unexpected graph authoring tool set");
     ATELIER_TRY_BIND(all, cli.call("capabilities", 0));
     for (const auto item : *all->root().at("result")->at("operations")->array())
@@ -1832,7 +1836,7 @@ Result<void> verify_moss_bindings_cli(ControlCli& cli) {
             return fixture_failure("Realize placement explanation disagreed with its wired target columns");
         return {};
     };
-    const auto samples = [&]() -> Result<std::vector<std::string>> {
+    const auto samples = [&]() -> Result<Array<std::string>> {
         ATELIER_TRY_BIND(reply,
                          cli.call("graph.inspect", 0,
                                   json::Document::literal<R"({"node":"place_clumps","samples":8,"spatial":false})">()));
@@ -1840,10 +1844,10 @@ Result<void> verify_moss_bindings_cli(ControlCli& cli) {
         for (const auto attr : *summary.at("attributes")->array()) {
             if (attr.string({"name"}) != "P")
                 continue;
-            std::vector<std::string> result;
+            Array<std::string> result;
             for (const auto sample : *attr.at("samples")->array()) {
                 ATELIER_TRY_BIND(value, sample.string().transform_error(json_error));
-                result.emplace_back(*value);
+                result.emplace(*value);
             }
             if (result.size() == 8)
                 return result;
@@ -2270,11 +2274,11 @@ Result<void> verify_graph_patch_cli(ControlCli& cli) {
     if (structure.string({"display"}) != "raise" || structure.at("nodes")->size() != 6 ||
         *structure.find("parameters") || *structure.find("display_summary") || *structure.find("node_types"))
         return fixture_failure("Expected a structure-only roof graph");
-    std::vector<std::string> order;
+    Array<std::string> order;
     for (const auto edge : *structure.at("connections")->array())
         if (edge.string({"to_node"}) == "ordered")
-            order.emplace_back(*edge.string({"from_node"}));
-    if (order != std::vector<std::string>{"working", "roof"})
+            order.emplace(*edge.string({"from_node"}));
+    if (order != Array<std::string>{"working", "roof"})
         return fixture_failure("Topology changed the order of a multi-input port");
     ATELIER_TRY_BIND(props,
                      cli.call("graph.inspect", 0, json::Document::literal<R"({"view":"node","node":"working"})">()));
@@ -2410,7 +2414,7 @@ Result<void> verify_graph_requests(Driver& driver) {
     const auto query = json::Document::literal<R"({"asset":"scratch/control","node":"copies","samples":0})">();
     ATELIER_TRY_BIND(original, driver.ok("graph.inspect", query));
     const auto nodes = *original->root().at("nodes");
-    std::optional<json::Value> copies;
+    Optional<json::Value> copies;
     for (const auto node : *nodes.array())
         if (node.string({"name"}) == "copies")
             copies = node;
@@ -2756,7 +2760,7 @@ Result<void> smoke_logs(const std::filesystem::path& executable, const std::file
                                          L" --log-directory " + quote(logs) + L" --no-activate --gpu-validation",
                                      root / "editor.log"));
 
-    std::optional<SmokeLog> child;
+    Optional<SmokeLog> child;
     const auto drive = [&]() -> Result<void> {
         ATELIER_TRY_BIND(instance, discover_editor(*editor, directory));
 

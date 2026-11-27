@@ -18,7 +18,7 @@ constexpr double plane_epsilon = 256.0 * std::numeric_limits<double>::epsilon();
 
 constexpr std::size_t max_corner_samples = 2048;
 
-bool in_normal_cone(Vector3d direction, std::span<const Vector3d> sides) {
+bool in_normal_cone(Vector3d direction, Span<const Vector3d> sides) {
     return std::ranges::all_of(sides, [&](Vector3d side) { return math::dot(side, direction) >= -plane_epsilon; });
 }
 
@@ -138,7 +138,7 @@ math::Vector3d bevel_arc(math::Vector3d a, math::Vector3d b, std::uint32_t index
     return point / math::length(point);
 }
 
-Result<Array<BevelPlane>> bevel_corner_planes(std::span<const math::Vector3d> normals, std::uint32_t segments) {
+Result<Array<BevelPlane>> bevel_corner_planes(Span<const math::Vector3d> normals, std::uint32_t segments) {
     if (normals.size() < 3 || segments == 0 || segments > 8)
         return failure("Bevel corner requires a closed normal fan and 1 to 8 segments.");
 

@@ -12,8 +12,10 @@
 #include "editor/camera.hpp"
 #include "editor/operators.hpp"
 #include "editor/workspace.hpp"
+#include "foundation/array.hpp"
 #include "foundation/function_ref.hpp"
 #include "foundation/optional.hpp"
+#include "foundation/span.hpp"
 #include "renderer/renderer.hpp"
 #include <chrono>
 #include <source_location>
@@ -29,7 +31,7 @@ public:
 
     // Takes an initialized document at this stable address. Failure permits destruction only.
     Result<void> initialize(std::unique_ptr<editor::Session>, bool gpu_validation = false, bool activate = true,
-                            std::optional<ui::PixelExtent> initial_client = {}, bool vsync = true);
+                            Optional<ui::PixelExtent> initial_client = {}, bool vsync = true);
 
     ~Application();
 
@@ -172,7 +174,7 @@ private:
 
     editor::ViewportTool viewport_tool_;
 
-    std::optional<editor::ViewportView>
+    Optional<editor::ViewportView>
         accepted_view_; // Owns the accepted camera and CPU draw group, never a GPU batch.
 
     math::Vector2 pointer_position_{};
@@ -187,9 +189,9 @@ private:
 
     std::unique_ptr<PopupHost> popup_;
 
-    std::vector<std::unique_ptr<PopupHost>> submenus_;
+    Array<std::unique_ptr<PopupHost>> submenus_;
 
-    std::vector<ui::ControlKey> menu_path_;
+    Array<ui::ControlKey> menu_path_;
 
     bool gpu_validation_{};
 
@@ -210,7 +212,7 @@ private:
 
         ui::ControlKey group{};
 
-        std::optional<ui::TableSelection> table{};
+        Optional<ui::TableSelection> table{};
 
         const editor::Session* document{};
 
@@ -235,7 +237,7 @@ private:
         bool operator==(const MenuProjection&) const = default;
     };
 
-    std::optional<MenuProjection> menu_projection_;
+    Optional<MenuProjection> menu_projection_;
 
     bool menu_dirty_{};
 
@@ -271,7 +273,7 @@ private:
 
     bool camera_cut_{true}; // Retained until the renderer accepts the new view.
 
-    std::vector<renderer::OverlayShape> overlay_;
+    Array<renderer::OverlayShape> overlay_;
 
     ui::Surface surface_;
 
@@ -289,7 +291,7 @@ private:
         math::Vector2 previous;
     };
 
-    std::optional<CameraDrag> camera_drag_;
+    Optional<CameraDrag> camera_drag_;
 
     struct CameraFly {
         editor::Camera entry;
@@ -303,9 +305,9 @@ private:
         std::chrono::steady_clock::time_point previous;
     };
 
-    std::optional<CameraFly> camera_fly_;
+    Optional<CameraFly> camera_fly_;
 
-    std::optional<ui::PointerButton> camera_fly_release_;
+    Optional<ui::PointerButton> camera_fly_release_;
 
     void finish_camera_fly(bool accept);
 
@@ -315,7 +317,7 @@ private:
 
     timing::Recorder recorder_;
 
-    std::optional<std::uint64_t> sampled_frame_; // The UI frame of a step accepted without capture.
+    Optional<std::uint64_t> sampled_frame_; // The UI frame of a step accepted without capture.
 
     double fps_interval_{}; // The frame interval the FPS text was formatted from.
 
@@ -356,7 +358,7 @@ private:
 
     bool pie_input(const ui::Event&, WPARAM);
 
-    bool invoke_menu(const ui::Action&, std::span<const ui::MenuItem>);
+    bool invoke_menu(const ui::Action&, Span<const ui::MenuItem>);
 
     bool effects(const ui::Reply&);
 
@@ -373,8 +375,8 @@ private:
     // Completed text edits pass interactive=false: an empty committed name must fail, not reopen a prompt.
     Result<void> run_operator(const editor::OperatorCall&, bool report_unavailable = false, bool interactive = true);
 
-    Result<std::optional<std::filesystem::path>> choose_path(editor::PathPurpose, const std::filesystem::path& initial,
-                                                             std::wstring_view filename) override;
+    Result<Optional<std::filesystem::path>> choose_path(editor::PathPurpose, const std::filesystem::path& initial,
+                                                        std::wstring_view filename) override;
 
     void asset_created(std::string_view key, bool inspect_material) override;
 
@@ -447,7 +449,7 @@ private:
 
     void select_graph_node(std::string_view key, std::string_view node_name) override;
 
-    void select_graph_nodes(std::string_view key, std::span<const std::string> node_names) override;
+    void select_graph_nodes(std::string_view key, Span<const std::string> node_names) override;
 
     Result<void> action(const ui::Action&);
 
@@ -461,7 +463,7 @@ private:
 
     void status(Result<world::Commit>, const wchar_t* success);
 
-    Result<void> open_color_edit(ObjectId, std::span<const FieldId> prefix, ui::ControlKey swatch);
+    Result<void> open_color_edit(ObjectId, Span<const FieldId> prefix, ui::ControlKey swatch);
 
     Result<bool> color_edit_action(const ui::Action&);
 
@@ -471,7 +473,7 @@ private:
 
     Result<void> begin_asset_rename();
 
-    TypeId take_type(ObjectId, std::span<const FieldId>) const;
+    TypeId take_type(ObjectId, Span<const FieldId>) const;
 
     Result<void> set_camera(const editor::Camera&, bool cut);
 
@@ -499,11 +501,14 @@ private:
     struct ProjectCandidate {
         // Procedural resource providers borrow this address during loading and after adoption.
         std::unique_ptr<editor::Project> project;
+
         std::string scene_text;
+
         editor::ProjectDocument document;
     };
 
     static Result<ProjectCandidate> prepare_project_scene(editor::Project, std::string, ProjectOpenPolicy);
+
     Result<void> publish_project(ProjectCandidate);
 
     void cancel_interaction(const ui::Reply&, std::string_view input_event = {},

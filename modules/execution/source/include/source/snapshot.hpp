@@ -26,11 +26,11 @@ struct EntryInfo {
 
     FunctionSignature signature;
 
-    std::vector<std::string> parameter_names;
+    Array<std::string> parameter_names;
 
     std::uint64_t code{};
 
-    std::vector<MetadataList> parameter_metadata{};
+    Array<MetadataList> parameter_metadata{};
 };
 
 struct FunctionParameterInfo {
@@ -50,7 +50,7 @@ struct FunctionInfo {
 
     std::string return_type;
 
-    std::vector<FunctionParameterInfo> parameters;
+    Array<FunctionParameterInfo> parameters;
 
     bool parallel_safe{};
 
@@ -64,10 +64,10 @@ struct FunctionInfo {
 [[nodiscard]] Result<SourceFile> read_source_file(const std::filesystem::path&, std::string snapshot_path);
 
 // Engine Source is <root>/<module>/**.source. Paths are relative to root and sorted; a missing root has none.
-[[nodiscard]] Result<std::vector<std::filesystem::path>> engine_source_paths(const std::filesystem::path& root);
+[[nodiscard]] Result<Array<std::filesystem::path>> engine_source_paths(const std::filesystem::path& root);
 
 // Snapshot files named engine/<relative path>.
-[[nodiscard]] Result<std::vector<SourceFile>> engine_sources(const std::filesystem::path& root);
+[[nodiscard]] Result<Array<SourceFile>> engine_sources(const std::filesystem::path& root);
 
 // The source tree's assets/engine while it exists, otherwise engine/ beside the executable.
 [[nodiscard]] std::filesystem::path default_engine_root();

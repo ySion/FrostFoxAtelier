@@ -6,7 +6,6 @@
 #include <array>
 #include <concepts>
 #include <limits>
-#include <span>
 #include <type_traits>
 
 namespace atelier::logging::native {
@@ -31,9 +30,9 @@ concept Argument =
      std::same_as<std::remove_cv_t<std::remove_extent_t<std::remove_reference_t<T>>>, char>);
 
 struct Context {
-    std::span<const Field> fields{};
+    Span<const Field> fields{};
 
-    std::optional<Repeat> repeat{};
+    Optional<Repeat> repeat{};
 };
 
 template <class... Args>
@@ -46,7 +45,7 @@ class FormatString {
 
     struct Policy {
         std::array<fmtquill::detail::type, sizeof...(Args)> types{fmtquill::detail::mapped_type_constant<
-            std::remove_cvref_t<decltype(*detail::argument(std::declval<const std::remove_cvref_t<Args>&>()))>,
+            typename decltype(detail::argument(std::declval<const std::remove_cvref_t<Args>&>()))::Value,
             char>::value...};
 
         fmtquill::detail::compile_parse_context<char> context;
@@ -128,7 +127,7 @@ template <Severity Level, Argument... Args>
     if (!location)
         return detail::complete({}, SubmitStatus::invalid_record);
     entry.source = std::move(*location);
-    entry.fields.assign(context.fields.begin(), context.fields.end());
+    entry.fields.assign(context.fields);
     entry.repeat = context.repeat;
     const auto values = std::tuple{detail::argument(args)...};
     return std::apply(

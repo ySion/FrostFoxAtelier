@@ -55,9 +55,10 @@ void native_instance_defaults() {
 void sparse_sweep() {
     Runtime runtime;
     const auto type = take(runtime.register_type({"gc.Sparse", TypeKind::object, {}, {}, {}}));
-    std::vector<ObjectRoot> survivors;
+    Array<ObjectRoot> survivors;
+    survivors.reserve(8192);
     for (unsigned i = 0; i != 8192; ++i)
-        survivors.push_back(take(runtime.create(type)));
+        survivors.add(take(runtime.create(type)));
     auto victim = take(runtime.create(type));
     const auto dead = victim.id();
     victim.reset();
@@ -105,7 +106,7 @@ void runtime_sequence() {
     auto target = take(runtime.create(object_type));
     take(runtime.write_reference({object_type, ValueForm::strong_reference}, links->second, target.reference()));
     target.reset();
-    auto root = take(runtime.root_value(links_type, std::as_bytes(std::span{links.get(), 1})));
+    auto root = take(runtime.root_value(links_type, as_bytes(Span{links.get(), 1})));
     take(runtime.begin_collection());
     // Pause on actual field visitation, not an implementation-derived step count.
     unsigned steps{};
@@ -134,7 +135,7 @@ void runtime_sequence() {
     holder_def.kind = TypeKind::object;
     holder_def.fields = {
         {"outer", {TypeReference{"gc.OuterRecord"}}}, {"empty", {TypeReference{"gc.EmptyRecord"}}}, holder_weight};
-    holder_def.fields.push_back({"other", {TypeReference{"gc.OuterRecord"}}});
+    holder_def.fields.add({"other", {TypeReference{"gc.OuterRecord"}}});
     TypeDefinition empty_def;
     empty_def.name = "gc.EmptyRecord";
     empty_def.kind = TypeKind::record;
@@ -170,7 +171,7 @@ void runtime_sequence() {
     require(!runtime.read(retired, other_scale) &&
                 std::get<float>(take(runtime.read(replacement.id(), other_scale))) == 0.0f,
             "A retired object resolved through a previously used field path.");
-    std::vector<std::byte> outer_bytes(outer_info->size);
+    Array<std::byte> outer_bytes(outer_info->size);
     take(runtime.initialize_value(empty_batch[0], outer_bytes));
     take(runtime.destroy_value(empty_batch[0], outer_bytes));
 

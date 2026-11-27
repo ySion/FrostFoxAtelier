@@ -40,11 +40,13 @@ void verify_signed_zero_bindings(Runtime& runtime, ui::ControlKey& next) {
     }
     const auto row_key = next++;
     const auto items = [row_key](double value) {
-        std::vector<Item> rows{{row_key, {value}}};
-        return std::array<InputValue, 1>{ItemList{std::make_shared<const std::vector<Item>>(std::move(rows))}};
+        Array<Item> rows{{row_key, {value}}};
+        return std::array<InputValue, 1>{ItemList{std::make_shared<const Array<Item>>(std::move(rows))}};
     };
-    auto list = take(Instance::create(module->find("Rows"), 0, next, {}, items(0.0)));
-    take(list->update(items(-0.0)));
+    const auto items_pos_zero = items(0.0);
+    const auto items_neg_zero = items(-0.0);
+    auto list = take(Instance::create(module->find("Rows"), 0, next, {}, items_pos_zero));
+    take(list->update(items_neg_zero));
     list->commit_controls();
     require(list->controls().front().key == row_key && list->controls().front().enabled,
             "Repeat failed to publish a signed-zero change to an existing item.");
@@ -57,9 +59,12 @@ void verify_signed_zero_bindings(Runtime& runtime, ui::ControlKey& next) {
             Splitter grip { value: 0.0d * input.n; }
         })",
                                                "Probe"));
-    auto instance = take(Instance::create(event, 0, next, {}, std::array<InputValue, 1>{1.0}));
-    take(instance->update(std::array<InputValue, 1>{0.0}));
-    take(instance->update(std::array<InputValue, 1>{-0.0})); // Supersede an uncommitted input.
+    const InputValue one_in[]{1.0};
+    const InputValue pos_zero_in[]{0.0};
+    const InputValue neg_zero_in[]{-0.0};
+    auto instance = take(Instance::create(event, 0, next, {}, one_in));
+    take(instance->update(pos_zero_in));
+    take(instance->update(neg_zero_in)); // Supersede an uncommitted input.
     instance->commit_controls();
     require(std::signbit(instance->controls()[2].value), "Splitter lost the new input's sign.");
     const auto activate = [&] {
@@ -80,7 +85,8 @@ void verify_number_row_sign(std::shared_ptr<Component> component, ui::ControlKey
     ui::NumberField field;
     field.key = next++;
     EditBinding edit{.group = next++, .enabled = true, .fields = {field}};
-    auto row = take(Instance::create(component, 0, next, {}, std::array<InputValue, 1>{edit}));
+    const InputValue initial_edit[]{edit};
+    auto row = take(Instance::create(component, 0, next, {}, initial_edit));
     ui::Session session;
     take(session.initialize());
     take(session.set_surface({{600, 200}, 1, 1}));
@@ -93,7 +99,8 @@ void verify_number_row_sign(std::shared_ptr<Component> component, ui::ControlKey
     require(!session.focus(field.key).error && session.focused_control() == field.key,
             "Could not focus the numeric field.");
     edit.fields.front().value = -0.0;
-    take(row->update(std::array<InputValue, 1>{edit}));
+    const InputValue updated_edit[]{edit};
+    take(row->update(updated_edit));
     present();
     ui::Event shortcut{};
     shortcut.kind = ui::EventKind::key_down;
@@ -155,8 +162,10 @@ void verify_component_environments(Runtime& runtime, ui::ControlKey& next) {
                          "ui A(in double size) { Button a { height: extent(input.size); } }\n"
                          "ui B(in bool flag, in double size) { Button b { height: extent(input.size); } }";
     auto initial = take(Module::compile(runtime, "environment", source));
-    auto a = take(Instance::create(initial->find("A"), 0, next, {}, std::array<InputValue, 1>{30.}));
-    auto b = take(Instance::create(initial->find("B"), 0, next, {}, std::array<InputValue, 2>{true, 43.}));
+    const InputValue a_in[]{30.};
+    const InputValue b_in[]{true, 43.};
+    auto a = take(Instance::create(initial->find("A"), 0, next, {}, a_in));
+    auto b = take(Instance::create(initial->find("B"), 0, next, {}, b_in));
     require(a->controls().front().layout.height.value == 32 && b->controls().front().layout.height.value == 45,
             "Explicit helper parameters computed the wrong component height.");
     auto decoupled =
@@ -178,7 +187,9 @@ void verify_component_environments(Runtime& runtime, ui::ControlKey& next) {
     auto plain1 = take(Module::compile(runtime, "plain", plain_v1));
     require(!plain1->find("Plain")->declaration().needs_jit,
             "Pure-declarative UI component unexpectedly required JIT.");
-    auto plain_instance = take(Instance::create(plain1->find("Plain"), 0, next, {}, std::array<InputValue, 1>{80.}));
+    const InputValue width_80[]{80.};
+    const InputValue width_96[]{96.};
+    auto plain_instance = take(Instance::create(plain1->find("Plain"), 0, next, {}, width_80));
     require(plain_instance->controls().front().layout.width.value == 80 &&
                 plain_instance->controls().front().layout.height.value == 20 &&
                 plain_instance->controls().front().layout.offset_x == -16,
@@ -186,7 +197,7 @@ void verify_component_environments(Runtime& runtime, ui::ControlKey& next) {
     auto plain2 = take(Module::compile(runtime, "plain", plain_v2, plain1.get()));
     require(plain2->find("Plain")->compilation() == Component::Compilation::compiled,
             "Pure-declarative literal change was not reported as compiled.");
-    take(plain_instance->update(std::array<InputValue, 1>{96.}, plain2->find("Plain")));
+    take(plain_instance->update(width_96, plain2->find("Plain")));
     plain_instance->commit_controls();
     require(plain_instance->controls().front().layout.width.value == 96 &&
                 plain_instance->controls().front().layout.height.value == 24,
@@ -203,21 +214,21 @@ void verify_component_environments(Runtime& runtime, ui::ControlKey& next) {
     const std::string mixed_v2 = "ui Mixed(in double w) { Button b { width: input.w + 1.0d; height: 28; } }";
     auto mixed1 = take(Module::compile(runtime, "mixed", mixed_v1));
     require(mixed1->find("Mixed")->declaration().needs_jit, "Mixed UI component should require JIT.");
-    auto mixed_instance = take(Instance::create(mixed1->find("Mixed"), 0, next, {}, std::array<InputValue, 1>{80.}));
+    auto mixed_instance = take(Instance::create(mixed1->find("Mixed"), 0, next, {}, width_80));
     require(mixed_instance->controls().front().layout.width.value == 81 &&
                 mixed_instance->controls().front().layout.height.value == 20,
             "Mixed UI component evaluated wrong initial dimensions.");
     auto mixed2 = take(Module::compile(runtime, "mixed", mixed_v2, mixed1.get()));
     require(mixed2->find("Mixed")->compilation() == Component::Compilation::reused_source,
             "Literal-only edit in a mixed UI component unexpectedly recompiled JIT code.");
-    take(mixed_instance->update(std::array<InputValue, 1>{80.}, mixed2->find("Mixed")));
+    take(mixed_instance->update(width_80, mixed2->find("Mixed")));
     mixed_instance->commit_controls();
     require(mixed_instance->controls().front().layout.width.value == 81 &&
                 mixed_instance->controls().front().layout.height.value == 28,
             "Literal-only edit in a mixed UI component did not update the live control.");
     source.replace(source.find("2.0d"), 4, "5.0d");
     auto changed = take(Module::compile(runtime, "environment", source, initial.get()));
-    take(a->update(std::array<InputValue, 1>{30.}, changed->find("A")));
+    take(a->update(a_in, changed->find("A")));
     require(changed->compilation().compiled == 2 && a->controls().front().layout.height.value == 35,
             "Changed module constant was dropped from the entry dependencies.");
     struct Extra {
@@ -260,7 +271,7 @@ void verify_ui_entry_dependencies() {
         drain(document, now);
     };
     const auto present = [&](float height) {
-        std::vector<ui::Control> controls;
+        Array<ui::Control> controls;
         take(document.append("ToolShelf", 0, keys, inputs, controls));
         take(session.set_controls(controls));
         auto frame = take(session.prepare());
@@ -288,7 +299,9 @@ void verify_ui_entry_dependencies() {
     present(56);
     verify_number_row_sign(document.component("WorkbenchRgb"), next);
     const auto old = document.component("ToolShelf");
-    const auto instance = document.statistics("ToolShelf")->instance;
+    const auto initial_shelf_stats = document.statistics("ToolShelf");
+    require(initial_shelf_stats.has_value(), "Missing initial ToolShelf statistics.");
+    const auto instance = initial_shelf_stats->instance;
     const auto types = runtime.type_count();
     replace("return 56.0d;", "return 57.0d;");
     reload(source);
@@ -326,7 +339,8 @@ void verify_ui_entry_dependencies() {
     reload(source);
     present(38);
     changed({"PaneDivider", "ToolShelf"}, Compilation::reused_dependencies);
-    require(document.statistics("ToolShelf")->instance == instance && runtime.type_count() == types,
+    const auto helper_shelf_stats = document.statistics("ToolShelf");
+    require(helper_shelf_stats && helper_shelf_stats->instance == instance && runtime.type_count() == types,
             "Helper changes replaced the accepted UI context or type catalog.");
     // Save again after dispatch but before the next file poll. Both successful
     // code and a diagnostic from the previous request must be discarded.
@@ -371,7 +385,9 @@ void verify_ui_entry_dependencies() {
     require(document.diagnostic().empty() && document.committed_source() == newer, "Valid edit did not recover.");
     supersede(broken, source, 42);
     present(38);
-    require(document.committed_source() == source && document.statistics("ToolShelf")->instance == instance,
+    const auto recovered_shelf_stats = document.statistics("ToolShelf");
+    require(document.committed_source() == source && recovered_shelf_stats &&
+                recovered_shelf_stats->instance == instance,
             "A superseded failure displaced the accepted editor instance.");
     auto pinned = take(Instance::create(old, 0, next, keys, inputs));
     require(pinned->controls().front().layout.height.value == 56, "Old ToolShelf lost its pinned entry.");

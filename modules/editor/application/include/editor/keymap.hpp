@@ -1,5 +1,6 @@
 #pragma once
 #include "editor/operators.hpp"
+#include "foundation/span.hpp"
 #include "ui/session.hpp"
 
 namespace atelier::editor {
@@ -25,7 +26,7 @@ struct KeymapEntry {
     std::wstring_view shortcut;
 };
 
-std::span<const KeymapEntry> keymap();
+Span<const KeymapEntry> keymap();
 
 const KeymapEntry* key_binding(RegionKind, KeyPhase, const ui::Event&, std::uint32_t, bool text);
 

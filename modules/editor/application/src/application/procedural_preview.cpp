@@ -84,7 +84,7 @@ GeometryBoundsSample compute_geometry_bounds(const procedural::Geometry& geometr
 struct GuideStrokes {
     const editor::ViewportView& view;
 
-    std::vector<renderer::OverlayShape>& overlay;
+    Array<renderer::OverlayShape>& overlay;
 
     math::Matrix4d view_projection =
         static_cast<math::Matrix4d>(view.view) * static_cast<math::Matrix4d>(view.projection);
@@ -95,7 +95,7 @@ struct GuideStrokes {
         const float pad = (width + 1.f) * .5f;
         if (screen && screen->x >= view.bounds.x - pad && screen->x <= view.bounds.x + view.bounds.width + pad &&
             screen->y >= view.bounds.y - pad && screen->y <= view.bounds.y + view.bounds.height + pad)
-            overlay.push_back(
+            overlay.add(
                 {renderer::OverlayShape::Kind::segment, {screen->x, screen->y, screen->x, screen->y}, width, color});
     }
 
@@ -117,7 +117,7 @@ struct GuideStrokes {
         };
         const auto pa = screen(a);
         const auto pb = screen(b);
-        overlay.push_back({renderer::OverlayShape::Kind::segment, {pa.x, pa.y, pb.x, pb.y}, width, color});
+        overlay.add({renderer::OverlayShape::Kind::segment, {pa.x, pa.y, pb.x, pb.y}, width, color});
     }
 
 private:
@@ -148,7 +148,7 @@ bool is_pure_point_cloud(const procedural::Geometry& geometry) noexcept {
 }
 
 std::wstring format_geometry_info_hud(std::wstring_view title, const procedural::Geometry& geometry, bool auto_points,
-                                      std::optional<double> cook_ms, std::size_t chunk_count) {
+                                      Optional<double> cook_ms, std::size_t chunk_count) {
     std::wstring out{title};
     if (auto_points)
         out += L"  [Auto Points]";
@@ -184,7 +184,7 @@ std::wstring format_geometry_info_hud(std::wstring_view title, const procedural:
 }
 
 void append_procedural_guides(const procedural::Geometry& geometry, const editor::ViewportView& view,
-                              const SopGuideOptions& options, std::vector<renderer::OverlayShape>& overlay) {
+                              const SopGuideOptions& options, Array<renderer::OverlayShape>& overlay) {
     const auto& positions = geometry.positions();
     const std::size_t point_count = positions.size();
     const GuideStrokes guides{view, overlay};
@@ -197,15 +197,18 @@ void append_procedural_guides(const procedural::Geometry& geometry, const editor
                               options.world_transform[4], options.world_transform[5], options.world_transform[6],
                               options.world_transform[8], options.world_transform[9], options.world_transform[10]});
 
-    const auto transform_normal = [&](math::Vector3 n) noexcept -> std::optional<math::Vector3> {
+    const auto transform_normal = [&](math::Vector3 n) noexcept -> Optional<math::Vector3> {
         if (!normal_xform)
-            return std::nullopt;
-        if (identity_world)
-            return math::try_normalize(n);
-        const auto& m = normal_xform->matrix;
-        return math::try_normalize(math::Vector3{n.x * m[0] + n.y * m[3] + n.z * m[6],
-                                                 n.x * m[1] + n.y * m[4] + n.z * m[7],
-                                                 n.x * m[2] + n.y * m[5] + n.z * m[8]});
+            return {};
+        const auto unit = identity_world ? math::try_normalize(n)
+                                         : math::try_normalize(math::Vector3{
+                                               n.x * normal_xform->matrix[0] + n.y * normal_xform->matrix[3] +
+                                                   n.z * normal_xform->matrix[6],
+                                               n.x * normal_xform->matrix[1] + n.y * normal_xform->matrix[4] +
+                                                   n.z * normal_xform->matrix[7],
+                                               n.x * normal_xform->matrix[2] + n.y * normal_xform->matrix[5] +
+                                                   n.z * normal_xform->matrix[8]});
+        return unit ? Optional<math::Vector3>{*unit} : Optional<math::Vector3>{};
     };
 
     const auto front_facing = [&](math::Vector3 world_p, math::Vector3 unit_world_n) noexcept {
@@ -478,7 +481,7 @@ void append_procedural_guides(const procedural::Geometry& geometry, const editor
                 continue;
             }
             const auto prim = geometry.primitive(member);
-            const auto points = geometry.vertex_points().subspan(prim.first, prim.count);
+            const auto points = geometry.vertex_points().slice(prim.first, prim.count);
             math::Vector3d sum{};
             for (const auto p : points)
                 sum += math::Vector3d(positions[p]);
@@ -505,7 +508,7 @@ void append_procedural_guides(const procedural::Geometry& geometry, const editor
 }
 
 void append_template_wireframe(const procedural::Geometry& geometry, const editor::ViewportView& view,
-                               std::vector<renderer::OverlayShape>& overlay, const math::Matrix4& world_transform) {
+                               Array<renderer::OverlayShape>& overlay, const math::Matrix4& world_transform) {
     const auto& positions = geometry.positions();
     const std::size_t point_count = positions.size();
     if (point_count == 0)
@@ -517,7 +520,7 @@ void append_template_wireframe(const procedural::Geometry& geometry, const edito
     constexpr ui::Color wire_color{0.82f, 0.44f, 0.96f, 0.48f};
 
     if (prim_count > 0) {
-        std::vector<std::pair<std::uint32_t, std::uint32_t>> edges;
+        Array<std::pair<std::uint32_t, std::uint32_t>> edges;
         edges.reserve(std::min<std::size_t>(vp.size(), 24576));
         constexpr std::size_t max_raw_edges = 32768;
         for (std::uint32_t p = 0; p < prim_count && edges.size() < max_raw_edges; ++p) {
@@ -527,20 +530,19 @@ void append_template_wireframe(const procedural::Geometry& geometry, const edito
                     const std::uint32_t a = vp[range.first + i];
                     const std::uint32_t b = vp[range.first + ((i + 1) % range.count)];
                     if (a != b)
-                        edges.push_back(a < b ? std::pair{a, b} : std::pair{b, a});
+                        edges.add(a < b ? std::pair{a, b} : std::pair{b, a});
                 }
             } else if (range.kind == procedural::PrimitiveKind::polyline && range.count >= 2) {
                 for (std::uint32_t i = 0; i + 1 < range.count && edges.size() < max_raw_edges; ++i) {
                     const std::uint32_t a = vp[range.first + i];
                     const std::uint32_t b = vp[range.first + i + 1];
                     if (a != b)
-                        edges.push_back(a < b ? std::pair{a, b} : std::pair{b, a});
+                        edges.add(a < b ? std::pair{a, b} : std::pair{b, a});
                 }
             }
         }
         std::ranges::sort(edges);
-        const auto unique_end = std::ranges::unique(edges).begin();
-        edges.erase(unique_end, edges.end());
+        edges.deduplicate();
         constexpr std::size_t max_segments = 16384;
         const std::size_t step = edges.size() > max_segments ? (edges.size() + max_segments - 1) / max_segments : 1;
         for (std::size_t i = 0; i < edges.size(); i += step) {
@@ -559,7 +561,7 @@ void append_template_wireframe(const procedural::Geometry& geometry, const edito
     }
 }
 
-void append_orientation_gnomon(const editor::ViewportView& view, std::vector<renderer::OverlayShape>& overlay) {
+void append_orientation_gnomon(const editor::ViewportView& view, Array<renderer::OverlayShape>& overlay) {
     const float dpi = std::max(view.dpi_scale, 1.f);
     if (view.bounds.width < 180.f * dpi || view.bounds.height < 160.f * dpi)
         return;
@@ -570,10 +572,10 @@ void append_orientation_gnomon(const editor::ViewportView& view, std::vector<ren
     const float arm = 20.f * g_scale;
 
     // Subtle dark circular backdrop hub (clamped within Renderer's 64px overlay capsule limit):
-    overlay.push_back({renderer::OverlayShape::Kind::segment,
-                       {cx, cy, cx, cy},
-                       std::min(50.f * g_scale, 62.f),
-                       {0.08f, 0.09f, 0.11f, 0.42f}});
+    overlay.add({renderer::OverlayShape::Kind::segment,
+                 {cx, cy, cx, cy},
+                 std::min(50.f * g_scale, 62.f),
+                 {0.08f, 0.09f, 0.11f, 0.42f}});
 
     struct AxisEntry {
         int axis; // 0=X, 1=Y, 2=Z
@@ -605,22 +607,22 @@ void append_orientation_gnomon(const editor::ViewportView& view, std::vector<ren
     std::ranges::sort(entries, [](const AxisEntry& lhs, const AxisEntry& rhs) { return lhs.depth > rhs.depth; });
 
     const auto glyph_seg = [&](float x0, float y0, float x1, float y1, std::array<float, 4> col) {
-        overlay.push_back({renderer::OverlayShape::Kind::segment,
-                           {x0, y0, x1, y1},
-                           std::min(1.35f * g_scale, 64.f),
-                           {col[0], col[1], col[2], col[3]}});
+        overlay.add({renderer::OverlayShape::Kind::segment,
+                     {x0, y0, x1, y1},
+                     std::min(1.35f * g_scale, 64.f),
+                     {col[0], col[1], col[2], col[3]}});
     };
 
     for (const auto& e : entries) {
         if (e.positive) {
-            overlay.push_back({renderer::OverlayShape::Kind::segment,
-                               {cx, cy, e.sx, e.sy},
-                               std::min(2.0f * g_scale, 64.f),
-                               {e.rgb[0], e.rgb[1], e.rgb[2], 0.92f}});
-            overlay.push_back({renderer::OverlayShape::Kind::segment,
-                               {e.sx, e.sy, e.sx, e.sy},
-                               std::min(11.5f * g_scale, 64.f),
-                               {e.rgb[0], e.rgb[1], e.rgb[2], 0.96f}});
+            overlay.add({renderer::OverlayShape::Kind::segment,
+                         {cx, cy, e.sx, e.sy},
+                         std::min(2.0f * g_scale, 64.f),
+                         {e.rgb[0], e.rgb[1], e.rgb[2], 0.92f}});
+            overlay.add({renderer::OverlayShape::Kind::segment,
+                         {e.sx, e.sy, e.sx, e.sy},
+                         std::min(11.5f * g_scale, 64.f),
+                         {e.rgb[0], e.rgb[1], e.rgb[2], 0.96f}});
             const float r = 2.6f * g_scale;
             const std::array<float, 4> ink{0.08f, 0.09f, 0.11f, 0.95f};
             if (e.axis == 0) { // X
@@ -636,14 +638,14 @@ void append_orientation_gnomon(const editor::ViewportView& view, std::vector<ren
                 glyph_seg(e.sx - r, e.sy + r, e.sx + r, e.sy + r, ink);
             }
         } else {
-            overlay.push_back({renderer::OverlayShape::Kind::segment,
-                               {cx, cy, e.sx, e.sy},
-                               std::min(1.2f * g_scale, 64.f),
-                               {e.rgb[0], e.rgb[1], e.rgb[2], 0.30f}});
-            overlay.push_back({renderer::OverlayShape::Kind::segment,
-                               {e.sx, e.sy, e.sx, e.sy},
-                               std::min(5.5f * g_scale, 64.f),
-                               {e.rgb[0], e.rgb[1], e.rgb[2], 0.42f}});
+            overlay.add({renderer::OverlayShape::Kind::segment,
+                         {cx, cy, e.sx, e.sy},
+                         std::min(1.2f * g_scale, 64.f),
+                         {e.rgb[0], e.rgb[1], e.rgb[2], 0.30f}});
+            overlay.add({renderer::OverlayShape::Kind::segment,
+                         {e.sx, e.sy, e.sx, e.sy},
+                         std::min(5.5f * g_scale, 64.f),
+                         {e.rgb[0], e.rgb[1], e.rgb[2], 0.42f}});
         }
     }
 }
@@ -673,17 +675,17 @@ Result<void> ProceduralPreview::refresh(editor::Session& session, editor::Projec
     surfaces_.clear();
     Map<const material::ProgramSurface*, std::uint32_t> surface_indices;
     const auto register_surfaces =
-        [&](std::span<const material::ProgramSurfaceRef> list) -> std::shared_ptr<const std::vector<std::uint32_t>> {
-        std::vector<std::uint32_t> slots;
+        [&](Span<const material::ProgramSurfaceRef> list) -> std::shared_ptr<const Array<std::uint32_t>> {
+        Array<std::uint32_t> slots;
         slots.reserve(list.size());
         for (const auto& surf : list) {
             const auto [it, added] =
                 surface_indices.try_emplace(surf.get(), static_cast<std::uint32_t>(surfaces_.size()));
             if (added)
-                surfaces_.push_back(surf);
-            slots.push_back(*it);
+                surfaces_.add(surf);
+            slots.add(*it);
         }
-        return std::make_shared<const std::vector<std::uint32_t>>(std::move(slots));
+        return std::make_shared<const Array<std::uint32_t>>(std::move(slots));
     };
 
     assets::Reader installed;
@@ -702,20 +704,20 @@ Result<void> ProceduralPreview::refresh(editor::Session& session, editor::Projec
             surface_inst.geometry = cached_surface_mesh_;
             surface_inst.stable_key = stable_key++;
             surface_inst.material_slots = register_surfaces({&*default_surface, 1});
-            meshes_.push_back(std::move(surface_inst));
+            meshes_.add(std::move(surface_inst));
         }
 
         const auto refs = shown->references();
         const auto& inst_indices = shown->instance_references();
         const auto& inst_transforms = shown->instance_transforms();
-        std::vector<std::shared_ptr<const std::vector<std::uint32_t>>> ref_slots(refs.size());
+        Array<std::shared_ptr<const Array<std::uint32_t>>> ref_slots(refs.size());
         for (std::size_t r = 0; r < refs.size(); ++r) {
             if (!refs[r].mesh)
                 continue;
             const auto key_sv = refs[r].key.view().std_view();
             if (!key_sv.empty()) {
                 if (auto resolved_asset = reader.mesh(key_sv)) {
-                    std::vector<editor::MissingResource> ignored_missing;
+                    Array<editor::MissingResource> ignored_missing;
                     if (auto surfs = session.mesh_surfaces(reader, *resolved_asset, &ignored_missing);
                         surfs && (*surfs)->size() == refs[r].mesh->materials().size()) {
                         ref_slots[r] = register_surfaces(**surfs);
@@ -723,7 +725,7 @@ Result<void> ProceduralPreview::refresh(editor::Session& session, editor::Projec
                 }
             }
             if (!ref_slots[r]) {
-                std::vector<material::ProgramSurfaceRef> fallback(refs[r].mesh->materials().size(), *default_surface);
+                Array<material::ProgramSurfaceRef> fallback(refs[r].mesh->materials().size(), *default_surface);
                 ref_slots[r] = register_surfaces(fallback);
             }
         }
@@ -744,7 +746,7 @@ Result<void> ProceduralPreview::refresh(editor::Session& session, editor::Projec
             inst.geometry = refs[r].mesh;
             inst.stable_key = stable_key++;
             inst.material_slots = ref_slots[r];
-            meshes_.push_back(std::move(inst));
+            meshes_.add(std::move(inst));
         }
     } else {
         cached_surface_mesh_.reset();
@@ -755,7 +757,7 @@ Result<void> ProceduralPreview::refresh(editor::Session& session, editor::Projec
     picking->materials = surfaces_;
     picking->meshes.reserve(meshes_.size());
     for (const auto& m : meshes_)
-        picking->meshes.push_back({ObjectId{}, m.world, m.geometry, m.material_slots});
+        picking->meshes.add({ObjectId{}, m.world, m.geometry, m.material_slots});
     picking_ = std::move(picking);
 
     cached_shown_ = std::move(shown);
@@ -771,7 +773,7 @@ renderer::Result<renderer::Preparation> ProceduralPreview::prepare(renderer::Ren
         return renderer::Preparation{0, 0, true};
     if (!pending_ || pending_->request != request_) {
         std::shared_ptr<renderer::MaterialBatch> batch;
-        const auto matches = [&](const std::optional<Prepared>& group) {
+        const auto matches = [&](const Optional<Prepared>& group) {
             return group && group->draw.materials && std::ranges::equal(group->draw.materials->surfaces(), surfaces_);
         };
         if (matches(pending_))

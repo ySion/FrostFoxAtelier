@@ -317,7 +317,7 @@ struct ValueDescription {
 `TypeReference` 是定义输入中的类型选择器，可以持有本运行时已发布的 `TypeId`、完整声明名称，或由 `TypeReference::native<T>()` 生成的 C++ 表示标记。名称按精确字符串匹配同批和已发布定义，不做短名回退或语言作用域解析。`ValueDefinition` 组合该选择器与 `ValueForm`；发布后的 `ValueDescription` 只保留已解析的 `TypeId` 与值形式，不创建第二套业务类型身份。
 
 ```cpp
-std::vector<TypeDefinition> definitions(2);
+Array<TypeDefinition> definitions(2);
 definitions[0].name = "sample.A";
 definitions[0].fields = {
     {"next", {TypeReference{"sample.B"}, ValueForm::strong_reference}}
@@ -355,7 +355,7 @@ auto published = runtime.register_types(std::move(definitions));
 
 `create(TypeId)` 返回 `Result<ObjectRoot>`。对象与首个根在交付前一起完成发布；创建失败不遗留本次创建的对象或根，原生回调对其他对象的外部副作用仍不自动回滚。`hold(ObjectId)` 检查活对象并建立定型根；`hold(ObjectReference)` 只接收持有形式，允许保留已经失效的身份而不复活目标。
 
-`observe` 将定型引用转换为观察形式，不建立根。`try_acquire` 只接收观察形式，返回 `Result<std::optional<ObjectRoot>>`：空或失效目标产生空结果，活目标交付已经登记的根；错误类型或跨运行时引用报告错误。弱引用不能直接写入持有字段，须先成功取得根。持有引用可写入同类型观察字段，或先通过 `observe` 转换。普通空/失效取得不抛异常；根登记分配失败仍遵守现有内存耗尽边界。
+`observe` 将定型引用转换为观察形式，不建立根。`try_acquire` 只接收观察形式，返回 `Result<Optional<ObjectRoot>>`：空或失效目标产生空结果，活目标交付已经登记的根；错误类型或跨运行时引用报告错误。弱引用不能直接写入持有字段，须先成功取得根。持有引用可写入同类型观察字段，或先通过 `observe` 转换。普通空/失效取得不抛异常；根登记分配失败仍遵守现有内存耗尽边界。
 
 `read_reference/write_reference` 支持对象字段路径和调用方的记录存储。路径只穿过内联记录，不隐式解引用对象；已有定型引用的同形式复制不要求目标仍然存活。可信原生代码可用 `ValueDescription + ReferenceSlot` 重载访问未公开成员，但必须提供该槽真实的声明描述并保持宿主存储有效。引用槽不能通过任意原生赋值绕过 Runtime；整条原生记录复制通过四个值操作入口执行。
 
@@ -392,12 +392,12 @@ auto published = runtime.register_types(std::move(definitions));
 当前接口服务引擎内部和可信原生调用方，操作标量及记录，包括含持有/观察引用的记录。调用方提供存储，运行时不为值分配存储或创建对象身份；需要作为外部持有入口的活值另外登记 `ValueRoot`：
 
 ```cpp
-Result<void> initialize_value(TypeId, std::span<std::byte> destination);
-Result<void> copy_construct_value(TypeId, std::span<std::byte> destination,
-                                  std::span<const std::byte> source);
-Result<void> assign_value(TypeId, std::span<std::byte> destination,
-                         std::span<const std::byte> source);
-Result<void> destroy_value(TypeId, std::span<std::byte> storage);
+Result<void> initialize_value(TypeId, Span<std::byte> destination);
+Result<void> copy_construct_value(TypeId, Span<std::byte> destination,
+                                  Span<const std::byte> source);
+Result<void> assign_value(TypeId, Span<std::byte> destination,
+                          Span<const std::byte> source);
+Result<void> destroy_value(TypeId, Span<std::byte> storage);
 ```
 
 运行时在修改前检查类型、容量、对齐、操作能力及重叠范围。每个缓冲区只使用 `TypeInfo::size` 字节；复制构造禁止重叠，支持赋值的类型允许原址自赋值并直接成功，部分重叠则拒绝。调用方保证源值已构造、目标处于操作要求的构造状态、实际 C++ 表示正确，以及存储有效；这些条件无法仅凭字节视图验证。调用方须在所属运行时结束前销毁值，运行时不会自动清理外部值。已登记的外部值禁止重建和销毁，须先撤销其根登记；复制引用值不自动新增根或克隆对象。
@@ -408,7 +408,7 @@ Result<void> destroy_value(TypeId, std::span<std::byte> storage);
 
 描述型构造、复制、赋值、销毁及同步引用遍历使用显式可复用工作栈，不以 C++ 调用栈承载内联布局深度。发布前按执行计划预留最大遍历深度；回调重入的公开值操作在修改前预留新增深度，并以独立栈区间隔离。原生回调可能扩容工作栈，因此循环不跨回调保留栈元素引用。构造失败复用已有容量逆序清理已完成部分，不重复清理返回失败的原生目标。
 
-Runtime 私有类型表、对象槽、写代号页、字段/调用/遍历计划、类型发布候选目录及引用批事务缓冲使用 Array。Type 仍独立分配，容器增长不移动类型对象；对象槽保留代际和自由链。引用批修改仍在全部验证和候选复制后才预留目标容量并提交，预算拒绝返回 Result。公开类型定义、诊断路径、ReferenceSequence 与 PreparedArguments 的现有容器和借用接口不因此改变。
+Runtime 私有类型表、对象槽、写代号页、字段/调用/遍历计划、类型发布候选目录及引用批事务缓冲使用 Array。Type 仍独立分配，容器增长不移动类型对象；对象槽保留代际和自由链。引用批修改仍在全部验证和候选复制后才预留目标容量并提交，预算拒绝返回 Result。公开类型定义、诊断路径、ReferenceSequence 与 PreparedArguments 均统一使用 Array、Span 与 Optional。
 
 发布时派生需要析构的字段计划：内建标量、枚举、`NativeRegistration` 自动识别的 C++ 平凡析构类型（`NativeLayout::trivially_destructible`）及仅由它们组成的描述型子树无需逐字段调用空析构；非平凡 C++ 类型与任何未标记平凡析构的显式原生 `destroy` 仍在原地址、原顺序逆序执行一次，不能以“不含引用”代替平凡性判断。持有引用追踪与析构计划相互独立。
 

@@ -5,6 +5,7 @@
 #include "editor/keymap.hpp"
 #include "procedural/graph.hpp"
 #include "foundation/result.hpp"
+#include "foundation/scope_exit.hpp"
 #include "logging/native.hpp"
 #include "memory/fatal.hpp"
 #include "assets/file.hpp"
@@ -98,7 +99,7 @@ ui::PixelExtent client_extent(HWND window) {
 Application::Application(SceneRecovery* recovery) : recovery_(recovery ? recovery : &owned_recovery_) {}
 
 Result<void> Application::initialize(std::unique_ptr<editor::Session> document, bool validation, bool activate,
-                                     std::optional<ui::PixelExtent> initial_client, bool vsync) {
+                                     Optional<ui::PixelExtent> initial_client, bool vsync) {
     document_ = std::move(document);
     ATELIER_TRY(workspace_.initialize());
     gpu_validation_ = validation;
@@ -136,7 +137,7 @@ Result<void> Application::initialize(std::unique_ptr<editor::Session> document, 
     popup_ = std::move(popup);
     auto submenu = std::make_unique<PopupHost>();
     ATELIER_TRY(submenu->initialize(window(), *fonts, gpu_validation_));
-    submenus_.push_back(std::move(submenu));
+    submenus_.add(std::move(submenu));
     closed_ = false;
     window_.show(activate);
     return {};
@@ -414,7 +415,7 @@ Result<void> Application::configure_view(math::Vector3 eye, math::Vector3 target
 Result<void> Application::action(const ui::Action& source) {
     // UI instance keys and host command/target keys occupy different roles.
     // Resolve once at the existing dispatch boundary; business checks stay below.
-    std::optional<ui::Action> routed;
+    Optional<ui::Action> routed;
     if (source.target)
         routed.emplace(source.kind, source.target, source.value);
     const auto& event = routed ? *routed : source;
@@ -472,7 +473,7 @@ Result<void> Application::action(const ui::Action& source) {
         }
         if (event.kind != ui::ActionKind::edit_commit && event.kind != ui::ActionKind::edit_cancel)
             return {};
-        const auto rename = std::exchange(workspace_.row_rename, std::nullopt);
+        const auto rename = workspace_.row_rename.take();
         if (!rename->asset.empty()) {
             const auto* text = std::get_if<std::wstring>(&event.value);
             if (event.kind == ui::ActionKind::edit_cancel || !text || *text == rename->asset.filename().wstring() ||
@@ -866,10 +867,12 @@ Result<void> Application::action(const ui::Action& source) {
         if (!expanded)
             return invalid();
         using Tree = editor::Workspace::EntityTree;
-        if (event.key == tree_world)
-            return workspace_.tree_query.empty()
-                       ? workspace_.set_tree_expanded(*document_, Tree::scene_tree, std::array{ObjectId{}}, *expanded)
-                       : Result<void>{};
+        if (event.key == tree_world) {
+            if (!workspace_.tree_query.empty())
+                return {};
+            const std::array world_id{ObjectId{}};
+            return workspace_.set_tree_expanded(*document_, Tree::scene_tree, world_id, *expanded);
+        }
         const auto* row = workspace_.binding(event.key);
         if (!row || !row->path.empty() ||
             (row->kind != editor::Workspace::Binding::Kind::object &&
@@ -878,7 +881,7 @@ Result<void> Application::action(const ui::Action& source) {
         const auto tree = row->kind == editor::Workspace::Binding::Kind::object ? Tree::scene_tree : Tree::structure;
         if (!(tree == Tree::scene_tree ? workspace_.tree_query : workspace_.structure_query).empty())
             return {};
-        return workspace_.set_tree_expanded(*document_, tree, std::span{&row->object, 1}, *expanded);
+        return workspace_.set_tree_expanded(*document_, tree, Span{&row->object, 1}, *expanded);
     }
     // The rail snap toggle is a second view of the shared snapping command.
     if (event.kind == ui::ActionKind::activate && event.key == viewport_rail_snap) {
@@ -921,7 +924,7 @@ Result<void> Application::action(const ui::Action& source) {
         const auto* point = std::get_if<ui::DragPoint>(&event.value);
         const auto drop = point && ui_.presented()
                               ? workspace_.tree_drop(*document_, *ui_.presented(), binding->object, *point)
-                              : std::nullopt;
+                              : Optional<editor::Workspace::TreeDrop>{};
         workspace_.tree_drop_row = event.kind == ui::ActionKind::drag_preview && drop ? drop->row : 0;
         if (event.kind == ui::ActionKind::drag_preview)
             workspace_.status = drop ? L"Drop to parent · World or empty space unparents" : L"Cannot parent here";
@@ -966,10 +969,10 @@ Result<void> Application::action(const ui::Action& source) {
                                                                      pit->properties.front().string_value, proj),
                             msg);
             }
-            std::vector<Scalar> scalars;
+            Array<Scalar> scalars;
             scalars.reserve(pit->properties.size());
             for (const auto& prop : pit->properties)
-                scalars.push_back(prop.value);
+                scalars.add(prop.value);
             return done(document_->set_promoted_parameter_scalars(target, binding->material_path, scalars, proj), msg);
         }
         if (binding->kind == editor::Workspace::Binding::Kind::graph_param_text) {
@@ -1003,7 +1006,7 @@ Result<void> Application::action(const ui::Action& source) {
                                                                   : L"Digital Asset override updated";
                 const editor::PromotedParameterTarget target{binding->slot, binding->node_name, binding->component};
                 return done(
-                    document_->set_promoted_parameter_scalars(target, binding->material_path, std::span{&val, 1}, proj),
+                    document_->set_promoted_parameter_scalars(target, binding->material_path, Span{&val, 1}, proj),
                     msg);
             }
             const auto* number = std::get_if<double>(&event.value);
@@ -1020,8 +1023,8 @@ Result<void> Application::action(const ui::Action& source) {
             if (pit == params->end() || !pit->valid || binding->index >= pit->properties.size())
                 return invalid();
             ATELIER_TRY_BIND(typed, scalar_value(pit->properties[binding->index].value, *number));
-            const std::optional<std::size_t> lane =
-                pit->is_vector ? std::optional<std::size_t>{binding->index} : std::nullopt;
+            const Optional<std::size_t> lane =
+                pit->is_vector ? Optional<std::size_t>{binding->index} : Optional<std::size_t>{};
             switch (event.kind) {
             case ui::ActionKind::edit_begin:
                 return done(document_->begin_graph_parameter_edit(binding->slot, binding->node_name,
@@ -1029,10 +1032,10 @@ Result<void> Application::action(const ui::Action& source) {
                                                                   binding->component),
                             L"Editing Digital Asset parameter / Esc cancels");
             case ui::ActionKind::edit_preview:
-                return done(document_->preview_graph_parameter_edit(event.key, std::span{&*typed, 1}),
+                return done(document_->preview_graph_parameter_edit(event.key, Span{&*typed, 1}),
                             L"Parameter preview / Esc cancels");
             case ui::ActionKind::edit_commit: {
-                if (auto previewed = document_->preview_graph_parameter_edit(event.key, std::span{&*typed, 1});
+                if (auto previewed = document_->preview_graph_parameter_edit(event.key, Span{&*typed, 1});
                     !previewed) {
                     static_cast<void>(document_->cancel_edit());
                     return previewed;
@@ -1093,17 +1096,17 @@ Result<void> Application::action(const ui::Action& source) {
                 const auto leaf_desc = runtime.describe(*cur_type);
                 if (!leaf_desc)
                     return std::unexpected(leaf_desc.error());
-                std::vector<editor::PropertyPatch> patches;
+                Array<editor::PropertyPatch> patches;
                 if ((*leaf_desc)->math.vector() &&
                     leaf_field->default_leaves.size() == (*leaf_desc)->math.components() &&
                     (*leaf_desc)->fields.size() >= leaf_field->default_leaves.size()) {
                     for (std::size_t li = 0; li < leaf_field->default_leaves.size(); ++li) {
                         world::FieldPath lane_path = binding->path;
-                        lane_path.push_back((*leaf_desc)->fields[li].id);
-                        patches.push_back({std::move(lane_path), leaf_field->default_leaves[li]});
+                        lane_path.add((*leaf_desc)->fields[li].id);
+                        patches.add({std::move(lane_path), leaf_field->default_leaves[li]});
                     }
                 } else if (leaf_field->default_leaves.size() == 1) {
-                    patches.push_back({binding->path, leaf_field->default_leaves.front()});
+                    patches.add({binding->path, leaf_field->default_leaves.front()});
                 } else {
                     return {};
                 }
@@ -1329,7 +1332,7 @@ Result<void> Application::action(const ui::Action& source) {
 
 // Colour editor: one Session group transaction from open to Done/dismiss; Esc and
 // outside clicks keep the edit (Houdini applies live), Revert restores the original.
-Result<void> Application::open_color_edit(ObjectId object, std::span<const FieldId> prefix, ui::ControlKey swatch) {
+Result<void> Application::open_color_edit(ObjectId object, Span<const FieldId> prefix, ui::ControlKey swatch) {
     if (workspace_.color_edit)
         ATELIER_TRY(finish_color_edit(true));
     close_menu(false);
@@ -1360,11 +1363,11 @@ Result<void> Application::open_color_edit(ObjectId object, std::span<const Field
         ATELIER_TRY(document_->begin_material_edit(object, editor::control::color_group));
     } else {
         for (std::uint32_t lane = 0; lane < 3; ++lane) {
-            auto path = world::FieldPath(prefix.begin(), prefix.end());
+            world::FieldPath path{prefix};
             ATELIER_TRY_BIND(info, document_->world().runtime().describe(take_type(object, prefix)));
             if (lane >= (*info)->fields.size())
                 return std::unexpected(Error{ErrorCode::invalid_definition, "A colour needs three channels."});
-            path.push_back((*info)->fields[lane].id);
+            path.add((*info)->fields[lane].id);
             ATELIER_TRY_BIND(value, document_->read_property(object, path));
             edit.original[lane] = edit.value[lane] = std::visit(
                 [](const auto& v) -> double {
@@ -1374,7 +1377,7 @@ Result<void> Application::open_color_edit(ObjectId object, std::span<const Field
                         return double(v);
                 },
                 *value);
-            edit.paths.push_back(std::move(path));
+            edit.paths.add(std::move(path));
         }
         ATELIER_TRY(document_->begin_group_edit(object, edit.paths, editor::control::color_group));
     }
@@ -1395,7 +1398,7 @@ Result<void> Application::open_color_edit(ObjectId object, std::span<const Field
     return {};
 }
 
-TypeId Application::take_type(ObjectId object, std::span<const FieldId> path) const {
+TypeId Application::take_type(ObjectId object, Span<const FieldId> path) const {
     auto& runtime = document_->world().runtime();
     auto type = runtime.type_of(object).value_or(TypeId{});
     for (const auto id : path) {
@@ -1432,7 +1435,7 @@ Result<void> Application::apply_color(std::array<double, 3> rgb) {
         edit.hex = editor::color_hex(edit.value);
         return {};
     }
-    std::vector<Scalar> values;
+    Array<Scalar> values;
     for (std::size_t lane = 0; lane < 3; ++lane) {
         const auto value = rgb[lane];
         if (!std::isfinite(value) || value < 0 || value > edit.maximum)
@@ -1440,7 +1443,7 @@ Result<void> Application::apply_color(std::array<double, 3> rgb) {
                 Error{ErrorCode::argument_mismatch, "Colour channels must stay within the property's numeric range."});
         ATELIER_TRY_BIND(prototype, document_->read_property(edit.object, edit.paths[lane]));
         ATELIER_TRY_BIND(typed, scalar_value(*prototype, value));
-        values.push_back(*typed);
+        values.add(*typed);
     }
     ATELIER_TRY(document_->preview_group_edit(editor::control::color_group, values));
     for (std::size_t lane = 0; lane < 3; ++lane)
@@ -1645,7 +1648,7 @@ Result<void> Application::dive_into_asset_node(std::string_view parent_graph, st
     workspace_.network.close_tab_search();
     workspace_.network.close_popup();
     workspace_.network_lock_overrides.remove(target_key);
-    workspace_.graph_breadcrumbs.push_back({std::string(parent_graph), std::string(node_name)});
+    workspace_.graph_breadcrumbs.add({std::string(parent_graph), std::string(node_name)});
     if (!workspace_.active_graph.empty()) {
         workspace_.active_graph = target_key;
         camera_cut_ = true;
@@ -1680,7 +1683,7 @@ Result<void> Application::pop_graph_breadcrumb() {
     bool found_valid = false;
     while (!workspace_.graph_breadcrumbs.empty()) {
         crumb = std::move(workspace_.graph_breadcrumbs.back());
-        workspace_.graph_breadcrumbs.pop_back();
+        workspace_.graph_breadcrumbs.pop();
         if (!document_->has_graph(crumb.graph_key) && project_ && project_->entry(crumb.graph_key))
             static_cast<void>(document_->open_graph(*project_, crumb.graph_key));
         if (document_->has_graph(crumb.graph_key)) {
@@ -1733,7 +1736,7 @@ void Application::select_graph_node(std::string_view key, std::string_view node_
     workspace_.bump_view_revision();
 }
 
-void Application::select_graph_nodes(std::string_view key, std::span<const std::string> node_names) {
+void Application::select_graph_nodes(std::string_view key, Span<const std::string> node_names) {
     const auto net_key = workspace_.current_network_graph(*document_);
     if (workspace_.active_graph != key && net_key != key)
         return;
@@ -2097,7 +2100,7 @@ Result<void> Application::update_menu() {
     }
     window_.capture(true);
     ATELIER_TRY(popup_->render());
-    auto items = std::span<const ui::MenuItem>(workspace_.menu_items);
+    auto items = Span<const ui::MenuItem>(workspace_.menu_items);
     auto* parent = popup_.get();
     for (std::size_t depth = 0; depth < menu_path_.size(); ++depth) {
         const auto at =
@@ -2113,7 +2116,7 @@ Result<void> Application::update_menu() {
             auto child = std::make_unique<PopupHost>();
             ATELIER_TRY_BIND(fonts, editor_fonts());
             ATELIER_TRY(child->initialize(window(), *fonts, gpu_validation_));
-            submenus_.push_back(std::move(child));
+            submenus_.add(std::move(child));
         }
         POINT corners[2]{{static_cast<LONG>(box->bounds.x), static_cast<LONG>(box->bounds.y)},
                          {static_cast<LONG>(box->bounds.x + box->bounds.width),
@@ -2210,11 +2213,11 @@ Result<bool> Application::menu_input(const ui::Event& input, WPARAM native_key) 
     if (input.kind == ui::EventKind::key_down && !menu_path_.empty() &&
         (input.key == ui::Key::left || input.key == ui::Key::escape)) {
         ATELIER_TRY(submenus_[menu_path_.size() - 1]->hide());
-        menu_path_.pop_back();
+        menu_path_.pop();
         return true;
     }
     auto* host = level ? submenus_[level - 1].get() : popup_.get();
-    auto items = std::span<const ui::MenuItem>(workspace_.menu_items);
+    auto items = Span<const ui::MenuItem>(workspace_.menu_items);
     for (std::size_t depth = 0; depth < level; ++depth) {
         const auto at =
             std::find_if(items.begin(), items.end(), [&](const auto& item) { return item.key == menu_path_[depth]; });
@@ -2242,7 +2245,7 @@ Result<bool> Application::menu_input(const ui::Event& input, WPARAM native_key) 
                     continue;
                 if (!at->children.empty()) {
                     menu_path_.resize(level);
-                    menu_path_.push_back(at->key);
+                    menu_path_.add(at->key);
                     ATELIER_TRY(update_menu());
                     return true;
                 }
@@ -2260,7 +2263,7 @@ Result<bool> Application::menu_input(const ui::Event& input, WPARAM native_key) 
     return true;
 }
 
-bool Application::invoke_menu(const ui::Action& command, std::span<const ui::MenuItem> items) {
+bool Application::invoke_menu(const ui::Action& command, Span<const ui::MenuItem> items) {
     const auto at = std::ranges::find(items, command.key, &ui::MenuItem::key);
     if (at == items.end() || !at->enabled || !at->children.empty())
         return false;
@@ -2622,11 +2625,7 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
         ATELIER_TRY(renderer_.wait_frame(20).transform_error(renderer_error));
     }
     // Everything this step changed reaches Play as one batch, whichever way the step ends.
-    struct ForwardLive {
-        Application& app;
-
-        ~ForwardLive() { app.forward_live(); }
-    } forward_live{*this};
+    ScopeExit forward_live_guard{[this]() noexcept { forward_live(); }};
     {
         timing::Scope input{phases::input};
         Result<void> polled;
@@ -2762,7 +2761,7 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
         }
         return {};
     };
-    std::optional<timing::Scope> stage{std::in_place, phases::ui};
+    Optional<timing::Scope> stage{std::in_place, phases::ui};
     ATELIER_TRY(describe());
     auto described = ui_.set_controls(workspace_controls_);
     if (!described && described.error().code != ui::ErrorCode::text_failed &&
@@ -2972,11 +2971,11 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
     const bool capturing_control = control_ && control_->wants_capture();
     auto* frame_capture = capture ? capture : capturing_control ? &control_capture : nullptr;
     const auto effective_view = control_ ? control_->view() : workspace_.view;
-    const auto frame_meshes = sop_draw ? std::span<const renderer::MeshInstance>{sop_draw->meshes}
-                              : scene  ? std::span<const renderer::MeshInstance>{scene->meshes}
-                                       : std::span<const renderer::MeshInstance>{};
+    const auto frame_meshes = sop_draw ? Span<const renderer::MeshInstance>{sop_draw->meshes}
+                              : scene  ? Span<const renderer::MeshInstance>{scene->meshes}
+                                       : Span<const renderer::MeshInstance>{};
     const auto frame_lights =
-        scene ? std::span<const renderer::Light>{scene->lights} : std::span<const renderer::Light>{};
+        scene ? Span<const renderer::Light>{scene->lights} : Span<const renderer::Light>{};
     const auto frame_identity = sop_draw ? sop_draw->identity : scene ? scene->identity : scene_.identity;
     renderer::Frame render_frame{*frame.drawing,
                                  {camera.view, camera.projection, camera.far_depth},
@@ -2991,7 +2990,7 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
                                  lighting_focus()};
     render_frame.materials = sop_draw ? sop_draw->materials.get() : scene ? scene->materials.get() : nullptr;
     render_frame.command_trace = control_ ? control_->command_trace() : nullptr;
-    std::optional<renderer::Result<renderer::FrameResult>> traced_result;
+    Optional<renderer::Result<renderer::FrameResult>> traced_result;
     if (render_frame.command_trace)
         traced_result.emplace();
     const auto lighting_start = Clock::now();
@@ -3046,7 +3045,7 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
         render_retry_delay_ = {};
         lighting_clock_.accept(lighting_start, lighting_active && drawn->view.shading == renderer::Shading::scene_lit);
         fallback_presented_ = drawn->fallback;
-        accepted_view_ = viewport ? std::optional(viewport_view) : std::nullopt;
+        accepted_view_ = viewport ? Optional{viewport_view} : Optional<editor::ViewportView>{};
         workspace_.lighting.observe(rendered.stats);
         if (viewport)
             camera_cut_ = false;
@@ -3136,9 +3135,9 @@ Result<void> Application::close() {
                             {"play_running", play_.running()}};
             if (control_) {
                 if (auto job = control_->active_job()) {
-                    entry.fields.push_back({"active_control_job_id", std::move(job->id)});
-                    entry.fields.push_back({"active_control_job_kind", std::string(job->kind)});
-                    entry.fields.push_back({"active_control_job_phase", std::string(job->phase)});
+                    entry.fields.add({"active_control_job_id", std::move(job->id)});
+                    entry.fields.add({"active_control_job_kind", std::string(job->kind)});
+                    entry.fields.add({"active_control_job_phase", std::string(job->phase)});
                 }
             }
             static_cast<void>(workspace_.output.submit_owned(std::move(entry)));

@@ -2,6 +2,7 @@
 #include "assets/assets.hpp"
 #include "assets/file.hpp"
 #include "foundation/array.hpp"
+#include "foundation/bit_vector.hpp"
 #include "foundation/map.hpp"
 #include "foundation/set.hpp"
 #include "platform/error.hpp"
@@ -11,7 +12,6 @@
 #include <charconv>
 #include <cmath>
 #include <cstring>
-#include <optional>
 
 namespace atelier::assets {
 namespace {
@@ -185,7 +185,7 @@ std::size_t component_size(std::uint32_t type) {
 }
 
 json::Result<Accessor> accessor(json::Value gltf, Map<std::string_view, Array<json::Value>>& indexed,
-                                std::span<const std::string_view> buffers, json::Value index, std::string_view type,
+                                Span<const std::string_view> buffers, json::Value index, std::string_view type,
                                 std::initializer_list<std::uint32_t> components) {
     ATELIER_TRY_BIND(a, element(gltf, indexed, "accessors", index));
     ATELIER_TRY_BIND(sparse, a->find("sparse"));
@@ -296,7 +296,7 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
         if (!bytes)
             return std::unexpected(json::Error{json::Fault::range, bytes.error().message, {}, {}});
         read_files.try_emplace(std::move(key), result.files.size());
-        result.files.push_back({relative, std::move(*bytes)});
+        result.files.add({relative, std::move(*bytes)});
         return result.files.size() - 1;
     };
     const auto imported = [&]() -> std::expected<void, std::variant<json::Error, Error>> {
@@ -331,16 +331,16 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
         ATELIER_TRY_BIND(scenes, gltf.at("scenes"));
         ATELIER_TRY_BIND(scene, scenes->at(*scene_index));
         // Depth-first in file order, so parts follow the document.
-        std::vector<std::pair<std::size_t, Matrix>> placed;
-        std::vector<std::pair<std::size_t, Matrix>> stack;
-        std::vector<bool> visited(nodes.size());
+        Array<std::pair<std::size_t, Matrix>> placed;
+        Array<std::pair<std::size_t, Matrix>> stack;
+        BitVector visited(nodes.size());
         const auto push = [&](json::Value indices, const Matrix& parent) -> json::Result<void> {
             ATELIER_TRY_BIND(items, indices.array());
             const auto begin = stack.size();
             for (auto value : *items) {
                 ATELIER_TRY_BIND(index, integer(value));
                 ATELIER_TRY(require(*index < nodes.size(), "invalid node index."));
-                stack.push_back({*index, parent});
+                stack.add({*index, parent});
             }
             std::reverse(stack.begin() + begin, stack.end());
             return {};
@@ -349,9 +349,9 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
         ATELIER_TRY(push(*roots, conversion));
         while (!stack.empty()) {
             const auto [index, parent] = stack.back();
-            stack.pop_back();
+            stack.pop();
             ATELIER_TRY(require(!visited[index], "node graph is not a tree."));
-            visited[index] = true;
+            visited.set(index);
             const auto& node = nodes[index];
             ATELIER_TRY_BIND(skin, node.find("skin"));
             ATELIER_TRY(require(!*skin, "skinned meshes are not supported."));
@@ -359,7 +359,7 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
             const auto world = multiply(parent, *local);
             ATELIER_TRY_BIND(mesh, node.find("mesh"));
             if (*mesh)
-                placed.push_back({index, world});
+                placed.add({index, world});
             ATELIER_TRY_BIND(children, field(node, "children", empty_array));
             ATELIER_TRY(push(*children, world));
         }
@@ -383,7 +383,7 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
         Array<json::Value> materials;
         for (auto material : *material_items)
             materials.emplace(material);
-        std::vector<bool> used(materials.size());
+        BitVector used(materials.size());
         bool default_used = false;
         std::size_t corners{};
         struct Skipped {
@@ -412,7 +412,7 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
                         s.triangles += *count / 3;
                         continue;
                     }
-                    used[*m] = true;
+                    used.set(*m);
                 } else
                     default_used = true;
                 ATELIER_TRY(require(*count <= maximum_triangles * 3 - corners, "too many triangles."));
@@ -423,12 +423,12 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
             if (!skipped[m].primitives)
                 continue;
             ATELIER_TRY_BIND(name, material_name(materials[m], m));
-            result.notes.push_back("BLEND material skipped: " + *name + " (" + std::to_string(skipped[m].primitives) +
-                                   " primitives, " + std::to_string(skipped[m].triangles) +
-                                   " triangles); alpha blending is not supported.");
+            result.notes.add("BLEND material skipped: " + *name + " (" + std::to_string(skipped[m].primitives) +
+                             " primitives, " + std::to_string(skipped[m].triangles) +
+                             " triangles); alpha blending is not supported.");
         }
         // Read every dependency before taking views: result.files grows while reading.
-        std::vector<std::size_t> buffer_files;
+        Array<std::size_t> buffer_files;
         std::size_t buffer_bytes{};
         ATELIER_TRY_BIND(buffer_values, field(gltf, "buffers", empty_array));
         ATELIER_TRY_BIND(buffer_items, buffer_values->array());
@@ -440,7 +440,7 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
             ATELIER_TRY_BIND(length_value, buffer.at("byteLength"));
             ATELIER_TRY_BIND(length, integer(*length_value));
             ATELIER_TRY(require(*length <= result.files[*file].bytes.size(), "buffer is shorter than its byteLength."));
-            buffer_files.push_back(*file);
+            buffer_files.add(*file);
         }
         ATELIER_TRY_BIND(images_value, field(gltf, "images", empty_array));
         ATELIER_TRY_BIND(image_items, images_value->array());
@@ -448,8 +448,8 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
         images.reserve(image_items->size());
         for (auto image : *image_items)
             images.emplace(image);
-        std::vector<std::size_t> image_slot(images.size(), no_slot);
-        std::vector<std::size_t> image_files;
+        Array<std::size_t> image_slot(images.size(), no_slot);
+        Array<std::size_t> image_files;
         const auto texture_image = [&](json::Value info) -> json::Result<std::size_t> {
             ATELIER_TRY_BIND(coord_value, info.find("texCoord"));
             ATELIER_TRY_BIND(coord, *coord_value ? integer(**coord_value) : json::Result<std::uint64_t>{0});
@@ -472,7 +472,7 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
                 ATELIER_TRY(require(is_texture_path(*path), "images must be PNG, JPEG, BMP or TIFF files."));
                 slot = image_files.size();
                 ATELIER_TRY_BIND(file, read(*path, maximum_image_file));
-                image_files.push_back(*file);
+                image_files.add(*file);
             }
             return slot;
         };
@@ -490,12 +490,12 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
                         ATELIER_TRY(texture_image(**info));
                 }
             }
-        std::vector<std::string_view> buffers;
-        std::vector<std::string_view> image_sources;
+        Array<std::string_view> buffers;
+        Array<std::string_view> image_sources;
         for (const auto file : buffer_files)
-            buffers.push_back(result.files[file].bytes);
+            buffers.add(result.files[file].bytes);
         for (const auto file : image_files)
-            image_sources.push_back(result.files[file].bytes);
+            image_sources.add(result.files[file].bytes);
         // Decode to validate the same images and byte budget. Author MI values
         // carry paths/keys, never decoded pixels or a second surface definition.
         ATELIER_TRY(decode_images(image_sources, shared_images, maximum_decoded));
@@ -526,12 +526,12 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
                                      : wrap == 33648 ? material::Address::mirror
                                                      : material::Address::repeat;
                 const auto name = std::string(imported_material_inputs[input]);
-                author.entries.push_back({name + "_texture", material::TextureBinding{{}, address}});
-                author.entries.push_back({name + "_uv.scale", math::Vector2{1, 1}});
-                author.entries.push_back({name + "_uv.offset", math::Vector2{}});
-                author.entries.push_back({name + "_uv.rotation", 0.f});
+                author.entries.add({name + "_texture", material::TextureBinding{{}, address}});
+                author.entries.add({name + "_uv.scale", math::Vector2{1, 1}});
+                author.entries.add({name + "_uv.offset", math::Vector2{}});
+                author.entries.add({name + "_uv.rotation", 0.f});
                 if (input == 1 || input == 2)
-                    author.entries.push_back({name + "_channel", channel});
+                    author.entries.add({name + "_channel", channel});
                 return {};
             };
             ATELIER_TRY_BIND(pbr, field(source_material, "pbrMetallicRoughness", empty_object));
@@ -589,20 +589,20 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
             return author;
         };
         // Slot names are unique: scenes bind materials to slots by name.
-        std::vector<geometry::MaterialSlot> slots;
-        std::vector<std::size_t> slot_of(materials.size(), no_slot);
+        Array<geometry::MaterialSlot> slots;
+        Array<std::size_t> slot_of(materials.size(), no_slot);
         Set<std::string> names;
         const auto add_slot = [&](const std::string& name, const json::Value* source_material) -> json::Result<void> {
             auto unique = name;
             for (std::size_t n = 2; !names.add(unique); ++n)
                 unique = name + " (" + std::to_string(n) + ")";
-            slots.push_back({std::move(unique)});
-            result.textures.emplace_back();
+            slots.add({std::move(unique)});
+            result.textures.emplace();
             if (source_material) {
                 ATELIER_TRY_BIND(material, instance(*source_material, result.textures.back()));
-                result.materials.emplace_back(std::move(*material));
+                result.materials.emplace(std::move(*material));
             } else
-                result.materials.emplace_back();
+                result.materials.emplace();
             return {};
         };
         for (std::size_t m = 0; m < materials.size(); ++m)
@@ -614,9 +614,9 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
         const auto default_slot = slots.size();
         if (default_used)
             ATELIER_TRY(add_slot("default", nullptr));
-        std::vector<geometry::Vertex> vertices;
+        Array<geometry::Vertex> vertices;
         vertices.reserve(corners);
-        std::vector<geometry::MeshPart> parts;
+        Array<geometry::MeshPart> parts;
         for (const auto& [index, world] : placed) {
             const std::array<double, 9> linear{world[0], world[1], world[2], world[4], world[5],
                                                world[6], world[8], world[9], world[10]};
@@ -659,9 +659,8 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
                 ATELIER_TRY_BIND(attributes, primitive.at("attributes"));
                 ATELIER_TRY_BIND(position_index, attributes->at("POSITION"));
                 ATELIER_TRY_BIND(position, accessor(gltf, indexed, buffers, *position_index, "VEC3", {5126}));
-                const auto optional = [&](const char* name,
-                                          std::string_view type) -> json::Result<std::optional<Accessor>> {
-                    std::optional<Accessor> a;
+                const auto optional = [&](const char* name, std::string_view type) -> json::Result<Optional<Accessor>> {
+                    Optional<Accessor> a;
                     ATELIER_TRY_BIND(value, attributes->find(name));
                     if (*value) {
                         ATELIER_TRY_BIND(found, accessor(gltf, indexed, buffers, **value, type, {5126}));
@@ -676,7 +675,7 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
                 const auto textured =
                     std::ranges::any_of(result.textures[slot], [](const auto& path) { return !path.empty(); });
                 ATELIER_TRY(require(*uv || !textured, "a textured primitive has no TEXCOORD_0."));
-                std::vector<geometry::Vertex> source(position->count);
+                Array<geometry::Vertex> source(position->count);
                 for (std::size_t v = 0; v < position->count; ++v) {
                     auto& out = source[v];
                     ATELIER_TRY_BIND(p, floats_at<3>(*position, v));
@@ -702,7 +701,7 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
                         out.uv[1] = static_cast<float>((*t)[1]);
                     }
                 }
-                std::optional<Accessor> indices;
+                Optional<Accessor> indices;
                 ATELIER_TRY_BIND(indices_value, primitive.find("indices"));
                 if (*indices_value) {
                     ATELIER_TRY_BIND(found,
@@ -734,24 +733,24 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
                         for (auto& v : triangle)
                             std::ranges::copy(flat, v.normal);
                     }
-                    vertices.insert(vertices.end(), triangle.begin(), triangle.end());
+                    vertices.append(triangle);
                 }
                 if (!*tangent) {
                     // Mikk takes handedness from the UV winding and assumes normals follow the triangle
                     // winding, which after the conversion holds only when det>0; there its bitangent
                     // points toward +V, while glTF normal maps put +Y toward -V.
-                    const auto generated = std::span(vertices).subspan(first);
+                    const auto generated = vertices.slice(first);
                     geometry::generate_tangents(generated);
                     if (det > 0)
                         for (auto& v : generated)
                             v.tangent[3] = -v.tangent[3];
                 }
-                parts.push_back({static_cast<std::uint32_t>(first), static_cast<std::uint32_t>(count),
-                                 static_cast<std::uint32_t>(slot)});
+                parts.add({static_cast<std::uint32_t>(first), static_cast<std::uint32_t>(count),
+                           static_cast<std::uint32_t>(slot)});
             }
         }
         ATELIER_TRY(require(!vertices.empty(), "the scene has no importable triangles."));
-        auto mesh = geometry::Mesh::create(std::move(vertices), std::vector<std::uint8_t>{}, std::move(slots),
+        auto mesh = geometry::Mesh::create(std::move(vertices), Array<std::uint8_t>{}, std::move(slots),
                                            std::move(parts), geometry::Tangents::authored);
         if (!mesh)
             return std::unexpected(Error{ErrorCode::invalid_storage, std::move(mesh.error().message)});

@@ -9,7 +9,6 @@
 #include "ui_layout/layout.hpp"
 #include <bitset>
 #include <limits>
-#include <span>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -148,13 +147,13 @@ struct CanvasData {
 
     Color grid_axis{0, 0, 0, 0};
 
-    std::vector<CanvasBox> boxes;
+    Array<CanvasBox> boxes;
 
-    std::vector<CanvasStroke> strokes;
+    Array<CanvasStroke> strokes;
 
-    std::vector<CanvasNodeShape> shapes;
+    Array<CanvasNodeShape> shapes;
 
-    std::vector<CanvasArc> arcs;
+    Array<CanvasArc> arcs;
 
     bool operator==(const CanvasData&) const = default;
 };
@@ -200,7 +199,7 @@ struct Control {
 
     DragAxis drag_axis{DragAxis::horizontal};
 
-    std::vector<std::string> classes;
+    Array<std::string> classes;
 
     StyleProperties style;
 
@@ -210,7 +209,7 @@ struct Control {
 
     bool modified{}; // Modified compares the authoritative value with its declared default.
 
-    std::optional<double> default_value;
+    Optional<double> default_value;
 
     ControlKey context_target{};
 
@@ -249,7 +248,7 @@ struct Control {
 
     bool menu_branch{}; // Host opens a child menu; activating keeps this parent modal.
 
-    std::optional<EditCommand> edit_command; // menu_item only; executes through the shared editor.
+    Optional<EditCommand> edit_command; // menu_item only; executes through the shared editor.
 
     ButtonBehavior button_behavior{ButtonBehavior::command}; // button only: request the inverse selected value.
 
@@ -281,10 +280,10 @@ public:
     static std::uint64_t new_region_revision();
     void begin(std::uint64_t decoration_revision = 0);
     void require_full_submission() noexcept { baseline_ = 0; }
-    void append(std::span<const Control>, std::uint64_t region_revision);
-    void append(std::vector<Control>&&);
-    std::span<const Control> controls() const { return std::span(values_).first(count_); }
-    std::vector<Control> take() && {
+    void append(Span<const Control>, std::uint64_t region_revision);
+    void append(Array<Control>&&);
+    Span<const Control> controls() const { return values_.slice(0, count_); }
+    Array<Control> take() && {
         auto values = std::move(values_);
         *this = {};
         return values;
@@ -293,10 +292,10 @@ public:
     // Host decorations must depend only on the region and decoration_revision.
     void finish(auto&& decorate) {
         for (auto range : dirty_)
-            for (auto& control : std::span(values_).subspan(range.first, range.count))
+            for (auto& control : values_.slice(range.first, range.count))
                 decorate(control);
-        values_.resize(count_);
-        regions_.resize(region_);
+        values_.truncate(count_);
+        regions_.truncate(region_);
         finished_ = true;
     }
     void finish() {
@@ -313,9 +312,9 @@ private:
         std::uint64_t revision{};
     };
     bool advance(std::size_t count, std::uint64_t revision);
-    std::vector<Control> values_;
-    std::vector<Region> regions_;
-    std::vector<Range> dirty_;
+    Array<Control> values_;
+    Array<Region> regions_;
+    Array<Range> dirty_;
     std::size_t count_{}, region_{};
     std::uint64_t decoration_revision_{}, baseline_{};
     bool finished_{}, submitted_{};
@@ -412,9 +411,9 @@ struct TextInputState {
 
     bool composing{};
 
-    std::optional<TextCaret> accepted_caret;
+    Optional<TextCaret> accepted_caret;
 
-    std::optional<TextInputAnchor> accepted_anchor{}; // Only IME offset zero is supported.
+    Optional<TextInputAnchor> accepted_anchor{}; // Only IME offset zero is supported.
 };
 
 // Focus and passive text bindings are not pending interactions. Field drafts
@@ -548,9 +547,9 @@ struct TableGeometry {
 
     Clip clip;
 
-    std::vector<TableColumnGeometry> columns{};
+    Array<TableColumnGeometry> columns{};
 
-    std::vector<TableCellGeometry> cells{}; // Only visible cells; stable data identities, never ControlKeys.
+    Array<TableCellGeometry> cells{}; // Only visible cells; stable data identities, never ControlKeys.
 
     std::size_t columns_per_row{1}; // Actual accepted grid width for keyboard navigation.
 
@@ -582,7 +581,7 @@ struct CodeGeometry {
 
     float scale{1};
 
-    std::vector<CodeLineGeometry> lines; // Accepted visible lines only.
+    Array<CodeLineGeometry> lines; // Accepted visible lines only.
 };
 
 struct TooltipGeometry {
@@ -602,9 +601,9 @@ struct TooltipGeometry {
 struct UiFrame {
     std::shared_ptr<const Frame> drawing; // Null for geometry-only preparation; such a result cannot be accepted.
 
-    std::vector<ControlBox> controls; // Draw order, also used for reverse hit testing.
+    Array<ControlBox> controls; // Draw order, also used for reverse hit testing.
 
-    std::vector<std::pair<ControlKey, std::uint32_t>> control_index; // Sorted by key for O(log N) lookup in find().
+    Array<std::pair<ControlKey, std::uint32_t>> control_index; // Sorted by key for O(log N) lookup in find().
 
     std::uint64_t session_identity{};
 
@@ -614,23 +613,23 @@ struct UiFrame {
 
     std::uint64_t measure_provider_revision{};
 
-    std::optional<TextCaret> caret;
+    Optional<TextCaret> caret;
 
-    std::optional<TextInputAnchor> input_anchor{};
+    Optional<TextInputAnchor> input_anchor{};
 
-    std::vector<TextGeometry> text_geometry;
+    Array<TextGeometry> text_geometry;
 
-    std::vector<ScrollbarGeometry> scrollbars; // Accepted geometry shared by paint and input.
+    Array<ScrollbarGeometry> scrollbars; // Accepted geometry shared by paint and input.
 
-    std::vector<TreeRowGeometry> tree_rows;
+    Array<TreeRowGeometry> tree_rows;
 
-    std::vector<CodeGeometry> code_editors;
+    Array<CodeGeometry> code_editors;
 
-    std::vector<TableGeometry> tables;
+    Array<TableGeometry> tables;
 
-    std::optional<ValueLadderGeometry> value_ladder;
+    Optional<ValueLadderGeometry> value_ladder;
 
-    std::optional<TooltipGeometry> tooltip;
+    Optional<TooltipGeometry> tooltip;
 
     ControlKey popup{};
 
@@ -672,7 +671,7 @@ struct ContextMenuRequest {
 
     float y{};
 
-    std::optional<TableSelection> table{};
+    Optional<TableSelection> table{};
 }; // Accepted client pixels.
 
 struct DragPoint {
@@ -761,7 +760,7 @@ struct Preedit {
 
     std::uint32_t cursor{}; // UTF-16 offset, clamped to an editing boundary by UI.
 
-    std::vector<std::uint8_t> attributes; // IMM attributes per UTF-16 unit; empty if absent.
+    Array<std::uint8_t> attributes; // IMM attributes per UTF-16 unit; empty if absent.
 };
 
 struct CompositionEvent {
@@ -771,9 +770,9 @@ struct CompositionEvent {
 
     EditToken token; // Fixed start binding; advanced only after a confirmed segment.
 
-    std::optional<std::wstring> result;
+    Optional<std::wstring> result;
 
-    std::optional<Preedit> preedit; // Missing differs from an empty preedit.
+    Optional<Preedit> preedit; // Missing differs from an empty preedit.
 };
 
 using PlatformRequest = std::variant<ClipboardRequest, ImeRequest>;
@@ -808,11 +807,11 @@ struct Reply {
 
     Capture capture{Capture::unchanged};
 
-    std::optional<Cursor> cursor; // No change for non-pointer events.
+    Optional<Cursor> cursor; // No change for non-pointer events.
 
-    std::vector<Effect> effects; // Execute in order; business failure stops ordinary effects, not cleanup.
+    Array<Effect> effects; // Execute in order; business failure stops ordinary effects, not cleanup.
 
-    std::optional<Error> error; // Input/platform failure; the edit and its history remain intact.
+    Optional<Error> error; // Input/platform failure; the edit and its history remain intact.
 };
 
 enum class EventKind {
@@ -941,7 +940,7 @@ public:
     // Optional application fonts join the system collection for this Session.
     // Files must remain available for its lifetime; no global font installation.
     // Initialize once at its stable address. On failure only destruction is allowed.
-    Result<void> initialize(std::span<const std::wstring> font_files = {});
+    Result<void> initialize(Span<const std::wstring> font_files = {});
 
     ~Session();
 
@@ -964,7 +963,7 @@ public:
     // Descriptors are copied. Apply returned cancellation effects when controls
     // disappear/disable. Active text drafts survive fresh model projections;
     // passive buffers instead follow the latest authoritative value.
-    Result<Reply> set_controls(std::span<const Control>);
+    Result<Reply> set_controls(Span<const Control>);
 
     Result<Reply> set_controls(ControlList&);
 
@@ -974,7 +973,7 @@ public:
     // Both description entries validate and prepare before changing live controls.
     // Layout dependencies are resolved by prepare; its failure retains the old
     // frame, not the previous descriptors or cancelled interaction.
-    Result<Reply> update_controls(std::span<const Control>);
+    Result<Reply> update_controls(Span<const Control>);
 
     // Geometry mode retains ordinary layout/scroll preparation but skips paint and
     // rasterization. It is for scratch Sessions, not a side-effect-free live query.
@@ -1021,7 +1020,7 @@ public:
     bool clipboard_current(const ClipboardRequest&) const noexcept;
 
     // Writable live binding plus matching accepted caret only; no pending-frame geometry.
-    std::optional<TextInputState> text_input() const noexcept;
+    Optional<TextInputState> text_input() const noexcept;
 
 private:
     struct Impl;

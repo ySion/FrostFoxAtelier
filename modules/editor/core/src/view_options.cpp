@@ -220,7 +220,7 @@ bool world_option(ViewOption option) noexcept {
            (option >= ViewOption::sky_enabled && option <= ViewOption::sky_color_z);
 }
 
-std::span<const ViewOptionInfo> view_options() noexcept {
+Span<const ViewOptionInfo> view_options() noexcept {
     return options;
 }
 

@@ -2,11 +2,10 @@
 #include "geometry/mesh.hpp"
 #include "material/program_resources.hpp"
 #include "rendering/sky_map.hpp"
-#include <string_view>
-#include <string>
 #include <filesystem>
+#include <string>
+#include <string_view>
 #include <variant>
-#include <vector>
 
 namespace atelier::assets {
 enum class AssetKind { folder, mesh, scene, source, file, texture, material, sky, procedural_graph };
@@ -49,7 +48,7 @@ struct MeshAsset {
 
     geometry::MeshRef mesh;
 
-    std::vector<SlotMaterial> materials{}; // Slots without an entry show DefaultWorldGrid.
+    Array<SlotMaterial> materials{}; // Slots without an entry show DefaultWorldGrid.
 };
 
 // A key and the sky map it resolved to; an empty key with a null map clears an Environment's sky map.
@@ -74,13 +73,13 @@ struct MaterialSourceAsset {
 
     material::Policy policy;
 
-    std::vector<material::TextureDefault> inputs;
+    Array<material::TextureDefault> inputs;
 };
 
 struct MaterialInstanceAsset {
     std::string parent_key{"builtin/material/standard-opaque-double"};
 
-    std::vector<material::Override> entries;
+    Array<material::Override> entries;
 };
 
 // Author values only: no compiled program, resolved texture or Runtime owner.
@@ -111,13 +110,13 @@ struct ProjectEntry {
 
     std::filesystem::file_time_type modified{};
 
-    std::vector<SlotMaterial> materials{};
+    Array<SlotMaterial> materials{};
 
     bool operator==(const ProjectEntry&) const = default;
 };
 
 // Immutable engine catalogue, in its presentation order. Typed loads use Reader.
-std::span<const MeshAsset> mesh_assets();
+Span<const MeshAsset> mesh_assets();
 
 // Shared by directory classification and import dependency validation.
 bool is_texture_path(const std::filesystem::path&);

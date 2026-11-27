@@ -5,7 +5,7 @@ void ui_shape_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     render::Capture capture;
     const auto box = [&](ui::Rect bounds, ui::Color color, ui::CornerRadii radius = {}, float border = 0,
                          ui::Color stroke = {0, 0, 0, 0}) -> ui::DrawQuad& {
-        drawing.draws.push_back({bounds, full, color, {0, 0, 1, 1}, {}, radius, border, stroke});
+        drawing.draws.add({bounds, full, color, {0, 0, 1, 1}, {}, radius, border, stroke});
         return drawing.draws.back();
     };
     box({10, 10, 100, 80}, {0, 0, 0, 0}, {30, 10, 0, 20}, 4, {0, 0, 1, 1});

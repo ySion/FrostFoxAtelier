@@ -1,18 +1,21 @@
 #pragma once
+#include "foundation/array.hpp"
 #include "foundation/map.hpp"
+#include "foundation/optional.hpp"
 #include "foundation/ring_deque.hpp"
+#include "foundation/span.hpp"
 #include "runtime/runtime.hpp"
 #include <Windows.h>
 #include <chrono>
 #include <filesystem>
 #include <memory>
-#include <optional>
 #include <string>
-#include <vector>
 
 namespace atelier::editor {
 class Project;
+
 class Session;
+
 struct LiveChange;
 }
 
@@ -36,7 +39,7 @@ public:
     // Protocol producers must reject oversized encoded replies before sending.
     void send(std::string);
 
-    std::vector<std::string> receive();
+    Array<std::string> receive();
 
     // The peer closed its end, a transfer failed or a message broke the size limit.
     bool closed() const noexcept;
@@ -69,7 +72,7 @@ public:
     bool active() const noexcept { return link_ != nullptr; }
 
     // Sends one step's ops in order, split at op boundaries into consecutive batches.
-    void forward(const std::vector<editor::LiveChange>& ops);
+    void forward(Span<const editor::LiveChange> ops);
 
     void fail(std::string reason);
 
@@ -88,7 +91,7 @@ public:
     std::uint64_t inspect(std::uint64_t identity);
 
     // The graph text, or an error message prefixed with "error: ".
-    std::optional<std::string> inspected(std::uint64_t request);
+    Optional<std::string> inspected(std::uint64_t request);
 
 private:
     // Owns every spill file until ACK/close, or until an unsent batch is abandoned.
@@ -99,7 +102,7 @@ private:
 
         std::size_t resource_bytes{};
 
-        std::vector<std::filesystem::path> files;
+        Array<std::filesystem::path> files;
 
         Pending() = default;
 
@@ -128,7 +131,7 @@ private:
 
     std::string divergence_;
 
-    std::optional<std::chrono::steady_clock::time_point> closed_since_;
+    Optional<std::chrono::steady_clock::time_point> closed_since_;
 
     Map<std::uint64_t, std::string> inspected_;
 

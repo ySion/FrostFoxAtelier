@@ -1,5 +1,7 @@
 #include "world/detail.hpp"
+#include "foundation/bit_vector.hpp"
 #include "foundation/priority_queue.hpp"
+#include "foundation/scope_exit.hpp"
 #include "foundation/set.hpp"
 #include "memory/fatal.hpp"
 #include <algorithm>
@@ -26,14 +28,14 @@ static bool isolatable(const Error& failure) noexcept {
 }
 
 Diagnostic validation_diagnostic(const ValidationFailure& failure, DiagnosticPhase phase, ObjectId object,
-                                 ObjectId entity, std::vector<std::string> record) {
+                                 ObjectId entity, Array<std::string> record) {
     Diagnostic diagnostic;
     diagnostic.kind = DiagnosticKind::invalid_value;
     diagnostic.phase = phase;
     diagnostic.object = object;
     diagnostic.entity = entity;
     diagnostic.field = std::move(record);
-    diagnostic.field.insert(diagnostic.field.end(), failure.names.begin(), failure.names.end());
+    diagnostic.field.append(Span<const std::string>{failure.names});
     if (failure.value)
         diagnostic.value = std::visit(
             [](const auto& value) -> std::string {
@@ -66,7 +68,7 @@ void World::Impl::report(Diagnostic diagnostic) {
     const auto phase = diagnostic.phase;
     const bool consumer = phase == DiagnosticPhase::presentation || phase == DiagnosticPhase::lighting ||
                           phase == DiagnosticPhase::physics || phase == DiagnosticPhase::command;
-    std::optional<DiagnosticKey> key;
+    Optional<DiagnosticKey> key;
     if (consumer) {
         std::string field;
         for (const auto& name : diagnostic.field) {
@@ -94,7 +96,7 @@ void World::Impl::report(Diagnostic diagnostic) {
     diagnostic.serial = next_diagnostic++;
     if (key)
         recent.insert_or_assign(std::move(*key), Recent{diagnostic.serial, passes[std::size_t(phase)]});
-    diagnostics.push_back(std::move(diagnostic));
+    diagnostics.add(std::move(diagnostic));
 }
 
 bool World::Impl::contain(const Error& failure, Diagnostic diagnostic) {
@@ -108,7 +110,7 @@ bool World::Impl::contain(const Error& failure, Diagnostic diagnostic) {
 }
 
 bool World::Impl::contain(const Error& failure, DiagnosticKind kind, DiagnosticPhase phase, ObjectId object,
-                          ObjectId entity, std::vector<std::string> field, Severity severity) {
+                          ObjectId entity, Array<std::string> field, Severity severity) {
     Diagnostic diagnostic;
     diagnostic.severity = severity;
     diagnostic.kind = kind;
@@ -134,7 +136,7 @@ void World::Impl::fault_tick(ObjectId object, ObjectId entity) noexcept {
         *fault = Fault::tick;
     schedule_dirty = true;
     cancel_tasks(object, false);
-    std::erase_if(translations, [&](const Translation& command) { return command.component == object; });
+    translations.remove_if([&](const Translation& command) { return command.component == object; });
 }
 
 Result<void> World::Impl::admit(bool mutation) const {
@@ -199,13 +201,13 @@ Result<void> World::Impl::relocate(ObjectId edited) {
     for (const auto& entry : systems) {
         if (!entry.simulation || !entry.simulation->relocated)
             continue;
-        std::vector<ObjectId> moved;
+        Array<ObjectId> moved;
         for (const auto& member : members) {
             if (!entry.simulation->writes_pose(member.id()))
                 continue;
             for (auto node = member.id(); node != ObjectId{};) {
                 if (node == edited) {
-                    moved.push_back(member.id());
+                    moved.add(member.id());
                     break;
                 }
                 ATELIER_TRY_BIND(parent, spatial_parent(runtime, node));
@@ -245,9 +247,9 @@ World::Impl::ComponentState* World::Impl::component_state(ObjectId entity, Objec
     return found == owner->components.end() ? nullptr : &*found;
 }
 
-Result<std::vector<World::Impl::ComponentState>> World::Impl::derive_components(ObjectId entity) const {
+Result<Array<World::Impl::ComponentState>> World::Impl::derive_components(ObjectId entity) const {
     ATELIER_TRY_BIND(group, components(runtime, entity));
-    std::vector<ComponentState> result;
+    Array<ComponentState> result;
     result.reserve(group->size());
     for (const auto& root : *group) {
         const auto object = root.id();
@@ -255,7 +257,7 @@ Result<std::vector<World::Impl::ComponentState>> World::Impl::derive_components(
         ATELIER_TRY_BIND(binding, behavior(*type));
         ATELIER_TRY_BIND(data, detail::component_data(runtime, object));
         ATELIER_TRY_BIND(capabilities, capabilities_of(object, *type));
-        result.push_back({object, *type, *binding, *capabilities, data->enabled, false});
+        result.add({object, *type, *binding, *capabilities, data->enabled, false});
     }
     return result;
 }
@@ -345,14 +347,14 @@ void World::Impl::rebuild_schedule() {
     };
     // Every participant takes part in ordering, so prerequisites hold
     // transitively through objects that do not tick in a phase.
-    std::vector<Node> order;
+    Array<Node> order;
     for (std::size_t i = 0; i < members.size(); ++i) {
         const auto& state = states[i];
         const auto id = members[i].id();
-        order.push_back({{id, id, state.behavior}, state.eligible && state.begun && state.fault == Fault::none});
+        order.add({{id, id, state.behavior}, state.eligible && state.begun && state.fault == Fault::none});
         for (const auto& item : state.components)
-            order.push_back({{item.id, id, item.behavior},
-                             state.eligible && item.enabled && item.begun && item.fault == Fault::none});
+            order.add({{item.id, id, item.behavior},
+                       state.eligible && item.enabled && item.begun && item.fault == Fault::none});
     }
     if (!prerequisites.empty()) {
         // Kahn's algorithm; ties keep composition preorder, so the result is deterministic.
@@ -360,18 +362,18 @@ void World::Impl::rebuild_schedule() {
         index.reserve(order.size());
         for (std::size_t i = 0; i < order.size(); ++i)
             index.try_emplace(order[i].item.object, i);
-        std::vector<std::size_t> pending(order.size());
+        Array<std::size_t> pending(order.size());
         for (const auto [object, before] : prerequisites)
             pending[index.at(object)] = before.size();
         PriorityQueue<std::size_t, std::greater<>> ready;
         for (std::size_t i = 0; i < order.size(); ++i)
             if (!pending[i])
                 ready.emplace(i);
-        std::vector<Node> sorted;
+        Array<Node> sorted;
         sorted.reserve(order.size());
         while (!ready.empty()) {
             const auto next = ready.pop();
-            sorted.push_back(order[next]);
+            sorted.add(order[next]);
             if (const auto* found = dependents.find(order[next].item.object))
                 for (const auto object : *found) {
                     const auto dependent = index.at(object);
@@ -386,11 +388,11 @@ void World::Impl::rebuild_schedule() {
         if (!node.ticks || !behavior)
             continue;
         if (behavior->tick)
-            updates[std::size_t(TickPhase::pre_physics)].push_back(node.item);
+            updates[std::size_t(TickPhase::pre_physics)].add(node.item);
         if (behavior->post_physics_tick)
-            updates[std::size_t(TickPhase::post_physics)].push_back(node.item);
+            updates[std::size_t(TickPhase::post_physics)].add(node.item);
         if (behavior->late_tick)
-            updates[std::size_t(TickPhase::late)].push_back(node.item);
+            updates[std::size_t(TickPhase::late)].add(node.item);
     }
 }
 
@@ -401,7 +403,7 @@ void World::Impl::forget_prerequisites(ObjectId object) noexcept {
             return;
         for (const auto other : *taken) {
             auto& back = to.at(other);
-            std::erase(back, object);
+            back.remove_all(object);
             if (back.empty())
                 to.remove(other);
         }
@@ -417,10 +419,10 @@ void World::Impl::rebuild_buckets() {
     const auto add = [&](TypeId type, ObjectId object) {
         auto found = std::ranges::find(buckets, type, &Bucket::type);
         if (found == buckets.end()) {
-            buckets.push_back({type, {}});
+            buckets.add({type, {}});
             found = std::prev(buckets.end());
         }
-        found->objects.push_back(object);
+        found->objects.add(object);
     };
     capable.assign(registrations.size(), {});
     for (std::size_t i = 0; i < members.size(); ++i) {
@@ -429,19 +431,20 @@ void World::Impl::rebuild_buckets() {
         for (const auto& item : states[i].components) {
             add(item.type, item.id);
             for (std::uint32_t mask = item.capabilities; mask; mask &= mask - 1)
-                capable[std::countr_zero(mask)].push_back({id, item.id, states[i].eligible && item.enabled});
+                capable[std::countr_zero(mask)].add({id, item.id, states[i].eligible && item.enabled});
         }
     }
     buckets_dirty = false;
 }
 
 void World::Impl::cancel_tasks(ObjectId target, bool entity) noexcept {
-    std::erase_if(tasks, [&](Task& task) {
-        if (target != ObjectId{} && (entity ? task.entity : task.object) != target)
-            return false;
-        task.coroutine.cancel();
-        return true;
-    });
+    const auto matches = [&](const Task& task) noexcept {
+        return target == ObjectId{} || (entity ? task.entity : task.object) == target;
+    };
+    for (auto& task : tasks)
+        if (matches(task))
+            task.coroutine.cancel();
+    tasks.remove_if(matches);
 }
 
 void World::Impl::halt() noexcept {
@@ -459,14 +462,14 @@ void World::Impl::halt() noexcept {
     changed(false);
 }
 
-std::optional<Error> World::Impl::notify(Lifecycle event, ObjectId object) {
+Optional<Error> World::Impl::notify(Lifecycle event, ObjectId object) {
     if (!observer && subscriptions.empty())
         return {};
     auto scope = ExecutionScope::enter(runtime);
     if (!scope)
         return scope.error();
     detail::DispatchScope dispatch{dispatch_depth};
-    std::optional<Error> failure;
+    Optional<Error> failure;
     const auto owner = [&] {
         if (positions.contains(object))
             return object;
@@ -492,7 +495,7 @@ std::optional<Error> World::Impl::notify(Lifecycle event, ObjectId object) {
     return failure;
 }
 
-Commit World::Impl::finish(bool changed, std::optional<Error> failure) {
+Commit World::Impl::finish(bool changed, Optional<Error> failure) {
     if (!failure && running) {
         auto applied = apply_translations();
         if (!applied)
@@ -557,7 +560,7 @@ Result<void> World::set_failure_policy(FailurePolicy policy) {
     return {};
 }
 
-std::vector<Diagnostic> World::take_diagnostics() {
+Array<Diagnostic> World::take_diagnostics() {
     return std::exchange(impl_->diagnostics, {});
 }
 
@@ -573,9 +576,9 @@ bool World::contain(const Error& failure, Diagnostic diagnostic) {
     return impl_->contain(failure, std::move(diagnostic));
 }
 
-Result<std::span<const Member>> World::members() const {
+Result<Span<const Member>> World::members() const {
     ATELIER_TRY(impl_->admit(false));
-    return std::span<const Member>{impl_->members};
+    return Span<const Member>{impl_->members};
 }
 
 Result<CapabilityId> World::register_capability(TypeId type, CapabilityPredicate predicate) {
@@ -591,34 +594,34 @@ Result<CapabilityId> World::register_capability(TypeId type, CapabilityPredicate
     if (!*component)
         return error(ErrorCode::type_mismatch, "A capability requires a Component type.");
     const auto id = CapabilityId{std::uint32_t(state.registrations.size())};
-    state.registrations.push_back({type, std::move(predicate)});
+    state.registrations.add({type, std::move(predicate)});
     // Evaluate the new registration for current members before publishing any bit.
-    std::vector<bool> present;
+    BitVector present;
     for (const auto& member : state.states)
         for (const auto& item : member.components) {
             auto value = state.capabilities_of(item.id, item.type);
             if (!value) {
-                state.registrations.pop_back();
+                state.registrations.pop();
                 return std::unexpected(value.error());
             }
-            present.push_back(*value & Impl::bit(id));
+            present.add((*value & Impl::bit(id)) != 0);
         }
-    auto next = present.begin();
+    std::size_t index = 0;
     for (auto& member : state.states)
         for (auto& item : member.components)
-            if (*next++)
+            if (present[index++])
                 item.capabilities |= Impl::bit(id);
     state.changed(false);
     return id;
 }
 
-Result<std::span<const CapabilityMember>> World::members(CapabilityId id) const {
+Result<Span<const CapabilityMember>> World::members(CapabilityId id) const {
     ATELIER_TRY(impl_->admit(false));
     if (id.value >= impl_->registrations.size())
         return error(ErrorCode::argument_mismatch, "Unknown capability registration.");
     if (impl_->buckets_dirty)
         impl_->rebuild_buckets();
-    return std::span<const CapabilityMember>{impl_->capable[id.value]};
+    return Span<const CapabilityMember>{impl_->capable[id.value]};
 }
 
 Result<void> World::reevaluate_capabilities(ObjectId component) {
@@ -636,14 +639,14 @@ Result<void> World::add_admission(TypeId type, Admission admission) {
     ATELIER_TRY_BIND(component, runtime().is_a(type, types().component));
     if (!*component)
         return error(ErrorCode::type_mismatch, "Admission requires a Component type.");
-    state.admissions.push_back({type, std::move(admission)});
+    state.admissions.add({type, std::move(admission)});
     return {};
 }
 
-Result<void> World::Impl::check_admissions(std::span<const ObjectId> candidates, ObjectId proposed_owner) {
+Result<void> World::Impl::check_admissions(Span<const ObjectId> candidates, ObjectId proposed_owner) {
     // Admissions may read the World; edits and registrations stay busy until they return.
     detail::DispatchScope dispatch{dispatch_depth};
-    std::vector<AdmissionCandidate> selected;
+    Array<AdmissionCandidate> selected;
     for (const auto& [type, admission] : admissions) {
         selected.clear();
         for (const auto object : candidates) {
@@ -655,7 +658,7 @@ Result<void> World::Impl::check_admissions(std::span<const ObjectId> candidates,
                     ATELIER_TRY_BIND(data, detail::component_data(runtime, object));
                     owner = data->owner;
                 }
-                selected.push_back({object, owner});
+                selected.add({object, owner});
             }
         }
         if (selected.empty())
@@ -665,14 +668,14 @@ Result<void> World::Impl::check_admissions(std::span<const ObjectId> candidates,
     return {};
 }
 
-Result<void> World::Impl::check_admissions(std::span<const ObjectRoot> candidates, ObjectId proposed_owner) {
+Result<void> World::Impl::check_admissions(Span<const ObjectRoot> candidates, ObjectId proposed_owner) {
     if (admissions.empty())
         return {};
-    std::vector<ObjectId> ids;
+    Array<ObjectId> ids;
     ids.reserve(candidates.size());
     for (const auto& root : candidates)
-        ids.push_back(root.id());
-    return check_admissions(std::span<const ObjectId>{ids}, proposed_owner);
+        ids.add(root.id());
+    return check_admissions(Span<const ObjectId>{ids}, proposed_owner);
 }
 
 Result<bool> World::Impl::admitted(ObjectId component) const {
@@ -694,7 +697,7 @@ Result<void> World::Impl::check_edit(ObjectId component) {
     ATELIER_TRY_BIND(checked, admitted(component));
     if (!*checked)
         return {};
-    return check_admissions(std::span<const ObjectId>{&component, 1});
+    return check_admissions(Span<const ObjectId>{&component, 1});
 }
 
 Result<World::SpatialPass> World::spatial_pass(DiagnosticPhase phase) const {
@@ -704,7 +707,7 @@ Result<World::SpatialPass> World::spatial_pass(DiagnosticPhase phase) const {
     return SpatialPass{*impl_, phase};
 }
 
-Result<std::optional<math::Matrix4>> World::SpatialPass::matrix(ObjectId entity) {
+Result<Optional<math::Matrix4>> World::SpatialPass::matrix(ObjectId entity) {
     auto& state = *impl_;
     if (!state.positions.contains(entity))
         return error(ErrorCode::invalid_member, "A spatial pass reads only member Entities.");
@@ -714,7 +717,7 @@ Result<std::optional<math::Matrix4>> World::SpatialPass::matrix(ObjectId entity)
     const auto at = state.space.failed;
     if (!state.contain(matrix.error(), DiagnosticKind::invalid_value, phase_, at, at))
         return std::unexpected(matrix.error());
-    return std::nullopt;
+    return {};
 }
 
 bool World::SpatialPass::degenerate(ObjectId entity, const math::Matrix4& world, std::string_view message) {
@@ -737,10 +740,10 @@ Result<ObjectId> World::SpatialPass::parent(ObjectId entity) {
     return impl_->space.parent(entity);
 }
 
-Result<std::optional<World::Orientation>> World::SpatialPass::orientation(ObjectId entity) {
+Result<Optional<World::Orientation>> World::SpatialPass::orientation(ObjectId entity) {
     ATELIER_TRY_BIND(matrix, this->matrix(entity));
     if (!*matrix)
-        return std::nullopt;
+        return {};
     // The chain was validated in this pass. An odd sign pattern is -1 times a
     // pattern with two negative axes, a half turn about the remaining positive one.
     Orientation result;
@@ -779,25 +782,25 @@ Result<std::optional<World::Orientation>> World::SpatialPass::orientation(Object
         return result;
     if (!impl_->contain(composed.error(), DiagnosticKind::invalid_value, phase_, entity, entity, {"rotation"}))
         return std::unexpected(composed.error());
-    return std::nullopt;
+    return {};
 }
 
-Result<std::optional<math::Quaterniond>> World::SpatialPass::rotation(ObjectId entity) {
+Result<Optional<math::Quaterniond>> World::SpatialPass::rotation(ObjectId entity) {
     ATELIER_TRY_BIND(matrix, this->matrix(entity));
     if (!*matrix)
-        return std::nullopt;
+        return {};
     math::Quaterniond result;
     // matrix() validated and cached the actual spatial chain, including explicit origins.
     for (auto node = entity; node != ObjectId{};) {
         const auto* entry = impl_->space.entry(node);
         const auto& q = entry->local.rotation;
         const auto local = math::try_normalize(math::Quaterniond(q));
-        const auto next = local ? math::try_normalize(*local * result) : std::nullopt;
+        const auto next = local ? math::try_normalize(*local * result) : decltype(local){};
         if (!next) {
             const auto failure = Error{ErrorCode::argument_mismatch, "Space rotation is not finite or normalizable."};
             if (!impl_->contain(failure, DiagnosticKind::invalid_value, phase_, node, node, {"rotation"}))
                 return std::unexpected(failure);
-            return std::nullopt;
+            return {};
         }
         result = *next;
         node = entry->parent;
@@ -810,9 +813,9 @@ Result<std::uint64_t> World::add_simulation(Simulation simulation) {
     ATELIER_TRY(state.admit());
     if (!simulation.step || !simulation.writes_pose)
         return error(ErrorCode::argument_mismatch, "A simulation needs step and writes_pose.");
-    std::erase_if(state.simulations, [](const Impl::SimulationEntry& entry) { return !entry.simulation; });
+    state.simulations.remove_if([](const Impl::SimulationEntry& entry) { return !entry.simulation; });
     const auto id = state.next_simulation++;
-    state.simulations.push_back({id, std::make_shared<const Simulation>(std::move(simulation))});
+    state.simulations.add({id, std::make_shared<const Simulation>(std::move(simulation))});
     return id;
 }
 
@@ -821,25 +824,25 @@ void World::remove_simulation(std::uint64_t id) noexcept {
         if (entry.id == id)
             entry.simulation.reset();
     if (!impl_->updating)
-        std::erase_if(impl_->simulations, [](const Impl::SimulationEntry& entry) { return !entry.simulation; });
+        impl_->simulations.remove_if([](const Impl::SimulationEntry& entry) { return !entry.simulation; });
 }
 
-Result<std::vector<ObjectId>> World::query(TypeId type, bool include_derived) const {
+Result<Array<ObjectId>> World::query(TypeId type, bool include_derived) const {
     ATELIER_TRY(impl_->admit(false));
     ATELIER_TRY_BIND(info, runtime().describe(type));
     if (impl_->buckets_dirty)
         impl_->rebuild_buckets();
-    std::vector<ObjectId> result;
+    Array<ObjectId> result;
     for (const auto& bucket : impl_->buckets) {
         ATELIER_TRY_BIND(matches,
                          include_derived ? runtime().is_a(bucket.type, type) : Result<bool>{bucket.type == type});
         if (*matches)
-            result.insert(result.end(), bucket.objects.begin(), bucket.objects.end());
+            result.append(bucket.objects);
     }
     return result;
 }
 
-Result<Commit> World::attach_components(ObjectId entity_id, std::span<const Attachment> incoming, std::size_t index) {
+Result<Commit> World::attach_components(ObjectId entity_id, Span<const Attachment> incoming, std::size_t index) {
     auto& state = *impl_;
     ATELIER_TRY(state.admit());
     ATELIER_TRY_BIND(entity, state.composition_entity(entity_id));
@@ -850,8 +853,8 @@ Result<Commit> World::attach_components(ObjectId entity_id, std::span<const Atta
         return error(ErrorCode::argument_mismatch, "Component insertion index is out of range.");
     if (incoming.empty())
         return Commit{};
-    std::vector<ObjectRoot> roots;
-    std::vector<ObjectReference> references;
+    Array<ObjectRoot> roots;
+    Array<ObjectReference> references;
     Set<ObjectId> seen;
     roots.reserve(incoming.size());
     references.reserve(incoming.size());
@@ -864,8 +867,8 @@ Result<Commit> World::attach_components(ObjectId entity_id, std::span<const Atta
         if (data->owner != ObjectId{})
             return error(ErrorCode::invalid_member, "Component already has an owner.");
         ATELIER_TRY_BIND(held, runtime().hold(item.component, types().component));
-        references.push_back(held->reference());
-        roots.push_back(std::move(*held));
+        references.add(held->reference());
+        roots.add(std::move(*held));
     }
     // Detached composition is the preparation phase: capabilities may be added
     // before their owner's Transform. Complete spatial requirements are checked
@@ -877,16 +880,16 @@ Result<Commit> World::attach_components(ObjectId entity_id, std::span<const Atta
     ATELIER_TRY_BIND(held, runtime().hold(entity_id, types().entity));
     auto changed = runtime().with_native<Entity>(entity_id, [&](Entity& value) -> Result<void> {
         ATELIER_TRY_BIND(sequence, runtime().reference_field(entity_id, Access::sequence(value)));
-        std::vector<ReferenceChange> changes;
+        Array<ReferenceChange> changes;
         changes.reserve(incoming.size() + 1);
-        changes.push_back(SequenceSplice{*sequence, index, 0, references});
+        changes.add(SequenceSplice{*sequence, index, 0, references});
         for (const auto& item : incoming) {
             auto owner = runtime().with_native<Component>(item.component, [&](Component& value) {
                 return runtime().reference_field(item.component, Access::owner(value));
             });
             if (!owner)
                 return std::unexpected(owner.error());
-            changes.push_back(ReferenceWrite{*owner, held->reference()});
+            changes.add(ReferenceWrite{*owner, held->reference()});
         }
         return runtime().apply_reference_changes(changes);
     });
@@ -896,7 +899,7 @@ Result<Commit> World::attach_components(ObjectId entity_id, std::span<const Atta
         return Commit{true, {}};
     if (auto rederived = state.rederive(entity_id); !rederived)
         return state.finish(true, rederived.error());
-    std::optional<Error> failure;
+    Optional<Error> failure;
     for (const auto& item : incoming) {
         auto notification = state.notify(Lifecycle::attached, item.component);
         if (!failure)
@@ -904,7 +907,7 @@ Result<Commit> World::attach_components(ObjectId entity_id, std::span<const Atta
     }
     if (!failure && state.running) {
         auto at = state.member(entity_id);
-        failure = at ? state.begin(*at, *at + 1) : std::optional<Error>{at.error()};
+        failure = at ? state.begin(*at, *at + 1) : Optional<Error>{at.error()};
     }
     return state.finish(true, std::move(failure));
 }
@@ -931,10 +934,10 @@ Result<ComponentRemoval> World::remove_component(ObjectId object) {
     result.origin_ = state.lifetime;
     if (registered)
         state.cancel_tasks(object, false);
-    std::optional<Error> failure;
+    Optional<Error> failure;
     if (registered) {
         auto position = state.member(owner);
-        failure = position ? state.end(*position, *position + 1, object) : std::optional<Error>{position.error()};
+        failure = position ? state.end(*position, *position + 1, object) : Optional<Error>{position.error()};
     }
     if (status->active) {
         auto notification = state.notify(Lifecycle::deactivated, object);
@@ -951,7 +954,7 @@ Result<ComponentRemoval> World::remove_component(ObjectId object) {
         }
         if (registered) {
             if (auto* member = state.state_of(owner))
-                std::erase_if(member->components, [&](const Impl::ComponentState& item) { return item.id == object; });
+                member->components.remove_if([&](const Impl::ComponentState& item) { return item.id == object; });
             state.forget_prerequisites(object);
             state.changed(false);
         }
@@ -991,7 +994,7 @@ Result<void> queue_translation(Runtime& runtime, ObjectId object, math::Vector3 
     ATELIER_TRY_BIND(spatial, has_transform(runtime, component->owner));
     if (!*spatial)
         return error(ErrorCode::invalid_member, "Translation requires an Entity Transform.");
-    state.translations.push_back({object, component->owner, delta});
+    state.translations.add({object, component->owner, delta});
     return {};
 }
 
@@ -1018,14 +1021,10 @@ Result<void> World::Impl::apply_translations() {
         return {};
     // No callbacks execute while applying. Retain buffers between frames, and
     // discard the batch on every exit so a rejected action cannot replay later.
-    struct Cleanup {
-        Impl& state;
-
-        ~Cleanup() {
-            state.translations.clear();
-            state.translation_changes.clear();
-        }
-    } cleanup{*this};
+    ScopeExit cleanup{[this]() noexcept {
+        translations.clear();
+        translation_changes.clear();
+    }};
     auto& changes = translation_changes;
     changes.reserve(translations.size());
     // Each command is checked alone: a rejected one is reported and dropped.
@@ -1042,7 +1041,7 @@ Result<void> World::Impl::apply_translations() {
         if (found == changes.end()) {
             ATELIER_TRY_BIND(matrix, world_matrix(runtime, command.entity));
             ATELIER_TRY_BIND(value, relative_transform(*matrix, math::Matrix4::identity()));
-            changes.push_back({command.entity, *value});
+            changes.add({command.entity, *value});
             found = std::prev(changes.end());
         }
         auto value = found->value;
@@ -1058,10 +1057,10 @@ Result<void> World::Impl::apply_translations() {
             !checked && !contain(checked.error(), DiagnosticKind::command_rejected, DiagnosticPhase::command,
                                  command.component, command.entity, {}, Severity::warning))
             return checked;
-    std::vector<SimulationPose> poses;
+    Array<SimulationPose> poses;
     poses.reserve(changes.size());
     for (const auto& change : changes)
-        poses.push_back({change.entity, change.value.position, change.value.rotation});
+        poses.add({change.entity, change.value.position, change.value.rotation});
     return apply_poses(poses, DiagnosticPhase::command);
 }
 
@@ -1088,13 +1087,13 @@ Result<void> World::Impl::checked_write(ObjectId object, bool entity, Write&& wr
             return reject((*after)->error);
     }
     if (*candidate)
-        if (auto valid = check_admissions(std::span<const ObjectId>{&object, 1}); !valid)
+        if (auto valid = check_admissions(Span<const ObjectId>{&object, 1}); !valid)
             return reject(valid.error());
     return {};
 }
 
 // Exchanges a scalar leaf with `old`, the exact value read before a write.
-static Result<void> restore_scalar(Runtime& runtime, ObjectId object, std::span<const FieldId> path, Scalar& old) {
+static Result<void> restore_scalar(Runtime& runtime, ObjectId object, Span<const FieldId> path, Scalar& old) {
     return std::visit(
         [&]<class T>(T& value) -> Result<void> {
             if constexpr (std::is_same_v<T, EnumValue>)
@@ -1107,7 +1106,7 @@ static Result<void> restore_scalar(Runtime& runtime, ObjectId object, std::span<
         old);
 }
 
-Result<Scalar> World::read(ObjectId component, std::span<const FieldId> path) const {
+Result<Scalar> World::read(ObjectId component, Span<const FieldId> path) const {
     ATELIER_TRY(impl_->admit(false));
     ATELIER_TRY_BIND(entity, detail::is(runtime(), component, types().entity));
     if (*entity) {
@@ -1118,10 +1117,10 @@ Result<Scalar> World::read(ObjectId component, std::span<const FieldId> path) co
     return runtime().read(component, path);
 }
 
-Result<void> World::write(ObjectId object, std::span<const FieldId> path, Scalar value) {
+Result<void> World::write(ObjectId object, Span<const FieldId> path, Scalar value) {
     ATELIER_TRY(impl_->admit_edit(object));
     ATELIER_TRY_BIND(transform, detail::is(runtime(), object, types().entity));
-    const auto match = [&](const auto& paths) -> std::optional<std::size_t> {
+    const auto match = [&](const auto& paths) -> Optional<std::size_t> {
         for (std::size_t i = 0; i < paths.size(); ++i)
             if (std::ranges::equal(path, paths[i]))
                 return i;
@@ -1152,7 +1151,7 @@ Result<void> World::write(ObjectId object, std::span<const FieldId> path, Scalar
         [&] { return restore_scalar(runtime(), object, path, *previous); });
 }
 
-Result<void> World::write(ObjectId object, std::span<const FieldPath> paths, std::span<const Scalar> values) {
+Result<void> World::write(ObjectId object, Span<const FieldPath> paths, Span<const Scalar> values) {
     ATELIER_TRY(impl_->admit_edit(object));
     if (paths.empty() || paths.size() != values.size())
         return error(ErrorCode::argument_mismatch, "A group write needs one value per field.");
@@ -1170,11 +1169,11 @@ Result<void> World::write(ObjectId object, std::span<const FieldPath> paths, std
             if (paths[j] == paths[i])
                 return error(ErrorCode::argument_mismatch, "A group write names the same field more than once.");
     }
-    std::vector<Scalar> previous;
+    Array<Scalar> previous;
     previous.reserve(paths.size());
     for (const auto& path : paths) {
         ATELIER_TRY_BIND(value, runtime().read(object, path));
-        previous.push_back(*value);
+        previous.add(*value);
     }
     std::size_t written = 0;
     const auto restore = [&]() -> Result<void> {
@@ -1200,7 +1199,7 @@ Result<void> World::write(ObjectId object, std::span<const FieldPath> paths, std
         restore);
 }
 
-Result<void> World::write(ObjectId object, std::span<const FieldId> path, ValueInput value) {
+Result<void> World::write(ObjectId object, Span<const FieldId> path, ValueInput value) {
     ATELIER_TRY(impl_->admit_edit(object));
     ATELIER_TRY_BIND(entity, detail::is(runtime(), object, types().entity));
     const auto transform = [&](const auto& leaves) {
@@ -1219,7 +1218,7 @@ Result<void> World::write(ObjectId object, std::span<const FieldId> path, ValueI
 
         std::align_val_t alignment;
 
-        std::span<std::byte> storage;
+        Span<std::byte> storage;
 
         bool live{};
 

@@ -2,7 +2,6 @@
 #include "foundation/map.hpp"
 #include "physics/physics.hpp"
 #include "order.hpp"
-#include <optional>
 
 namespace atelier::physics::detail {
 // Reports a physics failure of one object to the World log. True when the
@@ -24,7 +23,7 @@ public:
 
     Result<void> before_step(float fixed);
 
-    Result<void> append_poses(std::vector<world::SimulationPose>&);
+    Result<void> append_poses(Array<world::SimulationPose>&);
 
     Result<void> after_step();
 
@@ -58,11 +57,11 @@ private:
 
         BodyHandle other_body{};
 
-        std::vector<ObjectId> targets{};
+        Array<ObjectId> targets{};
 
-        std::vector<ObjectId> metadata{};
+        Array<ObjectId> metadata{};
 
-        std::vector<ObjectId> ancestors{};
+        Array<ObjectId> ancestors{};
 
         math::Vector3 origin{};
 
@@ -72,7 +71,7 @@ private:
 
         bool impulse_pending{true};
 
-        std::optional<QueryResult> query{};
+        Optional<QueryResult> query{};
 
         std::uint64_t revision{};
     };

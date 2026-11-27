@@ -1,15 +1,20 @@
 #pragma once
 #include "editor/project.hpp"
+#include "foundation/array.hpp"
 #include "foundation/map.hpp"
+#include "foundation/optional.hpp"
+#include "foundation/span.hpp"
 #include "ui/controls.hpp"
 #include <array>
 #include <memory>
 
 namespace atelier::ui_language {
 class LiveDocument;
+
 class ControlOutput;
 
 struct Item;
+
 struct ItemList;
 }
 
@@ -89,9 +94,9 @@ public:
 
     bool apply(const ui::Action&);
 
-    std::vector<ui::MenuItem> menu_items(ui::ControlKey source) const;
+    Array<ui::MenuItem> menu_items(ui::ControlKey source) const;
 
-    const std::optional<Item>& selected() const noexcept { return selected_; }
+    const Optional<Item>& selected() const noexcept { return selected_; }
 
     // Project files and folders below the top-level roots; Engine resources are read-only.
     bool can_rename() const noexcept {
@@ -121,7 +126,7 @@ public:
 
     // Directory rows' expansion is view state. The empty path is Project; every
     // path must be a project directory row, otherwise nothing changes.
-    Result<void> set_expanded(std::span<const std::filesystem::path>, bool expanded);
+    Result<void> set_expanded(Span<const std::filesystem::path>, bool expanded);
 
 private:
     View view_{View::details};
@@ -146,13 +151,13 @@ private:
         bool operator==(const Location&) const = default;
     };
 
-    std::vector<Location> navigation_;
+    Array<Location> navigation_;
 
     std::size_t navigation_cursor_{};
 
-    std::optional<Item> selected_;
+    Optional<Item> selected_;
 
-    std::optional<std::filesystem::path> selected_path_; // Restored once the catalog reflects a rename.
+    Optional<std::filesystem::path> selected_path_; // Restored once the catalog reflects a rename.
 
     struct Target {
         ui::ControlKey key;
@@ -160,13 +165,13 @@ private:
         Item item;
     };
 
-    std::vector<Target> targets_;
+    Array<Target> targets_;
 
     Map<String, ui::ControlKey> keys_;
 
     ui::ControlKey next_key_{browser_control::root + 1000};
 
-    std::vector<Item> items_;
+    Array<Item> items_;
 
     Map<ui::TableKey, std::size_t> row_indices_;
 
@@ -178,15 +183,15 @@ private:
 
     double directory_width_{144};
 
-    std::optional<double> directory_resize_;
+    Optional<double> directory_resize_;
 
     std::shared_ptr<const ui::TableData> table_data_;
 
     bool table_dirty_{true};
 
-    std::vector<Item> directories_;
+    Array<Item> directories_;
 
-    std::shared_ptr<const std::vector<ui_language::Item>> directory_items_;
+    std::shared_ptr<const Array<ui_language::Item>> directory_items_;
 
     std::size_t directory_rows_{};
 

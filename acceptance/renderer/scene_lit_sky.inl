@@ -4,7 +4,7 @@ using SkyDirection = std::array<double, 3>;
 template <class Radiance>
 atelier::rendering::SkyMapRef sky_map(std::uint32_t width, Radiance&& radiance) {
     const std::uint32_t height = width / 2;
-    std::vector<float> rgb(std::size_t(width) * height * 3);
+    atelier::Array<float> rgb(std::size_t(width) * height * 3);
     for (std::uint32_t y = 0; y < height; ++y)
         for (std::uint32_t x = 0; x < width; ++x) {
             const double longitude = 2 * std::numbers::pi * ((x + .5) / width - .5);
@@ -68,11 +68,11 @@ void sky_background_geometry(Fixture& f) {
     f.frame.camera = sky_look({0, 0, 0}, {0, 0, 1}, {0, 1, 0}, aspect, 1.8f);
     f.frame.environment = {1, 1, 1};
     const auto marker = sky_direction(-20, 10);
-    std::vector<SkyDirection> marker_texels;
+    atelier::Array<SkyDirection> marker_texels;
     options.sky_map = sky_map(2048, [&](const SkyDirection& d) {
         const bool on = d[0] * marker[0] + d[1] * marker[1] + d[2] * marker[2] > std::cos(.8 * std::numbers::pi / 180);
         if (on)
-            marker_texels.push_back(d);
+            marker_texels.add(d);
         return on ? Vec3{4, 4, 4} : Vec3{};
     });
     options.sky_rotation = 35;
@@ -138,14 +138,14 @@ void sky_benchmark(Fixture& f) {
         return std::pair{std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(),
                          stats};
     };
-    std::vector<double> steady;
+    atelier::Array<double> steady;
     for (unsigned i = 0; i < 31; ++i)
-        steady.push_back(timed_step().first);
+        steady.add(timed_step().first);
     set(true);
     const auto upload_frame = f.drawing.id + 1;
     const auto [upload_ms, upload_stats] = timed_step();
     double upload_gpu_ms = -1;
-    std::array<std::array<std::vector<double>, 3>, 2> series;
+    std::array<std::array<atelier::Array<double>, 3>, 2> series;
     std::uint64_t previous = 0;
     for (unsigned block = 0; block < 4; ++block) {
         const bool mapped = block % 2 == 0;
@@ -163,9 +163,9 @@ void sky_benchmark(Fixture& f) {
             double total = 0;
             for (float value : stats.scene_lit_gpu_ms)
                 total += value;
-            series[mapped][0].push_back(stats.scene_lit_direct_shading_gpu_ms);
-            series[mapped][1].push_back(stats.scene_lit_ddgi_update_gpu_ms[0]);
-            series[mapped][2].push_back(total);
+            series[mapped][0].add(stats.scene_lit_direct_shading_gpu_ms);
+            series[mapped][1].add(stats.scene_lit_ddgi_update_gpu_ms[0]);
+            series[mapped][2].add(total);
             ++taken;
         }
     }

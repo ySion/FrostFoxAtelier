@@ -4,7 +4,6 @@
 #include "foundation/map.hpp"
 #include "foundation/set.hpp"
 #include <deque>
-#include <optional>
 #include <unordered_map>
 
 namespace atelier::world::detail {
@@ -108,15 +107,15 @@ Result<EntityData> entity_data(Runtime&, ObjectId);
 
 Result<ComponentData> component_data(Runtime&, ObjectId);
 
-Result<void> validate_tree(Runtime&, ObjectId entity, std::span<const ObjectRoot>);
+Result<void> validate_tree(Runtime&, ObjectId entity, Span<const ObjectRoot>);
 
-Result<std::vector<ObjectRoot>> subtree(Runtime&, ObjectId entity);
+Result<Array<ObjectRoot>> subtree(Runtime&, ObjectId entity);
 
 Result<void> clear_component(Runtime&, ObjectId entity, ObjectId component, std::size_t index);
 
 Result<void> unlink_parent(Runtime&, ObjectId entity);
 
-Result<void> requires_space(Runtime&, ObjectId entity, std::span<const ObjectRoot>);
+Result<void> requires_space(Runtime&, ObjectId entity, Span<const ObjectRoot>);
 
 Result<bool> is(Runtime&, ObjectId, TypeId);
 
@@ -126,7 +125,7 @@ Result<void> validate_object(Runtime&, ObjectId, TypeId);
 template <class T>
 Result<void> check_value(Runtime& runtime, const T& value) {
     ATELIER_TRY_BIND(type, runtime.native_type<T>());
-    ATELIER_TRY_BIND(failure, runtime.validate_value(*type, std::as_bytes(std::span{&value, 1})));
+    ATELIER_TRY_BIND(failure, runtime.validate_value(*type, as_bytes(Span{&value, 1})));
     if (*failure)
         return std::unexpected((*failure)->error);
     return {};
@@ -141,7 +140,7 @@ Result<void> queue_request(Runtime&, ObjectId object, RequestKind, bool enabled)
 struct SpaceNode {
     ObjectId parent{};
 
-    std::optional<ObjectId> origin;
+    Optional<ObjectId> origin;
 
     bool spatial{};
 
@@ -159,7 +158,7 @@ struct SpaceGraph {
     Map<ObjectId, math::Matrix4> matrices;
 
     // Reused only inside this evaluation phase; no author data survives it.
-    std::vector<ObjectId> matrix_path;
+    Array<ObjectId> matrix_path;
 
     Set<ObjectId> matrix_seen;
 
@@ -215,7 +214,7 @@ struct SpaceCache {
 
     SpaceGraph relations;
 
-    std::vector<ObjectId> path;
+    Array<ObjectId> path;
 
     std::uint64_t pass{1}; // Above every fresh entry's `checked` and `failed`.
 
@@ -317,13 +316,13 @@ struct World::Impl {
 
         Fault fault{};
 
-        std::vector<ComponentState> components;
+        Array<ComponentState> components;
     };
 
     struct Bucket {
         TypeId type;
 
-        std::vector<ObjectId> objects;
+        Array<ObjectId> objects;
     };
 
     Runtime& runtime;
@@ -351,9 +350,9 @@ struct World::Impl {
     std::size_t dispatch_depth{};
 
     // Composition preorder: every member's subtree is one contiguous range.
-    std::vector<Member> members;
+    Array<Member> members;
 
-    std::vector<MemberState> states;
+    Array<MemberState> states;
 
     Map<ObjectId, std::size_t> positions;
 
@@ -364,9 +363,9 @@ struct World::Impl {
 
     std::uint64_t revision{1}; // World::revision; advanced by changed().
 
-    std::array<std::vector<Scheduled>, 3> updates; // Indexed by TickPhase.
+    std::array<Array<Scheduled>, 3> updates; // Indexed by TickPhase.
 
-    std::vector<Bucket> buckets;
+    Array<Bucket> buckets;
 
     struct Registration {
         TypeId type;
@@ -374,18 +373,18 @@ struct World::Impl {
         CapabilityPredicate predicate;
     };
 
-    std::vector<Registration> registrations;
+    Array<Registration> registrations;
 
-    std::vector<std::vector<CapabilityMember>> capable; // Rebuilt with `buckets`.
+    Array<Array<CapabilityMember>> capable; // Rebuilt with `buckets`.
 
     static constexpr std::uint32_t bit(CapabilityId id) noexcept { return 1u << id.value; }
 
     Result<std::uint32_t> capabilities_of(ObjectId component, TypeId type) const;
 
     // Tick prerequisite edges, both directions; only between current participants.
-    Map<ObjectId, std::vector<ObjectId>> prerequisites;
+    Map<ObjectId, Array<ObjectId>> prerequisites;
 
-    Map<ObjectId, std::vector<ObjectId>> dependents;
+    Map<ObjectId, Array<ObjectId>> dependents;
 
     void forget_prerequisites(ObjectId) noexcept;
 
@@ -395,13 +394,13 @@ struct World::Impl {
         std::shared_ptr<const Simulation> simulation;
     };
 
-    std::vector<SimulationEntry> simulations;
+    Array<SimulationEntry> simulations;
 
     std::uint64_t next_simulation{1};
 
     detail::SpaceCache space;
 
-    std::vector<Task> tasks;
+    Array<Task> tasks;
 
     struct Translation {
         ObjectId component;
@@ -411,7 +410,7 @@ struct World::Impl {
         math::Vector3 delta;
     };
 
-    std::vector<Translation> translations;
+    Array<Translation> translations;
 
     struct TranslationChange {
         ObjectId entity;
@@ -419,18 +418,18 @@ struct World::Impl {
         Trs value;
     };
 
-    std::vector<TranslationChange> translation_changes;
+    Array<TranslationChange> translation_changes;
 
     Result<void> apply_translations();
 
-    Result<void> apply_poses(std::span<const SimulationPose>, DiagnosticPhase,
-                             std::vector<std::pair<ObjectId, Trs>>* written = nullptr);
+    Result<void> apply_poses(Span<const SimulationPose>, DiagnosticPhase,
+                             Array<std::pair<ObjectId, Trs>>* written = nullptr);
 
     Map<ObjectId, Trs> pose_targets;
 
-    std::vector<std::pair<ObjectId, Trs>> pose_locals;
+    Array<std::pair<ObjectId, Trs>> pose_locals;
 
-    std::vector<Pending> pending;
+    Array<Pending> pending;
 
     std::uint64_t next_request{1};
 
@@ -452,7 +451,7 @@ struct World::Impl {
         std::shared_ptr<LifecycleObserver> observer;
     };
 
-    std::vector<Subscription> subscriptions;
+    Array<Subscription> subscriptions;
 
     std::uint64_t next_subscription{1};
 
@@ -460,7 +459,7 @@ struct World::Impl {
 
     static constexpr std::size_t diagnostic_capacity = 1024;
 
-    std::vector<Diagnostic> diagnostics;
+    Array<Diagnostic> diagnostics;
 
     std::uint64_t next_diagnostic{1};
 
@@ -507,7 +506,7 @@ struct World::Impl {
     bool contain(const Error&, Diagnostic);
 
     bool contain(const Error&, DiagnosticKind, DiagnosticPhase, ObjectId object, ObjectId entity,
-                 std::vector<std::string> field = {}, Severity = Severity::error);
+                 Array<std::string> field = {}, Severity = Severity::error);
 
     // A broken World index is a World-level failure; once seen, nothing is isolated.
     mutable bool invariant_failed{};
@@ -546,7 +545,7 @@ struct World::Impl {
     // relations and matrices.
     void changed(bool spatial = true) noexcept;
 
-    Result<std::vector<ComponentState>> derive_components(ObjectId entity) const;
+    Result<Array<ComponentState>> derive_components(ObjectId entity) const;
 
     Result<MemberState> derive(ObjectId entity, ObjectId parent, ObjectId origin) const;
 
@@ -574,12 +573,12 @@ struct World::Impl {
         Admission admission;
     };
 
-    std::vector<AdmissionEntry> admissions;
+    Array<AdmissionEntry> admissions;
 
     // Runs each admission on the candidates of its type; empty selections are skipped.
-    Result<void> check_admissions(std::span<const ObjectId> candidates, ObjectId proposed_owner = {});
+    Result<void> check_admissions(Span<const ObjectId> candidates, ObjectId proposed_owner = {});
 
-    Result<void> check_admissions(std::span<const ObjectRoot> candidates, ObjectId proposed_owner = {});
+    Result<void> check_admissions(Span<const ObjectRoot> candidates, ObjectId proposed_owner = {});
 
     // Whether an edit of this member component runs admissions; detached composition does not.
     Result<bool> admitted(ObjectId component) const;
@@ -596,29 +595,29 @@ struct World::Impl {
 
     // Begin visits [first,last) members; End reverses it. A non-null component
     // limits the visit to that component of the range.
-    std::optional<Error> begin(std::size_t first, std::size_t last, ObjectId component = {});
+    Optional<Error> begin(std::size_t first, std::size_t last, ObjectId component = {});
 
-    std::optional<Error> end(std::size_t first, std::size_t last, ObjectId component = {});
+    Optional<Error> end(std::size_t first, std::size_t last, ObjectId component = {});
 
-    std::optional<Error> begin() { return begin(0, members.size()); }
+    Optional<Error> begin() { return begin(0, members.size()); }
 
-    std::optional<Error> end() { return end(0, members.size()); }
+    Optional<Error> end() { return end(0, members.size()); }
 
-    std::optional<Error> invoke(const Scheduled&, bool beginning);
+    Optional<Error> invoke(const Scheduled&, bool beginning);
 
     // One phase of update: Tick, tasks (pre_physics only), commands, requests.
-    std::optional<Error> run_phase(TickPhase, float amount);
+    Optional<Error> run_phase(TickPhase, float amount);
 
     // Applies queued requests; object failures are contained, others returned.
-    std::optional<Error> flush_requests();
+    Optional<Error> flush_requests();
 
     Result<Commit> apply_request(const Pending&);
 
-    std::optional<Error> shutdown();
+    Optional<Error> shutdown();
 
-    std::optional<Error> notify(Lifecycle, ObjectId);
+    Optional<Error> notify(Lifecycle, ObjectId);
 
-    Commit finish(bool changed, std::optional<Error> failure = {});
+    Commit finish(bool changed, Optional<Error> failure = {});
 };
 
 }

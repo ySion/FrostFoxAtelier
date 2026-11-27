@@ -1,13 +1,15 @@
 #pragma once
 
+#include "foundation/array.hpp"
 #include "foundation/map.hpp"
+#include "foundation/optional.hpp"
+#include "foundation/span.hpp"
 #include "procedural/geometry.hpp"
 #include "runtime/reflection.hpp"
 
 #include <cstdint>
 #include <memory>
 #include <string>
-#include <vector>
 
 #include "procedural/graph.gen.hpp"
 
@@ -50,7 +52,7 @@ private:
 
     const Resources* resources_{};
 
-    std::vector<Reference>* dependencies_{};
+    Array<Reference>* dependencies_{};
 };
 
 // Input port `input` reads output `output` of the node in the same position of inputs_.
@@ -61,9 +63,9 @@ struct Connection {
 };
 
 struct FrozenOutput {
-    std::vector<Geometry> outputs;
+    Array<Geometry> outputs;
 
-    std::vector<Reference> dependencies;
+    Array<Reference> dependencies;
 };
 
 // The unified base of all native and Source procedural graph nodes. Public fields are
@@ -171,7 +173,7 @@ private:
     AFIELD(Name = "inputs", Hidden, Sequence = "procedural.Node")
     ReferenceSequence inputs_; // Upstream node of each connection, ordered by input port.
 
-    std::vector<Connection> connections_; // Parallel to inputs_.
+    Array<Connection> connections_; // Parallel to inputs_.
 
     bool bypassed_{};
 
@@ -209,11 +211,11 @@ Result<void> register_types(Runtime& runtime);
 
 // Port schema of a concrete `procedural.Node` type or bound `procedural.AssetNode` instance.
 struct Ports {
-    std::vector<std::string> inputs; // Input port names.
+    Array<std::string> inputs; // Input port names.
 
-    std::vector<bool> multiple; // Per input port: takes any number of connections.
+    Array<bool> multiple; // Per input port: takes any number of connections.
 
-    std::vector<std::string> outputs; // Output port names.
+    Array<std::string> outputs; // Output port names.
 
     bool operator==(const Ports&) const = default;
 };
@@ -225,11 +227,11 @@ struct AssetSubgraph {
 
     ObjectRoot graph;
 
-    std::vector<ObjectId> input_nodes;
+    Array<ObjectId> input_nodes;
 
-    std::vector<ObjectId> output_nodes;
+    Array<ObjectId> output_nodes;
 
-    std::optional<Error> bind_error;
+    Optional<Error> bind_error;
 
     std::uint64_t revision{};
 };
@@ -265,8 +267,8 @@ struct PortDescription {
 
 struct NodeInterface {
     Ports ports;
-    std::vector<AttributeRule> attributes;
-    std::vector<PortDescription> port_descriptions;
+    Array<AttributeRule> attributes;
+    Array<PortDescription> port_descriptions;
 };
 
 Result<NodeInterface> node_interface(Runtime& runtime, TypeId node);
@@ -297,19 +299,19 @@ struct Input {
 // Does not root objects; the caller keeps the graph alive.
 class Contents {
 public:
-    [[nodiscard]] std::span<const ObjectId> nodes() const noexcept { return nodes_; }
+    [[nodiscard]] Span<const ObjectId> nodes() const noexcept { return nodes_; }
 
     [[nodiscard]] ObjectId display() const noexcept { return display_; }
 
     [[nodiscard]] bool contains(ObjectId node) const noexcept { return members_.contains(node); }
 
     // Recheck cached connections after a membership change, without rereading the node.
-    [[nodiscard]] Result<void> check(std::span<const Input> connections) const;
+    [[nodiscard]] Result<void> check(Span<const Input> connections) const;
 
 private:
     friend struct detail::Access;
 
-    std::vector<ObjectId> nodes_;
+    Array<ObjectId> nodes_;
 
     Map<ObjectId, std::uint8_t> members_;
 
@@ -320,7 +322,7 @@ Result<Contents> contents(Runtime& runtime, ObjectId graph);
 
 // Connections into a member of this snapshot. Checks membership and reference/connection
 // lengths, not output port numbers; consumers check against their current source ports.
-Result<std::vector<Input>> inputs(Runtime& runtime, const Contents& graph, ObjectId node);
+Result<Array<Input>> inputs(Runtime& runtime, const Contents& graph, ObjectId node);
 
 // Graph edits. Each writes only the objects it changes: the graph for its node list and
 // display, a node for the connections into it. The graph holds its nodes and a node holds

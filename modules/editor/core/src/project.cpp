@@ -17,7 +17,6 @@
 #include <cwctype>
 #include <fstream>
 #include <functional>
-#include <optional>
 #include <sstream>
 #include <array>
 
@@ -95,8 +94,8 @@ std::string identity_file(std::string_view key, json::Builder record = json::Bui
 }
 
 // These kinds use sidecar identities. Other catalogue entries are addressed by relative path.
-std::optional<assets::AssetKind> resource_kind(const std::filesystem::path& path,
-                                               const std::filesystem::path& directory) {
+Optional<assets::AssetKind> resource_kind(const std::filesystem::path& path,
+                                          const std::filesystem::path& directory) {
     using enum assets::AssetKind;
     if (assets::is_mesh_path(path))
         return mesh;
@@ -108,7 +107,7 @@ std::optional<assets::AssetKind> resource_kind(const std::filesystem::path& path
         return texture;
     if (assets::is_sky_path(path))
         return sky;
-    return std::nullopt;
+    return {};
 }
 
 Result<void> read_asset_identity(const Project& project, assets::ProjectEntry& entry, bool create_if_missing) {
@@ -155,7 +154,7 @@ Result<void> read_asset_identity(const Project& project, assets::ProjectEntry& e
             ATELIER_TRY_BIND(material, value.string().transform_error(json_error));
             if (slot.empty())
                 return failure("Default material slot names cannot be empty.");
-            entry.materials.push_back({std::string(slot), std::string(*material)});
+            entry.materials.add({std::string(slot), std::string(*material)});
         }
     }
     entry.key = "project/" + *name;
@@ -185,7 +184,7 @@ Result<void> visit_project_directory(const Project& project, const std::filesyst
 }
 
 // A generated material's file name: valid on Windows and unique among `taken`, compared as the file system does (ordinal, ignoring case).
-Result<std::wstring> material_file(std::string_view slot, std::vector<std::wstring>& taken) {
+Result<std::wstring> material_file(std::string_view slot, Array<std::wstring>& taken) {
     auto converted = platform::utf8_to_utf16(slot);
     if (!converted)
         return failure("Invalid UTF-8 text.");
@@ -212,10 +211,10 @@ Result<std::wstring> material_file(std::string_view slot, std::vector<std::wstri
     auto candidate = name;
     for (std::size_t n = 2;; ++n) {
         const auto file = candidate + L".material";
-        if (std::ranges::none_of(taken, [&](const std::wstring& other) {
+            if (std::ranges::none_of(taken, [&](const std::wstring& other) {
                 return CompareStringOrdinal(other.c_str(), -1, file.c_str(), -1, TRUE) == CSTR_EQUAL;
             })) {
-            taken.push_back(file);
+            taken.add(file);
             return file;
         }
         candidate = name + L" (" + std::to_wstring(n) + L")";
@@ -268,7 +267,7 @@ bool same_path(const std::filesystem::path& a, const std::filesystem::path& b) {
 // and directories created by this batch belong to its rollback.
 class MeshImportFiles {
 public:
-    MeshImportFiles(const Project& project, bool reimport, std::optional<Error> unverified)
+    MeshImportFiles(const Project& project, bool reimport, Optional<Error> unverified)
         : project_(project), reimport_(reimport), unverified_(std::move(unverified)) {}
 
     Result<void> stage(const std::filesystem::path& relative, std::string bytes, bool replace) {
@@ -298,12 +297,12 @@ public:
             }
             file.before = std::move(*before);
         }
-        files_.push_back(std::move(file));
+        files_.add(std::move(file));
         return {};
     }
 
     Result<void> write() {
-        std::vector<std::filesystem::path> missing;
+        Array<std::filesystem::path> missing;
         for (auto& file : files_) {
             if (file.before && *file.before == file.bytes)
                 continue;
@@ -315,11 +314,11 @@ public:
                     return std::unexpected(file_error(error));
                 if (parent == parent.root_path())
                     return failure("The import destination volume is unavailable.");
-                missing.push_back(parent);
+                missing.add(parent);
             }
             for (auto at = missing.rbegin(); at != missing.rend(); ++at) {
                 if (std::filesystem::create_directory(*at, error))
-                    directories_.push_back(*at);
+                    directories_.add(*at);
                 else if (error)
                     return std::unexpected(file_error(error));
             }
@@ -362,16 +361,25 @@ public:
 private:
     struct File {
         std::filesystem::path path;
+
         std::string bytes;
-        std::optional<std::string> before{};
+
+        Optional<std::string> before{};
+
         std::filesystem::file_time_type modified{};
+
         bool written{};
     };
+
     const Project& project_;
+
     bool reimport_;
-    std::optional<Error> unverified_;
-    std::vector<File> files_;
-    std::vector<std::filesystem::path> directories_;
+
+    Optional<Error> unverified_;
+
+    Array<File> files_;
+
+    Array<std::filesystem::path> directories_;
 };
 }
 
@@ -465,8 +473,8 @@ Result<Project> Project::open(const std::filesystem::path& folder) {
     return project;
 }
 
-Result<std::vector<std::filesystem::path>> Project::source_paths() const {
-    std::vector<std::filesystem::path> paths;
+Result<Array<std::filesystem::path>> Project::source_paths() const {
+    Array<std::filesystem::path> paths;
     const std::filesystem::path source{"Source"};
     auto scanned =
         visit_project_directory(*this, source, [&](const auto& file, auto status, const auto& root) -> Result<void> {
@@ -476,7 +484,7 @@ Result<std::vector<std::filesystem::path>> Project::source_paths() const {
                 ATELIER_TRY(resolve(relative));
                 if (paths.size() >= 256)
                     return failure("Project exceeds the 256 Source file limit.");
-                paths.push_back(std::move(relative));
+                paths.add(std::move(relative));
             }
             return {};
         });
@@ -571,16 +579,16 @@ Result<std::filesystem::path> Project::rename(const std::filesystem::path& relat
     return target_relative;
 }
 
-std::span<const std::filesystem::path> Project::roots() noexcept {
+Span<const std::filesystem::path> Project::roots() noexcept {
     static const std::array<std::filesystem::path, 3> directories{L"Content", L"Source", L"Config"};
     return directories;
 }
 
-Result<std::vector<assets::ProjectEntry>> Project::scan_entries(bool create_identities) const {
+Result<Array<assets::ProjectEntry>> Project::scan_entries(bool create_identities) const {
     using enum assets::AssetKind;
-    std::vector<assets::ProjectEntry> entries;
+    Array<assets::ProjectEntry> entries;
     for (const auto& directory : roots()) {
-        entries.push_back({directory, directory.string(), folder});
+        entries.add({directory, directory.string(), folder});
         const auto collect = [&](const std::filesystem::directory_entry& file, std::filesystem::file_status status,
                                  const std::filesystem::path& root) -> Result<void> {
             const auto& path = file.path();
@@ -592,7 +600,7 @@ Result<std::vector<assets::ProjectEntry>> Project::scan_entries(bool create_iden
             auto name = platform::utf16_to_utf8(relative.generic_wstring());
             if (!name)
                 return failure("Invalid UTF-16 text.");
-            auto& entry = entries.emplace_back(std::move(relative), std::move(*name), folder);
+            auto& entry = entries.emplace(std::move(relative), std::move(*name), folder);
             if (std::filesystem::is_directory(status))
                 return {};
             if (const auto kind = resource_kind(path, directory)) {
@@ -667,8 +675,8 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
     }
     json::Builder metadata;
     json::Builder defaults;
-    std::vector<std::filesystem::path> owned;
-    std::optional<Error> dependency_error;
+    Array<std::filesystem::path> owned;
+    Optional<Error> dependency_error;
     if (!requested.empty()) {
         const auto* at = current.entry(requested);
         if (!at || at->kind != assets::AssetKind::mesh)
@@ -680,18 +688,18 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
         ATELIER_TRY_BIND(metadata_path, resolve(sidecar(target_relative)));
         ATELIER_TRY_BIND(previous_metadata, read_json(*metadata_path));
         metadata = json::Builder(*previous_metadata);
-        owned.push_back(target_relative);
+        owned.add(target_relative);
         // Current raw dependencies, not material closure, prove which existing
         // files this operation may replace. There is no import ownership history.
         auto previous = resolve(target_relative).and_then([&](const auto& path) { return current.prepare_mesh(path); });
         if (previous) {
             for (const auto& file : previous->files)
-                owned.push_back(relative / file.relative);
+                owned.add(relative / file.relative);
         } else {
             dependency_error = std::move(previous.error());
             dependency_error->message =
                 "Existing mesh dependencies could not be verified: " + dependency_error->message;
-            loaded.notes.push_back(dependency_error->message + "; only unchanged existing dependencies may be reused.");
+            loaded.notes.add(dependency_error->message + "; only unchanged existing dependencies may be reused.");
         }
         auto main = std::ranges::find(loaded.files, source.filename(), &assets::ImportedFile::relative);
         if (main == loaded.files.end())
@@ -702,7 +710,7 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
     // Prepare exact input pixels and persistent texture keys before moving the
     // immutable file bytes into the common create/replace transaction.
     Map<std::filesystem::path, std::string> texture_keys;
-    std::vector<std::string_view> image_bytes;
+    Array<std::string_view> image_bytes;
     MeshImportPublication result;
     const auto prepare_texture = [&](const std::filesystem::path& file) -> Result<void> {
         if (file.empty() || texture_keys.contains(file))
@@ -721,8 +729,8 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
         const auto bytes = std::ranges::find(loaded.files, file, &assets::ImportedFile::relative);
         if (bytes == loaded.files.end())
             return failure("Imported texture is absent from the prepared bundle.");
-        image_bytes.push_back(bytes->bytes);
-        result.textures.push_back({key, file.stem().wstring(), {}});
+        image_bytes.add(bytes->bytes);
+        result.textures.add({key, file.stem().wstring(), {}});
         return {};
     };
     for (const auto& inputs : loaded.textures)
@@ -771,10 +779,10 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
     }
     Set<std::string> returned_materials;
     Set<std::string> slots;
-    std::vector<std::wstring> names;
+    Array<std::wstring> names;
     for (const auto& entry : catalog)
         if (same_path(entry.path.parent_path(), relative / "Materials"))
-            names.push_back(entry.path.filename().wstring());
+            names.add(entry.path.filename().wstring());
     const auto mapping = metadata.root().find("materials");
     if (!mapping)
         return failure(mapping.error().describe());
@@ -782,7 +790,7 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
         const auto slot = geometry::material_slot_name(*loaded.mesh, i);
         if (!slots.add(slot))
             return failure("Reimport requires unique material slot names.");
-        std::optional<json::Value> saved;
+        Optional<json::Value> saved;
         if (*mapping) {
             const auto at = (*mapping)->find(slot);
             if (!at)
@@ -796,13 +804,13 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
             const std::string key(*text);
             if (auto written = defaults.set(defaults.root(), slot, *saved); !written)
                 return failure(written.error().describe());
-            loaded.notes.push_back("Preserved material binding and author values for slot '" + slot +
-                                   "'; source material changes were not merged.");
+            loaded.notes.add("Preserved material binding and author values for slot '" + slot +
+                             "'; source material changes were not merged.");
             if (returned_materials.add(key)) {
                 if (auto material = current.material(key))
-                    result.materials.push_back(std::move(*material));
+                    result.materials.add(std::move(*material));
                 else
-                    loaded.notes.push_back("Preserved unavailable material " + key + ": " + material.error().message);
+                    loaded.notes.add("Preserved unavailable material " + key + ": " + material.error().message);
             }
             continue;
         }
@@ -840,7 +848,7 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
         ATELIER_TRY(files.stage(sidecar(path), identity_file(key), false));
         if (auto written = defaults.set(defaults.root(), slot, key); !written)
             return failure(written.error().describe());
-        result.materials.push_back(std::move(asset));
+        result.materials.add(std::move(asset));
     }
     if (defaults.root().size())
         metadata.set_validated(metadata.root(), "materials", defaults.root());

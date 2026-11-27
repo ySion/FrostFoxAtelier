@@ -1,6 +1,8 @@
 #pragma once
 #include "editor/project.hpp"
 #include "editor/session.hpp"
+#include "foundation/array.hpp"
+#include "foundation/optional.hpp"
 #include "source/program.hpp"
 #include "physics/physics.hpp"
 #include <chrono>
@@ -11,11 +13,11 @@ enum class BuildState { ready, failed, rebuild_required };
 struct ProjectBuild {
     std::shared_ptr<const source::SourceSnapshot> sources;
 
-    std::optional<source::SourceFile> ui_source;
+    Optional<source::SourceFile> ui_source;
 
     BuildState state{BuildState::ready};
 
-    std::optional<Error> error;
+    Optional<Error> error;
 
     std::uint64_t published_version{};
 };
@@ -39,7 +41,7 @@ public:
 
     static Result<source::SourceSnapshot> snapshot(const Project&);
 
-    static Result<std::optional<source::SourceFile>> ui_snapshot(const Project&);
+    static Result<Optional<source::SourceFile>> ui_snapshot(const Project&);
 
     static std::string component_source(std::string_view name);
 
@@ -64,7 +66,7 @@ private:
 
     std::shared_ptr<const ProjectBuild> published_;
 
-    std::vector<Stamp> stamps_;
+    Array<Stamp> stamps_;
 
     std::chrono::steady_clock::time_point next_poll_{};
 
@@ -85,7 +87,7 @@ struct ProjectDocument {
 
     std::shared_ptr<const ProjectBuild> build;
 
-    std::optional<Error> error;
+    Optional<Error> error;
 };
 
 // With allow_failed_build, a Source build failure still produces a document without

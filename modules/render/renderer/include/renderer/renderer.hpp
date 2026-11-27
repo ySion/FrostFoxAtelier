@@ -1,5 +1,7 @@
 #pragma once
 
+#include "foundation/array.hpp"
+#include "foundation/span.hpp"
 #include "math/math.hpp"
 #include "rhi/rhi.hpp"
 #include "geometry/mesh.hpp"
@@ -11,8 +13,6 @@
 #include <array>
 #include <functional>
 #include <memory>
-#include <span>
-#include <vector>
 
 namespace atelier::renderer {
 
@@ -70,7 +70,7 @@ public:
 
     MaterialBatch& operator=(const MaterialBatch&) = delete;
 
-    std::span<const material::ProgramSurfaceRef> surfaces() const noexcept;
+    Span<const material::ProgramSurfaceRef> surfaces() const noexcept;
 
 private:
     friend class Renderer;
@@ -147,7 +147,7 @@ struct MeshInstance {
 
     // Required complete geometry-slot -> Frame::materials index mapping.
     // No business material defaults or instance overrides exist at this boundary.
-    std::shared_ptr<const std::vector<std::uint32_t>> material_slots{};
+    std::shared_ptr<const Array<std::uint32_t>> material_slots{};
 };
 
 struct Frame {
@@ -157,13 +157,13 @@ struct Frame {
 
     ui::Rect scene_viewport; // Physical pixels, top-left origin.
 
-    std::span<const MeshInstance> meshes; // Borrowed draw snapshots; no business object ownership.
+    Span<const MeshInstance> meshes; // Borrowed draw snapshots; no business object ownership.
 
     ViewSettings view{};
 
-    std::span<const OverlayShape> overlay{};
+    Span<const OverlayShape> overlay{};
 
-    std::span<const Light> lights{};
+    Span<const Light> lights{};
 
     std::uint64_t scene_identity{}; // Change for replacement world and Edit/Play execution domain.
 
@@ -439,11 +439,11 @@ struct Capture {
 
     ui::PixelExtent extent;
 
-    std::vector<std::uint8_t> rgba;
+    Array<std::uint8_t> rgba;
 
-    std::vector<float> depth;
+    Array<float> depth;
 
-    std::vector<float> motion;
+    Array<float> motion;
 };
 
 // Single owner thread. Application owns HWND and keeps it alive through close.
@@ -486,7 +486,7 @@ public:
     // The last rendered code set (not its tables/images) stays reusable until
     // another code set is rendered or Renderer closes.
     // Unrelated product/UI preparation remains separate.
-    [[nodiscard]] Result<MaterialBatch> prepare_materials(std::span<const material::ProgramSurfaceRef>);
+    [[nodiscard]] Result<MaterialBatch> prepare_materials(Span<const material::ProgramSurfaceRef>);
 
     // Collects jobs without waiting. Finalization uploads immutable tables;
     // ready means same-Context ordered use, not GPU completion or presentation.

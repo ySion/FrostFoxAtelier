@@ -17,19 +17,19 @@ struct Access {
 
     static const ReferenceSequence& materials(const StaticMeshComponent& value) noexcept { return value.materials_; }
 
-    static std::vector<std::string>& material_slots(StaticMeshComponent& value) noexcept {
+    static Array<std::string>& material_slots(StaticMeshComponent& value) noexcept {
         return value.material_slots_;
     }
 
-    static const std::vector<std::string>& material_slots(const StaticMeshComponent& value) noexcept {
+    static const Array<std::string>& material_slots(const StaticMeshComponent& value) noexcept {
         return value.material_slots_;
     }
 
-    static std::vector<bool>& material_overrides(StaticMeshComponent& value) noexcept {
+    static BitVector& material_overrides(StaticMeshComponent& value) noexcept {
         return value.material_overrides_;
     }
 
-    static const std::vector<bool>& material_overrides(const StaticMeshComponent& value) noexcept {
+    static const BitVector& material_overrides(const StaticMeshComponent& value) noexcept {
         return value.material_overrides_;
     }
 
@@ -41,9 +41,9 @@ struct Access {
         return value.default_materials_;
     }
 
-    static std::vector<std::string>& default_slots(StaticMeshComponent& value) noexcept { return value.default_slots_; }
+    static Array<std::string>& default_slots(StaticMeshComponent& value) noexcept { return value.default_slots_; }
 
-    static const std::vector<std::string>& default_slots(const StaticMeshComponent& value) noexcept {
+    static const Array<std::string>& default_slots(const StaticMeshComponent& value) noexcept {
         return value.default_slots_;
     }
 
@@ -83,19 +83,19 @@ struct Access {
         return value.materials_;
     }
 
-    static std::vector<std::string>& material_slots(ProceduralGeneratorComponent& value) noexcept {
+    static Array<std::string>& material_slots(ProceduralGeneratorComponent& value) noexcept {
         return value.material_slots_;
     }
 
-    static const std::vector<std::string>& material_slots(const ProceduralGeneratorComponent& value) noexcept {
+    static const Array<std::string>& material_slots(const ProceduralGeneratorComponent& value) noexcept {
         return value.material_slots_;
     }
 
-    static std::vector<bool>& material_overrides(ProceduralGeneratorComponent& value) noexcept {
+    static BitVector& material_overrides(ProceduralGeneratorComponent& value) noexcept {
         return value.material_overrides_;
     }
 
-    static const std::vector<bool>& material_overrides(const ProceduralGeneratorComponent& value) noexcept {
+    static const BitVector& material_overrides(const ProceduralGeneratorComponent& value) noexcept {
         return value.material_overrides_;
     }
 
@@ -144,7 +144,7 @@ inline std::unexpected<Error> error(ErrorCode code, std::string message) {
 template <class T>
 Result<void> check_value(Runtime& runtime, const T& value) {
     ATELIER_TRY_BIND(type, runtime.native_type<T>());
-    ATELIER_TRY_BIND(failure, runtime.validate_value(*type, std::as_bytes(std::span{&value, 1})));
+    ATELIER_TRY_BIND(failure, runtime.validate_value(*type, as_bytes(Span{&value, 1})));
     if (*failure)
         return std::unexpected((*failure)->error);
     return {};
@@ -154,15 +154,15 @@ Result<void> check_value(Runtime& runtime, const T& value) {
 // the result equals the component's cache unless something changed. store_surfaces caches it.
 // Optional live dependencies come from these same captures, not the final sampled inputs;
 // discard the collection if capture or storage fails.
-Result<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>>
+Result<std::shared_ptr<const Array<material::ProgramSurfaceRef>>>
 material_surfaces(Runtime&, ObjectId, const StaticMeshComponent&, Set<ObjectId>* dependencies = nullptr);
 
-Result<void> store_surfaces(Runtime&, ObjectId, std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>);
+Result<void> store_surfaces(Runtime&, ObjectId, std::shared_ptr<const Array<material::ProgramSurfaceRef>>);
 
 struct GeneratorCapturedSurfaces {
-    std::shared_ptr<const std::vector<material::ProgramSurfaceRef>> surface;
+    std::shared_ptr<const Array<material::ProgramSurfaceRef>> surface;
 
-    std::vector<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>> assets;
+    Array<std::shared_ptr<const Array<material::ProgramSurfaceRef>>> assets;
 
     bool uncached{};
 };
@@ -180,7 +180,7 @@ world::World::Admission unique_camera(world::CapabilityId cameras);
 
 // The diagnostic of an extraction item failure, for World::contain.
 world::Diagnostic diagnostic(world::DiagnosticKind, world::DiagnosticPhase, ObjectId object, ObjectId entity,
-                             std::vector<std::string> field = {});
+                             Array<std::string> field = {});
 
 // The presented poses of one update as rigid offsets of world space.
 class Presented {
@@ -191,23 +191,23 @@ public:
         math::Quaternion rotation;
     };
 
-    explicit Presented(std::span<const world::PresentedPose>);
+    explicit Presented(Span<const world::PresentedPose>);
 
     [[nodiscard]] bool empty() const noexcept { return offsets_.empty(); }
 
-    [[nodiscard]] std::span<const ObjectId> entities() const noexcept { return entities_; }
+    [[nodiscard]] Span<const ObjectId> entities() const noexcept { return entities_; }
 
     // The offset of the nearest listed Entity on the spatial chain of `entity`,
     // itself included; null without one or when that Entity is drawn at its World pose.
     [[nodiscard]] Result<const Offset*> find(world::World::SpatialPass&, ObjectId entity) const;
 
     // As find, along a chain listed from its own Entity up.
-    [[nodiscard]] const Offset* find(std::span<const ObjectId> chain) const;
+    [[nodiscard]] const Offset* find(Span<const ObjectId> chain) const;
 
 private:
-    Map<ObjectId, std::optional<Offset>> offsets_;
+    Map<ObjectId, Optional<Offset>> offsets_;
 
-    std::vector<ObjectId> entities_;
+    Array<ObjectId> entities_;
 };
 
 }

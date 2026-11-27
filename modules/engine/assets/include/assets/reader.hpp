@@ -20,7 +20,7 @@ public:
     // The publishing owner supplies the canonical project root (not a current-directory fallback).
     explicit Reader(std::filesystem::path root) : root_(std::move(root)) {}
 
-    std::span<const ProjectEntry> entries() const noexcept { return entries_; }
+    Span<const ProjectEntry> entries() const noexcept { return entries_; }
 
     const ProjectEntry* entry(std::string_view key) const;
 
@@ -29,14 +29,14 @@ public:
     // Publishes the complete candidate, invalidating caches by the existing file stamps.
     // Entries have already passed the owner's path, kind and sidecar validation.
     // Borrowed entries/notes expire on publication; returned content keeps its own owners.
-    Result<void> publish(std::vector<ProjectEntry>);
+    Result<void> publish(Array<ProjectEntry>);
 
     // Explicit import/reimport publication, after the owner has written the bundle.
     // Consumes a private copy of this Reader used for preparation, then publishes catalogue, geometry
     // and exact input pixels together. Failure leaves this Reader unchanged.
     // Disk-derived dependency caches invalidate even when file stamps match.
-    Result<MeshAsset> publish_mesh(Reader candidate, std::vector<ProjectEntry>, std::string_view key, const MeshImport&,
-                                   std::span<const TextureAsset>);
+    Result<MeshAsset> publish_mesh(Reader candidate, Array<ProjectEntry>, std::string_view key, const MeshImport&,
+                                   Span<const TextureAsset>);
 
     // Exact received content for an existing mesh key. No disk reads/writes,
     // import, normalization or texture changes. Catalogue refresh retains this
@@ -67,19 +67,18 @@ public:
 
     Result<SkyAsset> sky_map(std::string_view);
 
-    std::span<const std::string> mesh_notes(std::string_view key) const;
+    Span<const std::string> mesh_notes(std::string_view key) const;
 
     // Owning project-relative raw companions (MTL, bin, source images), excluding
     // the mesh file/sidecars and never following MS/MI author references. A cold
     // disk-derived mesh is prepared; received exact content never rereads disk.
-    Result<std::vector<std::filesystem::path>> mesh_dependency_files(std::string_view key);
+    Result<Array<std::filesystem::path>> mesh_dependency_files(std::string_view key);
 
     // Candidate preparation shares the Reader's weak image cache. It neither
     // publishes geometry nor writes files; the owner commits through publish_mesh.
     Result<MeshImport> prepare_mesh(const std::filesystem::path& source);
 
-    Result<std::vector<material::ImageRef>> prepare_images(std::span<const std::string_view>,
-                                                           std::uint64_t pixel_budget);
+    Result<Array<material::ImageRef>> prepare_images(Span<const std::string_view>, std::uint64_t pixel_budget);
 
 private:
     struct CachedMesh;
@@ -90,7 +89,7 @@ private:
 
     std::filesystem::path root_;
 
-    std::vector<ProjectEntry> entries_;
+    Array<ProjectEntry> entries_;
 
     std::uint64_t revision_{};
 
@@ -103,9 +102,9 @@ private:
     struct CachedMesh {
         geometry::MeshRef mesh;
 
-        std::vector<std::filesystem::path> dependencies;
+        Array<std::filesystem::path> dependencies;
 
-        std::vector<std::string> notes;
+        Array<std::string> notes;
 
         bool exact_content{}; // Received publication, not a disk-derived cache entry.
     };

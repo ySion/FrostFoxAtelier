@@ -101,7 +101,7 @@ class SnapshotBuilder {
             return false;
         ++elements_;
         ++values_;
-        auto& child = parent.children.emplace_back();
+        auto& child = parent.children.emplace();
         child.name = text(name, &child.truncated);
         identify(child, type);
         preview(child, type, data, depth);
@@ -258,7 +258,7 @@ class SnapshotBuilder {
 
     void local(DebugFrame& frame, const DebugVariableMetadata& variable, const BusinessDebugLocal& storage) {
         ++values_;
-        auto& value = frame.locals.emplace_back();
+        auto& value = frame.locals.emplace();
         value.name = text(variable.name, &value.truncated);
         value.passing = variable.passing;
         if (variable.storage == DebugStorage::value)
@@ -301,7 +301,7 @@ public:
                 result_.truncated = true;
                 break;
             }
-            auto& output = result_.frames.emplace_back();
+            auto& output = result_.frames.emplace();
             output.activation_id = frame->activation;
             output.location = location(frame->location);
             const auto& variables = metadata_.tables->functions[frame->function].variables;
@@ -314,11 +314,11 @@ public:
             }
         }
         if (invocation_.failed) {
-            std::optional<ErrorElement> element;
+            Optional<ErrorElement> element;
             if (invocation_.error_storage.element != no_failure_element)
                 element = ErrorElement{text(invocation_.error_storage.layer), invocation_.error_storage.element};
             result_.error =
-                Error{invocation_.error_code(), text(invocation_.error_message()), std::nullopt, std::move(element)};
+                Error{invocation_.error_code(), text(invocation_.error_message()), {}, std::move(element)};
             if (invocation_.debug_top && invocation_.debug_top->location < metadata_.locations->size())
                 result_.error->source = source_location((*metadata_.locations)[invocation_.debug_top->location].source);
         }
@@ -407,7 +407,7 @@ std::uint32_t debug_point(void* context, BusinessDebugFrame* frame, std::uint32_
     if (point == DebugPoint::entry)
         state->entry_stopped = true;
     const bool bindable = point == DebugPoint::entry || point == DebugPoint::statement;
-    std::optional<DebugStopReason> reason;
+    Optional<DebugStopReason> reason;
     if (point == DebugPoint::error) {
         if (state->options.break_on_error)
             reason = DebugStopReason::error;

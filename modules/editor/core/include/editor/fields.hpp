@@ -1,14 +1,15 @@
 #pragma once
 #include "world/world.hpp"
 #include "editor/operator_parameters.hpp"
+#include "foundation/array.hpp"
+#include "foundation/span.hpp"
 #include <algorithm>
 #include <cmath>
-#include <span>
 
 namespace atelier::editor::detail {
-using FieldNames = std::vector<std::string>;
+using FieldNames = Array<std::string>;
 
-inline std::string dotted(std::span<const std::string> path) {
+inline std::string dotted(Span<const std::string> path) {
     std::string text;
     for (const auto& name : path) {
         if (!text.empty())
@@ -48,27 +49,27 @@ struct ScalarField {
     MetadataList metadata{};
 };
 
-inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId type, bool include_transient = false,
-                                                      std::vector<FieldNames>* skipped = nullptr) {
-    std::vector<ScalarField> result;
+inline Result<Array<ScalarField>> author_fields(Runtime& runtime, TypeId type, bool include_transient = false,
+                                                Array<FieldNames>* skipped = nullptr) {
+    Array<ScalarField> result;
     const auto visit = [&](auto&& self, TypeId current, ScalarField prefix) -> Result<void> {
         if (prefix.path.size() > 16)
             return std::unexpected(Error{ErrorCode::invalid_definition, "Scene field nesting exceeds 16 levels."});
         ATELIER_TRY_BIND(info, runtime.describe(current));
         if ((*info)->kind == TypeKind::record &&
             current == runtime.native_type<MaterialEntriesJson>().value_or(TypeId{})) {
-            prefix.path.push_back((*info)->fields.front().id);
+            prefix.path.add((*info)->fields.front().id);
             prefix.type = (*info)->fields.front().value.type;
             prefix.kind = TypeKind::string;
             prefix.material_entries_json = true;
-            result.push_back(std::move(prefix));
+            result.add(std::move(prefix));
             return {};
         }
         if ((*info)->kind == TypeKind::scalar || (*info)->kind == TypeKind::enumeration ||
             (*info)->kind == TypeKind::string) {
             prefix.type = current;
             prefix.kind = (*info)->kind;
-            result.push_back(std::move(prefix));
+            result.add(std::move(prefix));
             return {};
         }
         if (!prefix.path.empty() && (*info)->kind == TypeKind::array) {
@@ -79,7 +80,7 @@ inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId t
                     Error{ErrorCode::unsupported_operation, "Scene property Arrays hold scalars, enums or strings."});
             prefix.type = current;
             prefix.kind = TypeKind::array;
-            result.push_back(std::move(prefix));
+            result.add(std::move(prefix));
             return {};
         }
         if (!prefix.path.empty() && (*info)->kind != TypeKind::record)
@@ -92,13 +93,13 @@ inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId t
             child.read_only |= field.read_only;
             if (!include_transient && child.transient) {
                 if (skipped) {
-                    child.names.push_back(field.name);
-                    skipped->push_back(std::move(child.names));
+                    child.names.add(field.name);
+                    skipped->add(std::move(child.names));
                 }
                 continue;
             }
-            child.names.push_back(field.name);
-            child.path.push_back(field.id);
+            child.names.add(field.name);
+            child.path.add(field.id);
             // A vector's lanes share the aggregate caption. Other record children
             // use their own caption, while categories inherit through records.
             if (!(*info)->math.vector() && (*info)->math.shape != math::Shape::quaternion) {
@@ -120,12 +121,12 @@ inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId t
                 if (at != child.metadata.end())
                     at->second = entry.second;
                 else
-                    child.metadata.push_back(entry);
+                    child.metadata.add(entry);
             }
             if (field.value.form != ValueForm::inline_value) {
                 child.type = field.value.type;
                 child.form = field.value.form;
-                result.push_back(std::move(child));
+                result.add(std::move(child));
                 continue;
             }
             ATELIER_TRY_BIND(added, self(self, field.value.type, std::move(child)));
@@ -136,10 +137,10 @@ inline Result<std::vector<ScalarField>> author_fields(Runtime& runtime, TypeId t
     return result;
 }
 
-inline Result<std::vector<ScalarField>> scalar_fields(Runtime& runtime, TypeId type) {
+inline Result<Array<ScalarField>> scalar_fields(Runtime& runtime, TypeId type) {
     auto result = author_fields(runtime, type, true);
     if (result)
-        std::erase_if(*result, [](const auto& field) {
+        result->remove_if([](const auto& field) {
             return field.form != ValueForm::inline_value || field.kind == TypeKind::string ||
                    field.kind == TypeKind::array;
         });
@@ -203,7 +204,7 @@ inline bool transform_field(const world::Types& types, FieldId field) noexcept {
            field == types.scale_fields[0][0];
 }
 
-inline bool transform_path(const world::Types& types, std::span<const FieldId> path) {
+inline bool transform_path(const world::Types& types, Span<const FieldId> path) {
     const auto contains = [&](const auto& paths) {
         return std::ranges::any_of(paths, [&](const auto& p) { return std::ranges::equal(p, path); });
     };

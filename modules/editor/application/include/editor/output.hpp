@@ -1,4 +1,6 @@
 #pragma once
+#include "foundation/array.hpp"
+#include "foundation/optional.hpp"
 #include "foundation/ring_deque.hpp"
 #include "foundation/set.hpp"
 #include "logging/logging.hpp"
@@ -46,7 +48,7 @@ public:
 
         std::filesystem::path directory; // Original run, never the current project.
 
-        std::optional<logging::SubmitStatus> rejection;
+        Optional<logging::SubmitStatus> rejection;
     };
 
     struct Row {
@@ -109,13 +111,13 @@ public:
 
     const RingDeque<Item>& records() const noexcept { return records_; }
 
-    const std::vector<Row>& rows() const;
+    const Array<Row>& rows() const;
 
     const logging::Record* record(ui::TableKey) const;
 
     const logging::Record* selected_record() const;
 
-    std::optional<logging::SourceLocation> selected_source() const;
+    Optional<logging::SourceLocation> selected_source() const;
 
     std::filesystem::path selected_directory() const;
 
@@ -133,7 +135,7 @@ public:
     ui::Result<void> append(ui_language::ControlOutput, ui::ControlKey, ui_language::LiveDocument&, float height);
 
 private:
-    std::vector<std::unique_ptr<Stream>> streams_;
+    Array<std::unique_ptr<Stream>> streams_;
 
     std::size_t next_stream_{};
 
@@ -141,7 +143,7 @@ private:
 
     std::string memory_run_;
 
-    std::optional<logging::RunInfo> host_;
+    Optional<logging::RunInfo> host_;
 
     std::uint64_t sequence_{};
 
@@ -173,7 +175,7 @@ private:
 
     mutable bool health_dirty_{true};
 
-    mutable std::vector<Row> rows_;
+    mutable Array<Row> rows_;
 
     mutable std::shared_ptr<const ui::TableData> table_;
 
@@ -185,7 +187,7 @@ private:
 
     mutable std::wstring health_;
 
-    void retain(logging::Record, std::filesystem::path = {}, std::optional<logging::SubmitStatus> = {});
+    void retain(logging::Record, std::filesystem::path = {}, Optional<logging::SubmitStatus> = {});
 
     void rebuild() const;
 

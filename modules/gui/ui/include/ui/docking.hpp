@@ -1,7 +1,6 @@
 #pragma once
 #include "ui/controls.hpp"
 #include <memory>
-#include <span>
 
 namespace atelier::ui {
 enum class DockSide { tabs, left, right, top, bottom };
@@ -22,7 +21,7 @@ struct DockTab {
 
     ui_layout::Size minimum{220, 140}; // Includes pane chrome; shrinks only if the host is smaller.
 
-    std::vector<std::string> classes{};
+    Array<std::string> classes{};
 };
 
 // Single-host split tree. Owns geometry and tab placement, never the views' state.
@@ -33,7 +32,7 @@ public:
     // Each key/content is nonzero, globally distinct and outside that closed range.
     // Titles are nonempty; finite minimum sizes are at least 120x60.
     // Empty/oversized registries and overflowing key ranges are fatal; other violations assert.
-    DockSpace(ControlKey key_base, std::vector<DockTab>);
+    DockSpace(ControlKey key_base, Array<DockTab>);
 
     ~DockSpace();
 
@@ -42,7 +41,7 @@ public:
     DockSpace& operator=(const DockSpace&) = delete;
 
     // Placements must be legal moves from the initial group of all tabs. Check their full key budget before resetting.
-    Result<void> reset(std::span<const DockPlacement> placements = {});
+    Result<void> reset(Span<const DockPlacement> placements = {});
 
     Result<bool> move(ControlKey tab, ControlKey target_tab, DockSide, float fraction = .5f);
 
@@ -80,7 +79,7 @@ public:
 
     Result<bool> apply(const Action&, const UiFrame&);
 
-    std::vector<MenuItem> menu_items(ControlKey source, const UiFrame*);
+    Array<MenuItem> menu_items(ControlKey source, const UiFrame*);
 
     struct PresentedTab {
         const DockTab* view{};
@@ -115,17 +114,17 @@ public:
 
         Rect divider;
 
-        std::vector<PresentedTab> tabs;
+        Array<PresentedTab> tabs;
 
         const DockTab* active{};
     };
 
     struct Presentation {
-        std::vector<Pane> panes;
+        Array<Pane> panes;
 
         ControlKey preview_key{};
 
-        std::optional<Rect> preview;
+        Optional<Rect> preview;
     };
 
     // Logical placement, bounded gestures and host slots. All chrome is authored
@@ -138,7 +137,7 @@ private:
     struct Node {
         ControlKey key{};
 
-        std::vector<ControlKey> tabs;
+        Array<ControlKey> tabs;
 
         ControlKey active{};
 
@@ -168,7 +167,7 @@ private:
     struct Drag {
         ControlKey tab{};
 
-        std::optional<Drop> target;
+        Optional<Drop> target;
     };
 
     struct Resize {
@@ -191,15 +190,15 @@ private:
 
     bool menu_type_{};
 
-    std::vector<ControlKey> closed_tabs_;
+    Array<ControlKey> closed_tabs_;
 
-    std::vector<DockTab> tabs_;
+    Array<DockTab> tabs_;
 
     std::unique_ptr<Node> root_;
 
-    std::optional<Drag> drag_;
+    Optional<Drag> drag_;
 
-    std::optional<Resize> resize_; // Preview only; accepted pane geometry changes once at release.
+    Optional<Resize> resize_; // Preview only; accepted pane geometry changes once at release.
 
     Result<void> require_nodes(std::size_t count) const;
 
@@ -225,7 +224,7 @@ private:
 
     ui_layout::Size minimum(const Node&) const;
 
-    std::optional<Drop> destination(ControlKey, const DragPoint&, const UiFrame&) const;
+    Optional<Drop> destination(ControlKey, const DragPoint&, const UiFrame&) const;
 
     void present_node(Presentation&, const Node&, ControlKey, Rect) const;
 };

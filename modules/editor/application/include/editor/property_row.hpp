@@ -1,10 +1,10 @@
 #pragma once
 #include "foundation/map.hpp"
+#include "foundation/optional.hpp"
 #include "platform/utf.hpp"
 #include "ui_language/component.hpp"
 #include <algorithm>
 #include <array>
-#include <optional>
 
 namespace atelier::editor {
 
@@ -32,7 +32,7 @@ struct PropertyRow {
 
     ui::ControlKey target{};
 
-    std::optional<std::array<double, 3>> swatch;
+    Optional<std::array<double, 3>> swatch;
 
     bool override_available{};
 
@@ -48,7 +48,7 @@ struct PropertyRow {
 
     ui::ControlKey context_menu{};
 
-    std::optional<bool> row_enabled{};
+    Optional<bool> row_enabled{};
 
     ui_language::Item item() && {
         const auto color = swatch.value_or(std::array<double, 3>{});

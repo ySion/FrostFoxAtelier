@@ -52,7 +52,7 @@ struct LiveLink::Impl {
 
     RingDeque<std::string> outbox;
 
-    std::vector<std::string> inbox;
+    Array<std::string> inbox;
 
     std::atomic_bool closed{};
 
@@ -93,7 +93,7 @@ struct LiveLink::Impl {
             if (!transfer(read, text.data(), bytes, false))
                 break;
             std::lock_guard lock(mutex);
-            inbox.push_back(std::move(text));
+            inbox.add(std::move(text));
         }
         finish();
     }
@@ -137,7 +137,7 @@ void LiveLink::send(std::string text) {
     impl_->wake.notify_all();
 }
 
-std::vector<std::string> LiveLink::receive() {
+Array<std::string> LiveLink::receive() {
     std::lock_guard lock(impl_->mutex);
     return std::exchange(impl_->inbox, {});
 }
@@ -158,7 +158,7 @@ void PlayLink::open(std::unique_ptr<LiveLink> link, std::filesystem::path spill)
     spill_ = std::move(spill);
 }
 
-void PlayLink::forward(const std::vector<editor::LiveChange>& ops) {
+void PlayLink::forward(Span<const editor::LiveChange> ops) {
     if (!link_ || !divergence_.empty() || ops.empty())
         return;
     constexpr std::size_t envelope = std::string_view(R"({"ops":[]})").size();
@@ -265,9 +265,9 @@ void PlayLink::forward(const std::vector<editor::LiveChange>& ops) {
         }
         if (op.texture || op.mesh) {
             // Register before writing so allocation failure cannot orphan an owned file.
-            resources.files.push_back(file);
+            resources.files.add(file);
             if (auto saved = editor::write_file(file, content, editor::WriteMode::create); !saved) {
-                resources.files.pop_back();
+                resources.files.pop();
                 fail(std::string("Cannot write a Play ") + (op.mesh ? "mesh" : "texture") +
                      " publication: " + saved.error().message);
                 return;
@@ -293,9 +293,9 @@ void PlayLink::send(std::string_view ops, Pending&& resources) {
         text.append(ops);
         text += "]}";
         bytes = text.size();
-        resources.files.push_back(file);
+        resources.files.add(file);
         if (auto saved = editor::write_file(file, text, editor::WriteMode::create); !saved) {
-            resources.files.pop_back();
+            resources.files.pop();
             fail("Cannot write a large Play change batch: " + saved.error().message);
             return;
         }
@@ -416,9 +416,8 @@ std::uint64_t PlayLink::inspect(std::uint64_t identity) {
     return request;
 }
 
-std::optional<std::string> PlayLink::inspected(std::uint64_t request) {
-    auto taken = inspected_.take(request);
-    return taken ? std::optional<std::string>{std::move(*taken)} : std::nullopt;
+Optional<std::string> PlayLink::inspected(std::uint64_t request) {
+    return inspected_.take(request);
 }
 
 void PlayEnd::service(editor::Session& document, editor::Project& project) {

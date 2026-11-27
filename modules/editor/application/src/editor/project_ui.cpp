@@ -67,7 +67,7 @@ Result<std::shared_ptr<const ui::UiFrame>> ProjectUI::prepare(ui::Session& sessi
         ATELIER_TRY(collect());
         return *frame;
     };
-    std::vector<ui::Control> controls;
+    Array<ui::Control> controls;
     if (document_) {
         document_->poll();
         const std::array<ui_language::InputValue, 3> inputs{title_, elapsed, static_cast<double>(entities)};

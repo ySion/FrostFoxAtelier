@@ -2,17 +2,19 @@
 #include "runtime/runtime.hpp"
 #include "math/math.hpp"
 #include "assets/reader.hpp"
+#include "foundation/array.hpp"
+#include "foundation/span.hpp"
 #include <filesystem>
 
 namespace atelier::editor {
 struct MeshImportPublication {
     assets::MeshAsset mesh;
 
-    std::vector<assets::MaterialAsset> materials; // New MIs and readable preserved slot defaults.
+    Array<assets::MaterialAsset> materials; // New MIs and readable preserved slot defaults.
 
-    std::vector<assets::TextureAsset> textures; // Exact pixels for inputs and touched existing texture assets.
+    Array<assets::TextureAsset> textures; // Exact pixels for inputs and touched existing texture assets.
 
-    std::vector<std::string> notes;
+    Array<std::string> notes;
 };
 
 // The folder is the project. Config/Project.json identifies it; all persisted
@@ -39,12 +41,12 @@ public:
 
     const assets::Reader& assets() const noexcept { return assets_; }
 
-    std::span<const assets::ProjectEntry> entries() const noexcept { return assets_.entries(); }
+    Span<const assets::ProjectEntry> entries() const noexcept { return assets_.entries(); }
 
     const assets::ProjectEntry* entry(std::string_view key) const { return assets_.entry(key); }
 
     // The top-level folders the catalogue scans: Content, Source, Config.
-    static std::span<const std::filesystem::path> roots() noexcept;
+    static Span<const std::filesystem::path> roots() noexcept;
 
     std::uint64_t revision() const noexcept { return assets_.revision(); }
 
@@ -85,7 +87,7 @@ public:
 
     // Fresh, deterministic compiler inputs. UI declarations have their own
     // configured entry and are not parsed as gameplay Source functions.
-    Result<std::vector<std::filesystem::path>> source_paths() const;
+    Result<Array<std::filesystem::path>> source_paths() const;
 
     Result<void> create_source(const std::filesystem::path& relative, std::string_view);
 
@@ -102,7 +104,7 @@ public:
     Result<std::shared_ptr<const std::string>> collision(std::string_view mesh_key, math::Vector3 scale);
 
 private:
-    Result<std::vector<assets::ProjectEntry>> scan_entries(bool create_identities) const;
+    Result<Array<assets::ProjectEntry>> scan_entries(bool create_identities) const;
 
     Result<MeshImportPublication> import_mesh_files(const std::filesystem::path&, std::string_view existing_key);
 

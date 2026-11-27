@@ -15,8 +15,7 @@ namespace atelier::detail {
 struct ArraySequenceBase {};
 
 template <class L, class R>
-    requires std::derived_from<L, ArraySequenceBase> && std::derived_from<R, ArraySequenceBase> &&
-             SpanEqualityComparable<typename L::Value, typename R::Value>
+    requires std::derived_from<L, ArraySequenceBase> && std::derived_from<R, ArraySequenceBase>
 [[nodiscard]] bool operator==(const L& left, const R& right) noexcept {
     return left.view() == right.view();
 }
@@ -24,7 +23,8 @@ template <class L, class R>
 template <class L, class R>
     requires std::derived_from<L, ArraySequenceBase> && std::derived_from<R, ArraySequenceBase> &&
              std::three_way_comparable_with<typename L::Value, typename R::Value>
-[[nodiscard]] auto operator<=>(const L& left, const R& right) noexcept {
+[[nodiscard]] std::compare_three_way_result_t<typename L::Value, typename R::Value>
+operator<=>(const L& left, const R& right) noexcept {
     return left.view() <=> right.view();
 }
 
@@ -41,7 +41,7 @@ public:
 
     using ConstReverseIterator = std::reverse_iterator<const T*>;
 
-    static constexpr std::size_t npos = Span<T>::npos;
+    static constexpr std::size_t npos = std::numeric_limits<std::size_t>::max();
 
     [[nodiscard]] bool empty() const noexcept { return owner().size() == 0; }
 
@@ -122,6 +122,16 @@ public:
         owner().size_ = 0;
     }
 
+    void truncate(std::size_t count) noexcept {
+        auto& array = owner();
+        if (count > array.size())
+            fatal("Array range.");
+        if (count < array.size()) {
+            Elements::destroy(begin() + count, array.size() - count);
+            array.size_ = count;
+        }
+    }
+
     template <class... Args>
         requires std::constructible_from<T, Args...>
     T& emplace(Args&&... arguments) noexcept [[clang::lifetimebound]] {
@@ -145,6 +155,25 @@ public:
         array.extend(
             1, [&](T* destination, std::size_t) { std::construct_at(destination, std::forward<Args>(arguments)...); });
         return begin()[array.size() - 1];
+    }
+
+    void append(std::size_t count, const T& value) noexcept
+        requires std::is_copy_constructible_v<T>
+    {
+        auto& array = owner();
+        if (!count)
+            return;
+        if constexpr (Elements::byte_reallocate && Elements::byte_copy) {
+            const T saved(value);
+            const auto capacity = array.grown_capacity(count);
+            array.reserve(capacity);
+            Elements::fill_construct(raw_begin() + array.size(), count, saved);
+            array.size_ += count;
+            return;
+        }
+        array.extend(count, [&](T* destination, std::size_t total) {
+            Elements::fill_construct(destination, total, value);
+        });
     }
 
     void append(Span<const T> values) noexcept
@@ -218,8 +247,9 @@ public:
         if constexpr (Elements::byte_copy && std::is_trivially_copy_assignable_v<T> && std::is_implicit_lifetime_v<T>) {
             const T saved(value);
             if (count > array.capacity()) {
+                const auto next = array.capacity() ? array.grown_capacity(count - array.size()) : count;
                 array.release();
-                array.reserve(count);
+                array.reserve(next);
             }
             Elements::fill_construct(raw_begin(), count, saved);
             array.size_ = count;
@@ -248,8 +278,9 @@ public:
                 array.size_ = values.size();
                 return;
             }
+            const auto next = array.capacity() ? array.grown_capacity(values.size() - array.size()) : values.size();
             array.release();
-            array.reserve(values.size());
+            array.reserve(next);
             std::memcpy(raw_begin(), values.data(), values.size_bytes());
             array.size_ = values.size();
             return;
@@ -287,7 +318,9 @@ public:
             }
             return;
         }
-        Owner replacement(values);
+        Owner replacement;
+        replacement.reserve(array.capacity() ? array.grown_capacity(values.size() - array.size()) : values.size());
+        replacement.append(values);
         array.swap(replacement);
     }
 
@@ -471,6 +504,70 @@ public:
         return begin()[index];
     }
 
+    void insert_range(std::size_t index, Span<const T> values) noexcept
+        requires std::is_copy_constructible_v<T> && std::is_move_assignable_v<T>
+    {
+        check_range(index, 0);
+        if (values.empty())
+            return;
+        auto& array = owner();
+        if constexpr (Elements::byte_reallocate && Elements::byte_copy && std::is_trivially_move_assignable_v<T> &&
+                      std::is_trivially_copy_assignable_v<T>) {
+            const auto offset = Elements::alias_offset(begin(), array.size(), values.data(), values.size());
+            if (offset == SIZE_MAX) {
+                const auto capacity = array.grown_capacity(values.size());
+                array.reserve(capacity);
+                const auto tail = array.size() - index;
+                if (tail)
+                    std::memmove(raw_begin() + index + values.size(), raw_begin() + index, tail * sizeof(T));
+                std::memcpy(raw_begin() + index, values.data(), values.size_bytes());
+                array.size_ += values.size();
+                return;
+            }
+        }
+        const auto previous = array.size();
+        append(values);
+        std::rotate(begin() + index, begin() + previous, end());
+    }
+
+    void insert_range(std::size_t index, std::initializer_list<T> values) noexcept
+        requires std::is_copy_constructible_v<T> && std::is_move_assignable_v<T>
+    {
+        insert_range(index, Span<const T>{values.begin(), values.size()});
+    }
+
+    template <std::ranges::input_range R>
+        requires(!std::same_as<std::remove_cvref_t<R>, T>) &&
+                (!std::is_convertible_v<R&&, Span<const T>> || move_elements_from_range_v<R>) &&
+                std::constructible_from<T, RangeElementSource<R>> && std::is_move_assignable_v<T>
+    void insert_range(std::size_t index, R&& values) noexcept {
+        check_range(index, 0);
+        const auto previous = owner().size();
+        append(std::forward<R>(values));
+        std::rotate(begin() + index, begin() + previous, end());
+    }
+
+    std::size_t deduplicate() noexcept
+        requires std::equality_comparable<T> && std::is_move_assignable_v<T>
+    {
+        const auto previous = owner().size();
+        const auto kept = static_cast<std::size_t>(std::unique(begin(), end()) - begin());
+        truncate(kept);
+        return previous - kept;
+    }
+
+    template <class BinaryPredicate>
+        requires std::predicate<BinaryPredicate&, const T&, const T&> && std::is_move_assignable_v<T>
+    std::size_t deduplicate(BinaryPredicate&& equal) noexcept {
+        const auto previous = owner().size();
+        const auto kept = static_cast<std::size_t>(
+            std::unique(begin(), end(),
+                        [&](const T& left, const T& right) { return static_cast<bool>(std::invoke(equal, left, right)); }) -
+            begin());
+        truncate(kept);
+        return previous - kept;
+    }
+
     void move(std::size_t from, std::size_t to) noexcept
         requires std::is_move_assignable_v<T>
     {
@@ -648,18 +745,18 @@ public:
         return original - owner().size();
     }
 
-    template <class R>
-        requires(!std::derived_from<std::remove_cvref_t<R>, ArraySequenceBase>) &&
-                std::is_nothrow_convertible_v<const R&, Span<const T>> && SpanEqualityComparable<T, T>
+    template <class R, class U = T>
+        requires std::same_as<U, T> && (!std::derived_from<std::remove_cvref_t<R>, ArraySequenceBase>) &&
+                 std::is_nothrow_convertible_v<const R&, Span<const U>> && SpanEqualityComparable<U, U>
     [[nodiscard]] friend bool operator==(const Owner& left, const R& right) noexcept {
-        return left.view() == Span<const T>{right};
+        return left.view() == Span<const U>{right};
     }
 
-    template <class R>
-        requires(!std::derived_from<std::remove_cvref_t<R>, ArraySequenceBase>) &&
-                std::is_nothrow_convertible_v<const R&, Span<const T>> && std::three_way_comparable<T>
-    [[nodiscard]] friend auto operator<=>(const Owner& left, const R& right) noexcept {
-        return left.view() <=> Span<const T>{right};
+    template <class R, class U = T>
+        requires std::same_as<U, T> && (!std::derived_from<std::remove_cvref_t<R>, ArraySequenceBase>) &&
+                 std::is_nothrow_convertible_v<const R&, Span<const U>> && std::three_way_comparable<U>
+    [[nodiscard]] friend std::compare_three_way_result_t<U> operator<=>(const Owner& left, const R& right) noexcept {
+        return left.view() <=> Span<const U>{right};
     }
 
 protected:
@@ -720,11 +817,13 @@ private:
             }
             return;
         }
+        const auto next = array.capacity() ? array.grown_capacity(count - array.size()) : count;
         array.release();
-        array.reserve(count);
+        array.reserve(next);
         Elements::fill_construct(raw_begin(), count, value);
         array.size_ = count;
     }
+
     template <bool Swap>
     bool erase_match(std::size_t index) noexcept {
         if (index == npos)

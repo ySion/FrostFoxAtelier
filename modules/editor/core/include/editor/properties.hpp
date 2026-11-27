@@ -1,11 +1,12 @@
 #pragma once
 #include "editor/fields.hpp"
 #include "assets/json_format.hpp"
+#include "foundation/array.hpp"
+#include "foundation/optional.hpp"
+#include "foundation/span.hpp"
 #include "foundation/string.hpp"
 #include "runtime/runtime.hpp"
 #include <functional>
-#include <optional>
-#include <span>
 #include <variant>
 
 namespace atelier::editor {
@@ -13,8 +14,8 @@ namespace detail {
 struct PropertyStorage;
 
 // Removes the retained subtree at path, or a retained leaf on its prefix.
-inline bool erase_path(json::Builder& builder, json::Value record, std::span<const std::string> path) {
-    std::vector<json::Value> trail{record};
+inline bool erase_path(json::Builder& builder, json::Value record, Span<const std::string> path) {
+    Array<json::Value> trail{record};
     for (std::size_t i = 0; i < path.size(); ++i) {
         const auto node = trail.back();
         const auto at = node.find(path[i]);
@@ -26,7 +27,7 @@ inline bool erase_path(json::Builder& builder, json::Value record, std::span<con
                 builder.erase(trail[up - 1], path[up - 1]);
             return true;
         }
-        trail.push_back(**at);
+        trail.add(**at);
     }
     return false;
 }
@@ -38,7 +39,7 @@ struct PropertyTarget {
 
     ObjectId object{};
 
-    std::span<std::byte> storage{};
+    Span<std::byte> storage{};
 };
 
 // A whole inline Array value of scalars, enums or strings, decoded as one leaf. It is filled
@@ -50,7 +51,7 @@ public:
 
     [[nodiscard]] TypeId type() const noexcept;
 
-    [[nodiscard]] std::span<std::byte> storage() const noexcept;
+    [[nodiscard]] Span<std::byte> storage() const noexcept;
 
     [[nodiscard]] ValueInput input() const noexcept;
 
@@ -64,7 +65,7 @@ private:
 using PropertyLeaf = std::variant<Scalar, String, ArrayLeaf>;
 
 // Malformed identities fail; nullopt means the target does not fit the field.
-using ResolveReference = std::function<Result<std::optional<ObjectReference>>(json::Value, TypeId, ValueForm)>;
+using ResolveReference = std::function<Result<Optional<ObjectReference>>(json::Value, TypeId, ValueForm)>;
 
 // Stores one decoded inline leaf; by default it is written to the target through the Runtime.
 using WriteLeaf = std::function<Result<void>(const detail::ScalarField&, const PropertyLeaf&)>;
@@ -76,13 +77,13 @@ using EncodeReference = std::function<Result<json::Document>(ObjectId)>;
 // The properties record of `object` over `fields`, nested by field names: the same leaf encoder
 // as scene saves. Non-finite values fail.
 [[nodiscard]] Result<json::Document> encode_properties(Runtime&, ObjectId object,
-                                                       std::span<const detail::ScalarField> fields,
+                                                       Span<const detail::ScalarField> fields,
                                                        const EncodeReference& reference);
 
 // The same encoder for a caller-owned parameter/result record. Array and sequence
 // fields are object-only, as in the Runtime's indexed read interface.
 [[nodiscard]] Result<json::Document> encode_properties(Runtime&, const PropertyTarget&,
-                                                       std::span<const detail::ScalarField> fields,
+                                                       Span<const detail::ScalarField> fields,
                                                        const EncodeReference& reference);
 
 // Strict decoding of a sparse properties record, through the same leaf decoder as scene loads.
@@ -104,10 +105,10 @@ using EncodeReference = std::function<Result<json::Document>(ObjectId)>;
 // How a tolerant decode reports a saved leaf it does not apply as saved; paths start at the record.
 struct PropertyReport {
     // The saved value is kept; the field keeps its value, or takes the clamped value of a leaf outside its hard bounds.
-    std::function<Result<void>(std::vector<std::string>, json::Value, world::DiagnosticKind, const std::string&)> keep;
+    std::function<Result<void>(Array<std::string>, json::Value, world::DiagnosticKind, const std::string&)> keep;
 
     // An integral number written as a float was converted exactly.
-    std::function<Result<void>(std::vector<std::string>, json::Value)> converted;
+    std::function<Result<void>(Array<std::string>, json::Value)> converted;
 };
 
 // Tolerant decoding of a saved properties record, as scene loads do: fields now declared

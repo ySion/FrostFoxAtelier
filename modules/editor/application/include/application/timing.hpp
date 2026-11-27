@@ -1,5 +1,6 @@
 #pragma once
 
+#include "foundation/span.hpp"
 #include "physics/timing.hpp"
 #include "renderer/timing.hpp"
 #include "memory/fatal.hpp"
@@ -37,7 +38,7 @@ inline constexpr std::array<timing::Marker*, 10> markers{&admission, &input,  &p
 namespace atelier::application {
 // The product catalog: host, World, physics and renderer phases, then `extra`.
 // Call once at process start, before any Application or project run exists.
-inline void install_frame_timing(std::span<timing::Marker* const> extra = {}) {
+inline void install_frame_timing(Span<timing::Marker* const> extra = {}) {
     timing::install(
         {phases::markers, world::phases::markers, physics::phases::markers, renderer::phases::markers, extra});
 }
@@ -45,10 +46,9 @@ inline void install_frame_timing(std::span<timing::Marker* const> extra = {}) {
 // Hosts that record frames refuse to start without the product catalog instead
 // of recording every phase as a structure error.
 inline void require_frame_timing() {
-    for (const auto module :
-         {std::span<timing::Marker* const>(phases::markers), std::span<timing::Marker* const>(world::phases::markers),
-          std::span<timing::Marker* const>(physics::phases::markers),
-          std::span<timing::Marker* const>(renderer::phases::markers)})
+    const std::array<Span<timing::Marker* const>, 4> modules{
+        phases::markers, world::phases::markers, physics::phases::markers, renderer::phases::markers};
+    for (const auto module : modules)
         for (const auto* marker : module)
             if (!marker->registered())
                 fatal("Frame timing is not installed: call install_frame_timing() at process start (missing " +

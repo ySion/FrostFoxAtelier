@@ -52,10 +52,10 @@ Result<ObjectRoot> create_spatial_entity(world::World& world, const world::Trs& 
     return std::move(created.entity);
 }
 
-Result<std::pair<std::vector<ProceduralAssetSlotRange>, std::vector<ObjectReference>>>
-validate_procedural_assets(Runtime& runtime, std::span<const ProceduralInstanceAsset> resolved_assets) {
-    std::vector<ProceduralAssetSlotRange> ranges;
-    std::vector<ObjectReference> inst_defaults;
+Result< std::pair<Array<ProceduralAssetSlotRange>, Array<ObjectReference>>>
+validate_procedural_assets(Runtime& runtime, Span<const ProceduralInstanceAsset> resolved_assets) {
+    Array<ProceduralAssetSlotRange> ranges;
+    Array<ObjectReference> inst_defaults;
     ranges.reserve(resolved_assets.size());
     for (const auto& asset : resolved_assets) {
         Set<std::string_view> unique;
@@ -73,18 +73,18 @@ validate_procedural_assets(Runtime& runtime, std::span<const ProceduralInstanceA
                 return error(ErrorCode::argument_mismatch,
                              "Instance default material slot is missing, ambiguous or repeated: " + item.slot);
             ATELIER_TRY(material::capture_program(runtime, item.resource.id()));
-            range.default_slots.push_back(item.slot);
-            inst_defaults.push_back(item.resource.reference());
+            range.default_slots.add(item.slot);
+            inst_defaults.add(item.resource.reference());
         }
         range.default_count = inst_defaults.size() - range.default_offset;
-        ranges.push_back(std::move(range));
+        ranges.add(std::move(range));
     }
     return std::pair{std::move(ranges), std::move(inst_defaults)};
 }
 
 Result<void> commit_procedural_binding(Runtime& runtime, ObjectId object, String source,
                                        std::shared_ptr<const ProceduralOutput> published,
-                                       std::span<const ObjectReference> inst_defaults) {
+                                       Span<const ObjectReference> inst_defaults) {
     ATELIER_TRY_BIND(owner, world::admit_component_edit(runtime, object));
     bool capability_changed{};
     auto changed = runtime.with_native<ProceduralGeneratorComponent>(
@@ -132,21 +132,21 @@ Result<void> ProceduralGeneratorComponent::validate() const {
 
 Result<Types> register_types(Runtime& runtime) {
     ATELIER_TRY(material::register_resource_types(runtime));
-    std::vector<TypeDefinition> definitions;
-    definitions.push_back(reflection::Definition<StaticMeshComponent>::build(runtime));
-    definitions.push_back(reflection::Definition<StaticMeshEntity>::build(runtime));
-    definitions.push_back(reflection::Definition<LightKind>::build(runtime));
-    definitions.push_back(reflection::Definition<LightSettings>::build(runtime));
-    definitions.push_back(reflection::Definition<LightComponent>::build(runtime));
-    definitions.push_back(reflection::Definition<Antialiasing>::build(runtime));
-    definitions.push_back(reflection::Definition<ProbePlacement>::build(runtime));
-    definitions.push_back(reflection::Definition<ProbeVolume>::build(runtime));
-    definitions.push_back(reflection::Definition<EnvironmentComponent>::build(runtime));
-    definitions.push_back(reflection::Definition<CameraComponent>::build(runtime));
-    definitions.push_back(reflection::Definition<ProceduralGeneratorComponent>::build(runtime));
-    definitions.push_back(reflection::Definition<ProceduralGeneratorEntity>::build(runtime));
+    Array<TypeDefinition> definitions;
+    definitions.add(reflection::Definition<StaticMeshComponent>::build(runtime));
+    definitions.add(reflection::Definition<StaticMeshEntity>::build(runtime));
+    definitions.add(reflection::Definition<LightKind>::build(runtime));
+    definitions.add(reflection::Definition<LightSettings>::build(runtime));
+    definitions.add(reflection::Definition<LightComponent>::build(runtime));
+    definitions.add(reflection::Definition<Antialiasing>::build(runtime));
+    definitions.add(reflection::Definition<ProbePlacement>::build(runtime));
+    definitions.add(reflection::Definition<ProbeVolume>::build(runtime));
+    definitions.add(reflection::Definition<EnvironmentComponent>::build(runtime));
+    definitions.add(reflection::Definition<CameraComponent>::build(runtime));
+    definitions.add(reflection::Definition<ProceduralGeneratorComponent>::build(runtime));
+    definitions.add(reflection::Definition<ProceduralGeneratorEntity>::build(runtime));
     if (!runtime.find_type("core.String"))
-        definitions.push_back(string_definition(runtime));
+        definitions.add(string_definition(runtime));
     ATELIER_TRY_BIND(ids, runtime.register_types(std::move(definitions)));
     Types types;
     types.static_mesh_component = (*ids)[0];
@@ -194,7 +194,7 @@ Result<StaticMeshState> read_static_mesh(Runtime& runtime, ObjectId object) {
             for (std::size_t i = 0; i < slots.size(); ++i) {
                 ATELIER_TRY_BIND(reference, runtime.sequence_read(*field, i));
                 ATELIER_TRY_BIND(root, runtime.hold(*reference));
-                state.mesh.defaults.push_back({slots[i], std::move(*root), false});
+                state.mesh.defaults.add({slots[i], std::move(*root), false});
             }
             return state;
         });
@@ -208,8 +208,8 @@ Result<void> set_mesh_binding(Runtime& runtime, ObjectId object, MeshBinding bin
         return error(ErrorCode::invalid_definition, "String requires valid UTF-8.");
     ATELIER_TRY(runtime.check_code_publication());
     // Each default names one slot of the new mesh exactly once and holds a material that captures.
-    std::vector<std::string> default_slots;
-    std::vector<ObjectReference> defaults;
+    Array<std::string> default_slots;
+    Array<ObjectReference> defaults;
     Set<std::string_view> unique;
     unique.reserve(binding.defaults.size());
     for (const auto& item : binding.defaults) {
@@ -221,15 +221,15 @@ Result<void> set_mesh_binding(Runtime& runtime, ObjectId object, MeshBinding bin
             return error(ErrorCode::argument_mismatch,
                          "Default material slot is missing, ambiguous or repeated: " + item.slot);
         ATELIER_TRY(material::capture_program(runtime, item.resource.id()));
-        default_slots.push_back(item.slot);
-        defaults.push_back(item.resource.reference());
+        default_slots.add(item.slot);
+        defaults.add(item.resource.reference());
     }
     ATELIER_TRY_BIND(owner, world::admit_component_edit(runtime, object));
     auto changed =
         runtime.with_native<StaticMeshComponent>(object, [&](StaticMeshComponent& component) -> Result<void> {
-            std::vector<std::string> names;
-            std::vector<bool> overrides;
-            std::vector<ObjectReference> references;
+            Array<std::string> names;
+            BitVector overrides;
+            Array<ObjectReference> references;
             ATELIER_TRY_BIND(field, runtime.reference_field(object, Access::materials(component)));
             ATELIER_TRY_BIND(count, runtime.sequence_size(*field));
             ATELIER_TRY_BIND(default_field, runtime.reference_field(object, Access::default_materials(component)));
@@ -243,9 +243,9 @@ Result<void> set_mesh_binding(Runtime& runtime, ObjectId object, MeshBinding bin
                 if (matches != 1)
                     continue;
                 ATELIER_TRY_BIND(reference, runtime.sequence_read(*field, i));
-                names.push_back(previous[i]);
-                overrides.push_back(Access::material_overrides(component)[i]);
-                references.push_back(*reference);
+                names.add(previous[i]);
+                overrides.add(Access::material_overrides(component)[i]);
+                references.add(*reference);
             }
             const std::array<ReferenceChange, 2> changes{SequenceSplice{*field, 0, *count, references},
                                                          SequenceSplice{*default_field, 0, *default_count, defaults}};
@@ -285,8 +285,8 @@ geometry::MeshRef build_procedural_surface_mesh(const procedural::Geometry& geom
     else if (auto found_p = geometry.read<math::Vector2>("uv", procedural::Layer::point); found_p && *found_p)
         pt_uv = *found_p;
 
-    std::vector<geometry::Vertex> vertices;
-    std::vector<std::uint8_t> edge_masks;
+    Array<geometry::Vertex> vertices;
+    Array<std::uint8_t> edge_masks;
 
     for (std::uint32_t p = 0; p < prim_count; ++p) {
         const auto range = geometry.primitive(p);
@@ -341,22 +341,22 @@ geometry::MeshRef build_procedural_surface_mesh(const procedural::Geometry& geom
         for (std::uint32_t i = 1; i + 1 < range.count; ++i) {
             const std::uint32_t v1 = v0 + i;
             const std::uint32_t v2 = v0 + i + 1;
-            vertices.push_back(make_vertex(v0));
-            vertices.push_back(make_vertex(v1));
-            vertices.push_back(make_vertex(v2));
+            vertices.add(make_vertex(v0));
+            vertices.add(make_vertex(v1));
+            vertices.add(make_vertex(v2));
             std::uint8_t mask = 1u;
             if (i + 2 == range.count)
                 mask |= 2u;
             if (i == 1)
                 mask |= 4u;
-            edge_masks.push_back(mask);
+            edge_masks.add(mask);
         }
     }
 
     if (vertices.empty())
         return {};
-    std::vector<geometry::MaterialSlot> slots{{geometry::MaterialSlot{"default"}}};
-    std::vector<geometry::MeshPart> parts{{geometry::MeshPart{0, static_cast<std::uint32_t>(vertices.size()), 0}}};
+    Array<geometry::MaterialSlot> slots{{geometry::MaterialSlot{"default"}}};
+    Array<geometry::MeshPart> parts{{geometry::MeshPart{0, static_cast<std::uint32_t>(vertices.size()), 0}}};
     auto created =
         geometry::Mesh::create(std::move(vertices), std::move(edge_masks), std::move(slots), std::move(parts));
     return created ? std::move(*created) : geometry::MeshRef{};
@@ -378,7 +378,7 @@ Result<void> set_procedural_binding(Runtime& runtime, ObjectId object, Procedura
     ATELIER_TRY_BIND(source, validate_procedural_key(binding.source));
     ATELIER_TRY(runtime.check_code_publication());
 
-    std::vector<ObjectReference> inst_defaults;
+    Array<ObjectReference> inst_defaults;
     std::shared_ptr<const ProceduralOutput> published;
     if (binding.output) {
         ATELIER_TRY_BIND(validated, validate_procedural_assets(runtime, binding.resolved_assets));
@@ -401,7 +401,7 @@ Result<void> set_procedural_binding(Runtime& runtime, ObjectId object, Procedura
 
 Result<std::shared_ptr<const ProceduralOutput>>
 publish_procedural_binding(Runtime& runtime, ObjectId object, std::string source_key, ProceduralOutput output,
-                           std::span<const ProceduralInstanceAsset> resolved_assets) {
+                           Span<const ProceduralInstanceAsset> resolved_assets) {
     ATELIER_TRY_BIND(source, validate_procedural_key(source_key));
     ATELIER_TRY(runtime.check_code_publication());
     ATELIER_TRY_BIND(validated, validate_procedural_assets(runtime, resolved_assets));
@@ -437,9 +437,9 @@ Result<ProceduralBinding> read_procedural_binding(Runtime& runtime, ObjectId obj
                     for (std::size_t i = 0; i < range.default_count; ++i) {
                         ATELIER_TRY_BIND(ref, runtime.sequence_read(*inst_field, range.default_offset + i));
                         ATELIER_TRY_BIND(root, runtime.hold(*ref));
-                        asset.defaults.push_back({range.default_slots[i], std::move(*root), false});
+                        asset.defaults.add({range.default_slots[i], std::move(*root), false});
                     }
-                    result.resolved_assets.push_back(std::move(asset));
+                    result.resolved_assets.add(std::move(asset));
                 }
             }
             return result;

@@ -154,9 +154,9 @@ struct RagdollPose {
 
     std::uint64_t step_id{};
 
-    std::vector<math::Vector3> positions;
+    Array<math::Vector3> positions;
 
-    std::vector<math::Quaternion> rotations;
+    Array<math::Quaternion> rotations;
 };
 
 // Authoring components use the existing Runtime graph and scene properties.
@@ -219,14 +219,14 @@ public:
 
 [[nodiscard]] Result<ObjectId> constraint_target(Runtime&, ObjectId component);
 
-[[nodiscard]] Result<void> set_ragdoll_parts(Runtime&, ObjectId component, std::span<const ObjectId> entities);
+[[nodiscard]] Result<void> set_ragdoll_parts(Runtime&, ObjectId component, Span<const ObjectId> entities);
 
-[[nodiscard]] Result<std::vector<ObjectId>> ragdoll_parts(Runtime&, ObjectId component);
+[[nodiscard]] Result<Array<ObjectId>> ragdoll_parts(Runtime&, ObjectId component);
 
 // Persistent query exclusions may change while active and affect the next sample.
-[[nodiscard]] Result<void> set_query_ignored_entities(Runtime&, ObjectId component, std::span<const ObjectId> entities);
+[[nodiscard]] Result<void> set_query_ignored_entities(Runtime&, ObjectId component, Span<const ObjectId> entities);
 
-[[nodiscard]] Result<std::vector<ObjectId>> query_ignored_entities(Runtime&, ObjectId component);
+[[nodiscard]] Result<Array<ObjectId>> query_ignored_entities(Runtime&, ObjectId component);
 
 namespace detail {
 class ComponentSimulation;
@@ -267,9 +267,9 @@ struct QueryFilter {
     QueryPolicy policy{QueryPolicy::interaction};
 
     // Borrowed only for the duration of the synchronous call.
-    std::span<const ObjectId> ignored_entities{};
+    Span<const ObjectId> ignored_entities{};
 
-    std::span<const ObjectId> ignored_components{};
+    Span<const ObjectId> ignored_components{};
 
     bool include_sensors{true};
 
@@ -307,7 +307,7 @@ struct QueryHit {
 struct QueryResult {
     std::uint64_t step_id{};
 
-    std::vector<QueryHit> hits;
+    Array<QueryHit> hits;
 
     bool overflow{};
 
@@ -345,9 +345,9 @@ struct TraceSettings {
 };
 
 struct QueryIgnore {
-    std::span<const ObjectId> entities{};
+    Span<const ObjectId> entities{};
 
-    std::span<const ObjectId> components{};
+    Span<const ObjectId> components{};
 };
 
 // Configuration is persistent; results/requests are transient. Script Tick reads
@@ -457,7 +457,7 @@ public:
     // up to one step. Empty while paused. Simulated Entities below a moved one are listed
     // with equal poses. A created, teleported or relocated Entity starts again from its new pose.
     // Borrowed until the scene's next update, pose/lifecycle edit, pause or destruction.
-    [[nodiscard]] std::span<const world::PresentedPose> presented_poses() const noexcept { return presented_; }
+    [[nodiscard]] Span<const world::PresentedPose> presented_poses() const noexcept { return presented_; }
 
     [[nodiscard]] Result<void> set_gravity(math::Vector3);
 
@@ -492,7 +492,7 @@ public:
 
     [[nodiscard]] Result<void> destroy_character(SpecialHandle);
 
-    [[nodiscard]] Result<SpecialHandle> create_ragdoll(ObjectId entity, std::span<const RagdollPart> parts);
+    [[nodiscard]] Result<SpecialHandle> create_ragdoll(ObjectId entity, Span<const RagdollPart> parts);
 
     [[nodiscard]] Result<SpecialHandle> ragdoll_handle(ObjectId entity) const;
 
@@ -549,7 +549,7 @@ private:
     // Lookup failures answer true, so an unknown Entity is never translated.
     [[nodiscard]] bool writes_pose(ObjectId entity) const;
 
-    [[nodiscard]] Result<void> relocate(std::span<const ObjectId> entities);
+    [[nodiscard]] Result<void> relocate(Span<const ObjectId> entities);
 
     [[nodiscard]] Result<void> lifecycle(world::Lifecycle, ObjectId);
 
@@ -570,7 +570,7 @@ private:
 
     // Draws created or relocated Entities at these World poses until a step publishes them;
     // that step moves from here.
-    void hold_poses(std::span<const world::SimulationPose>);
+    void hold_poses(Span<const world::SimulationPose>);
 
     // Rebuilds presented_ from the latest published step and the fraction of a step left over.
     void present();
@@ -608,7 +608,7 @@ private:
 
     StepResult last_step_{};
 
-    std::vector<world::PresentedPose> presented_;
+    Array<world::PresentedPose> presented_;
 
     float remaining_{};
 

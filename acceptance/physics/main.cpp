@@ -12,7 +12,6 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
-#include <vector>
 #include <string_view>
 
 namespace {

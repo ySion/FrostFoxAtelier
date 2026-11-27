@@ -1,4 +1,7 @@
 #include "detail/shader_compiler.hpp"
+#include "foundation/array.hpp"
+#include "foundation/inline_array.hpp"
+#include "foundation/optional.hpp"
 #include "platform/utf.hpp"
 
 #include <bcrypt.h>
@@ -11,10 +14,8 @@
 #include <cstring>
 #include <fstream>
 #include <mutex>
-#include <optional>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 namespace atelier::rhi::detail {
 namespace {
@@ -76,10 +77,10 @@ public:
         add(text.data(), text.size() * sizeof(Char));
     }
 
-    std::optional<Digest> finish() {
+    Optional<Digest> finish() {
         Digest digest{};
         if (!ok_ || !BCRYPT_SUCCESS(BCryptFinishHash(hash_, digest.data(), static_cast<ULONG>(digest.size()), 0)))
-            return std::nullopt;
+            return {};
         return digest;
     }
 
@@ -89,7 +90,7 @@ private:
     bool ok_{};
 };
 
-std::optional<Digest> checksum(std::string_view bytecode, std::string_view reflection) {
+Optional<Digest> checksum(std::string_view bytecode, std::string_view reflection) {
     Sha256 hash;
     hash.add(bytecode.data(), bytecode.size());
     hash.add(reflection.data(), reflection.size());
@@ -141,7 +142,7 @@ void trim(const std::filesystem::path& directory) {
 
         std::uintmax_t size;
     };
-    std::vector<Entry> entries;
+    Array<Entry> entries;
     std::uintmax_t total = 0;
     for (std::filesystem::directory_iterator it(directory, error), end; !error && it != end; it.increment(error)) {
         std::error_code entry_error;
@@ -151,7 +152,7 @@ void trim(const std::filesystem::path& directory) {
         const auto time = it->last_write_time(entry_error);
         if (entry_error)
             continue;
-        entries.push_back({time, it->path(), size});
+        entries.add({time, it->path(), size});
         total += size;
     }
     if (total <= cache_limit)
@@ -166,20 +167,20 @@ void trim(const std::filesystem::path& directory) {
 }
 
 // Any unreadable, truncated or inconsistent entry is a miss; compilation then overwrites it.
-std::optional<CompiledShader> load(IDxcUtils& utils, const std::filesystem::path& file) {
+Optional<CompiledShader> load(IDxcUtils& utils, const std::filesystem::path& file) {
     std::ifstream in(file, std::ios::binary | std::ios::ate);
     if (!in)
-        return std::nullopt;
+        return {};
     const auto size = static_cast<std::uint64_t>(in.tellg());
     CacheHeader header{};
     if (size < sizeof header || !in.seekg(0).read(reinterpret_cast<char*>(&header), sizeof header) ||
         header.magic != cache_magic || header.format != cache_format || !header.bytecode_size ||
         !header.reflection_size || header.bytecode_size >= size - sizeof header ||
         header.reflection_size != size - sizeof header - header.bytecode_size)
-        return std::nullopt;
+        return {};
     std::string payload(static_cast<std::size_t>(size - sizeof header), '\0');
     if (!in.read(payload.data(), static_cast<std::streamsize>(payload.size())))
-        return std::nullopt;
+        return {};
     const std::string_view bytecode(payload.data(), header.bytecode_size);
     const std::string_view reflection(payload.data() + header.bytecode_size, header.reflection_size);
     CompiledShader cached;
@@ -188,7 +189,7 @@ std::optional<CompiledShader> load(IDxcUtils& utils, const std::filesystem::path
     if (checksum(bytecode, reflection) != header.checksum ||
         FAILED(utils.CreateBlob(bytecode.data(), static_cast<UINT32>(bytecode.size()), DXC_CP_ACP, &blob)) ||
         FAILED(utils.CreateReflection(&reflection_buffer, IID_PPV_ARGS(&cached.reflection))))
-        return std::nullopt;
+        return {};
     cached.bytecode = std::move(blob);
     return cached;
 }
@@ -247,11 +248,11 @@ Result<ShaderCompiler> ShaderCompiler::open(std::filesystem::path cache) {
 }
 
 Result<CompiledShader> ShaderCompiler::compile(const ShaderSource& source) {
-    std::vector<LPCWSTR> arguments{source.name.c_str(), L"-enable-16bit-types"};
-    for (LPCWSTR argument : {L"-I", L".", L"-T", source.profile.c_str(), L"-HV 2021", L"-Wno-parameter-usage",
-                             L"-fdiagnostics-format=msvc", DXC_ARG_ALL_RESOURCES_BOUND, DXC_ARG_RESOURCES_MAY_ALIAS,
-                             L"-E", source.entry.c_str()})
-        arguments.push_back(argument);
+    InlineArray<LPCWSTR, 16> arguments{
+        source.name.c_str(),     L"-enable-16bit-types",     L"-I",  L".",
+        L"-T",                   source.profile.c_str(),     L"-HV 2021",
+        L"-Wno-parameter-usage", L"-fdiagnostics-format=msvc", DXC_ARG_ALL_RESOURCES_BOUND,
+        DXC_ARG_RESOURCES_MAY_ALIAS, L"-E",                  source.entry.c_str()};
 
     std::filesystem::path entry;
     if (!cache_.empty()) {

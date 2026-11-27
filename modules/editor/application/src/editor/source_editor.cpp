@@ -102,7 +102,7 @@ Result<void> SourceEditor::open(const std::filesystem::path& path) {
     ATELIER_TRY(load(*file, std::move(*bytes)));
     selected_ = file->key;
     problem_line_ = 0;
-    files_.push_back(std::move(file));
+    files_.add(std::move(file));
     return {};
 }
 
@@ -145,7 +145,7 @@ Result<void> SourceEditor::reload(File& file) {
 }
 
 void SourceEditor::close(ui::ControlKey key) {
-    std::erase_if(files_, [&](const auto& file) { return file->key == key; });
+    files_.remove_if([&](const auto& file) { return file->key == key; });
     if (selected_ == key)
         selected_ = files_.empty() ? 0 : files_.back()->key;
     problem_line_ = 0;
@@ -184,7 +184,7 @@ void SourceEditor::poll(bool composing) {
             continue;
         }
         file->storage_error.clear();
-        file->stamp = error ? std::nullopt : std::optional{stamp};
+        file->stamp = error ? Optional<std::filesystem::file_time_type>{} : Optional{stamp};
         file->disk_size = size;
         if (*disk == file->disk) {
             file->conflict = false;
@@ -199,19 +199,19 @@ void SourceEditor::poll(bool composing) {
     }
 }
 
-std::vector<ui::MenuItem> SourceEditor::menu_items() const {
-    std::vector<ui::MenuItem> result;
+Array<ui::MenuItem> SourceEditor::menu_items() const {
+    Array<ui::MenuItem> result;
     for (const auto& file : files_)
-        result.push_back({file->key,
-                          bounded(file->path.wstring() + (file->dirty() ? L" *" : L"")),
-                          true,
-                          file->key == selected_,
-                          {},
-                          L"",
-                          false,
-                          {},
-                          ui::MenuBehavior::radio,
-                          source_control::files});
+        result.add({file->key,
+                    bounded(file->path.wstring() + (file->dirty() ? L" *" : L"")),
+                    true,
+                    file->key == selected_,
+                    {},
+                    L"",
+                    false,
+                    {},
+                    ui::MenuBehavior::radio,
+                    source_control::files});
     return result;
 }
 

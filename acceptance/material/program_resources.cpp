@@ -129,7 +129,7 @@ int main() {
                     math_fp.contains("ms_ddistance_squared("),
                 "Material HLSL/coverage/footprint failed to emit DXC-safe scalar splat or Batch 1 math helpers.");
         const auto math_surface =
-            take(resolve_source(take(make_definition(math_mat, {}, std::span<const TextureDefault>{})), {}));
+            take(resolve_source(take(make_definition(math_mat, {}, Span<const TextureDefault>{})), {}));
         const auto math_eval = take(math_surface->evaluate({}));
         // prod = (1.5, 3.0, 4.5) -> round ties-to-even = (2.0, 3.0, 4.0); d2=25, len2=9, dist=5, angle=180 -> 2.19.
         require(
@@ -155,7 +155,7 @@ int main() {
                 return o;
             })"));
         const auto const_eval =
-            take(take(resolve_source(take(make_definition(const_mat, {}, std::span<const TextureDefault>{})), {}))
+            take(take(resolve_source(take(make_definition(const_mat, {}, Span<const TextureDefault>{})), {}))
                      ->evaluate({}));
         require(std::abs(const_eval.base_color.z - 0.4f) < 1e-6f && std::abs(const_eval.coverage - 0.5f) < 1e-6f &&
                     take(const_mat->hlsl("test_const")).contains("ms_shade"),
@@ -165,15 +165,15 @@ int main() {
             Context unaligned_ctx_val{};
             unaligned_ctx_val.normal_world = {0.0f, 1.0f, 0.0f};
             const float unaligned_bias = 0.75f;
-            std::vector<std::byte> raw_ctx(sizeof(Context) + 1);
-            std::vector<std::byte> raw_params(const_mat->parameter_layout().size + 1);
-            std::vector<std::byte> raw_out(sizeof(Output) + 1);
+            Array<std::byte> raw_ctx(sizeof(Context) + 1);
+            Array<std::byte> raw_params(const_mat->parameter_layout().size + 1);
+            Array<std::byte> raw_out(sizeof(Output) + 1);
             std::memcpy(raw_ctx.data() + 1, &unaligned_ctx_val, sizeof(Context));
             std::memcpy(raw_params.data() + 1, &unaligned_bias, sizeof(unaligned_bias));
             take(const_mat->evaluate(
-                std::span<const std::byte>{raw_ctx.data() + 1, sizeof(Context)},
-                std::span<const std::byte>{raw_params.data() + 1, const_mat->parameter_layout().size},
-                std::span<std::byte>{raw_out.data() + 1, sizeof(Output)}));
+                Span<const std::byte>{raw_ctx.data() + 1, sizeof(Context)},
+                Span<const std::byte>{raw_params.data() + 1, const_mat->parameter_layout().size},
+                Span<std::byte>{raw_out.data() + 1, sizeof(Output)}));
             Output unaligned_out{};
             std::memcpy(&unaligned_out, raw_out.data() + 1, sizeof(Output));
             require(std::abs(unaligned_out.coverage - 0.75f) < 1e-6f &&

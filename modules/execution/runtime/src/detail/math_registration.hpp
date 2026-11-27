@@ -33,7 +33,7 @@ TypeDefinition matrix(Runtime& runtime, std::index_sequence<I...>) {
         std::string field{"m00"};
         field[1] += static_cast<char>(Index / 4);
         field[2] += static_cast<char>(Index % 4);
-        definition.fields.push_back(
+        definition.fields.add(
             {std::move(field),
              {TypeReference::native<Scalar>()},
              [](void* storage) noexcept -> void* { return &static_cast<T*>(storage)->elements[Index]; },
@@ -50,19 +50,19 @@ TypeDefinition matrix(Runtime& runtime, std::index_sequence<I...>) {
 
 // Runtime bootstrap publishes these native values once, through its ordinary
 // registry. Neither the math library nor World maintains another type table.
-[[nodiscard]] inline std::vector<TypeDefinition> type_definitions(Runtime& runtime) {
-    std::vector<TypeDefinition> definitions;
+[[nodiscard]] inline Array<TypeDefinition> type_definitions(Runtime& runtime) {
+    Array<TypeDefinition> definitions;
     definitions.reserve(10);
-    definitions.push_back(detail::components<Vector2>(runtime));
-    definitions.push_back(detail::components<Vector3>(runtime));
-    definitions.push_back(detail::components<Vector4>(runtime));
-    definitions.push_back(detail::components<Quaternion>(runtime));
-    definitions.push_back(detail::matrix<Matrix4>(runtime, std::make_index_sequence<16>{}));
-    definitions.push_back(detail::components<Vector2d>(runtime));
-    definitions.push_back(detail::components<Vector3d>(runtime));
-    definitions.push_back(detail::components<Vector4d>(runtime));
-    definitions.push_back(detail::components<Quaterniond>(runtime));
-    definitions.push_back(detail::matrix<Matrix4d>(runtime, std::make_index_sequence<16>{}));
+    definitions.add(detail::components<Vector2>(runtime));
+    definitions.add(detail::components<Vector3>(runtime));
+    definitions.add(detail::components<Vector4>(runtime));
+    definitions.add(detail::components<Quaternion>(runtime));
+    definitions.add(detail::matrix<Matrix4>(runtime, std::make_index_sequence<16>{}));
+    definitions.add(detail::components<Vector2d>(runtime));
+    definitions.add(detail::components<Vector3d>(runtime));
+    definitions.add(detail::components<Vector4d>(runtime));
+    definitions.add(detail::components<Quaterniond>(runtime));
+    definitions.add(detail::matrix<Matrix4d>(runtime, std::make_index_sequence<16>{}));
     return definitions;
 }
 

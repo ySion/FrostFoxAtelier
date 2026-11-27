@@ -12,7 +12,6 @@
 #include <array>
 #include <cmath>
 #include <numeric>
-#include <vector>
 
 namespace atelier::procedural {
 namespace detail {
@@ -44,18 +43,18 @@ struct Corner {
     Plane incoming;
 };
 
-using Cell = std::vector<Corner>;
+using Cell = Array<Corner>;
 
 // Indexed by the owning Geometry's existing point, primitive and corner
 // arrays. Attribute-only COW copies share these exact numerical constructions.
 struct BooleanBoundary {
     Lattice lattice;
 
-    std::vector<Point> positions;
+    Array<Point> positions;
 
-    std::vector<Plane> faces;
+    Array<Plane> faces;
 
-    std::vector<Plane> incoming;
+    Array<Plane> incoming;
 
     static const BooleanBoundary* get(const Geometry& mesh) { return mesh.boolean_boundary_.get(); }
 
@@ -173,7 +172,7 @@ struct Face {
 
     std::uint32_t primitive;
 
-    std::vector<std::uint32_t> corners;
+    Array<std::uint32_t> corners;
 
     unsigned operand;
 
@@ -220,17 +219,17 @@ struct detail::PreparedBooleanSurface {
         std::size_t right{};
     };
 
-    std::vector<Face> faces;
+    Array<Face> faces;
 
-    std::vector<std::size_t> order;
+    Array<std::size_t> order;
 
-    std::vector<Node> tree;
+    Array<Node> tree;
 
     // For multi-shell operands, store the full bounds of the closed shells
     // represented by each BVH node. Their oriented crossings cancel outside.
-    std::vector<Bounds> shells;
+    Array<Bounds> shells;
 
-    std::vector<Bounds> enclosures;
+    Array<Bounds> enclosures;
 
     void group_shells(const Geometry& mesh) {
         const auto components = detail::point_pieces(mesh);
@@ -243,7 +242,7 @@ struct detail::PreparedBooleanSurface {
             const auto entry = used.try_emplace(component(face), static_cast<std::uint32_t>(shells.size()));
             face.shell = *entry.value;
             if (entry.inserted)
-                shells.push_back(face.box);
+                shells.add(face.box);
             else
                 shells[face.shell].include(face.box);
         }
@@ -254,9 +253,9 @@ struct detail::PreparedBooleanSurface {
         for (auto i = begin + 1; i < end; ++i)
             box.include(faces[order[i]].box);
         const auto id = tree.size();
-        tree.push_back({box, begin, end});
+        tree.add({box, begin, end});
         if (!shells.empty())
-            enclosures.push_back(shells[faces[order[begin]].shell]);
+            enclosures.add(shells[faces[order[begin]].shell]);
         if (end - begin > 8) {
             int axis = 0;
             for (int k = 1; k < 3; ++k)
@@ -395,7 +394,7 @@ bool equal_sums(float a, float b, float c, float d) {
     return std::isfinite(a) && std::isfinite(b) && std::isfinite(c) && std::isfinite(d) && sum(a, b) == sum(c, d);
 }
 
-bool fan_independent(const Geometry& mesh, const std::vector<std::uint32_t>& corners, bool parallelogram) {
+bool fan_independent(const Geometry& mesh, const Array<std::uint32_t>& corners, bool parallelogram) {
     for (const auto& attr : mesh.attributes()) {
         if (attr.name == "P" || (attr.layer != Layer::vertex && attr.layer != Layer::point))
             continue;
@@ -444,8 +443,8 @@ Result<PreparedBooleanSurface> make_surface(const Geometry& mesh, const Lattice&
             f.cell.reserve(range.count);
             f.corners.reserve(range.count);
             for (std::uint32_t j = range.first; j < range.first + range.count; ++j) {
-                f.cell.push_back({cached->positions[mesh.vertex_points()[j]], cached->incoming[j]});
-                f.corners.push_back(j);
+                f.cell.add({cached->positions[mesh.vertex_points()[j]], cached->incoming[j]});
+                f.corners.add(j);
             }
             if (!same) {
                 ATELIER_TRY_BIND(plane, change->apply(f.plane));
@@ -459,12 +458,13 @@ Result<PreparedBooleanSurface> make_surface(const Geometry& mesh, const Lattice&
             f.box = point_box(f.cell.front().p);
             for (const auto& c : f.cell)
                 f.box.include(point_box(c.p));
-            result.faces.push_back(std::move(f));
+            result.faces.add(std::move(f));
         }
     } else {
         ATELIER_TRY_BIND(view, detail::TriangleView::create(mesh));
         ATELIER_TRY(detail::validate_shells(mesh));
-        std::vector<GridPoint> points(mesh.positions().size());
+        Array<GridPoint> points;
+        points.resize(mesh.positions().size());
         for (const auto id : mesh.vertex_points())
             points[id] = grid.encode(mesh.positions()[id]);
         result.faces.reserve(view->size());
@@ -474,7 +474,8 @@ Result<PreparedBooleanSurface> make_surface(const Geometry& mesh, const Lattice&
             const auto point = [&](std::uint32_t corner) -> const GridPoint& {
                 return points[mesh.vertex_points()[corner]];
             };
-            std::vector<std::uint32_t> corners(range.count);
+            Array<std::uint32_t> corners;
+            corners.resize(range.count);
             std::iota(corners.begin(), corners.end(), range.first);
             Plane support{};
             bool collinear_fan = false;
@@ -491,7 +492,7 @@ Result<PreparedBooleanSurface> make_surface(const Geometry& mesh, const Lattice&
             };
             if (support.n == GridPoint{})
                 return invalid_face(" is degenerate on the common 25-bit grid.");
-            auto add_face = [&](std::vector<std::uint32_t> ids, Plane plane) -> Result<void> {
+            auto add_face = [&](Array<std::uint32_t> ids, Plane plane) -> Result<void> {
                 if (plane.n == GridPoint{})
                     return invalid_face(" is degenerate on the common 25-bit grid.");
                 auto position = [&](auto c) { return math::Vector3d(mesh.positions()[mesh.vertex_points()[c]]); };
@@ -511,14 +512,14 @@ Result<PreparedBooleanSurface> make_surface(const Geometry& mesh, const Lattice&
                     const auto edge = edge_plane(point(prev), p, axis);
                     if (edge.n == GridPoint{})
                         return invalid_face(" is degenerate on the common 25-bit grid.");
-                    f.cell.push_back({homogeneous(p), plane.n[axis] < 0 ? edge.flipped() : edge});
+                    f.cell.add({homogeneous(p), plane.n[axis] < 0 ? edge.flipped() : edge});
                     f.box.include({p, p});
                     prev = c;
                 }
                 for (std::size_t i = 0; i < f.cell.size(); ++i)
                     if (f.cell[i].incoming.side(f.cell[(i + 1) % f.cell.size()].p) < 0)
                         return invalid_face(" has a reversed corner on the common 25-bit grid.");
-                result.faces.push_back(std::move(f));
+                result.faces.add(std::move(f));
                 return {};
             };
             bool parallelogram = corners.size() == 4;
@@ -605,7 +606,7 @@ struct FaceScratch {
 };
 
 template <class Select>
-void divide(std::vector<Cell>& cells, const Plane& face, const Plane& cut, FaceScratch& scratch, Select&& select) {
+void divide(Array<Cell>& cells, const Plane& face, const Plane& cut, FaceScratch& scratch, Select&& select) {
     const auto count = cells.size();
     for (std::size_t i = 0; i < count; ++i) {
         const auto& old = cells[i];
@@ -625,13 +626,13 @@ void divide(std::vector<Cell>& cells, const Plane& face, const Plane& cut, FaceS
             int side = cut.side(c.p);
             if (previous * side < 0) {
                 const auto p = intersection(face, c.incoming, cut);
-                above.push_back({p, previous > 0 ? c.incoming : cut});
-                below.push_back({p, previous < 0 ? c.incoming : cut.flipped()});
+                above.add({p, previous > 0 ? c.incoming : cut});
+                below.add({p, previous < 0 ? c.incoming : cut.flipped()});
             }
             if (side >= 0)
-                above.push_back({c.p, side == 0 && previous < 0 ? cut : c.incoming});
+                above.add({c.p, side == 0 && previous < 0 ? cut : c.incoming});
             if (side <= 0)
-                below.push_back({c.p, side == 0 && previous > 0 ? cut.flipped() : c.incoming});
+                below.add({c.p, side == 0 && previous > 0 ? cut.flipped() : c.incoming});
             previous = side;
         }
         if (scratch.stats) {
@@ -642,7 +643,7 @@ void divide(std::vector<Cell>& cells, const Plane& face, const Plane& cut, FaceS
             ++scratch.stats->splits;
         }
         cells[i] = std::move(above);
-        cells.push_back(std::move(below));
+        cells.add(std::move(below));
         if (scratch.stats)
             scratch.observe(cells.capacity() * sizeof(Cell));
     }
@@ -822,7 +823,7 @@ Crossings winding(const Cell& cell, int axis, const PreparedBooleanSurface& targ
 }
 
 // Decide which side of the source boundary contributes to the regularized solid.
-std::optional<bool> output_orientation(const Face& f, int axis, Crossings winding, BooleanOperation op) {
+Optional<bool> output_orientation(const Face& f, int axis, Crossings winding, BooleanOperation op) {
     const auto [above, at] = winding;
     if (at && f.operand == 1)
         return {}; // A owns coincident boundaries.
@@ -842,17 +843,18 @@ bool interior_contains(const Cell& cell, const Point& point) {
 }
 
 Result<void> arrange(const Geometry& mesh, const PreparedBooleanSurface& source, const PreparedBooleanSurface& other,
-                     BooleanOperation op, std::vector<Patch>& patches, BooleanStats* stats) {
+                     BooleanOperation op, Array<Patch>& patches, BooleanStats* stats) {
     enum class Location : std::uint8_t { unknown, outside, inside };
-    std::vector<Location> locations(mesh.count(Layer::point));
+    Array<Location> locations;
+    locations.resize(mesh.count(Layer::point));
     for (const auto& f : source.faces) {
         const int axis = f.plane.axis();
         if (other.tree.empty() || !other.tree.front().box.overlaps(f.box, -1)) {
             if (auto reverse = output_orientation(f, axis, {}, op))
-                patches.push_back({&f, {}, *reverse});
+                patches.add({&f, {}, *reverse});
             continue;
         }
-        std::vector<Cell> cells;
+        Array<Cell> cells;
         bool may_touch = false;
         struct Segment {
             const Face* face;
@@ -861,7 +863,7 @@ Result<void> arrange(const Geometry& mesh, const PreparedBooleanSurface& source,
 
             Section interval;
         };
-        std::vector<Segment> segments;
+        Array<Segment> segments;
         SectionEnds ends;
         const auto all = [](const Cell&) { return true; };
         FaceScratch scratch{stats};
@@ -872,7 +874,7 @@ Result<void> arrange(const Geometry& mesh, const PreparedBooleanSurface& source,
         };
         auto split = [&](const Plane& cut, const auto& select) {
             if (cells.empty()) {
-                cells.push_back(f.cell);
+                cells.add(f.cell);
                 if (stats) {
                     scratch.corner_bytes = cells.front().capacity() * sizeof(Corner);
                     scratch.observe(cells.capacity() * sizeof(Cell));
@@ -912,7 +914,7 @@ Result<void> arrange(const Geometry& mesh, const PreparedBooleanSurface& source,
                     ends_inside = true;
                     split(*end.support, [&](const Cell& cell) { return interior_contains(cell, end.p); });
                 }
-                segments.push_back({&g, ends_inside, section});
+                segments.add({&g, ends_inside, section});
                 if (stats)
                     observe_sections();
             }
@@ -945,19 +947,19 @@ Result<void> arrange(const Geometry& mesh, const PreparedBooleanSurface& source,
                 hit.above = known == Location::inside;
             }
             if (auto reverse = output_orientation(f, axis, hit, op))
-                patches.push_back({&f, {}, *reverse});
+                patches.add({&f, {}, *reverse});
             continue;
         }
         const auto first_patch = patches.size();
         for (auto& c : cells)
             if (auto reverse = output_orientation(f, axis, winding(c, axis, other, stats), op))
-                patches.push_back({&f, std::move(c), *reverse});
+                patches.add({&f, std::move(c), *reverse});
         if (patches.size() - first_patch == cells.size()) {
             const bool reversed = patches[first_patch].reverse;
             if (std::all_of(patches.begin() + first_patch, patches.end(),
                             [&](const Patch& p) { return p.reverse == reversed; })) {
                 patches.resize(first_patch);
-                patches.push_back({&f, {}, reversed});
+                patches.add({&f, {}, reversed});
             }
         }
     }
@@ -967,21 +969,21 @@ Result<void> arrange(const Geometry& mesh, const PreparedBooleanSurface& source,
 struct Piece {
     const Face* face;
 
-    std::vector<std::uint32_t> vertices;
+    Array<std::uint32_t> vertices;
 
-    std::vector<Plane> incoming;
+    Array<Plane> incoming;
 
     bool reverse;
 };
 
 struct MeshBuilder {
-    std::vector<Point> points;
+    Array<Point> points;
 
-    std::vector<math::Vector3> decoded;
+    Array<math::Vector3> decoded;
 
-    std::vector<Piece> pieces;
+    Array<Piece> pieces;
 
-    Result<void> sew(const std::vector<Patch>& patches, const Lattice& grid) {
+    Result<void> sew(const Array<Patch>& patches, const Lattice& grid) {
         struct Support {
             const Plane* face;
 
@@ -1008,8 +1010,8 @@ struct MeshBuilder {
 
             std::uint32_t point;
         };
-        std::vector<LinePoints> lines;
-        std::vector<Endpoint> ends;
+        Array<LinePoints> lines;
+        Array<Endpoint> ends;
         std::size_t corner_count = 0;
         for (const auto& patch : patches)
             corner_count += patch.boundary().size();
@@ -1025,15 +1027,15 @@ struct MeshBuilder {
                     if (point.inserted) {
                         if (points.size() >= element_limit)
                             return failure("Boolean point limit exceeded.");
-                        points.push_back(c.p);
-                        decoded.push_back(grid.decode(c.p));
+                        points.add(c.p);
+                        decoded.add(grid.decode(c.p));
                     }
                     Line key(patch.face->plane, c.incoming);
                     const Support support{&patch.face->plane, &c.incoming, key.hash()};
                     auto line = line_index.try_emplace(support, lines.size());
                     if (line.inserted)
-                        lines.push_back({key.axis, {}});
-                    ends.push_back({*line.value, *point.value});
+                        lines.add({key.axis, {}});
+                    ends.add({*line.value, *point.value});
                 }
                 auto previous = ends.back().point;
                 for (auto i = first; i < ends.size(); ++i) {
@@ -1068,8 +1070,8 @@ struct MeshBuilder {
                 const auto& next = c[j];
                 const auto& [line_axis, ids] = lines[ends[first + j].line];
                 if (ids.size() == 2) {
-                    piece.vertices.push_back(ends[first + i].point);
-                    piece.incoming.push_back(next.incoming);
+                    piece.vertices.add(ends[first + i].point);
+                    piece.incoming.add(next.incoming);
                     continue;
                 }
                 auto at = [&](const Point& p) {
@@ -1080,8 +1082,8 @@ struct MeshBuilder {
                 auto start = at(c[i].p);
                 auto end = at(next.p);
                 for (auto it = start; it != end; start < end ? ++it : --it) {
-                    piece.vertices.push_back(*it);
-                    piece.incoming.push_back(next.incoming); // Outgoing until the loop is complete.
+                    piece.vertices.add(*it);
+                    piece.incoming.add(next.incoming); // Outgoing until the loop is complete.
                 }
             }
             first += c.size();
@@ -1089,7 +1091,7 @@ struct MeshBuilder {
                 std::reverse(piece.vertices.begin(), piece.vertices.end());
                 std::reverse(piece.incoming.begin(), piece.incoming.end());
             } else {
-                std::rotate(piece.incoming.rbegin(), piece.incoming.rbegin() + 1, piece.incoming.rend());
+                std::rotate(piece.incoming.begin(), piece.incoming.end() - 1, piece.incoming.end());
             }
             // The rest of Geometry tessellates a convex polygon from its first
             // corner. Pick a fan whose visible triangles retain their orientation.
@@ -1126,7 +1128,7 @@ struct MeshBuilder {
             }
             std::rotate(piece.vertices.begin(), piece.vertices.begin() + start, piece.vertices.end());
             std::rotate(piece.incoming.begin(), piece.incoming.begin() + start, piece.incoming.end());
-            pieces.push_back(std::move(piece));
+            pieces.add(std::move(piece));
         }
         return {};
     }
@@ -1184,8 +1186,8 @@ Result<Sample> sample(const Piece& piece, const Point& p) {
     return failure("Boolean boundary sample lies outside its exact source polygon.");
 }
 
-Result<void> attributes(Geometry& out, const std::array<const Geometry*, 2>& inputs, const std::vector<Piece>& pieces,
-                        const std::vector<Sample>& corners, const std::vector<std::uint32_t>& donors) {
+Result<void> attributes(Geometry& out, const std::array<const Geometry*, 2>& inputs, const Array<Piece>& pieces,
+                        const Array<Sample>& corners, const Array<std::uint32_t>& donors) {
     for (unsigned side = 0; side < 2; ++side) {
         for (const auto& attr : inputs[side]->attributes()) {
             const auto name = attr.name.view();
@@ -1258,9 +1260,12 @@ Result<void> attributes(Geometry& out, const std::array<const Geometry*, 2>& inp
 // Build point identities by pairing opposite halfedges. Independent shells
 // that touch at a vertex occupy distinct point fans at the same coordinate.
 struct Fans {
-    std::vector<std::uint32_t> parent;
+    Array<std::uint32_t> parent;
 
-    explicit Fans(std::size_t n) : parent(n) { std::iota(parent.begin(), parent.end(), 0u); }
+    explicit Fans(std::size_t n) {
+        parent.resize_uninitialized(n);
+        std::iota(parent.begin(), parent.end(), 0u);
+    }
 
     std::uint32_t root(std::uint32_t v) {
         while (v != parent[v]) {
@@ -1282,23 +1287,33 @@ Result<Geometry> publish(const MeshBuilder& mesh, const Lattice& grid, const std
 
         std::uint32_t corner;
     };
-    std::vector<Edge> edges;
-    std::vector<std::uint32_t> ids;
-    std::vector<std::uint32_t> next;
-    std::vector<std::uint32_t> owners;
-    Array<std::uint32_t> offsets{0};
+    std::size_t total_corners = 0;
+    for (const auto& piece : pieces) {
+        if (piece.vertices.size() > element_limit - total_corners)
+            return failure("Boolean corner limit exceeded.");
+        total_corners += piece.vertices.size();
+    }
+    Array<Edge> edges;
+    edges.reserve(total_corners);
+    Array<std::uint32_t> ids;
+    ids.reserve(total_corners);
+    Array<std::uint32_t> next;
+    next.reserve(total_corners);
+    Array<std::uint32_t> owners;
+    owners.reserve(total_corners);
+    Array<std::uint32_t> offsets;
+    offsets.reserve(pieces.size() + 1);
+    offsets.add(0);
     for (std::uint32_t i = 0; i < pieces.size(); ++i) {
         const auto& loop = pieces[i].vertices;
-        if (ids.size() + loop.size() > element_limit)
-            return failure("Boolean corner limit exceeded.");
         const auto start = std::uint32_t(ids.size());
         for (std::size_t j = 0; j < loop.size(); ++j) {
             auto a = loop[j];
             auto b = loop[(j + 1) % loop.size()];
-            edges.push_back({std::min(a, b), std::max(a, b), std::uint32_t(ids.size())});
-            ids.push_back(a);
-            owners.push_back(i);
-            next.push_back(start + std::uint32_t((j + 1) % loop.size()));
+            edges.add({std::min(a, b), std::max(a, b), std::uint32_t(ids.size())});
+            ids.add(a);
+            owners.add(i);
+            next.add(start + std::uint32_t((j + 1) % loop.size()));
         }
         offsets.add(std::uint32_t(ids.size()));
     }
@@ -1324,7 +1339,7 @@ Result<Geometry> publish(const MeshBuilder& mesh, const Lattice& grid, const std
                 const auto& face = *pieces[owners[edge.corner]].face;
                 return std::pair{face.operand, face.shell};
             };
-            std::ranges::stable_sort(std::span{edges}.subspan(i, end - i), {}, shell_key);
+            std::ranges::stable_sort(edges.view().slice(i, end - i), {}, shell_key);
             for (auto j = i; j < end;) {
                 const auto first = j++;
                 const auto key = shell_key(edges[first]);
@@ -1340,28 +1355,30 @@ Result<Geometry> publish(const MeshBuilder& mesh, const Lattice& grid, const std
     }
     Array<math::Vector3> positions;
     Array<std::uint32_t> vertices;
-    std::vector<Sample> samples;
-    std::vector<std::uint32_t> donors;
-    std::vector<std::uint32_t> root_ids(edges.size(), UINT32_MAX);
+    vertices.reserve(edges.size());
+    Array<Sample> samples;
+    samples.reserve(edges.size());
+    Array<std::uint32_t> donors;
+    Array<std::uint32_t> root_ids(edges.size(), UINT32_MAX);
     auto boundary = std::make_shared<BooleanBoundary>();
     boundary->lattice = grid;
     boundary->faces.reserve(pieces.size());
     boundary->positions.reserve(mesh.points.size());
     boundary->incoming.reserve(edges.size());
     for (const auto& piece : pieces) {
-        boundary->faces.push_back(piece.reverse ? piece.face->plane.flipped() : piece.face->plane);
+        boundary->faces.add(piece.reverse ? piece.face->plane.flipped() : piece.face->plane);
         for (std::size_t i = 0; i < piece.vertices.size(); ++i) {
             const auto v = piece.vertices[i];
-            boundary->incoming.push_back(piece.incoming[i]);
+            boundary->incoming.add(piece.incoming[i]);
             ATELIER_TRY_BIND(value, sample(piece, mesh.points[v]));
             const auto corner = static_cast<std::uint32_t>(vertices.size());
-            samples.push_back(*value);
+            samples.add(*value);
             auto& point = root_ids[fans.root(corner)];
             if (point == UINT32_MAX) {
                 point = static_cast<std::uint32_t>(positions.size());
                 positions.add(mesh.decoded[v]);
-                boundary->positions.push_back(mesh.points[v]);
-                donors.push_back(corner);
+                boundary->positions.add(mesh.points[v]);
+                donors.add(corner);
             }
             vertices.add(point);
         }
@@ -1406,7 +1423,7 @@ Result<Geometry> solid_boolean(const Geometry& a, const Geometry& b, BooleanOper
                                   [&] { return prepare_operand(b, *grid, 1, scratch[1], stats); }));
     if (stats)
         stats->input_faces += (*right)->faces.size();
-    std::vector<Patch> patches;
+    Array<Patch> patches;
     ATELIER_TRY(stage(stats, &BooleanStats::arrange, "Boolean arrange A",
                       [&] { return arrange(a, **left, **right, operation, patches, stats); }));
     ATELIER_TRY(stage(stats, &BooleanStats::arrange, "Boolean arrange B",

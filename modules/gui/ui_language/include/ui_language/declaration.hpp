@@ -1,12 +1,12 @@
 #pragma once
 
+#include "foundation/array.hpp"
 #include "language/source.hpp"
 #include "ui/detail/number_bits.hpp"
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <variant>
-#include <vector>
 
 namespace atelier::ui_language {
 
@@ -218,7 +218,7 @@ struct SourceMapping {
 struct PreparedHelpers {
     std::string generated_source;
 
-    std::vector<SourceMapping> mappings;
+    Array<SourceMapping> mappings;
 };
 
 // UI structure, static/direct bindings and source positions. Computed
@@ -237,23 +237,23 @@ struct Declaration {
 
     bool needs_jit{};
 
-    std::vector<Input> inputs;
+    Array<Input> inputs;
 
-    std::vector<State> states;
+    Array<State> states;
 
-    std::vector<Node> nodes;
+    Array<Node> nodes;
 
-    std::vector<Binding> bindings;
+    Array<Binding> bindings;
 
-    std::vector<Event> events;
+    Array<Event> events;
 
-    std::vector<SourceMapping> mappings;
+    Array<SourceMapping> mappings;
 };
 
 [[nodiscard]] std::expected<Declaration, language::Diagnostic> lower(std::string_view source_name,
                                                                      std::string_view source);
 
-[[nodiscard]] std::expected<std::vector<Declaration>, language::Diagnostic> lower_module(std::string_view source_name,
-                                                                                         std::string_view source);
+[[nodiscard]] std::expected<Array<Declaration>, language::Diagnostic> lower_module(std::string_view source_name,
+                                                                                   std::string_view source);
 
 } // namespace atelier::ui_language

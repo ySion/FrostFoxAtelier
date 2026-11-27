@@ -33,7 +33,7 @@ Result<logging::Entry> error_diagnostic(const Error&, std::string_view event, co
 Result<logging::Entry> world_diagnostic(const editor::Session&, const world::Diagnostic&,
                                         const std::filesystem::path& root, std::string_view origin = "world");
 
-void report_world(const editor::Session&, std::span<const world::Diagnostic>, const std::filesystem::path& root,
+void report_world(const editor::Session&, Span<const world::Diagnostic>, const std::filesystem::path& root,
                   std::string_view origin = "world") noexcept;
 
 void drain_world(editor::Session&, const std::filesystem::path& root, std::uint64_t& dropped) noexcept;

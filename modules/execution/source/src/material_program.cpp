@@ -1,5 +1,6 @@
 #include "source/material_program.hpp"
 #include "source/detail/bridge.hpp"
+#include "foundation/bit_vector.hpp"
 #include "language/material.hpp"
 #include "runtime/detail/type_publication.hpp"
 
@@ -18,11 +19,11 @@ struct Samples {
 
     const MaterialTexture* indexed[fast_slots];
 
-    std::span<const MaterialTexture> textures;
+    Span<const MaterialTexture> textures;
 
     // The backend stops at the first failed callback. Owning errors stay on
     // the host side; only the status crosses the C ABI.
-    std::optional<Error> error{};
+    Optional<Error> error{};
 
     const MaterialTexture* lookup(std::uint32_t slot) const noexcept {
         if (slot < fast_slots && indexed[slot])
@@ -86,9 +87,9 @@ std::uint32_t sample_orientation(void* invocation, std::uint32_t slot, const flo
 }
 
 struct CheckedLayout {
-    std::vector<std::uint32_t> floats;
+    Array<std::uint32_t> floats;
 
-    std::vector<std::uint32_t> booleans;
+    Array<std::uint32_t> booleans;
 
     bool valid(const std::byte* bytes) const noexcept {
         for (const auto offset : floats)
@@ -104,11 +105,11 @@ struct CheckedLayout {
 void collect_checked_layout(BusinessType type, const BusinessEnvironment& environment, std::uint32_t offset,
                             CheckedLayout& out) {
     if (type == ValueKind::f32) {
-        out.floats.push_back(offset);
+        out.floats.add(offset);
         return;
     }
     if (type == ValueKind::boolean) {
-        out.booleans.push_back(offset);
+        out.booleans.add(offset);
         return;
     }
     if (type.kind != ValueKind::record)
@@ -120,14 +121,14 @@ void collect_checked_layout(BusinessType type, const BusinessEnvironment& enviro
 }
 
 void parameter_fields(BusinessType type, const BusinessEnvironment& environment, std::string path, std::size_t offset,
-                      std::vector<MaterialParameter>& fields) {
+                      Array<MaterialParameter>& fields) {
     if (type == ValueKind::f32) {
-        fields.push_back({std::move(path), 1, offset});
+        fields.add({std::move(path), 1, offset});
         return;
     }
     const auto& layout = environment.values[type.type_index];
     if (layout.math) {
-        fields.push_back({std::move(path), static_cast<std::uint32_t>(layout.math.components()), offset});
+        fields.add({std::move(path), static_cast<std::uint32_t>(layout.math.components()), offset});
         return;
     }
     for (std::uint32_t i = 0; i < layout.field_count; ++i) {
@@ -163,13 +164,13 @@ struct MaterialProgram::State {
 
     MaterialLayout parameters;
 
-    std::vector<MaterialParameter> fields;
+    Array<MaterialParameter> fields;
 
-    std::vector<MaterialTextureInput> textures;
+    Array<MaterialTextureInput> textures;
 
-    std::vector<std::byte> defaults;
+    Array<std::byte> defaults;
 
-    std::vector<std::byte> resource_values;
+    Array<std::byte> resource_values;
 };
 
 MaterialProgram::MaterialProgram(std::shared_ptr<const State> state) : state_(std::move(state)) {}
@@ -186,15 +187,15 @@ MaterialLayout MaterialProgram::parameter_layout() const noexcept {
     return state_->parameters;
 }
 
-std::span<const MaterialParameter> MaterialProgram::parameters() const noexcept {
+Span<const MaterialParameter> MaterialProgram::parameters() const noexcept {
     return state_->fields;
 }
 
-std::span<const std::byte> MaterialProgram::default_parameters() const noexcept {
+Span<const std::byte> MaterialProgram::default_parameters() const noexcept {
     return state_->defaults;
 }
 
-std::span<const MaterialTextureInput> MaterialProgram::textures() const noexcept {
+Span<const MaterialTextureInput> MaterialProgram::textures() const noexcept {
     return state_->textures;
 }
 
@@ -241,9 +242,9 @@ Result<std::string> MaterialProgram::hlsl_coverage(std::string_view name_space) 
     return wrap_hlsl(name_space, state_->view.coverage_hlsl, false);
 }
 
-Result<void> MaterialProgram::evaluate(std::span<const std::byte> context, std::span<const std::byte> parameters,
-                                       std::span<std::byte> output,
-                                       std::span<const MaterialTexture> textures) const noexcept {
+Result<void> MaterialProgram::evaluate(Span<const std::byte> context, Span<const std::byte> parameters,
+                                       Span<std::byte> output,
+                                       Span<const MaterialTexture> textures) const noexcept {
     const auto state = state_; // Samplers may release the caller's last outer owner.
     if (context.size() != state->context.size || parameters.size() != state->parameters.size ||
         output.size() != state->output.size)
@@ -279,7 +280,7 @@ Result<void> MaterialProgram::evaluate(std::span<const std::byte> context, std::
     atelier::detail::ValueStorage parameter_storage;
     auto* output_data = output_storage.prepare(output.size(), state->output.alignment);
     alignas(std::max_align_t) std::byte empty{};
-    const auto aligned_input = [&](std::span<const std::byte> bytes, std::size_t alignment,
+    const auto aligned_input = [&](Span<const std::byte> bytes, std::size_t alignment,
                                    atelier::detail::ValueStorage& staging) -> const void* {
         if (bytes.empty())
             return &empty;
@@ -350,18 +351,18 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
     // Capture ordinary plain defaults while the compile catalog is alive.
     // Preview Source records compose the existing value defaults without
     // ever passing preview TypeIds to live Runtime operations.
-    std::vector<std::vector<std::byte>> initial(binding->values.size());
-    std::vector<bool> captured(binding->values.size());
-    std::optional<Error> default_error;
+    Array<Array<std::byte>> initial(binding->values.size());
+    BitVector captured(binding->values.size());
+    Optional<Error> default_error;
     auto capture_default = [&](this auto&& self, std::uint32_t index) noexcept -> Result<const std::byte*> {
         if (captured[index])
             return initial[index].data();
-        captured[index] = true;
+        captured.set(index);
         const auto& value = binding->values[index];
         initial[index].resize(value.size);
         if (runtime.describe(value.type)) {
             atelier::detail::ValueStorage storage;
-            auto bytes = std::span(storage.prepare(value.size, value.alignment), value.size);
+            auto bytes = Span{storage.prepare(value.size, value.alignment), value.size};
             ATELIER_TRY(runtime.initialize_value(value.type, bytes));
             std::memcpy(initial[index].data(), bytes.data(), bytes.size());
             ATELIER_TRY(runtime.destroy_value(value.type, bytes));
@@ -379,7 +380,7 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
     struct CaptureState {
         decltype(capture_default)& capture;
 
-        std::optional<Error>& error;
+        Optional<Error>& error;
     } defaults{capture_default, default_error};
     const auto capture = [](void* state, std::uint32_t type) noexcept -> const std::byte* {
         auto& context_state = *static_cast<CaptureState*>(state);
@@ -433,8 +434,8 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
             }))
             return fail(Error{ErrorCode::invalid_definition, "Material Resources must be declared by this source."});
         state->resource_values.resize(resources.size);
-        for (const auto& input : std::span(view.textures, view.texture_count)) {
-            state->textures.push_back({input.key, input.slot});
+        for (const auto& input : Span{view.textures, view.texture_count}) {
+            state->textures.add({input.key, input.slot});
             std::memcpy(state->resource_values.data() + input.offset, &input.slot, sizeof(input.slot));
         }
     }

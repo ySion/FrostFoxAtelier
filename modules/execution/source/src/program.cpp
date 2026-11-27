@@ -42,7 +42,7 @@ std::atomic<std::uint64_t> next_entry_code{1};
 struct SourceMap {
     std::shared_ptr<const SourceSnapshot> snapshot;
 
-    std::vector<language::SourcePiece> pieces;
+    Array<language::SourcePiece> pieces;
 };
 
 // Line indexes are optional: eager diagnostic tables pass them, while a single
@@ -53,7 +53,7 @@ bool is_line_break(std::string_view text, std::size_t index) noexcept {
 
 SourceLocation resolve_location(const SourceMap* map, std::string_view path, std::uint64_t version,
                                 const BusinessLocation& position,
-                                const std::vector<std::vector<std::size_t>>* line_starts = nullptr) {
+                                const Array<Array<std::size_t>>* line_starts = nullptr) {
     const auto offset = static_cast<std::size_t>(position.offset);
     if (map)
         for (const auto& piece : map->pieces) {
@@ -84,16 +84,16 @@ SourceLocation resolve_location(const SourceMap* map, std::string_view path, std
 }
 
 // Only diagnostic and debug captures need every site resolved up front.
-std::shared_ptr<const std::vector<DiagnosticLocation>>
+std::shared_ptr<const Array<DiagnosticLocation>>
 diagnostic_locations(const BusinessCodeInfo& info, const SourceMap* map, std::string_view path, std::uint64_t version,
-                     const std::vector<std::vector<std::size_t>>* line_starts = nullptr) {
+                     const Array<Array<std::size_t>>* line_starts = nullptr) {
     if (!info.diagnostics && !info.debugging)
         return nullptr;
-    auto locations = std::make_shared<std::vector<DiagnosticLocation>>();
+    auto locations = std::make_shared<Array<DiagnosticLocation>>();
     locations->reserve(info.location_count);
     for (std::uint32_t i = 0; i < info.location_count; ++i) {
         const auto& value = info.locations[i];
-        locations->push_back(
+        locations->add(
             {value.function ? value.function : "", resolve_location(map, path, version, value, line_starts)});
     }
     return locations;
@@ -117,15 +117,15 @@ bool same_scalar(const Scalar& a, const Scalar& b) {
         a);
 }
 
-bool same_leaves(const std::vector<Scalar>& a, const std::vector<Scalar>& b) {
+bool same_leaves(Span<const Scalar> a, Span<const Scalar> b) {
     return std::ranges::equal(a, b, same_scalar);
 }
 }
 
 namespace detail {
-Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language::TypeDeclaration>& declarations,
-                                                     std::span<const language::TypeName> array_uses,
-                                                     const Binding& binding) {
+Result<Array<TypeDefinition>> type_definitions(Span<const language::TypeDeclaration> declarations,
+                                               Span<const language::TypeName> array_uses,
+                                               const Binding& binding) {
     auto& runtime = *binding.runtime;
     const auto is_described_element = [&](std::string_view name) {
         if (language::editor_reserved(name) || language::synthesized_array_name(name))
@@ -140,7 +140,7 @@ Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language:
                 return !(*runtime.describe(value.type))->native_storage;
         return false;
     };
-    std::vector<TypeDefinition> synthesized;
+    Array<TypeDefinition> synthesized;
     const auto ensure_synthesized_array = [&](std::string_view base_name, std::uint32_t array_depth) {
         for (std::uint32_t depth = 1; depth <= array_depth; ++depth) {
             auto arr_name = language::make_synthesized_array_name(base_name, depth);
@@ -151,10 +151,10 @@ Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language:
             arr_def.kind = TypeKind::array;
             arr_def.element = TypeReference{depth == 1 ? std::string(base_name)
                                                        : language::make_synthesized_array_name(base_name, depth - 1)};
-            synthesized.push_back(std::move(arr_def));
+            synthesized.add(std::move(arr_def));
         }
     };
-    std::vector<TypeDefinition> definitions;
+    Array<TypeDefinition> definitions;
     for (const auto& declaration : declarations) {
         for (const auto& value : binding.values)
             if (value.math && declaration.name == math::short_name(value.math))
@@ -166,13 +166,14 @@ Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language:
         definition.description = declaration.description;
         definition.kind = declaration.enumeration ? TypeKind::enumeration : TypeKind::record;
         if (declaration.enumeration) {
-            std::vector<EnumeratorMetadata> enum_metadata;
+            Array<EnumeratorMetadata> enum_metadata;
             enum_metadata.reserve(declaration.enumerator_attributes.size());
             for (const auto& attr : declaration.enumerator_attributes)
-                enum_metadata.push_back({attr.label, attr.description});
-            definition.enumeration =
-                TypeDefinition::Enumeration{declaration.signed_enum ? binding.i32 : binding.u32,
-                                            declaration.enumerators, declaration.flags, std::move(enum_metadata)};
+                enum_metadata.add({attr.label, attr.description});
+            definition.enumeration = TypeDefinition::Enumeration{
+                declaration.signed_enum ? binding.i32 : binding.u32,
+                Array<std::pair<std::string, std::uint32_t>>{declaration.enumerators},
+                declaration.flags, std::move(enum_metadata)};
         } else {
             for (std::size_t field_idx = 0; field_idx < declaration.fields.size(); ++field_idx) {
                 const auto& [name, type] = declaration.fields[field_idx];
@@ -229,16 +230,16 @@ Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language:
                 FieldDefinition field_def{name, {std::move(reference)}};
                 if (field_idx < declaration.field_descriptions.size())
                     field_def.description = declaration.field_descriptions[field_idx];
-                definition.fields.push_back(std::move(field_def));
+                definition.fields.add(std::move(field_def));
             }
         }
-        definitions.push_back(std::move(definition));
+        definitions.add(std::move(definition));
     }
     for (const auto& use : array_uses)
         if (use.array_depth > 0 && is_described_element(use.name))
             ensure_synthesized_array(use.name, use.array_depth);
     for (auto& arr : synthesized)
-        definitions.push_back(std::move(arr));
+        definitions.add(std::move(arr));
     return definitions;
 }
 }
@@ -256,19 +257,19 @@ struct Program::Contract {
 
     BusinessServices actual_services;
 
-    std::vector<language::TypeDeclaration> declarations;
+    Array<language::TypeDeclaration> declarations;
 
-    explicit Contract(Binding bound, std::vector<language::TypeDeclaration> source_types = {}) noexcept
+    explicit Contract(Binding bound, Array<language::TypeDeclaration> source_types = {}) noexcept
         : binding(std::move(bound)), type_name(binding.name), actual_services(services),
           declarations(std::move(source_types)) {
         binding.name = type_name;
     }
 
-    std::optional<ValueDescription> value_description(BusinessType kind) const noexcept {
+    Optional<ValueDescription> value_description(BusinessType kind) const noexcept {
         const auto type = value_type_id(binding, kind);
         if (type != TypeId{})
             return ValueDescription{type};
-        return std::nullopt;
+        return {};
     }
 
     Result<FunctionSignature> resolve_signature(const BusinessCodeInfo& info,
@@ -291,7 +292,7 @@ struct Program::Contract {
             const auto value = value_description(kind);
             if (!value)
                 return std::unexpected(Error{ErrorCode::invalid_definition, "Unsupported compiled source parameter."});
-            definition.parameters.push_back(
+            definition.parameters.add(
                 {{reference(kind, value->type), value->form}, info.signature.parameters[i].passing});
         }
         if (info.signature.result != ValueKind::void_value) {
@@ -445,12 +446,11 @@ struct Program::Version : Runtime::RetiredCode {
     }
 
     template <class T>
-    Result<std::optional<Scalar>> invoke_values(ObjectId receiver, std::span<const T> arguments,
-                                                Diagnostics* diagnostics, Debugger* debugger) const {
-        return invoke_captured<std::optional<Scalar>>(
+    Result<Optional<Scalar>> invoke_values(ObjectId receiver, Span<const T> arguments, Diagnostics* diagnostics,
+                                           Debugger* debugger) const {
+        return invoke_captured<Optional<Scalar>>(
             diagnostics, debugger,
-            [&](ExecutionScope& activation, DiagnosticScope* scope,
-                DebugScope* debug_scope) -> Result<std::optional<Scalar>> {
+            [&](ExecutionScope& activation, DiagnosticScope* scope, DebugScope* debug_scope) -> Result<Optional<Scalar>> {
                 if (aggregate(info.signature.result))
                     return std::unexpected(Error{ErrorCode::argument_mismatch,
                                                  "Aggregate source results require typed value output storage."});
@@ -470,7 +470,7 @@ struct Program::Version : Runtime::RetiredCode {
     }
 
     template <class T>
-    Result<void> invoke_values(ObjectId receiver, std::span<const T> arguments, ValueOutput output,
+    Result<void> invoke_values(ObjectId receiver, Span<const T> arguments, ValueOutput output,
                                Diagnostics* diagnostics, Debugger* debugger) const {
         return invoke_captured<void>(
             diagnostics, debugger,
@@ -506,12 +506,12 @@ struct Program::Version : Runtime::RetiredCode {
     }
 
     static Result<Coroutine> start_values(std::shared_ptr<const Version> version, ObjectId receiver,
-                                          std::span<const Scalar> arguments, Diagnostics* diagnostics,
+                                          Span<const Scalar> arguments, Diagnostics* diagnostics,
                                           Debugger* debugger);
 
-    Result<BusinessValue> invoke(ExecutionScope& activation, ObjectId receiver,
-                                 std::span<const BusinessValue> arguments, void* result_data = nullptr,
-                                 BusinessTrace* trace = nullptr, DebugSessionState* debugger = nullptr) const {
+    Result<BusinessValue> invoke(ExecutionScope& activation, ObjectId receiver, Span<const BusinessValue> arguments,
+                                 void* result_data = nullptr, BusinessTrace* trace = nullptr,
+                                 DebugSessionState* debugger = nullptr) const {
         if (info.signature.is_coroutine)
             return std::unexpected(
                 Error{ErrorCode::invalid_definition, "Coroutine code requires a persistent execution instance."});
@@ -552,7 +552,7 @@ struct Program::State {
 
     explicit State(std::shared_ptr<const Contract> bound) : contract(std::move(bound)) {}
 
-    std::optional<std::size_t> find(std::string_view name) const {
+    Optional<std::size_t> find(std::string_view name) const {
         if (!module)
             return {};
         for (std::size_t i = 0; i < module->entries.size(); ++i)
@@ -561,7 +561,7 @@ struct Program::State {
         return {};
     }
 
-    const std::shared_ptr<const Version>& select(std::optional<std::size_t> index) const {
+    const std::shared_ptr<const Version>& select(Optional<std::size_t> index) const {
         static const std::shared_ptr<const Version> empty;
         if (!index)
             return module ? empty : current;
@@ -592,7 +592,7 @@ struct Program::DirectScope::Active {
                      &scope) {}
 };
 
-bool Program::DirectScope::try_enter(const Version* version, const State* owner, std::optional<std::size_t> index,
+bool Program::DirectScope::try_enter(const Version* version, const State* owner, Optional<std::size_t> index,
                                      ObjectId receiver, DirectContext& out) noexcept {
     static_assert(sizeof(Stateless) <= sizeof(storage_) && alignof(Stateless) <= 16);
     static_assert(sizeof(Active) <= sizeof(storage_) && alignof(Active) <= 16);
@@ -630,7 +630,7 @@ bool Program::DirectScope::try_enter(const Version* version, const State* owner,
     return true;
 }
 
-Error Program::DirectScope::enter_error(const Version* version, const State* owner, std::optional<std::size_t> index,
+Error Program::DirectScope::enter_error(const Version* version, const State* owner, Optional<std::size_t> index,
                                         ObjectId receiver) {
     atelier::detail::assert_serial_access();
     if (owner)
@@ -690,9 +690,9 @@ Error Program::DirectScope::finish_error(std::uint32_t status) {
     return error;
 }
 
-Result<std::uint64_t> Program::invoke_bound(const Version* version, const State* owner,
-                                            std::optional<std::size_t> index, ObjectId receiver, void* arguments,
-                                            DirectCall invoke, Diagnostics* diagnostics, Debugger* debugger) {
+Result<std::uint64_t> Program::invoke_bound(const Version* version, const State* owner, Optional<std::size_t> index,
+                                            ObjectId receiver, void* arguments, DirectCall invoke,
+                                            Diagnostics* diagnostics, Debugger* debugger) {
     atelier::detail::assert_serial_access();
     if (owner)
         version = owner->open ? owner->select(index).get() : nullptr;
@@ -812,7 +812,7 @@ struct Program::Frame final : CoroutineFrame {
                                                               sizeof(message), &failure_detail);
         const auto decoded = status == 0 && !suspended && !invocation.failed
                                  ? scalar_value(output, &version->contract->binding)
-                                 : std::optional<Scalar>{};
+                                 : Optional<Scalar>{};
         const bool invalid_result =
             status == 0 && !suspended && !invocation.failed &&
             (output.kind != version->info.signature.result || output.storage != ArgumentStorage::value ||
@@ -872,7 +872,7 @@ struct Program::Prepared {
 };
 
 Result<Coroutine> Program::Version::start_values(std::shared_ptr<const Version> version, ObjectId receiver,
-                                                 std::span<const Scalar> arguments, Diagnostics* diagnostics,
+                                                 Span<const Scalar> arguments, Diagnostics* diagnostics,
                                                  Debugger* debugger) {
     return version->invoke_captured<Coroutine>(
         diagnostics, debugger,
@@ -933,30 +933,30 @@ Program::Candidate::operator bool() const noexcept {
     return prepared_ && (prepared_->code || prepared_->module);
 }
 
-std::span<const ClassInfo> Program::Candidate::classes() const noexcept {
-    return prepared_ && prepared_->module ? std::span<const ClassInfo>{prepared_->module->classes}
-                                          : std::span<const ClassInfo>{};
+Span<const ClassInfo> Program::Candidate::classes() const noexcept {
+    return prepared_ && prepared_->module ? Span<const ClassInfo>{prepared_->module->classes}
+                                          : Span<const ClassInfo>{};
 }
 
-std::span<const EntryInfo> Program::Candidate::entries() const noexcept {
-    return prepared_ && prepared_->module ? std::span<const EntryInfo>{prepared_->module->entries}
-                                          : std::span<const EntryInfo>{};
+Span<const EntryInfo> Program::Candidate::entries() const noexcept {
+    return prepared_ && prepared_->module ? Span<const EntryInfo>{prepared_->module->entries}
+                                          : Span<const EntryInfo>{};
 }
 
-std::span<const FunctionInfo> Program::Candidate::functions() const noexcept {
-    return prepared_ && prepared_->module ? std::span<const FunctionInfo>{prepared_->module->functions}
-                                          : std::span<const FunctionInfo>{};
+Span<const FunctionInfo> Program::Candidate::functions() const noexcept {
+    return prepared_ && prepared_->module ? Span<const FunctionInfo>{prepared_->module->functions}
+                                          : Span<const FunctionInfo>{};
 }
 
-std::span<const std::string> Program::Candidate::engine_modules() const noexcept {
+Span<const std::string> Program::Candidate::engine_modules() const noexcept {
     return prepared_ && prepared_->module
-               ? std::span<const std::string>{prepared_->module->request->source.engine_modules}
-               : std::span<const std::string>{};
+               ? Span<const std::string>{prepared_->module->request->source.engine_modules}
+               : Span<const std::string>{};
 }
 
 Program::Lease::Lease(std::shared_ptr<const Version> version) : version_(std::move(version)) {}
 
-Program::Entry::Entry(std::weak_ptr<State> owner, std::optional<std::size_t> index)
+Program::Entry::Entry(std::weak_ptr<State> owner, Optional<std::size_t> index)
     : owner_(std::move(owner)), index_(index) {}
 
 std::uintptr_t ProgramAccess::address(const Program::Lease& lease) noexcept {
@@ -986,23 +986,23 @@ Result<CompilationArtifacts> Program::Lease::artifacts() const {
     return result;
 }
 
-Result<std::vector<DiagnosticLocation>> Program::Lease::debug_sites() const {
+Result<Array<DiagnosticLocation>> Program::Lease::debug_sites() const {
     const auto version = version_;
     if (!version)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Code lease is empty."});
     if (!version->info.debugging || !version->debug || !version->debug->tables || !version->debug->locations)
         return std::unexpected(
             Error{ErrorCode::unsupported_operation, "This source version was compiled without debugging."});
-    std::vector<DiagnosticLocation> sites;
+    Array<DiagnosticLocation> sites;
     sites.reserve(version->debug->tables->sites.size());
     for (const auto index : version->debug->tables->sites) {
-        sites.push_back((*version->debug->locations)[index]);
+        sites.add((*version->debug->locations)[index]);
     }
     return sites;
 }
 
-Result<std::optional<Scalar>> Program::Entry::invoke(ObjectId receiver, std::span<const Scalar> arguments,
-                                                     Diagnostics* diagnostics, Debugger* debugger) const {
+Result<Optional<Scalar>> Program::Entry::invoke(ObjectId receiver, Span<const Scalar> arguments,
+                                                Diagnostics* diagnostics, Debugger* debugger) const {
     atelier::detail::assert_serial_access();
     const auto owner = owner_.lock();
     const auto version = owner && owner->open ? owner->select(index_) : nullptr;
@@ -1012,8 +1012,8 @@ Result<std::optional<Scalar>> Program::Entry::invoke(ObjectId receiver, std::spa
     return version->invoke_values(receiver, arguments, diagnostics, debugger);
 }
 
-Result<std::optional<Scalar>> Program::Entry::invoke_arguments(ObjectId receiver, std::span<const Argument> arguments,
-                                                               Diagnostics* diagnostics, Debugger* debugger) const {
+Result<Optional<Scalar>> Program::Entry::invoke_arguments(ObjectId receiver, Span<const Argument> arguments,
+                                                          Diagnostics* diagnostics, Debugger* debugger) const {
     atelier::detail::assert_serial_access();
     const auto owner = owner_.lock();
     const auto version = owner && owner->open ? owner->select(index_) : nullptr;
@@ -1041,8 +1041,8 @@ Result<std::shared_ptr<Program::State>> Program::Entry::bind_signature(Signature
     return owner;
 }
 
-Result<std::optional<Scalar>> Program::Lease::invoke(ObjectId receiver, std::span<const Scalar> arguments,
-                                                     Diagnostics* diagnostics, Debugger* debugger) const {
+Result<Optional<Scalar>> Program::Lease::invoke(ObjectId receiver, Span<const Scalar> arguments,
+                                                Diagnostics* diagnostics, Debugger* debugger) const {
     atelier::detail::assert_serial_access();
     const auto version = version_;
     if (!version)
@@ -1051,8 +1051,8 @@ Result<std::optional<Scalar>> Program::Lease::invoke(ObjectId receiver, std::spa
     return version->invoke_values(receiver, arguments, diagnostics, debugger);
 }
 
-Result<std::optional<Scalar>> Program::Lease::invoke_arguments(ObjectId receiver, std::span<const Argument> arguments,
-                                                               Diagnostics* diagnostics, Debugger* debugger) const {
+Result<Optional<Scalar>> Program::Lease::invoke_arguments(ObjectId receiver, Span<const Argument> arguments,
+                                                          Diagnostics* diagnostics, Debugger* debugger) const {
     atelier::detail::assert_serial_access();
     const auto version = version_;
     if (!version)
@@ -1061,7 +1061,7 @@ Result<std::optional<Scalar>> Program::Lease::invoke_arguments(ObjectId receiver
     return version->invoke_values(receiver, arguments, diagnostics, debugger);
 }
 
-Result<void> Program::Entry::invoke(ObjectId receiver, std::span<const Scalar> arguments, ValueOutput output,
+Result<void> Program::Entry::invoke(ObjectId receiver, Span<const Scalar> arguments, ValueOutput output,
                                     Diagnostics* diagnostics, Debugger* debugger) const {
     atelier::detail::assert_serial_access();
     const auto owner = owner_.lock();
@@ -1072,8 +1072,8 @@ Result<void> Program::Entry::invoke(ObjectId receiver, std::span<const Scalar> a
     return version->invoke_values(receiver, arguments, output, diagnostics, debugger);
 }
 
-Result<void> Program::Entry::invoke_arguments(ObjectId receiver, std::span<const Argument> arguments,
-                                              ValueOutput output, Diagnostics* diagnostics, Debugger* debugger) const {
+Result<void> Program::Entry::invoke_arguments(ObjectId receiver, Span<const Argument> arguments, ValueOutput output,
+                                              Diagnostics* diagnostics, Debugger* debugger) const {
     atelier::detail::assert_serial_access();
     const auto owner = owner_.lock();
     const auto version = owner && owner->open ? owner->select(index_) : nullptr;
@@ -1083,7 +1083,7 @@ Result<void> Program::Entry::invoke_arguments(ObjectId receiver, std::span<const
     return version->invoke_values(receiver, arguments, output, diagnostics, debugger);
 }
 
-Result<void> Program::Lease::invoke(ObjectId receiver, std::span<const Scalar> arguments, ValueOutput output,
+Result<void> Program::Lease::invoke(ObjectId receiver, Span<const Scalar> arguments, ValueOutput output,
                                     Diagnostics* diagnostics, Debugger* debugger) const {
     atelier::detail::assert_serial_access();
     const auto version = version_;
@@ -1093,8 +1093,8 @@ Result<void> Program::Lease::invoke(ObjectId receiver, std::span<const Scalar> a
     return version->invoke_values(receiver, arguments, output, diagnostics, debugger);
 }
 
-Result<void> Program::Lease::invoke_arguments(ObjectId receiver, std::span<const Argument> arguments,
-                                              ValueOutput output, Diagnostics* diagnostics, Debugger* debugger) const {
+Result<void> Program::Lease::invoke_arguments(ObjectId receiver, Span<const Argument> arguments, ValueOutput output,
+                                              Diagnostics* diagnostics, Debugger* debugger) const {
     atelier::detail::assert_serial_access();
     const auto version = version_;
     if (!version)
@@ -1103,7 +1103,7 @@ Result<void> Program::Lease::invoke_arguments(ObjectId receiver, std::span<const
     return version->invoke_values(receiver, arguments, output, diagnostics, debugger);
 }
 
-Result<Coroutine> Program::Entry::start(ObjectId receiver, std::span<const Scalar> arguments, Diagnostics* diagnostics,
+Result<Coroutine> Program::Entry::start(ObjectId receiver, Span<const Scalar> arguments, Diagnostics* diagnostics,
                                         Debugger* debugger) const {
     atelier::detail::assert_serial_access();
     const auto owner = owner_.lock();
@@ -1114,7 +1114,7 @@ Result<Coroutine> Program::Entry::start(ObjectId receiver, std::span<const Scala
     return Version::start_values(version, receiver, arguments, diagnostics, debugger);
 }
 
-Result<Coroutine> Program::Lease::start(ObjectId receiver, std::span<const Scalar> arguments, Diagnostics* diagnostics,
+Result<Coroutine> Program::Lease::start(ObjectId receiver, Span<const Scalar> arguments, Diagnostics* diagnostics,
                                         Debugger* debugger) const {
     atelier::detail::assert_serial_access();
     const auto version = version_;
@@ -1222,12 +1222,14 @@ Result<Program::Request> Program::request(std::string_view name, std::string_vie
         }
     }
     auto& runtime = *state_->contract->binding.runtime;
-    auto definitions = type_definitions(*declarations, *array_uses, state_->contract->binding);
+    auto definitions =
+        type_definitions(Span<const language::TypeDeclaration>{*declarations},
+                         Span<const language::TypeName>{*array_uses}, state_->contract->binding);
     if (!definitions) {
         report(definitions.error().message);
         return result;
     }
-    std::erase_if(*definitions, [&](const auto& definition) {
+    definitions->remove_if([&](const auto& definition) {
         return published(definition.name) ||
                (language::synthesized_array_name(definition.name) && runtime.find_type(definition.name).has_value());
     });
@@ -1244,11 +1246,21 @@ Result<Program::Request> Program::request(std::string_view name, std::string_vie
         report(binding.error().message);
         return result;
     }
-    result->compilation_contract_ = std::make_shared<const Contract>(std::move(*binding), std::move(*declarations));
+    result->compilation_contract_ =
+        std::make_shared<const Contract>(std::move(*binding), Array<language::TypeDeclaration>{std::move(*declarations)});
     return result;
 }
 
-Result<Program::Candidate> Program::prepare(const Request& request, std::optional<NeedsCode> needs_code,
+Result<Program::Request> Program::request(std::string name, std::uint64_t version, Array<SourceFile> files,
+                                          CompileOptions options) {
+    SourceSnapshot snapshot{std::move(name), version, {}};
+    snapshot.files.reserve(files.size());
+    for (auto& file : files)
+        snapshot.files.push_back(std::move(file));
+    return request(std::move(snapshot), options);
+}
+
+Result<Program::Candidate> Program::prepare(const Request& request, Optional<NeedsCode> needs_code,
                                             CompileTiming* timing) {
     atelier::detail::assert_serial_access();
     if (timing)
@@ -1277,7 +1289,7 @@ void Program::Emission::Destroy::operator()(BusinessCode* code) const noexcept {
     atelier_destroy_business(code);
 }
 
-Result<Program::Emission> Program::emit_entry(const Request& request, std::optional<NeedsCode> needs_code,
+Result<Program::Emission> Program::emit_entry(const Request& request, Optional<NeedsCode> needs_code,
                                               CompileTiming* timing) {
     if (!request || request->module_)
         return std::unexpected(
@@ -1291,7 +1303,7 @@ Result<Program::Emission> Program::emit_entry(const Request& request, std::optio
     const auto& contract = *request->compilation_contract_;
     const EnvironmentView storage(contract.binding);
     const auto environment = storage.view(contract.type_name.c_str());
-    auto callback = [&](std::span<const EntryFunction> functions) noexcept {
+    auto callback = [&](Span<const EntryFunction> functions) noexcept {
         return (*needs_code)(functions) || request->type_publication_ != nullptr;
     };
     const EntryFilter selection{&callback,

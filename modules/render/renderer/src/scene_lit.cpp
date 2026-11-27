@@ -9,8 +9,11 @@
 #include "renderer/raster_viewport.hpp"
 #include "detail/frame_slots.hpp"
 #include "math/math.hpp"
+#include "foundation/array.hpp"
 #include "foundation/map.hpp"
+#include "foundation/optional.hpp"
 #include "foundation/set.hpp"
+#include "foundation/span.hpp"
 #include "memory/fatal.hpp"
 
 #include <algorithm>
@@ -21,7 +24,6 @@
 #include <cstring>
 #include <limits>
 #include <numbers>
-#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -79,30 +81,30 @@ static_assert(sizeof(ProbeContribution) == 96);
 // its closed component's [count, material slots...] list after the triangle
 // words. A single-slot component needs only the hit material's coverage flag
 // and shares the empty list at the end of the triangle words.
-std::vector<std::uint32_t> closure_words(const geometry::Mesh& mesh) {
+Array<std::uint32_t> closure_words(const geometry::Mesh& mesh) {
     const auto volumes = triangle_volumes(mesh);
     struct ComponentInfo {
-        std::vector<std::uint32_t> slots;
+        Array<std::uint32_t> slots;
 
         std::uint32_t offset{};
     };
     Map<std::uint32_t, ComponentInfo> components;
     for (std::size_t i = 0; i < volumes.size(); ++i)
         if (volumes[i].closed)
-            components.try_emplace(volumes[i].closed).value->slots.push_back(mesh.material_slot(i));
-    std::vector<std::uint32_t> words(volumes.size() + 1);
+            components.try_emplace(volumes[i].closed).value->slots.add(mesh.material_slot(i));
+    Array<std::uint32_t> words(volumes.size() + 1);
     const auto empty = static_cast<std::uint32_t>(volumes.size());
     for (auto [component, info] : components) {
         (void)component;
         std::sort(info.slots.begin(), info.slots.end());
-        info.slots.erase(std::unique(info.slots.begin(), info.slots.end()), info.slots.end());
+        info.slots.deduplicate();
         if (info.slots.size() < 2) {
             info.offset = empty;
             continue;
         }
         info.offset = static_cast<std::uint32_t>(words.size());
-        words.push_back(static_cast<std::uint32_t>(info.slots.size()));
-        words.insert(words.end(), info.slots.begin(), info.slots.end());
+        words.add(static_cast<std::uint32_t>(info.slots.size()));
+        words.append(info.slots);
     }
     for (std::size_t i = 0; i < volumes.size(); ++i)
         if (volumes[i].closed)
@@ -286,18 +288,18 @@ struct SceneLit::State {
 
         GfxBuffer instances; // This frame's tables.
 
-        std::vector<GpuShadowFace> previous_faces;
+        Array<GpuShadowFace> previous_faces;
 
-        std::vector<GpuShadowLight> previous_lights;
+        Array<GpuShadowLight> previous_lights;
 
-        std::vector<std::uint32_t> previous_instances;
+        Array<std::uint32_t> previous_instances;
     } shadow_tables;
 
-    std::vector<ShadowCaster> shadow_casters;
+    Array<ShadowCaster> shadow_casters;
 
-    std::vector<ShadowChange> shadow_changes;
+    Array<ShadowChange> shadow_changes;
 
-    std::vector<std::uint32_t> shadow_instance_indices;
+    Array<std::uint32_t> shadow_instance_indices;
 
     bool shadows_cached{};
 
@@ -374,17 +376,17 @@ struct SceneLit::State {
     GfxBuffer reflection_arguments;
 
     // Ray hit views by RT geometry slot: Geometry::vertices, indices, faces and closure.
-    std::vector<GfxBuffer> rt_vertices;
+    Array<GfxBuffer> rt_vertices;
 
-    std::vector<GfxBuffer> rt_indices;
+    Array<GfxBuffer> rt_indices;
 
-    std::vector<GfxBuffer> rt_faces;
+    Array<GfxBuffer> rt_faces;
 
-    std::vector<GfxBuffer> rt_closure;
+    Array<GfxBuffer> rt_closure;
 
     // Programs keep parameter values. Rebind only after the geometry table changes,
     // including programs prepared later for optional diagnostics.
-    std::vector<GfxProgram> geometry_bound_programs;
+    Array<GfxProgram> geometry_bound_programs;
 
     GfxProgram material_program{}; // Value only; a retired batch is never dereferenced.
 
@@ -485,7 +487,7 @@ struct SceneLit::State {
 
         std::array<float, 4> normal_z{};
 
-        std::vector<material::ProgramSurfaceRef> program_surfaces;
+        Array<material::ProgramSurfaceRef> program_surfaces;
 
         math::Bounds shadow_bounds;
 
@@ -526,13 +528,13 @@ struct SceneLit::State {
         Geometry* geometry{};
     };
 
-    std::vector<Slot> resolved;
+    Array<Slot> resolved;
 
     bool resolved_complete{};
 
     std::uint64_t material_revision{}; // MaterialFrame revision the complete pass compared surfaces against.
 
-    std::vector<GpuInstance> instances;
+    Array<GpuInstance> instances;
 
     std::array<float, 16> view_projection{};
 
@@ -681,13 +683,13 @@ struct SceneLit::State {
         Group group;
     };
 
-    std::vector<PendingPipeline> pending;
+    Array<PendingPipeline> pending;
 
     std::array<std::uint32_t, 3> group_sizes{};
 
     std::uint32_t submitted{};
 
-    std::optional<Error> preparation_failure;
+    Optional<Error> preparation_failure;
 
     static std::uint32_t groups(const ViewSettings& view) {
         const auto& s = view.lit;
@@ -699,7 +701,7 @@ struct SceneLit::State {
         auto job = context.submit(desc);
         if (!job)
             return std::unexpected(Error{job.error(), false});
-        pending.push_back({&output, std::move(*job), group});
+        pending.add({&output, std::move(*job), group});
         ++group_sizes[std::countr_zero(std::uint32_t(group))];
         return {};
     }
@@ -808,16 +810,16 @@ struct SceneLit::State {
             for (std::uint32_t group = group_base; group != group_end; group <<= 1)
                 if ((wanted & group) && !(submitted & group))
                     ATELIER_TRY(submit_group(static_cast<Group>(group)));
-            for (auto it = pending.begin(); it != pending.end();) {
-                auto taken = context.take(it->job);
+            for (std::size_t i = 0; i < pending.size();) {
+                auto taken = context.take(pending[i].job);
                 if (!taken) {
-                    ++it;
+                    ++i;
                     continue;
                 }
                 if (!*taken)
                     return std::unexpected(Error{taken->error(), false});
-                *it->output = std::move(**taken);
-                it = pending.erase(it);
+                *pending[i].output = std::move(**taken);
+                pending.remove_at(i);
             }
             return {};
         }();
@@ -865,7 +867,7 @@ struct SceneLit::State {
         }
         ATELIER_TRY(texture(brdf_lut, 64, 64, DXGI_FORMAT_R16G16_FLOAT));
         const auto upload_lut = [&](GfxTexture& target, std::uint32_t width, std::uint32_t height, DXGI_FORMAT format,
-                                    std::span<const unsigned char> bytes) -> Result<void> {
+                                    Span<const unsigned char> bytes) -> Result<void> {
             ATELIER_TRY(texture(target, width, height, format));
             auto upload = gfxCreateBuffer(gfx, bytes.size(), bytes.data(), kGfxCpuAccess_Write);
             ATELIER_TRY(allocation(bool(upload), "Scene Lit GPU allocation failed"));
@@ -929,7 +931,7 @@ struct SceneLit::State {
     }
 
     template <class T>
-    Result<GfxBuffer> shadow_upload(DeviceTable<T>& table, std::vector<T>& previous, const std::vector<T>& values) {
+    Result<GfxBuffer> shadow_upload(DeviceTable<T>& table, Array<T>& previous, const Array<T>& values) {
         const bool changed =
             previous.size() != values.size() ||
             (!values.empty() && std::memcmp(previous.data(), values.data(), values.size() * sizeof(T)) != 0);
@@ -940,7 +942,7 @@ struct SceneLit::State {
 
     // The newest completed receiver depth of the current camera epoch. gfx
     // records frame N only after frame N - frames_in_flight completed.
-    std::optional<ShadowReceiverDepth> receiver_depth() const {
+    Optional<ShadowReceiverDepth> receiver_depth() const {
         const auto recording = gfxGetRecordingFrameSequence(gfx);
         const std::uint64_t in_flight = context.info().frames_in_flight;
         if (recording <= in_flight)
@@ -990,7 +992,7 @@ struct SceneLit::State {
             for (const auto index : job.instances) {
                 if (index >= instance_draws.size())
                     fatal("Shadow caster missing from current geometry snapshot");
-                shadow_instance_indices.push_back(index);
+                shadow_instance_indices.add(index);
             }
             // Depth-only rasterization is order independent: group each job's casters
             // by geometry so every run of one mesh is a single instanced draw.
@@ -1229,7 +1231,7 @@ struct SceneLit::State {
         ATELIER_TRY(bind(p, "lit_hit_candidates", hit_candidates));
         ATELIER_TRY(bind(p, "lit_history_invalid", history_invalid));
         ATELIER_TRY(bind(p, "lit_instances", gpu_instances));
-        if (std::ranges::find(geometry_bound_programs, p) == geometry_bound_programs.end()) {
+        if (!geometry_bound_programs.contains(p)) {
             for (const auto& [name, views] : {std::pair{"lit_geometry_vertices", &rt_vertices},
                                               {"lit_geometry_indices", &rt_indices},
                                               {"lit_geometry_faces", &rt_faces},
@@ -1242,7 +1244,7 @@ struct SceneLit::State {
                 if (!bound)
                     return std::unexpected(std::move(bound).error());
             }
-            geometry_bound_programs.push_back(p);
+            geometry_bound_programs.add(p);
         }
         ATELIER_TRY(bind(p, "lit_sources", gpu_sources));
         ATELIER_TRY(bind(p, "lit_light_proposals", gpu_proposals));
@@ -1727,7 +1729,7 @@ struct SceneLit::State {
                 instances[index].previous_world == mesh.world.elements &&
                 instances[index].geometry[2] == (correspondence ? 1u : 0u)) {
                 if (shadows_cached)
-                    shadow_casters.push_back(
+                    shadow_casters.add(
                         {static_cast<std::uint32_t>(index), object.shadow_bounds, object.shadow_dynamic});
                 else
                     object.shadow_tracked = false;
@@ -1757,9 +1759,8 @@ struct SceneLit::State {
             instance.normal_x = object.normal_x;
             instance.normal_y = object.normal_y;
             instance.normal_z = object.normal_z;
-            const auto programs =
-                std::span<const material::ProgramSurfaceRef>(material_frame->program_slots)
-                    .subspan(material_frame->program_offsets[index], mesh.geometry->materials().size());
+            const auto programs = material_frame->program_slots.slice(material_frame->program_offsets[index],
+                                                                      mesh.geometry->materials().size());
             const bool surface_changed =
                 !inserted && !surfaces_same && !std::ranges::equal(object.program_surfaces, programs);
             material_changed |= surface_changed;
@@ -1803,13 +1804,13 @@ struct SceneLit::State {
                                                                               std::numeric_limits<float>::infinity()));
                         }
                     }
-                    shadow_changes.push_back({object.shadow_bounds, bounds, object.shadow_tracked, true,
-                                              (object.shadow_tracked && !was_dynamic) || !object.shadow_dynamic,
-                                              was_dynamic || object.shadow_dynamic});
+                    shadow_changes.add({object.shadow_bounds, bounds, object.shadow_tracked, true,
+                                        (object.shadow_tracked && !was_dynamic) || !object.shadow_dynamic,
+                                        was_dynamic || object.shadow_dynamic});
                     object.shadow_bounds = bounds;
                     object.shadow_tracked = true;
                 }
-                shadow_casters.push_back(
+                shadow_casters.add(
                     {static_cast<std::uint32_t>(index), object.shadow_bounds, object.shadow_dynamic});
             } else
                 object.shadow_tracked = false;
@@ -1817,7 +1818,7 @@ struct SceneLit::State {
             emitter_changed |=
                 inserted || object.geometry != mesh.geometry.get() || object.world != mesh.world || surface_changed;
             if (inserted || surface_changed) {
-                object.program_surfaces.assign(programs.begin(), programs.end());
+                object.program_surfaces.assign(programs);
             }
             // Keep geometric motion, but edited material/radiance has no valid
             // previous shading observation, including when seen through SSR.
@@ -1864,12 +1865,12 @@ struct SceneLit::State {
                     continue;
                 }
                 if (shadows_cached && it->second.shadow_tracked)
-                    shadow_changes.push_back({it->second.shadow_bounds,
-                                              {},
-                                              true,
-                                              false,
-                                              !it->second.shadow_dynamic,
-                                              it->second.shadow_dynamic});
+                    shadow_changes.add({it->second.shadow_bounds,
+                                        {},
+                                        true,
+                                        false,
+                                        !it->second.shadow_dynamic,
+                                        it->second.shadow_dynamic});
                 emitter_changed = true;
                 if (gfxTopLevelAccelerationStructureRemoveInstance(gfx, tlas, it->second.instance))
                     fatal("Detach removed RT instance");
@@ -1901,10 +1902,10 @@ struct SceneLit::State {
             for (auto& [key, g] : geometries) {
                 (void)key;
                 g.slot = static_cast<std::uint32_t>(rt_vertices.size());
-                rt_vertices.push_back(g.vertices);
-                rt_indices.push_back(g.indices);
-                rt_faces.push_back(g.faces);
-                rt_closure.push_back(g.closure);
+                rt_vertices.add(g.vertices);
+                rt_indices.add(g.indices);
+                rt_faces.add(g.faces);
+                rt_closure.add(g.closure);
             }
         }
         if (!steady)
@@ -1955,7 +1956,7 @@ struct SceneLit::State {
         ATELIER_TRY(light_frame.update(frame, sequence));
         light_changed = light_frame.radiance_changed;
         const auto slots = context.info().frames_in_flight;
-        const auto upload = [&]<class T>(GfxBuffer& output, DeviceTable<T>& target, const std::vector<T>& data,
+        const auto upload = [&]<class T>(GfxBuffer& output, DeviceTable<T>& target, const Array<T>& data,
                                          bool changed) -> Result<void> {
             ATELIER_TRY_BIND(written, target.write(gfx, slots, data, changed, "Scene Lit light table"));
             output = *written;
@@ -2439,7 +2440,7 @@ struct SceneLit::State {
                 ATELIER_TRY(dispatch_window(reflection_filter, depth));
             }
         ATELIER_TRY(end(5));
-        std::optional<rhi::CommandTraceScope> trace;
+        Optional<rhi::CommandTraceScope> trace;
         if (frame.command_trace)
             trace.emplace(context, *frame.command_trace);
         ATELIER_TRY(begin(6));
@@ -2666,7 +2667,7 @@ struct SceneLit::State {
                                                     gfxCalculateMipCount(map.width(), map.height()), nullptr,
                                                     D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
                 ATELIER_TRY(allocation(bool(sky_background), "Scene Lit GPU allocation failed"));
-                const auto upload = [&](std::span<const std::byte> bytes, auto&& copy) -> Result<void> {
+                const auto upload = [&](Span<const std::byte> bytes, auto&& copy) -> Result<void> {
                     auto buffer = gfxCreateBuffer(gfx, bytes.size(), bytes.data(), kGfxCpuAccess_Write);
                     ATELIER_TRY(allocation(bool(buffer), "Scene Lit GPU allocation failed"));
                     const auto copied = copy(buffer);
@@ -2675,7 +2676,7 @@ struct SceneLit::State {
                         fatal("Retire sky map upload");
                     return require(copied, "Upload sky map");
                 };
-                auto uploaded = upload(std::as_bytes(map.pixels()), [&](GfxBuffer buffer) {
+                auto uploaded = upload(as_bytes(map.pixels()), [&](GfxBuffer buffer) {
                     return gfxCommandCopyBufferToTexture(gfx, sky_background, buffer);
                 });
                 if (!uploaded)
@@ -2688,8 +2689,8 @@ struct SceneLit::State {
                 constexpr std::size_t row = size * 4 * sizeof(float);
                 constexpr std::size_t pitch = (row + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) /
                                               D3D12_TEXTURE_DATA_PITCH_ALIGNMENT * D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
-                std::vector<std::byte> face(size * pitch);
-                const auto texels = std::as_bytes(map.cube());
+                Array<std::byte> face(size * pitch);
+                const auto texels = as_bytes(map.cube());
                 for (std::uint32_t i = 0; i < 6; ++i) {
                     for (std::size_t y = 0; y < size; ++y)
                         std::copy_n(texels.begin() + (i * size + y) * row, row, face.begin() + y * pitch);
@@ -2753,7 +2754,7 @@ struct SceneLit::State {
         }
         geometries.clear();
         for (auto* views : {&rt_vertices, &rt_indices, &rt_faces, &rt_closure})
-            std::vector<GfxBuffer>{}.swap(*views);
+            views->release();
         geometry_bound_programs.clear();
         retire(probe_ray_hits);
         instance_table.retire(gfx);
@@ -2761,7 +2762,7 @@ struct SceneLit::State {
         for (auto* b : {&gpu_instances, &gpu_light_cells, &gpu_spatial_proposals, &gpu_spatial_source_slots,
                         &gpu_sources, &gpu_proposals})
             *b = {};
-        std::vector<GpuInstance>{}.swap(instances);
+        instances.release();
         light_frame.clear();
         tlas_built = false;
     }

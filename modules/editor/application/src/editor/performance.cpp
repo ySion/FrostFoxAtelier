@@ -45,7 +45,7 @@ double milliseconds(std::chrono::nanoseconds value) {
 }
 
 // Mean, nearest-rank p95 and max; reorders `values`.
-void distribution(std::span<double> values, Timing& timing) {
+void distribution(Span<double> values, Timing& timing) {
     timing.mean = std::accumulate(values.begin(), values.end(), 0.) / double(values.size());
     const auto rank = values.begin() + static_cast<std::ptrdiff_t>((values.size() * 95 + 99) / 100 - 1);
     std::nth_element(values.begin(), rank, values.end());
@@ -54,7 +54,7 @@ void distribution(std::span<double> values, Timing& timing) {
 }
 }
 
-std::span<const FramePerformance::Pass> FramePerformance::passes() {
+Span<const FramePerformance::Pass> FramePerformance::passes() {
     return definitions;
 }
 
@@ -132,7 +132,7 @@ void FramePerformance::observe(const renderer::Frame& frame, const renderer::Fra
         publish(now);
 }
 
-void FramePerformance::observe(const timing::FrameRecord& record, std::optional<std::uint64_t> sampled_frame,
+void FramePerformance::observe(const timing::FrameRecord& record, Optional<std::uint64_t> sampled_frame,
                                Clock::time_point now) {
     if (record.structure_errors) {
         structure_errors_ += record.structure_errors;
@@ -301,10 +301,10 @@ void FramePerformance::rebuild_table() {
     auto data = std::make_shared<ui::TableData>();
     constexpr std::array titles{L"Phase", L"Current ms", L"Mean ms", L"P95 ms", L"Max ms", L"Share %"};
     for (std::size_t i = 0; i < titles.size(); ++i)
-        data->columns.push_back(
+        data->columns.add(
             {i + 1, titles[i], widths_[i], minima[i], i ? ui::TextAlign::right : ui::TextAlign::left, false});
     const auto add = [&](ui::TableKey key, std::size_t depth, std::wstring_view title,
-                         const std::optional<Timing>& timing, std::wstring_view inactive) {
+                         const Optional<Timing>& timing, std::wstring_view inactive) {
         const bool ready = timing && timing->active_samples;
         const std::array<std::wstring, 6> values{std::wstring(depth * 3, L' ').append(title),
                                                  !timing                  ? L"—"
@@ -317,8 +317,8 @@ void FramePerformance::rebuild_table() {
                                                                         : L"—"};
         ui::TableRow row{key, {}};
         for (std::size_t column = 0; column < values.size(); ++column)
-            row.cells.push_back({key * 8 + column + 1, values[column]});
-        data->rows.push_back(std::move(row));
+            row.cells.add({key * 8 + column + 1, values[column]});
+        data->rows.add(std::move(row));
     };
     const auto& cpu = published_.cpu;
     if (cpu_rows_.empty()) {
@@ -326,7 +326,7 @@ void FramePerformance::rebuild_table() {
         const auto visit = [&](const auto& self, const timing::Marker* parent) -> void {
             for (const auto* marker : catalog)
                 if (marker->parent() == parent) {
-                    cpu_rows_.push_back(marker);
+                    cpu_rows_.add(marker);
                     self(self, marker);
                 }
         };
@@ -334,7 +334,7 @@ void FramePerformance::rebuild_table() {
     }
     // A CPU row stays from its first entry until the domain resets, so rows do not come and go.
     add(cpu_frame_row, 0, L"CPU frame",
-        timing::frame.registered() ? cpu.phases[timing::frame.index()] : std::optional<Timing>{}, L"—");
+        timing::frame.registered() ? cpu.phases[timing::frame.index()] : Optional<Timing>{}, L"—");
     for (const auto* marker : cpu_rows_)
         if (cpu.phases[marker->index()])
             add(cpu_frame_row + marker->index(), timing::depth(*marker), wide(marker->title()),

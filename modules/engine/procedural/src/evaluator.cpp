@@ -103,9 +103,9 @@ struct Entry {
 
     std::uint32_t subgraph_span{}; // Active AssetNode hops beneath and including this entry.
 
-    std::vector<Geometry> outputs;
+    Array<Geometry> outputs;
 
-    std::vector<Reference> dependencies; // Resources read, with what they resolved to.
+    Array<Reference> dependencies; // Resources read, with what they resolved to.
 
     const Resources* confirmed_resources{}; // Host instance `revision` was confirmed against.
 
@@ -196,9 +196,9 @@ struct Evaluator::Impl {
 
         std::string local; // Type and public field contents.
 
-        std::vector<Input> inputs;
+        Array<Input> inputs;
 
-        std::optional<Error> fault; // Reading or keying the node failed.
+        Optional<Error> fault; // Reading or keying the node failed.
 
         std::shared_ptr<Entry> entry; // The node's current result.
 
@@ -208,7 +208,7 @@ struct Evaluator::Impl {
 
         Error failure{};
 
-        std::optional<Error> root_error; // Root-cause diagnostic carried to blocked downstream nodes.
+        Optional<Error> root_error; // Root-cause diagnostic carried to blocked downstream nodes.
 
         std::uint64_t synced_generation{};
 
@@ -229,7 +229,7 @@ struct Evaluator::Impl {
 
     bool has_external_inputs{};
 
-    std::vector<ExternalInput> external_inputs;
+    Array<ExternalInput> external_inputs;
 
     std::uint64_t external_inputs_epoch{};
 
@@ -249,7 +249,7 @@ struct Evaluator::Impl {
 
     FieldId graph_seed_field{};
 
-    std::optional<std::uint64_t> cursor;
+    Optional<std::uint64_t> cursor;
 
     std::uint64_t revision{};
 
@@ -316,7 +316,7 @@ struct Evaluator::Impl {
             return {};
         }
         if (info.kind == TypeKind::record && info.plain_value) {
-            const std::span source{static_cast<const std::byte*>(data), info.size};
+            const Span source{static_cast<const std::byte*>(data), info.size};
             for (const auto& field : info.fields) {
                 auto child = runtime.describe(field.value.type);
                 if (!child)
@@ -327,7 +327,7 @@ struct Evaluator::Impl {
                     continue;
                 }
                 atelier::detail::ValueStorage storage;
-                const std::span bytes{storage.prepare((*child)->size, (*child)->alignment), (*child)->size};
+                const Span bytes{storage.prepare((*child)->size, (*child)->alignment), (*child)->size};
                 if (auto made = runtime.initialize_value(field.value.type, bytes); !made)
                     return made;
                 auto added = runtime.read(info.id, source, {&field.id, 1}, ValueOutput{field.value.type, bytes.data()});
@@ -382,7 +382,7 @@ struct Evaluator::Impl {
             return {};
         }
         atelier::detail::ValueStorage storage;
-        const std::span bytes{storage.prepare((*info)->size, (*info)->alignment), (*info)->size};
+        const Span bytes{storage.prepare((*info)->size, (*info)->alignment), (*info)->size};
         if (auto made = runtime.initialize_value(field.value.type, bytes); !made)
             return made;
         auto added = runtime.read(object, field.id, ValueOutput{field.value.type, bytes.data()});
@@ -529,7 +529,7 @@ struct Evaluator::Impl {
             state.child_evaluator = std::make_shared<Evaluator>(runtime, state.asset_subgraph.graph, resources, program,
                                                                 pool, subgraph_depth + 1u);
         }
-        std::vector<ExternalInput> child_inputs;
+        Array<ExternalInput> child_inputs;
         child_inputs.reserve(state.asset_subgraph.input_nodes.size());
         for (std::size_t p = 0; p < state.asset_subgraph.input_nodes.size(); ++p) {
             ExternalInput ext{};
@@ -543,7 +543,7 @@ struct Evaluator::Impl {
                     break;
                 }
             }
-            child_inputs.push_back(std::move(ext));
+            child_inputs.add(std::move(ext));
         }
         state.child_evaluator->set_external_inputs(child_inputs);
         ATELIER_TRY(
@@ -620,9 +620,9 @@ struct Evaluator::Impl {
                      arg.kind == detail::ArgKind::column_out || arg.kind == detail::ArgKind::column_group)
                 has_any_columns = true;
         }
-        std::vector<Geometries> multi_inputs;
+        Array<Geometries> multi_inputs;
         multi_inputs.reserve(multi_port_count); // Borrowed below; must not reallocate.
-        std::vector<std::shared_ptr<const Spatial>> spatial_inputs;
+        Array<std::shared_ptr<const Spatial>> spatial_inputs;
         spatial_inputs.reserve(spatial_port_count);
 
         bool wrote_positions = false;
@@ -712,7 +712,7 @@ struct Evaluator::Impl {
                 values[i] = &single_input(arg.port_index);
                 break;
             case detail::ArgKind::port_inputs: {
-                auto& list = multi_inputs.emplace_back();
+                auto& list = multi_inputs.emplace();
                 for (const auto& connection : state.inputs)
                     if (connection.input == arg.port_index)
                         list.add(upstream_geometry(connection));
@@ -721,7 +721,7 @@ struct Evaluator::Impl {
             }
             case detail::ArgKind::port_spatial: {
                 ATELIER_TRY_BIND(built_spatial, Spatial::acquire(single_input(arg.port_index)));
-                spatial_inputs.push_back(std::move(*built_spatial));
+                spatial_inputs.add(std::move(*built_spatial));
                 values[i] = spatial_inputs.back().get();
                 break;
             }
@@ -789,8 +789,9 @@ struct Evaluator::Impl {
             const auto positions = entry.outputs[0].positions();
             for (std::uint32_t pt = 0; pt < positions.size(); ++pt)
                 if (!math::is_finite(positions[pt]))
-                    return std::unexpected(Error{ErrorCode::invocation_failed, "Point positions must be finite.",
-                                                 std::nullopt, ErrorElement{"point", pt}});
+                    return std::unexpected(
+                        Error{ErrorCode::invocation_failed, "Point positions must be finite.", {},
+                              ErrorElement{"point", pt}});
         }
         return {};
     }
@@ -902,8 +903,8 @@ struct Evaluator::Impl {
                     upstream.status.root_node != ObjectId{} ? upstream.status.root_node : connection.from;
                 state.status.error = Error{ErrorCode::invocation_failed,
                                            "Input '" + port_name + "' failed (" + std::string{cause} + ").",
-                                           state.root_error ? state.root_error->source : std::nullopt,
-                                           state.root_error ? state.root_error->element : std::nullopt};
+                                           state.root_error ? state.root_error->source : decltype(Error::source){},
+                                           state.root_error ? state.root_error->element : decltype(Error::element){}};
                 return;
             }
             append(key, connection.input);
@@ -955,22 +956,22 @@ struct Evaluator::Impl {
 
     // Upstream first, ending at each root in `roots`. When `active_only` is true, bypassed nodes
     // only follow their pass-through port 0 instead of cooking unused secondary branches.
-    Result<std::vector<ObjectId>> order(std::span<const ObjectId> roots, const Map<ObjectId, State>& changed,
-                                        bool active_only = false) const {
-        std::vector<ObjectId> result;
+    Result<Array<ObjectId>> order(Span<const ObjectId> roots, const Map<ObjectId, State>& changed,
+                                  bool active_only = false) const {
+        Array<ObjectId> result;
         struct Frame {
             ObjectId id;
 
             std::size_t next;
         };
         Map<ObjectId, bool> finished; // false while on the path.
-        std::vector<Frame> path;
+        Array<Frame> path;
         for (const ObjectId root : roots) {
             if (root == ObjectId{})
                 continue;
             if (!finished.try_emplace(root, false).inserted)
                 continue;
-            path.push_back({root, 0});
+            path.add({root, 0});
             while (!path.empty()) {
                 const auto id = path.back().id;
                 const auto* staged = changed.find(id);
@@ -991,26 +992,26 @@ struct Evaluator::Impl {
                     const auto from = state.inputs[idx].from;
                     const auto mark = finished.try_emplace(from, false);
                     if (mark.inserted)
-                        path.push_back({from, 0});
+                        path.add({from, 0});
                     else if (!*mark.value)
                         return error(ErrorCode::argument_mismatch, "The graph has a cycle.");
                     continue;
                 }
                 finished.insert_or_assign(id, true);
-                result.push_back(id);
-                path.pop_back();
+                result.add(id);
+                path.pop();
             }
         }
         return result;
     }
 
-    Result<std::vector<ObjectId>> order(ObjectId display, const Map<ObjectId, State>& changed,
-                                        bool active_only = false) const {
-        return display == ObjectId{} ? Result<std::vector<ObjectId>>{std::vector<ObjectId>{}}
-                                     : order(std::span<const ObjectId>{&display, 1}, changed, active_only);
+    Result<Array<ObjectId>> order(ObjectId display, const Map<ObjectId, State>& changed,
+                                  bool active_only = false) const {
+        return display == ObjectId{} ? Result<Array<ObjectId>>{Array<ObjectId>{}}
+                                     : order(Span<const ObjectId>{&display, 1}, changed, active_only);
     }
 
-    std::uint32_t max_subgraph_span(std::span<const ObjectId> roots) const {
+    std::uint32_t max_subgraph_span(Span<const ObjectId> roots) const {
         std::uint32_t span = 0;
         if (roots.empty())
             return span;
@@ -1026,8 +1027,8 @@ struct Evaluator::Impl {
         return span;
     }
 
-    std::vector<Reference> dependencies_for(std::span<const ObjectId> roots) const {
-        std::vector<Reference> result;
+    Array<Reference> dependencies_for(Span<const ObjectId> roots) const {
+        Array<Reference> result;
         if (roots.empty())
             return result;
         auto sequence = order(roots, {}, true);
@@ -1039,15 +1040,14 @@ struct Evaluator::Impl {
                 continue;
             for (const auto& dep : state->entry->dependencies) {
                 if (std::ranges::find(result, dep) == result.end())
-                    result.push_back(dep);
+                    result.add(dep);
             }
         }
         return result;
     }
 
-    std::vector<Reference> dependencies(ObjectId node_id) const {
-        return node_id == ObjectId{} ? std::vector<Reference>{}
-                                     : dependencies_for(std::span<const ObjectId>{&node_id, 1});
+    Array<Reference> dependencies(ObjectId node_id) const {
+        return node_id == ObjectId{} ? Array<Reference>{} : dependencies_for(Span<const ObjectId>{&node_id, 1});
     }
 
     void sync_published(bool update_last_valid) {
@@ -1065,8 +1065,8 @@ struct Evaluator::Impl {
         }
     }
 
-    Result<void> evaluate(std::optional<std::span<const ObjectId>> explicit_targets, bool record_timings,
-                          std::optional<std::uint32_t> seed_override) {
+    Result<void> evaluate(Optional<Span<const ObjectId>> explicit_targets, bool record_timings,
+                          Optional<std::uint32_t> seed_override) {
         auto now = runtime.change_cursor();
         if (!now)
             return std::unexpected(now.error());
@@ -1076,7 +1076,7 @@ struct Evaluator::Impl {
         // A publication may change any Source node's code; rebinding finds which did.
         const bool republished = program && program->revision() != code_revision;
         dirty = dirty || republished;
-        std::optional<Contents> refreshed;
+        Optional<Contents> refreshed;
         auto next_authored_seed = authored_seed;
         if (!cursor || runtime.changed_since(id, *cursor)) {
             auto listed = contents(runtime, id);
@@ -1104,10 +1104,10 @@ struct Evaluator::Impl {
         const bool update_last_valid = !seed_override.has_value();
         const auto& next_members = refreshed ? *refreshed : members;
         const ObjectId display_target = next_members.display();
-        const std::span<const ObjectId> target_roots =
+        const Span<const ObjectId> target_roots =
             explicit_targets ? *explicit_targets
-                             : (display_target != ObjectId{} ? std::span<const ObjectId>{&display_target, 1}
-                                                             : std::span<const ObjectId>{});
+                             : (display_target != ObjectId{} ? Span<const ObjectId>{&display_target, 1}
+                                                             : Span<const ObjectId>{});
         if (explicit_targets) {
             for (const ObjectId root_node : *explicit_targets)
                 if (root_node != ObjectId{} && !next_members.contains(root_node))
@@ -1179,7 +1179,7 @@ struct Evaluator::Impl {
                 state.inputs = std::move(*into);
             }
         }
-        const auto cook_sequence = [&](std::span<const ObjectId> sequence) {
+        const auto cook_sequence = [&](Span<const ObjectId> sequence) {
             for (const auto node : sequence) {
                 auto& state = *nodes.find(node);
                 if (state.synced_generation != sync_generation) {
@@ -1251,7 +1251,7 @@ struct Evaluator::Impl {
                     return false;
             }
         };
-        std::vector<ObjectId> invalidated;
+        Array<ObjectId> invalidated;
         for (auto [node, state] : candidate) {
             const auto* prior = nodes.find(node);
             auto read = this->read(node, state, prior);
@@ -1266,7 +1266,7 @@ struct Evaluator::Impl {
                                             state.frozen_entry != prior->frozen_entry || state.local != prior->local ||
                                             !active_inputs_equal(state, *prior);
             if (output_invalidated || (republished && !is_locked_frozen(state)))
-                invalidated.push_back(node);
+                invalidated.add(node);
             changed = changed || any_change;
         }
         for (auto [node, state] : candidate) {
@@ -1287,10 +1287,10 @@ struct Evaluator::Impl {
                 target.local = std::move(state.local);
         }
         if (membership_changed) {
-            std::vector<ObjectId> removed;
+            Array<ObjectId> removed;
             for (const auto& [node, _] : nodes)
                 if (!next_members.contains(node))
-                    removed.push_back(node);
+                    removed.add(node);
             for (const auto node : removed)
                 (void)nodes.remove(node);
         }
@@ -1301,7 +1301,7 @@ struct Evaluator::Impl {
                 if (((global_invalidation && st.status.error.has_value()) ||
                      (st.status.root_node != ObjectId{} && !nodes.contains(st.status.root_node))) &&
                     !std::ranges::contains(invalidated, node))
-                    invalidated.push_back(node);
+                    invalidated.add(node);
             }
             for (bool progress = !invalidated.empty(); progress;) {
                 progress = false;
@@ -1315,7 +1315,7 @@ struct Evaluator::Impl {
                     });
                     if (upstream_invalidated || (st.status.root_node != ObjectId{} &&
                                                  std::ranges::contains(invalidated, st.status.root_node))) {
-                        invalidated.push_back(node);
+                        invalidated.add(node);
                         progress = true;
                     }
                 }
@@ -1378,7 +1378,7 @@ std::shared_ptr<CachePool> Evaluator::cache_pool() const noexcept {
     return impl_->pool;
 }
 
-void Evaluator::set_external_inputs(std::span<const ExternalInput> inputs) {
+void Evaluator::set_external_inputs(Span<const ExternalInput> inputs) {
     bool same = impl_->has_external_inputs && impl_->external_inputs.size() == inputs.size();
     if (same) {
         for (std::size_t i = 0; i < inputs.size(); ++i) {
@@ -1395,7 +1395,7 @@ void Evaluator::set_external_inputs(std::span<const ExternalInput> inputs) {
     if (same)
         return;
     impl_->has_external_inputs = true;
-    impl_->external_inputs.assign(inputs.begin(), inputs.end());
+    impl_->external_inputs.assign(inputs);
     for (auto& ext : impl_->external_inputs) {
         if (ext.serial == 0u && !ext.geometry.same_value(impl_->empty))
             ext.serial = ++impl_->pool->impl_->serials;
@@ -1411,21 +1411,21 @@ void Evaluator::clear_external_inputs() noexcept {
     ++impl_->external_inputs_epoch;
 }
 
-Result<void> Evaluator::evaluate(bool record_timings, std::optional<std::uint32_t> seed_override) {
-    auto result = impl_->evaluate(std::nullopt, record_timings, seed_override);
+Result<void> Evaluator::evaluate(bool record_timings, Optional<std::uint32_t> seed_override) {
+    auto result = impl_->evaluate({}, record_timings, seed_override);
     if (!result)
         impl_->current_published.reset();
     return result;
 }
 
-Result<void> Evaluator::evaluate_node(ObjectId node, bool record_timings, std::optional<std::uint32_t> seed_override) {
-    const std::span<const ObjectId> single =
-        node != ObjectId{} ? std::span<const ObjectId>{&node, 1} : std::span<const ObjectId>{};
+Result<void> Evaluator::evaluate_node(ObjectId node, bool record_timings, Optional<std::uint32_t> seed_override) {
+    const Span<const ObjectId> single =
+        node != ObjectId{} ? Span<const ObjectId>{&node, 1} : Span<const ObjectId>{};
     return impl_->evaluate(single, record_timings, seed_override);
 }
 
-Result<void> Evaluator::evaluate_targets(std::span<const ObjectId> targets, bool record_timings,
-                                         std::optional<std::uint32_t> seed_override) {
+Result<void> Evaluator::evaluate_targets(Span<const ObjectId> targets, bool record_timings,
+                                         Optional<std::uint32_t> seed_override) {
     return impl_->evaluate(targets, record_timings, seed_override);
 }
 
@@ -1453,11 +1453,11 @@ bool Evaluator::has_display_node() const noexcept {
     return impl_->members.display() != ObjectId{};
 }
 
-std::optional<Error> Evaluator::display_error() const {
+Optional<Error> Evaluator::display_error() const {
     return target_error(impl_->members.display());
 }
 
-std::vector<Reference> Evaluator::display_dependencies() const {
+Array<Reference> Evaluator::display_dependencies() const {
     return impl_->dependencies(impl_->members.display());
 }
 
@@ -1586,26 +1586,26 @@ Result<NodeBindings> Evaluator::inspect_bindings(ObjectId node) {
             binding.status = "all";
         else
             binding.status = column ? "bound" : "fallback";
-        result.attributes.push_back(std::move(binding));
+        result.attributes.add(std::move(binding));
     }
     return result;
 }
 
-std::optional<Error> Evaluator::target_error(ObjectId node) const {
+Optional<Error> Evaluator::target_error(ObjectId node) const {
     if (node == ObjectId{})
-        return std::nullopt;
+        return {};
     const auto* state = impl_->nodes.find(node);
     if (!state || !state->status.error)
-        return std::nullopt;
+        return {};
     return state->root_error ? state->root_error : state->status.error;
 }
 
-std::vector<Reference> Evaluator::target_dependencies(std::span<const ObjectId> targets) const {
+Array<Reference> Evaluator::target_dependencies(Span<const ObjectId> targets) const {
     return impl_->dependencies_for(targets);
 }
 
 Result<std::shared_ptr<const FrozenOutput>> Evaluator::freeze_snapshot(ObjectId node,
-                                                                       std::optional<std::uint32_t> seed_override) {
+                                                                       Optional<std::uint32_t> seed_override) {
     ATELIER_TRY(evaluate_node(node, false, seed_override));
     const auto* state = impl_->nodes.find(node);
     if (state && state->status.error)
@@ -1618,13 +1618,13 @@ Result<std::shared_ptr<const FrozenOutput>> Evaluator::freeze_snapshot(ObjectId 
     return snapshot;
 }
 
-std::vector<ObjectId> Evaluator::display_freezes() const {
-    std::vector<ObjectId> result;
+Array<ObjectId> Evaluator::display_freezes() const {
+    Array<ObjectId> result;
     if (const auto sequence = impl_->order(impl_->members.display(), {}, true))
         for (const auto node : *sequence) {
             const auto& state = *impl_->nodes.find(node);
             if (state.frozen && !state.bypassed && state.frozen_entry)
-                result.push_back(node);
+                result.add(node);
         }
     return result;
 }

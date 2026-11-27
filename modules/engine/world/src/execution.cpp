@@ -1,4 +1,6 @@
 #include "world/detail.hpp"
+#include "foundation/bit_vector.hpp"
+#include "foundation/inline_array.hpp"
 #include "world/timing.hpp"
 #include <algorithm>
 #include <cmath>
@@ -26,14 +28,14 @@ Result<Commit> World::set_enabled(ObjectId object, bool enabled) {
         }
         std::size_t first{};
         std::size_t count{};
-        std::vector<bool> before;
+        BitVector before;
         if (data->world) {
             ATELIER_TRY_BIND(at, state.member(object));
             first = *at;
             count = state.states[first].size;
             before.reserve(count);
             for (auto i = first; i < first + count; ++i)
-                before.push_back(state.states[i].eligible);
+                before.add(state.states[i].eligible);
         }
         {
             detail::FlagScope transition{state.transitioning};
@@ -51,7 +53,7 @@ Result<Commit> World::set_enabled(ObjectId object, bool enabled) {
         }
         if (!data->world)
             return Commit{true, {}};
-        std::optional<Error> failure;
+        Optional<Error> failure;
         // Entity notifications cover its capability registrations. Emit only
         // actual effective transitions, without repeating Begin/End.
         for (std::size_t i = count; i-- > 0;) {
@@ -106,10 +108,10 @@ Result<Commit> World::set_enabled(ObjectId object, bool enabled) {
         return Commit{true, {}};
     return state.finish(true, state.running && owner_enabled
                                   ? state.notify(enabled ? Lifecycle::activated : Lifecycle::deactivated, object)
-                                  : std::nullopt);
+                                  : Optional<Error>{});
 }
 
-std::optional<Error> World::Impl::invoke(const Scheduled& item, bool beginning) {
+Optional<Error> World::Impl::invoke(const Scheduled& item, bool beginning) {
     auto root = runtime.hold(item.object);
     if (!root)
         return root.error();
@@ -131,9 +133,9 @@ std::optional<Error> World::Impl::invoke(const Scheduled& item, bool beginning) 
 // Callbacks cannot change membership or registrations (dispatch guard), so
 // state references stay valid across each invocation. An isolated Begin
 // failure leaves only that object unbegun; its components and children continue.
-std::optional<Error> World::Impl::begin(std::size_t first, std::size_t last, ObjectId component) {
+Optional<Error> World::Impl::begin(std::size_t first, std::size_t last, ObjectId component) {
     const auto begin_one = [&](ObjectId object, ObjectId entity, const Behavior* behavior, bool& begun,
-                               Fault& fault) -> std::optional<Error> {
+                               Fault& fault) -> Optional<Error> {
         if (begun || fault != Fault::none)
             return {};
         if (auto failure = invoke({object, entity, behavior}, true)) {
@@ -161,8 +163,8 @@ std::optional<Error> World::Impl::begin(std::size_t first, std::size_t last, Obj
     return {};
 }
 
-std::optional<Error> World::Impl::end(std::size_t first, std::size_t last, ObjectId component) {
-    std::optional<Error> failure;
+Optional<Error> World::Impl::end(std::size_t first, std::size_t last, ObjectId component) {
+    Optional<Error> failure;
     // Clear before invoking: End is attempted exactly once, including failures.
     for (auto i = last; i-- > first;) {
         const auto entity = members[i].id();
@@ -189,7 +191,7 @@ std::optional<Error> World::Impl::end(std::size_t first, std::size_t last, Objec
     return failure;
 }
 
-std::optional<Error> World::Impl::shutdown() {
+Optional<Error> World::Impl::shutdown() {
     const bool was_running = running;
     halt(); // Cancel tasks before End and suppress all further Tick calls.
     auto failure = end();
@@ -258,12 +260,12 @@ Result<Commit> World::close() {
     // closing blocks mutation, but deactivated observers still need read-only
     // access to the complete registered graph to release subsystem state.
     auto failure = state.shutdown();
-    std::vector<ObjectId> exiting;
+    Array<ObjectId> exiting;
     for (auto i = state.members.size(); i-- > 0;) {
         const auto& group = state.states[i].components;
         for (auto it = group.rbegin(); it != group.rend(); ++it)
-            exiting.push_back(it->id);
-        exiting.push_back(state.members[i].id());
+            exiting.add(it->id);
+        exiting.add(state.members[i].id());
     }
     {
         detail::FlagScope transition{state.transitioning};
@@ -326,21 +328,21 @@ Result<void> World::bind_behavior(TypeId type, Behavior binding) {
     }
     // Bindings keep their addresses, so a failed re-resolution leaves every registration valid.
     state.behaviors.push_back({type, std::move(binding)});
-    std::vector<const Behavior*> resolved;
+    Array<const Behavior*> resolved;
     for (const auto& member : state.states) {
         auto own = state.behavior(member.type);
         if (!own) {
             state.behaviors.pop_back();
             return std::unexpected(own.error());
         }
-        resolved.push_back(*own);
+        resolved.add(*own);
         for (const auto& item : member.components) {
             auto bound = state.behavior(item.type);
             if (!bound) {
                 state.behaviors.pop_back();
                 return std::unexpected(bound.error());
             }
-            resolved.push_back(*bound);
+            resolved.add(*bound);
         }
     }
     auto next = resolved.begin();
@@ -369,20 +371,20 @@ Result<void> World::add_tick_prerequisite(ObjectId object, ObjectId prerequisite
         found && std::ranges::find(*found, prerequisite) != found->end())
         return {};
     // The edge closes a cycle when `object` already precedes `prerequisite`.
-    std::vector<ObjectId> stack{object};
+    Array<ObjectId> stack{object};
     Set<ObjectId> seen{object};
     while (!stack.empty()) {
         const auto next = stack.back();
-        stack.pop_back();
+        stack.pop();
         if (next == prerequisite)
             return error(ErrorCode::argument_mismatch, "Tick prerequisites would form a cycle.");
         if (const auto* found = state.dependents.find(next))
             for (const auto later : *found)
                 if (seen.add(later))
-                    stack.push_back(later);
+                    stack.add(later);
     }
-    state.prerequisites.try_emplace(object).value->push_back(prerequisite);
-    state.dependents.try_emplace(prerequisite).value->push_back(object);
+    state.prerequisites.try_emplace(object).value->add(prerequisite);
+    state.dependents.try_emplace(prerequisite).value->add(object);
     state.schedule_dirty = true;
     return {};
 }
@@ -399,9 +401,9 @@ Result<std::uint64_t> World::subscribe_lifecycle(LifecycleObserver observer) {
         return error(ErrorCode::argument_mismatch, "Lifecycle subscription is empty.");
     if (impl_->next_subscription == std::numeric_limits<std::uint64_t>::max())
         return error(ErrorCode::capacity_exceeded, "Lifecycle subscription identity space is exhausted.");
-    std::erase_if(impl_->subscriptions, [](const Impl::Subscription& entry) { return !entry.observer; });
+    impl_->subscriptions.remove_if([](const Impl::Subscription& entry) { return !entry.observer; });
     const auto id = impl_->next_subscription++;
-    impl_->subscriptions.push_back({id, std::make_shared<LifecycleObserver>(std::move(observer))});
+    impl_->subscriptions.add({id, std::make_shared<LifecycleObserver>(std::move(observer))});
     return id;
 }
 
@@ -414,7 +416,7 @@ void World::unsubscribe_lifecycle(std::uint64_t id) noexcept {
             return;
         }
     }
-    std::erase_if(impl_->subscriptions, [id](const Impl::Subscription& entry) { return entry.id == id; });
+    impl_->subscriptions.remove_if([id](const Impl::Subscription& entry) { return entry.id == id; });
 }
 
 Result<void> World::start_task(ObjectId object, const TaskStart& starter) {
@@ -446,11 +448,11 @@ Result<void> World::start_task(ObjectId object, const TaskStart& starter) {
     ATELIER_TRY_BIND(task, starter(runtime(), object));
     if (task->state() != CoroutineState::ready && task->state() != CoroutineState::suspended)
         return error(ErrorCode::argument_mismatch, "World accepts only ready or suspended tasks.");
-    state.tasks.push_back({object, entity_id, std::move(*task)});
+    state.tasks.add({object, entity_id, std::move(*task)});
     return {};
 }
 
-std::optional<Error> World::Impl::run_phase(TickPhase phase, float amount) {
+Optional<Error> World::Impl::run_phase(TickPhase phase, float amount) {
     struct PhaseMarkers {
         const timing::Marker& phase;
 
@@ -470,10 +472,10 @@ std::optional<Error> World::Impl::run_phase(TickPhase phase, float amount) {
         rebuild_schedule();
     }
     timing::Scope timed{marked.phase};
-    std::optional<Error> failure;
-    std::optional<timing::Scope> resuming;
+    Optional<Error> failure;
+    Optional<timing::Scope> resuming;
     {
-        std::optional<timing::Scope> ticking{std::in_place, marked.tick};
+        Optional<timing::Scope> ticking{std::in_place, marked.tick};
         auto execution = ExecutionScope::enter(runtime);
         if (!execution)
             return execution.error();
@@ -505,7 +507,7 @@ std::optional<Error> World::Impl::run_phase(TickPhase phase, float amount) {
         if (!failure && phase == TickPhase::pre_physics) {
             resuming.emplace(phases::pre_physics_tasks);
             // Cancelling erases tasks, so faults apply after the resume loop.
-            std::vector<std::pair<ObjectId, ObjectId>> faulted;
+            Array<std::pair<ObjectId, ObjectId>> faulted;
             for (auto& task : tasks) {
                 if (std::ranges::any_of(faulted, [&](const auto& other) { return other.first == task.object; }))
                     continue;
@@ -517,7 +519,7 @@ std::optional<Error> World::Impl::run_phase(TickPhase phase, float amount) {
                     failure = stepped.error();
                     break;
                 }
-                faulted.emplace_back(task.object, task.entity);
+                faulted.emplace(task.object, task.entity);
             }
             for (const auto& [object, entity] : faulted)
                 fault_tick(object, entity);
@@ -526,7 +528,7 @@ std::optional<Error> World::Impl::run_phase(TickPhase phase, float amount) {
     if (failure)
         return failure;
     if (phase == TickPhase::pre_physics)
-        std::erase_if(tasks, [](const Task& task) {
+        tasks.remove_if([](const Task& task) {
             const auto state = task.coroutine.state();
             return state == CoroutineState::completed || state == CoroutineState::cancelled ||
                    state == CoroutineState::failed;
@@ -562,11 +564,11 @@ Result<void> World::update(float amount) {
         return fail(std::move(*failure));
     if (!state.running)
         return {};
-    std::optional<timing::Scope> simulating{std::in_place, phases::simulation};
-    std::vector<std::shared_ptr<const Simulation>> systems;
+    Optional<timing::Scope> simulating{std::in_place, phases::simulation};
+    InlineArray<std::shared_ptr<const Simulation>, 8> systems;
     for (const auto& entry : state.simulations)
         if (entry.simulation)
-            systems.push_back(entry.simulation);
+            systems.add(entry.simulation);
     for (const auto& system : systems) {
         if (!state.running)
             return {};
@@ -630,7 +632,7 @@ Result<std::uint64_t> World::request(Request command) {
     default:
         return error(ErrorCode::argument_mismatch, "Unknown World request.");
     }
-    state.pending.push_back(std::move(pending));
+    state.pending.add(std::move(pending));
     return state.next_request++;
 }
 
@@ -683,7 +685,7 @@ Result<Commit> World::Impl::apply_request(const Pending& item) {
     return error(ErrorCode::argument_mismatch, "Unknown World request.");
 }
 
-std::optional<Error> World::Impl::flush_requests() {
+Optional<Error> World::Impl::flush_requests() {
     if (pending.empty())
         return {};
     if (auto ready = runtime.check_code_publication(); !ready)
@@ -710,18 +712,18 @@ std::optional<Error> World::Impl::flush_requests() {
     return {};
 }
 
-Result<std::vector<RequestCompletion>> World::flush() {
+Result<Array<RequestCompletion>> World::flush() {
     auto& state = *impl_;
     if (state.dispatch_depth || state.transitioning || state.flushing)
         return error(ErrorCode::busy, "Cannot recursively flush World requests.");
     ATELIER_TRY(runtime().check_code_publication());
-    std::vector<RequestCompletion> completed;
+    Array<RequestCompletion> completed;
     completed.reserve(state.pending.size());
     auto pending = std::move(state.pending);
     state.pending.clear();
     detail::FlagScope flushing{state.flushing};
     for (const auto& item : pending)
-        completed.push_back({item.serial, state.apply_request(item)});
+        completed.add({item.serial, state.apply_request(item)});
     return completed;
 }
 

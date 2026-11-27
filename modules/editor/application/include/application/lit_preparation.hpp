@@ -1,8 +1,8 @@
 #pragma once
+#include "foundation/optional.hpp"
 #include "renderer/renderer.hpp"
 #include "runtime/runtime.hpp"
 #include <filesystem>
-#include <optional>
 #include <string>
 
 namespace atelier::application {
@@ -34,6 +34,6 @@ public:
                                    renderer::Result<renderer::FrameResult>* first_attempt = nullptr);
 
 private:
-    std::optional<renderer::ViewSettings> last_lit_;
+    Optional<renderer::ViewSettings> last_lit_;
 };
 }

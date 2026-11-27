@@ -14,17 +14,17 @@ struct DebugVariableMetadata {
 };
 
 struct DebugFunctionMetadata {
-    std::vector<DebugVariableMetadata> variables;
+    Array<DebugVariableMetadata> variables;
 };
 
 struct DebugTables {
-    std::vector<DebugFunctionMetadata> functions;
+    Array<DebugFunctionMetadata> functions;
 
-    std::vector<std::uint32_t> sites;
+    Array<std::uint32_t> sites;
 
-    std::vector<std::string> failure_messages;
+    Array<std::string> failure_messages;
 
-    std::vector<BusinessFailureMessage> failure_message_views;
+    Array<BusinessFailureMessage> failure_message_views;
 };
 
 struct DebugMetadata {
@@ -32,7 +32,7 @@ struct DebugMetadata {
 
     std::uint64_t code_version{};
 
-    std::shared_ptr<const std::vector<DiagnosticLocation>> locations;
+    std::shared_ptr<const Array<DiagnosticLocation>> locations;
 
     std::shared_ptr<const DebugTables> tables;
 };
@@ -42,13 +42,13 @@ struct DebugSessionState {
 
     DebugOptions options;
 
-    std::vector<DebugBreakpoint> breakpoints;
+    Array<DebugBreakpoint> breakpoints;
 
     std::shared_ptr<const DebugMetadata> metadata;
 
-    std::vector<std::uint32_t> bound_sites;
+    Array<std::uint32_t> bound_sites;
 
-    std::optional<DebugSnapshot> last_stop;
+    Optional<DebugSnapshot> last_stop;
 
     DebugStatus status{DebugStatus::unused};
 

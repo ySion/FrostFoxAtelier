@@ -84,12 +84,13 @@ atelier::material::ProgramSurfaceRef capture(const Description& value) {
         catalog[(p.coverage == Coverage::mask ? 2 : 0) + (p.double_sided ? 0 : 1)].author);
     const auto definition =
         take(m::make_definition(program, {p.coverage, p.double_sided, p.emission_two_sided}, author.inputs));
-    const auto parent = take(m::resolve_source(definition, std::vector<ImageRef>(definition->textures().size())));
-    std::vector<m::Override> entries;
-    std::vector<ImageRef> images;
+    const atelier::Array<ImageRef> default_images(definition->textures().size());
+    const auto parent = take(m::resolve_source(definition, default_images));
+    atelier::Array<m::Override> entries;
+    atelier::Array<ImageRef> images;
     const auto add = [&](std::string path, m::LocalValue v, ImageRef image = {}) {
-        entries.push_back({std::move(path), std::move(v), true});
-        images.push_back(std::move(image));
+        entries.add({std::move(path), std::move(v), true});
+        images.add(std::move(image));
     };
     add("base_color", math::Vector4{p.base_color[0], p.base_color[1], p.base_color[2], p.base_color[3]});
     add("roughness", p.roughness);
@@ -159,23 +160,23 @@ struct MeshInstance {
 
     std::uint64_t stable_key{};
 
-    std::shared_ptr<const std::vector<standard_fixture::SurfaceRef>> surfaces{};
+    std::shared_ptr<const atelier::Array<standard_fixture::SurfaceRef>> surfaces{};
 };
 
 struct Frame : atelier::renderer::Frame {
-    std::span<const MeshInstance> meshes;
+    atelier::Span<const MeshInstance> meshes;
 
     struct Candidate {
         MaterialBatch batch;
 
-        std::vector<standard_fixture::SurfaceRef> authors;
+        atelier::Array<standard_fixture::SurfaceRef> authors;
 
-        std::vector<atelier::renderer::MeshInstance> meshes;
+        atelier::Array<atelier::renderer::MeshInstance> meshes;
     };
 
     mutable std::unique_ptr<Candidate> candidate;
 
-    Frame(const ui::Frame& drawing, Camera view_camera, ui::Rect viewport, std::span<const MeshInstance> instances)
+    Frame(const ui::Frame& drawing, Camera view_camera, ui::Rect viewport, atelier::Span<const MeshInstance> instances)
         : atelier::renderer::Frame{drawing, view_camera, viewport, {}}, meshes(instances) {}
 
     Frame(const Frame& other) : atelier::renderer::Frame(other), meshes(other.meshes) {}
@@ -193,13 +194,13 @@ struct Frame : atelier::renderer::Frame {
         if (!candidate)
             candidate = std::make_unique<Candidate>();
         auto& old = *candidate;
-        std::vector<standard_fixture::SurfaceRef> authors;
-        std::vector<atelier::material::ProgramSurfaceRef> surfaces;
-        std::vector<atelier::renderer::MeshInstance> draws;
+        atelier::Array<standard_fixture::SurfaceRef> authors;
+        atelier::Array<atelier::material::ProgramSurfaceRef> surfaces;
+        atelier::Array<atelier::renderer::MeshInstance> draws;
         for (const auto& mesh : meshes) {
             const auto count =
                 mesh.surfaces ? mesh.surfaces->size() : (mesh.geometry ? mesh.geometry->materials().size() : 1);
-            auto slots = std::make_shared<std::vector<std::uint32_t>>();
+            auto slots = std::make_shared<atelier::Array<std::uint32_t>>();
             for (std::size_t i = 0; i < count; ++i) {
                 standard_fixture::SurfaceRef author;
                 if (mesh.surfaces)
@@ -221,15 +222,15 @@ struct Frame : atelier::renderer::Frame {
                         author = std::make_shared<const standard_fixture::Surface>(std::move(d));
                 }
                 check(bool(author), "fixture has an explicit StandardPBR author for every slot");
-                slots->push_back(static_cast<std::uint32_t>(surfaces.size()));
-                surfaces.push_back(author->program());
-                authors.push_back(std::move(author));
+                slots->add(static_cast<std::uint32_t>(surfaces.size()));
+                surfaces.add(author->program());
+                authors.add(std::move(author));
             }
-            std::shared_ptr<const std::vector<std::uint32_t>> mapping = slots;
+            std::shared_ptr<const atelier::Array<std::uint32_t>> mapping = slots;
             if (draws.size() < old.meshes.size() && old.meshes[draws.size()].material_slots &&
                 *old.meshes[draws.size()].material_slots == *slots)
                 mapping = old.meshes[draws.size()].material_slots;
-            draws.push_back({mesh.world, mesh.selected, mesh.geometry, mesh.stable_key, std::move(mapping)});
+            draws.add({mesh.world, mesh.selected, mesh.geometry, mesh.stable_key, std::move(mapping)});
         }
         if (!std::ranges::equal(old.batch.surfaces(), surfaces)) {
             // Submit before retiring the old batch: the exact live code-set owner

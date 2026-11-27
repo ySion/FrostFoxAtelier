@@ -38,7 +38,8 @@ struct PhysicsFixture {
     Entity make(Vector3 position, p::BodySettings settings = {}) {
         Entity result{take(w::create_entity(runtime)),
                       take(w::create_component(runtime, world_types.collision_component))};
-        committed(world.attach_components(result.id(), std::array{w::Attachment{result.body.id()}}));
+        const std::array added{w::Attachment{result.body.id()}};
+        committed(world.attach_components(result.id(), added));
         take(world.set_transform(result.id(), w::Trs{position, {0, 0, 0, 1}, {1, 1, 1}}));
         settings.enabled = true;
         take(p::configure(runtime, result.body.id(), settings));

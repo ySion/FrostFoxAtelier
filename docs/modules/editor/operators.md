@@ -27,8 +27,8 @@ enum class OperatorFlag : std::uint32_t {
 };
 enum class OperatorKind { query, direct, interactive };
 struct OperatorParameters {
-    ValueInput value;                     // 记录类型参数：Runtime 现有的 {TypeId, const void*}
-    std::span<const PropertyPatch> patch; // @context.object：对象类型约束下的稀疏路径补丁（第 4 节）
+    ValueInput value;                // 记录类型参数：Runtime 现有的 {TypeId, const void*}
+    Span<const PropertyPatch> patch; // @context.object：对象类型约束下的稀疏路径补丁（第 4 节）
 };
 struct OperatorInfo {
     std::string id;                 // 稳定 ID：小写 "<域>.<动作>"，如 "scene.delete"
@@ -40,7 +40,7 @@ struct OperatorInfo {
     std::function<Result<void>(const Context&)> poll;            // 不可用时 error.message 就是原因
     std::function<Result<void>(OperatorHost&, const Context&, const OperatorParameters&, ValueOutput result)> execute;
     std::function<Result<void>(const Context&, ValueOutput parameters)> seed;  // 可选：用当前状态初始化补丁式参数
-    std::function<std::optional<bool>(const Context&, ValueInput parameters)> state; // 可选：菜单的勾选/单选状态
+    std::function<Optional<bool>(const Context&, ValueInput parameters)> state; // 可选：菜单的勾选/单选状态
     OperatorKind kind = OperatorKind::direct;
     std::function<bool(ValueInput)> requires_interaction; // 可选：由已解码参数决定是否需要人类交互
     std::string interaction; // 条件说明，供发现与拒绝结果使用
@@ -49,7 +49,7 @@ class OperatorRegistry {
 public:
     Result<void> add(OperatorInfo);                // 重复 ID、ID 语法错误、标志组合非法时拒绝
     const OperatorInfo* find(std::string_view id) const;
-    std::span<const OperatorInfo> all() const;
+    Span<const OperatorInfo> all() const;
     // 原生便捷入口：参数记录 P 由 atelier_reflect 生成，包装成上面的类型擦除形式。
     template<class P> static OperatorInfo native(std::string id, std::wstring title, std::string description, OperatorFlag,
         std::function<Result<void>(const Context&)> poll,
@@ -94,20 +94,20 @@ Result<OperatorReport> call(OperatorRegistry&, OperatorHost&, const Context&, co
 ## 3. Context
 
 ```cpp
-struct Selection { ObjectId active;  /* active Entity */ ObjectId object; /* 被检视的对象：Entity、组件或材质 */ std::vector<ObjectId> entities; };
+struct Selection { ObjectId active;  /* active Entity */ ObjectId object; /* 被检视的对象：Entity、组件或材质 */ Array<ObjectId> entities; };
 enum class RegionKind : std::uint32_t { none, viewport, scene_tree, structure, parameters, assets, code, output, world, controls };
 struct Region { RegionKind kind{}; ui::ControlKey instance{}; };   // instance 是 Dock 页的键，现在每种只有一个
 struct ViewportContext {
     CameraState camera; ViewportView view;          // 已接受帧的投影与范围
     math::Vector3 cursor; math::Quaternion cursor_rotation;
-    std::optional<math::Vector2> pointer;           // 视口物理像素
-    std::optional<Hit> hit;                         // 由 pointer 经真实射线求得 {entity, position, normal}
+    Optional<math::Vector2> pointer;                // 视口物理像素
+    Optional<Hit> hit;                              // 由 pointer 经真实射线求得 {entity, position, normal}
 };
 struct Context {
     Session& document; Project* project;
     Selection selection;
     Region region;
-    std::optional<ViewportContext> viewport;        // 仅当 region 为 viewport
+    Optional<ViewportContext> viewport;             // 仅当 region 为 viewport
     std::string asset;                              // 资源浏览器的活动资产或被检视的材质资产键
     std::filesystem::path source;                   // 代码页的活动文档
     bool scene_available{true};                     // 工程场景是否可用；Play 运行期间的修改照常进入文档并转发给 Play

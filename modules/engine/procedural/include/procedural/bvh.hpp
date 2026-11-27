@@ -1,12 +1,12 @@
 #pragma once
 
 #include "foundation/array.hpp"
+#include "foundation/optional.hpp"
 #include "foundation/shared_array.hpp"
 #include "procedural/geometry.hpp"
 #include "runtime/reflection.hpp"
 
 #include <memory>
-#include <optional>
 
 #include "procedural/bvh.gen.hpp"
 
@@ -66,11 +66,10 @@ public:
     static Result<std::shared_ptr<const Bvh>> acquire(const Geometry& surface);
 
     // The nearest triangle along a unit direction within max_distance.
-    [[nodiscard]] std::optional<Hit> ray(math::Vector3 origin, math::Vector3 direction,
-                                         float max_distance) const noexcept;
+    [[nodiscard]] Optional<Hit> ray(math::Vector3 origin, math::Vector3 direction, float max_distance) const noexcept;
 
     // The nearest surface point within max_distance.
-    [[nodiscard]] std::optional<Hit> closest(math::Vector3 point, float max_distance) const noexcept;
+    [[nodiscard]] Optional<Hit> closest(math::Vector3 point, float max_distance) const noexcept;
 
     // Whether any polygon's bounded Euclidean surface band contains point. Each polygon
     // uses its own scale-dependent tolerance, not the nearest polygon's tolerance.
@@ -80,8 +79,8 @@ public:
     // Finite point and finite, nonzero direction are required. Nullopt means a relevant
     // intersection's sign could not be certified with outward-rounded double arithmetic.
     // For a closed oriented surface outside its band, this sum is its integer winding.
-    [[nodiscard]] std::optional<std::int64_t> signed_crossings(math::Vector3 point,
-                                                               math::Vector3 direction) const noexcept;
+    [[nodiscard]] Optional<std::int64_t> signed_crossings(math::Vector3 point,
+                                                          math::Vector3 direction) const noexcept;
 
 private:
     // A leaf holds triangles [first, first + count); an interior node has count 0 and its

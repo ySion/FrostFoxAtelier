@@ -1,4 +1,6 @@
 #pragma once
+#include "foundation/array.hpp"
+#include "foundation/optional.hpp"
 #include "ui_language/live_document.hpp"
 #include <array>
 
@@ -118,11 +120,11 @@ public:
 private:
     Values values_;
 
-    std::vector<Values> history_{values_};
+    Array<Values> history_{values_};
 
     std::size_t cursor_{};
 
-    std::optional<std::pair<ui::ControlKey, Values>> active_;
+    Optional<std::pair<ui::ControlKey, Values>> active_;
 
     bool disabled_{};
 

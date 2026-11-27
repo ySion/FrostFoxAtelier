@@ -110,7 +110,7 @@ provider拥有实际文字、字体与排版对象；core只存纯值键和结�
 
 当前编辑是真实节点池上的创建/更新/移动/删除或完整树批量提交。静态输入及没有几何度量依赖的逐项内容变化可以复用结果；其余变化仍计算参与布局的实例树，不是通用局部调度。工作数组按参与节点初始化，折叠子树保留描述但不承担逐次初始化；索引扩容、节点编辑和快照复制仍有各自成本。稳定叶缓存减少provider调用，不承诺O(变更节点数)、零分配、硬帧预算或并行。Stats的node_visits计三次可见节点尺寸/定位遍历，不包含编辑验证、先序构造、独立宽度遍历、provider内部工作和整个进程成本。
 
-`Stats.buffer_allocations/buffer_bytes_allocated/buffer_bytes/peak_buffer_bytes`记录内部节点池、孩子数组、批量计划、工作和发布缓冲的实际分配次数、累计申请字节、当前保留字节与峰值；仍使用进程默认分配器。它们排除公开NodeInput列描述的std::vector复制、返回的 ID 数组、快照、provider、Document拥有者本身与进程其他分配，不得称为全进程或全部布局内存。移除释放孩子数组和列描述，批量复用槽位时可保留即将使用的孩子数组容量；节点池/工作/索引向量保留高水位容量，没有自动shrink或硬内存预算。
+`Stats.buffer_allocations/buffer_bytes_allocated/buffer_bytes/peak_buffer_bytes`记录内部节点池、孩子数组、批量计划、工作和发布缓冲的实际分配次数、累计申请字节、当前保留字节与峰值；仍使用进程默认分配器。它们排除公开NodeInput列描述的Array复制、返回的 ID 数组、快照、provider、Document拥有者本身与进程其他分配，不得称为全进程或全部布局内存。移除释放孩子数组和列描述，批量复用槽位时可保留即将使用的孩子数组容量；节点池/工作/索引向量保留高水位容量，没有自动shrink或硬内存预算。
 
 `NodeInput`提供row/column/overlay/box/measured/table/wrap/grid构造辅助；它们直接产生同一描述，不创建另一个节点体系。输入错误附带`InputField`，`describe(ErrorCode/InputField)`返回静态说明，无需分配。构造辅助的非法参数由create/update/set_tree共用的校验拒绝。
 

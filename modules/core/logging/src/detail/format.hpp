@@ -9,9 +9,9 @@ struct FormatError {
 
     std::string message;
 
-    std::optional<std::uint32_t> native_code;
+    Optional<std::uint32_t> native_code;
 
-    FormatError(ReaderFault kind, std::string text, std::optional<std::uint32_t> native = {})
+    FormatError(ReaderFault kind, std::string text, Optional<std::uint32_t> native = {})
         : fault(kind), message(std::move(text)), native_code(native) {}
 
     FormatError(json::Error error);

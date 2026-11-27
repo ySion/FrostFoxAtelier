@@ -1,11 +1,11 @@
 #include "ui_language/declaration.hpp"
 #include "language/lexer.hpp"
+#include "foundation/optional.hpp"
 #include "foundation/result.hpp"
+#include "foundation/span.hpp"
 #include <algorithm>
 #include <charconv>
 #include <cmath>
-#include <optional>
-#include <span>
 #include <utility>
 
 namespace atelier::ui_language {
@@ -19,7 +19,7 @@ struct Fragment {
 
     SourcePosition end_position;
 
-    std::vector<Token> tokens;
+    Array<Token> tokens;
 };
 
 struct Evaluation {
@@ -27,7 +27,7 @@ struct Evaluation {
 
     std::uint32_t node{};
 
-    std::optional<Property> property;
+    Optional<Property> property;
 
     InputKind kind{InputKind::boolean};
 
@@ -60,56 +60,56 @@ bool is_text_property(Property property) {
            property == Property::tooltip_title || property == Property::tooltip_identity;
 }
 
-std::optional<bool> try_bool_literal(std::span<const Token> tokens) {
+Optional<bool> try_bool_literal(Span<const Token> tokens) {
     if (tokens.size() == 1 && (tokens[0].text == "true" || tokens[0].text == "false"))
         return tokens[0].text == "true";
-    return std::nullopt;
+    return {};
 }
 
-std::optional<double> try_number_literal(std::span<const Token> tokens, bool double_only) {
+Optional<double> try_number_literal(Span<const Token> tokens, bool double_only) {
     if (tokens.empty() || tokens.size() > 2)
-        return std::nullopt;
+        return {};
     bool negative = false;
     std::size_t index = 0;
     if (tokens.size() == 2) {
         if (tokens[0].text == "-")
             negative = true;
         else if (tokens[0].text != "+")
-            return std::nullopt;
+            return {};
         index = 1;
     }
     const auto& token = tokens[index];
     if (token.kind != Token::Kind::number || token.text.empty())
-        return std::nullopt;
+        return {};
     auto text = token.text;
     const char suffix = text.back();
     const bool is_double = suffix == 'd' || suffix == 'D';
     const bool is_float = suffix == 'f' || suffix == 'F';
     if (double_only && !is_double)
-        return std::nullopt;
+        return {};
     if (is_double || is_float)
         text.remove_suffix(1);
     if (is_double) {
         double value{};
         const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
         if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || !std::isfinite(value))
-            return std::nullopt;
+            return {};
         return negative ? -value : value;
     }
     if (is_float || text.find_first_of(".eE") != std::string_view::npos) {
         float value{};
         const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
         if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || !std::isfinite(value))
-            return std::nullopt;
+            return {};
         return static_cast<double>(negative ? -value : value);
     }
     std::uint32_t value{};
     const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
     if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
-        return std::nullopt;
+        return {};
     if (negative)
-        return value <= 2147483648u ? std::optional{static_cast<double>(-static_cast<std::int64_t>(value))}
-                                    : std::nullopt;
+        return value <= 2147483648u ? Optional<double>{static_cast<double>(-static_cast<std::int64_t>(value))}
+                                    : Optional<double>{};
     return static_cast<double>(value);
 }
 
@@ -138,9 +138,9 @@ constexpr std::pair<std::string_view, NodeKind> builtin_nodes[]{{"Column", NodeK
                                                                 {"Overlay", NodeKind::overlay},
                                                                 {"CodeEditor", NodeKind::code_editor}};
 
-std::optional<NodeKind> builtin_node(std::string_view name) {
+Optional<NodeKind> builtin_node(std::string_view name) {
     const auto at = std::ranges::find_if(builtin_nodes, [&](const auto& item) { return item.first == name; });
-    return at == std::end(builtin_nodes) ? std::nullopt : std::optional{at->second};
+    return at == std::end(builtin_nodes) ? Optional<NodeKind>{} : Optional<NodeKind>{at->second};
 }
 
 bool height_strategy(std::string_view name) {
@@ -165,7 +165,7 @@ bool container_node(NodeKind kind) {
 struct Header {
     std::string name;
 
-    std::vector<Input> inputs;
+    Array<Input> inputs;
 
     SourcePosition begin;
 
@@ -218,7 +218,7 @@ std::expected<Input, Diagnostic> parse_input(Tokens& tokens) {
     return value;
 }
 
-std::expected<std::vector<Header>, Diagnostic> headers(std::string_view source) {
+std::expected<Array<Header>, Diagnostic> headers(std::string_view source) {
     ATELIER_TRY_BIND(created, Tokens::create(source));
     auto& tokens = *created;
     std::size_t braces{};
@@ -240,7 +240,7 @@ std::expected<std::vector<Header>, Diagnostic> headers(std::string_view source) 
         } else if (!braces)
             declaration_start = token->text == ";";
     }
-    std::vector<Header> result;
+    Array<Header> result;
     while (tokens.token_.kind != Token::Kind::end) {
         ATELIER_TRY_BIND(begin, tokens.expect("ui"));
         ATELIER_TRY_BIND(name, tokens.identifier());
@@ -249,7 +249,7 @@ std::expected<std::vector<Header>, Diagnostic> headers(std::string_view source) 
         if (result.size() >= 64 ||
             std::ranges::any_of(result, [&](const auto& item) { return item.name == name->text; }))
             return reject(begin->position, "Duplicate or excessive UI component type.");
-        std::vector<Input> inputs;
+        Array<Input> inputs;
         ATELIER_TRY(tokens.expect("("));
         ATELIER_TRY_BIND(empty, tokens.accept(")"));
         if (!*empty)
@@ -259,14 +259,14 @@ std::expected<std::vector<Header>, Diagnostic> headers(std::string_view source) 
                 if (inputs.size() >= 1024 ||
                     std::ranges::any_of(inputs, [&](const auto& item) { return item.name == input->name; }))
                     return reject(tokens.token_.position, "Duplicate or excessive UI input.");
-                inputs.push_back(std::move(*input));
+                inputs.add(std::move(*input));
                 ATELIER_TRY_BIND(closed, tokens.accept(")"));
                 if (*closed)
                     break;
                 ATELIER_TRY(tokens.expect(","));
             }
         ATELIER_TRY(tokens.expect("{"));
-        result.push_back({std::string(name->text), std::move(inputs), begin->position, tokens});
+        result.add({std::string(name->text), std::move(inputs), begin->position, tokens});
         braces = 1;
         while (braces && tokens.token_.kind != Token::Kind::end) {
             ATELIER_TRY_BIND(token, tokens.consume());
@@ -305,7 +305,7 @@ std::expected<std::shared_ptr<const PreparedHelpers>, Diagnostic> prepare_helper
                 "UI helpers use explicit parameters; native context access and asynchronous effects are not permitted.");
         const auto begin = prepared->generated_source.size();
         prepared->generated_source += token.text;
-        prepared->mappings.push_back({begin, prepared->generated_source.size(), token.position});
+        prepared->mappings.add({begin, prepared->generated_source.size(), token.position});
         prepared->generated_source += ' ';
         previous = token.text;
     }
@@ -314,7 +314,7 @@ std::expected<std::shared_ptr<const PreparedHelpers>, Diagnostic> prepare_helper
 
 class Parser : private Tokens {
 public:
-    Parser(std::string_view name, const Header& header, const std::vector<Header>& all,
+    Parser(std::string_view name, const Header& header, const Array<Header>& all,
            std::shared_ptr<const PreparedHelpers> helpers)
         : Tokens(header.body), headers_(all) {
         result_.source_name = name;
@@ -346,8 +346,8 @@ public:
                 }
             }
             if (std::holds_alternative<std::monostate>(declared.initial_value))
-                initializers_.push_back({static_cast<std::uint32_t>(result_.states.size()), std::move(*initial)});
-            result_.states.push_back(std::move(declared));
+                initializers_.add({static_cast<std::uint32_t>(result_.states.size()), std::move(*initial)});
+            result_.states.add(std::move(declared));
         }
         for (;;) {
             ATELIER_TRY_BIND(closed, accept("}"));
@@ -358,7 +358,7 @@ public:
         if (result_.nodes.empty())
             return reject(token_.position, "A ui component needs at least one node.");
         result_.has_jit_init = !initializers_.empty();
-        std::vector<std::size_t> jit_evaluations;
+        Array<std::size_t> jit_evaluations;
         jit_evaluations.reserve(evaluations_.size());
         const std::uint32_t op_base = result_.has_jit_init ? 1u : 0u;
         for (std::size_t i = 0; i < evaluations_.size(); ++i) {
@@ -366,7 +366,7 @@ public:
             if (!eval.property) {
                 const auto op = static_cast<std::uint32_t>(op_base + jit_evaluations.size());
                 result_.events[eval.event_index].operation = op;
-                jit_evaluations.push_back(i);
+                jit_evaluations.add(i);
                 continue;
             }
             ATELIER_TRY_BIND(classified, classify_binding(eval));
@@ -374,7 +374,7 @@ public:
                 continue;
             const auto op = static_cast<std::uint32_t>(op_base + jit_evaluations.size());
             result_.bindings[eval.binding_index].operation = op;
-            jit_evaluations.push_back(i);
+            jit_evaluations.add(i);
         }
         jit_evaluations_ = std::move(jit_evaluations);
         const std::size_t operation_count = op_base + jit_evaluations_.size();
@@ -395,29 +395,29 @@ public:
 private:
     Declaration result_;
 
-    const std::vector<Header>& headers_;
+    const Array<Header>& headers_;
 
-    std::vector<Evaluation> evaluations_;
+    Array<Evaluation> evaluations_;
 
-    std::vector<std::size_t> jit_evaluations_;
+    Array<std::size_t> jit_evaluations_;
 
-    std::vector<Initializer> initializers_;
+    Array<Initializer> initializers_;
 
-    std::optional<DirectSource> try_direct_source(std::span<const Token> tokens) const {
+    Optional<DirectSource> try_direct_source(Span<const Token> tokens) const {
         if (tokens.size() != 3 || tokens[1].text != "." || tokens[2].kind != Token::Kind::identifier)
-            return std::nullopt;
+            return {};
         const auto member = tokens[2].text;
         if (tokens[0].text == "input") {
             for (std::uint32_t i = 0; i < result_.inputs.size(); ++i)
                 if (result_.inputs[i].name == member)
                     return DirectSource{DirectSource::Kind::input, i, result_.inputs[i].kind};
-            return std::nullopt;
+            return {};
         }
         if (tokens[0].text == "state") {
             for (std::uint32_t i = 0; i < result_.states.size(); ++i)
                 if (result_.states[i].name == member)
                     return DirectSource{DirectSource::Kind::state, i, result_.states[i].kind};
-            return std::nullopt;
+            return {};
         }
         if (tokens[0].text == "node") {
             for (std::uint32_t i = 0; i < result_.nodes.size(); ++i) {
@@ -426,11 +426,11 @@ private:
                     continue;
                 if (item.kind == NodeKind::component || item.kind == NodeKind::repeat ||
                     item.kind == NodeKind::text_field)
-                    return std::nullopt;
+                    return {};
                 return DirectSource{DirectSource::Kind::node_key, i, InputKind::key};
             }
         }
-        return std::nullopt;
+        return {};
     }
 
     static bool compatible_direct(Property property, InputKind argument_kind, NodeKind node_kind,
@@ -477,7 +477,7 @@ private:
         auto& binding = result_.bindings[eval.binding_index];
         const auto property = *eval.property;
         const auto node_kind = result_.nodes[eval.node].kind;
-        const std::span<const Token> tokens = eval.source.tokens;
+        const Span<const Token> tokens = eval.source.tokens;
         if (const auto direct = try_direct_source(tokens)) {
             if (compatible_direct(property, eval.kind, node_kind, *direct)) {
                 binding.mode = Binding::Mode::direct;
@@ -604,7 +604,7 @@ private:
     }
 
     template <class T>
-    std::expected<void, Diagnostic> unique(Token name, const std::vector<T>& items) {
+    std::expected<void, Diagnostic> unique(Token name, const Array<T>& items) {
         if (items.size() >= 1024 || name.text.starts_with("__ui_") ||
             std::ranges::any_of(items, [&](const auto& item) { return item.name == name.text; }))
             return reject(name.position, "Duplicate, reserved or excessive UI declaration.");
@@ -630,7 +630,7 @@ private:
 
     std::expected<Fragment, Diagnostic> fragment(std::string_view terminator) {
         const auto begin = token_.position;
-        std::vector<Token> tokens;
+        Array<Token> tokens;
         std::size_t parentheses{};
         std::size_t brackets{};
         std::size_t braces{};
@@ -660,17 +660,17 @@ private:
                 --braces;
             }
             ATELIER_TRY_BIND(parsed_token, consume());
-            tokens.push_back(*parsed_token);
+            tokens.add(*parsed_token);
         }
         return reject(begin, "Unterminated UI expression or handler.");
     }
 
-    std::optional<InputKind> reference_kind(const Fragment& source) const {
+    Optional<InputKind> reference_kind(const Fragment& source) const {
         if (source.tokens.size() != 3 || source.tokens[0].text != "input" || source.tokens[1].text != ".")
-            return std::nullopt;
+            return {};
         const auto at = std::ranges::find_if(result_.inputs,
                                              [&](const auto& input) { return input.name == source.tokens[2].text; });
-        return at == result_.inputs.end() ? std::nullopt : std::optional{at->kind};
+        return at == result_.inputs.end() ? Optional<InputKind>{} : Optional<InputKind>{at->kind};
     }
 
     std::expected<void, Diagnostic> node(std::uint32_t parent, std::size_t depth) {
@@ -687,10 +687,10 @@ private:
         const auto name = *parsed_name;
         ATELIER_TRY(unique(name, result_.nodes));
         const auto slot = static_cast<std::uint32_t>(result_.nodes.size());
-        result_.nodes.push_back({std::string(name.text), kind, parent,
-                                 kind == NodeKind::component ? std::string(type.text) : std::string{}});
+        result_.nodes.add({std::string(name.text), kind, parent,
+                           kind == NodeKind::component ? std::string(type.text) : std::string{}});
         ATELIER_TRY(expect("{"));
-        std::vector<std::string_view> properties;
+        Array<std::string_view> properties;
         bool has_event{};
         bool tooltip_binding{};
         for (;;) {
@@ -707,8 +707,8 @@ private:
                 ATELIER_TRY_BIND(body, fragment("}"));
                 ATELIER_TRY(expect("}"));
                 const auto event_index = result_.events.size();
-                result_.events.push_back({slot, 0, event->position});
-                evaluations_.push_back({std::move(*body), slot, {}, InputKind::boolean, 0, 0, event_index});
+                result_.events.add({slot, 0, event->position});
+                evaluations_.add({std::move(*body), slot, {}, InputKind::boolean, 0, 0, event_index});
                 continue;
             }
             const auto saved_lexer = lexer_;
@@ -739,7 +739,7 @@ private:
             if (kind != NodeKind::component && (property.text == "panel" || property.text == "caption") &&
                 std::ranges::any_of(properties, [](auto name) { return name == "panel" || name == "caption"; }))
                 return reject(property.position, "panel and caption are mutually exclusive roles.");
-            properties.push_back(property.text);
+            properties.add(property.text);
             Property value{};
             InputKind value_kind{InputKind::boolean};
             std::uint32_t argument{};
@@ -898,9 +898,9 @@ private:
                     return reject(expression.position, "Component Items argument has a different element type.");
             }
             const auto binding_index = result_.bindings.size();
-            result_.bindings.push_back(
+            result_.bindings.add(
                 {slot, 0, value, value_kind, argument, Binding::Mode::jit, {}, {}, property.position});
-            evaluations_.push_back({std::move(expression), slot, value, value_kind, argument, binding_index, 0});
+            evaluations_.add({std::move(expression), slot, value, value_kind, argument, binding_index, 0});
         }
         if ((kind == NodeKind::number_row || kind == NodeKind::text_field) &&
             std::ranges::find(properties, "edit") == properties.end())
@@ -926,7 +926,7 @@ private:
         const auto begin = result_.generated_source.size();
         result_.generated_source += value;
         if (!value.empty())
-            result_.mappings.push_back({begin, result_.generated_source.size(), origin});
+            result_.mappings.add({begin, result_.generated_source.size(), origin});
     }
 
     std::expected<void, Diagnostic> rewrite(const Fragment& fragment, bool event, bool checked = false) {
@@ -945,7 +945,7 @@ private:
                               "Expected an identifier.");
             return tokens[cursor++];
         };
-        std::optional<std::size_t> assignment;
+        Optional<std::size_t> assignment;
         std::size_t parentheses{};
         std::string_view previous;
         while (cursor < tokens.size()) {
@@ -977,7 +977,7 @@ private:
                 ++cursor;
                 ATELIER_TRY_BIND(name, expect_identifier());
                 const auto state = token.text == "state";
-                std::optional<std::uint32_t> index;
+                Optional<std::uint32_t> index;
                 InputKind kind{};
                 if (state) {
                     for (std::uint32_t i = 0; i < result_.states.size(); ++i)
@@ -1043,15 +1043,15 @@ private:
 };
 }
 
-std::expected<std::vector<Declaration>, language::Diagnostic> lower_module(std::string_view name,
-                                                                           std::string_view source) {
+std::expected<Array<Declaration>, language::Diagnostic> lower_module(std::string_view name,
+                                                                     std::string_view source) {
     ATELIER_TRY_BIND(all, headers(source));
     ATELIER_TRY_BIND(helpers, prepare_helpers(source, all->front().begin.offset));
-    std::vector<Declaration> result;
+    Array<Declaration> result;
     result.reserve(all->size());
     for (const auto& header : *all) {
         ATELIER_TRY_BIND(declaration, Parser(name, header, *all, *helpers).run());
-        result.push_back(std::move(*declaration));
+        result.add(std::move(*declaration));
     }
     return result;
 }

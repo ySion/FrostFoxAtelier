@@ -102,7 +102,7 @@ class SupportPoints {
         Index begin, end;
         std::size_t after;
     };
-    std::span<const Vector3d> points_;
+    Span<const Vector3d> points_;
     Array<Index> order_;
     Array<Block> blocks_;
 
@@ -134,7 +134,7 @@ class SupportPoints {
     }
 
 public:
-    SupportPoints(std::span<const Vector3d> points, std::size_t planes) : points_(points) {
+    SupportPoints(Span<const Vector3d> points, std::size_t planes) : points_(points) {
         if (points.size() * planes <= 262144 || planes < 16)
             return;
         order_.resize(points.size());
@@ -498,7 +498,7 @@ struct Output {
     Array<std::uint8_t> original;
     Array<Index> point_donors;
 
-    Result<void> face(std::span<const Index> ids, Index donor, bool retained) {
+    Result<void> face(Span<const Index> ids, Index donor, bool retained) {
         if (face_donors.size() >= element_limit || points.size() + ids.size() > element_limit)
             return failure("Bevel output exceeds the geometry element limit.");
         for (auto id : ids)
@@ -566,7 +566,8 @@ struct Output {
                                                 Vector3d(polygon[j]) - Vector3d(center))) <= 0 ||
                     !detail::validate_polygon(triangle))
                     return unresolved();
-                ATELIER_TRY(face(std::array{center_id, ids[i], ids[j]}, patch.donor, patch.original));
+                const std::array tri_ids{center_id, ids[i], ids[j]};
+                ATELIER_TRY(face(tri_ids, patch.donor, patch.original));
             }
         }
         // A point on an authored chart has an exact source there. Prefer that

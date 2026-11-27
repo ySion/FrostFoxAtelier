@@ -147,8 +147,8 @@ Result<void> LightFrame::update_impl(const Frame& frame, std::uint64_t sequence)
             if ((light.kind == LightKind::directional) != directional)
                 continue;
             ATELIER_TRY_BIND(source, analytic_source(light));
-            next_analytic_.push_back(*source);
-            next_analytic_keys_.push_back({light.stable_key, static_cast<std::uint32_t>(light.kind)});
+            next_analytic_.add(*source);
+            next_analytic_keys_.add({light.stable_key, static_cast<std::uint32_t>(light.kind)});
         }
     const bool rebuild_sources = rebuild || next_analytic_ != analytic_ || next_analytic_keys_ != analytic_keys_;
     analytic_.swap(next_analytic_);
@@ -176,13 +176,13 @@ Result<void> LightFrame::update_impl(const Frame& frame, std::uint64_t sequence)
     powers_.clear();
     directional_count = 0;
     const auto append = [&](std::size_t i) {
-        sources.push_back(analytic_[i]);
-        keys_.push_back(analytic_keys_[i]);
+        sources.add(analytic_[i]);
+        keys_.add(analytic_keys_[i]);
     };
     for (std::size_t i = 0; i < analytic_.size(); ++i)
         if (analytic_[i].meta[0] != 2) {
             append(i);
-            powers_.push_back(analytic_power(analytic_[i]));
+            powers_.add(analytic_power(analytic_[i]));
         }
     local_count = static_cast<std::uint32_t>(sources.size());
     for (std::size_t i = 0; i < analytic_.size(); ++i)
@@ -213,7 +213,7 @@ Result<void> LightFrame::build_proposals() {
     proposals.assign(local_count, {});
     if (local_count == 0)
         return {};
-    scaled_.resize(local_count);
+    scaled_.resize_uninitialized(local_count);
     actual_.assign(local_count, 0);
     below_.clear();
     above_.clear();
@@ -227,17 +227,17 @@ Result<void> LightFrame::build_proposals() {
         scaled_[i] = total > 0 ? .95 * (powers_[i] / total) * local_count + .05 : 1;
         proposals[i].accept = 1;
         proposals[i].alias = i;
-        (scaled_[i] < 1 ? below_ : above_).push_back(i);
+        (scaled_[i] < 1 ? below_ : above_).add(i);
     }
     while (!below_.empty() && !above_.empty()) {
         const auto underfull = below_.back();
-        below_.pop_back();
+        below_.pop();
         const auto large = above_.back();
-        above_.pop_back();
+        above_.pop();
         proposals[underfull].accept = static_cast<float>(std::clamp(scaled_[underfull], 0., 1.));
         proposals[underfull].alias = large;
         scaled_[large] += scaled_[underfull] - 1;
-        (scaled_[large] < 1 ? below_ : above_).push_back(large);
+        (scaled_[large] < 1 ? below_ : above_).add(large);
     }
     for (std::uint32_t i = 0; i < local_count; ++i) {
         const double accept = proposals[i].accept;
@@ -271,7 +271,7 @@ Result<void> LightFrame::update_spatial(math::Vector3 focus, std::uint64_t seque
         return {};
 
     spatial_cells.resize(light_grid_cell_count);
-    spatial_bins_.resize(light_grid_cell_count);
+    spatial_bins_.resize_uninitialized(light_grid_cell_count);
     // A min heap under this ordering keeps the worst retained source at its
     // root. Stable source identity resolves equal weights independently of
     // packing order; ambiguous legacy identities use the packed index last.
@@ -346,7 +346,7 @@ Result<void> LightFrame::update_spatial(math::Vector3 focus, std::uint64_t seque
         std::uint32_t above_count = 0;
         for (std::uint32_t slot = 0; slot < count; ++slot) {
             const auto source = selected[slot];
-            spatial_proposals.push_back({source, 1, slot, 0});
+            spatial_proposals.add({source, 1, slot, 0});
             spatial_source_slots[source] = (cell << 5) | slot;
             scaled[slot] = (double(proposals[source].probability) / mass) * count;
             if (scaled[slot] < 1)

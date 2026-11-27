@@ -41,12 +41,12 @@
         // Described rows of this tree in host order; tree_rows parallels the tree_item boxes.
         // Disabled rows stay in the list so arrow keys never step across an undescribed range.
         struct Row { const ControlBox* box; const TreeRowGeometry* geometry; bool selectable; };
-        std::vector<Row> rows;
+        Array<Row> rows;
         std::size_t next{};
         for (const auto& box:published->controls) {
             if (box.kind!=ControlKind::tree_item) continue;
             const auto& geometry=published->tree_rows[next++];
-            if (box.parent==focused.control.parent && box.bounds.height>0) rows.push_back({&box,&geometry,current(box)});
+            if (box.parent==focused.control.parent && box.bounds.height>0) rows.add({&box,&geometry,current(box)});
         }
         const auto at=std::find_if(rows.begin(),rows.end(),[&](const auto& row){return row.box->key==focus;});
         if (at==rows.end()) return true;

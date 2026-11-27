@@ -60,13 +60,13 @@ SceneRecovery::Outcome save_recovery(editor::Session& document, const std::files
                                      const std::filesystem::path& scene, std::string_view reason,
                                      std::filesystem::path directory) {
     if (!document.dirty())
-        return std::nullopt;
+        return Optional<RecoveryRecord>{};
     const bool unfinished = document.editing();
     const auto cancelled = document.cancel_edit();
     // Cancellation can restore the author state before a lifecycle notification fails.
     ATELIER_TRY_BIND(bytes, document.serialize());
     if (!document.dirty())
-        return std::nullopt;
+        return Optional<RecoveryRecord>{};
     const auto storage_error = [](const control::Failure& error) {
         return Error{ErrorCode::invalid_storage, error.message};
     };
@@ -89,17 +89,17 @@ SceneRecovery::Outcome save_recovery(editor::Session& document, const std::files
             record.warning += " ";
         record.warning += "Recovery metadata: " + metadata.error().message;
     }
-    return record;
+    return Optional<RecoveryRecord>{std::move(record)};
 }
 }
 
 
-std::optional<logging::Field> SceneRecovery::diagnostic_field() const {
+Optional<logging::Field> SceneRecovery::diagnostic_field() const {
     if (!attempted_ || !outcome_ || !*outcome_)
-        return std::nullopt;
+        return {};
     const auto saved = platform::utf16_to_utf8((*outcome_)->scene.generic_wstring());
     if (!saved)
-        return std::nullopt;
+        return {};
     return logging::Field{"recovery_scene", std::string(StringView{*saved}.utf8_prefix(max_field_bytes).std_view())};
 }
 
@@ -161,9 +161,9 @@ const SceneRecovery::Outcome& SceneRecovery::preserve(editor::Session& document,
                     {"project_root", path_field_utf8(project)},
                     {"original_scene", path_field_utf8(scene)}};
     if (outcome && *outcome) {
-        entry.fields.push_back(
+        entry.fields.add(
             {"recovery_scene", std::string(StringView{saved}.utf8_prefix(max_field_bytes).std_view())});
-        entry.fields.push_back({"metadata_warning", std::string(bounded_utf8((*outcome)->warning, max_field_bytes))});
+        entry.fields.add({"metadata_warning", std::string(bounded_utf8((*outcome)->warning, max_field_bytes))});
     }
     logged_ = logging::submit(std::move(entry)).status == logging::SubmitStatus::accepted;
     if (!logged_)

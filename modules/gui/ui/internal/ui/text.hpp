@@ -66,7 +66,7 @@ public:
 
     Result<TextPosition> move(TextPosition, int direction, bool edge) const;
 
-    Result<std::vector<Rect>> selection(std::uint32_t first, std::uint32_t last) const;
+    Result<Array<Rect>> selection(std::uint32_t first, std::uint32_t last) const;
 
 private:
     struct Impl;
@@ -86,7 +86,7 @@ public:
     ~TextStore();
 
     // Stable-address storage; failure leaves only a destructible empty store.
-    Result<void> initialize(std::span<const std::wstring> font_files = {});
+    Result<void> initialize(Span<const std::wstring> font_files = {});
 
     std::uint64_t set(TextKey key, std::wstring_view, const Font&, bool wrap, TextAlign = TextAlign::left,
                       bool ellipsis = false);
@@ -185,7 +185,7 @@ public:
 
     Result<ui_layout::MeasuredSize> metrics(TextKey key, float width);
 
-    Result<RasterText> raster(TextKey key, float width, float dpi, std::optional<Clip> viewport = {});
+    Result<RasterText> raster(TextKey key, float width, float dpi, Optional<Clip> viewport = {});
 
     Result<std::shared_ptr<const TextSnapshot>> snapshot(TextKey key, float width);
 

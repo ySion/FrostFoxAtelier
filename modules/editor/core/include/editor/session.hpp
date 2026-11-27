@@ -4,7 +4,10 @@
 #include "world/diagnostic.hpp"
 #include "assets/reader.hpp"
 #include "editor/graph_view.hpp"
+#include "foundation/array.hpp"
 #include "foundation/map.hpp"
+#include "foundation/optional.hpp"
+#include "foundation/span.hpp"
 #include "physics/physics.hpp"
 #include "presentation/presentation.hpp"
 
@@ -83,7 +86,7 @@ struct GraphPromotedParameterView {
 
     std::string description;
 
-    std::vector<std::string> targets;
+    Array<std::string> targets;
 
     bool valid{};
 
@@ -97,9 +100,9 @@ struct GraphPromotedParameterView {
 
     bool undeclared{};
 
-    std::vector<Property> properties;
+    Array<Property> properties;
 
-    std::vector<Scalar> default_scalars;
+    Array<Scalar> default_scalars;
 
     std::string default_string;
 };
@@ -136,7 +139,7 @@ enum class SessionRole { runtime, editor };
 // Saved scene data the loader could not apply, addressed by its scene record path
 // (for example properties.speed, space or name). It is written back on save.
 struct RetainedEntry {
-    std::vector<std::string> path;
+    Array<std::string> path;
 
     std::string value;
 
@@ -146,7 +149,7 @@ struct RetainedEntry {
 struct RetainedView {
     std::string type; // Original type of a placeholder object; empty when the type resolved.
 
-    std::vector<RetainedEntry> entries;
+    Array<RetainedEntry> entries;
 };
 
 // A project resource a tolerant load could not provide: absent from the catalog
@@ -158,7 +161,7 @@ struct MissingResource {
 
     Error error;
 
-    std::optional<std::size_t> input;
+    Optional<std::size_t> input;
 
     world::DiagnosticKind kind{world::DiagnosticKind::missing_resource};
 };
@@ -199,13 +202,13 @@ struct MaterialView {
 
     bool default_material{};
 
-    std::optional<source::SourceFile> source_file;
+    Optional<source::SourceFile> source_file;
 
-    std::vector<MaterialParameterView> declarations;
+    Array<MaterialParameterView> declarations;
 
-    std::vector<material::Override> entries;
+    Array<material::Override> entries;
 
-    std::vector<material::AuthorDiagnostic> diagnostics;
+    Array<material::AuthorDiagnostic> diagnostics;
 };
 
 // One document writer. History retains ordinary roots and removal records;
@@ -228,7 +231,7 @@ public:
 
     Result<void> set_failure_policy(world::FailurePolicy policy) { return world_.set_failure_policy(policy); }
 
-    std::vector<world::Diagnostic> take_diagnostics() { return world_.take_diagnostics(); }
+    Array<world::Diagnostic> take_diagnostics() { return world_.take_diagnostics(); }
 
     const world::Types& types() const noexcept { return types_; }
 
@@ -242,17 +245,17 @@ public:
     physics::PhysicsScene* physics_scene() noexcept { return physics_.get(); }
 
     // Poses to draw the running simulation at this frame; empty without one. See PhysicsScene::presented_poses.
-    std::span<const world::PresentedPose> presented_poses() const noexcept {
-        return physics_ ? physics_->presented_poses() : std::span<const world::PresentedPose>{};
+    Span<const world::PresentedPose> presented_poses() const noexcept {
+        return physics_ ? physics_->presented_poses() : Span<const world::PresentedPose>{};
     }
 
-    std::span<const Parameter> parameters() const noexcept { return parameters_; }
+    Span<const Parameter> parameters() const noexcept { return parameters_; }
 
     Selection selection() const noexcept { return selection_; }
 
     // Entity-level multi-selection; the active Entity (selection().entity) is the
     // last entry when it is one of them. Selection is view state, not history.
-    std::span<const ObjectId> selected_entities() const noexcept { return selected_entities_; }
+    Span<const ObjectId> selected_entities() const noexcept { return selected_entities_; }
 
     bool is_selected(ObjectId entity) const noexcept {
         return std::ranges::find(selected_entities_, entity) != selected_entities_.end();
@@ -285,7 +288,7 @@ public:
 
     Result<void> select(ObjectId);
 
-    Result<void> select_entities(std::span<const ObjectId> entities, ObjectId active);
+    Result<void> select_entities(Span<const ObjectId> entities, ObjectId active);
 
     Result<world::Commit> add_entity(TypeId actual = {});
 
@@ -298,11 +301,11 @@ public:
 
     [[nodiscard]] json::Document generator_overrides(ObjectId component) const;
 
-    Result<std::vector<GraphPromotedParameterView>> generator_promoted_parameters(ObjectId component,
-                                                                                  Project* project = nullptr) const;
+    Result<Array<GraphPromotedParameterView>> generator_promoted_parameters(ObjectId component,
+                                                                            Project* project = nullptr) const;
 
     Result<void> set_generator_override_json(Project* project, ObjectId component, std::string_view param_name,
-                                             std::optional<json::Value> value);
+                                             Optional<json::Value> value);
 
     Result<void> sync_procedural_generators(Project* project);
 
@@ -316,10 +319,10 @@ public:
     Result<world::Commit> create_camera(math::Vector3 position = {});
 
     // Deletes explicit subtrees as one history entry; unrelated document selection is preserved.
-    Result<world::Commit> erase_entities(std::span<const ObjectId>);
+    Result<world::Commit> erase_entities(Span<const ObjectId>);
 
     // Selects fresh Entity/Component identities; immutable resources stay shared.
-    Result<world::Commit> duplicate_entities(std::span<const ObjectId>);
+    Result<world::Commit> duplicate_entities(Span<const ObjectId>);
 
     Result<world::Commit> reparent(ObjectId child, ObjectId parent,
                                    world::ReparentRule = world::ReparentRule::keep_world,
@@ -328,7 +331,7 @@ public:
     // Publishes in input order and records the committed prefix as one history entry,
     // stopping at the first rejection or notification error. This is not atomic publication.
     // A non-append index is the first destination slot; subsequent children follow it.
-    Result<world::Commit> reparent(std::span<const ObjectId> children, ObjectId parent,
+    Result<world::Commit> reparent(Span<const ObjectId> children, ObjectId parent,
                                    world::ReparentRule = world::ReparentRule::keep_world,
                                    std::size_t index = world::append);
 
@@ -336,27 +339,27 @@ public:
 
     Result<void> remove_transform(ObjectId);
 
-    Result<world::Commit> set_space_reference(ObjectId, std::optional<ObjectId>,
+    Result<world::Commit> set_space_reference(ObjectId, Optional<ObjectId>,
                                               world::ReparentRule = world::ReparentRule::keep_world);
 
     Result<world::Commit> add_component(ObjectId entity, TypeId);
 
     Result<world::Commit> remove_component(ObjectId);
 
-    Result<std::vector<ComponentType>> component_types() const;
+    Result<Array<ComponentType>> component_types() const;
 
-    Result<std::vector<Property>> properties(ObjectId) const;
+    Result<Array<Property>> properties(ObjectId) const;
 
-    Result<Scalar> read_property(ObjectId, std::span<const FieldId>) const;
+    Result<Scalar> read_property(ObjectId, Span<const FieldId>) const;
 
     Result<void> configure_body(ObjectId component, physics::BodySettings);
 
-    Result<void> begin_edit(ObjectId component, std::span<const FieldId>, std::uint64_t control_session);
+    Result<void> begin_edit(ObjectId component, Span<const FieldId>, std::uint64_t control_session);
 
     // Whole-TRS edit of several Entities (viewport handles, modal G/R/S,
     // Euler fields). Preview writes complete transforms in the same order;
     // commit_edit records one history entry, cancel_edit restores all.
-    Result<void> begin_transform(std::span<const ObjectId> entities, std::uint64_t control_session,
+    Result<void> begin_transform(Span<const ObjectId> entities, std::uint64_t control_session,
                                  bool amend_creation = false);
 
     // Bounds |scale|: negative axes mirror and zero is stored, as World accepts them.
@@ -365,9 +368,9 @@ public:
     // Stable gesture origin; previews never feed their converted values back into the next preview.
     Result<world::Trs> original_transform(std::uint64_t control_session, ObjectId component) const;
 
-    Result<void> preview_transform(std::uint64_t control_session, std::span<const world::Trs>);
+    Result<void> preview_transform(std::uint64_t control_session, Span<const world::Trs>);
 
-    Result<void> set_property(ObjectId, std::span<const FieldId>, Scalar, std::uint64_t control_session);
+    Result<void> set_property(ObjectId, Span<const FieldId>, Scalar, std::uint64_t control_session);
 
     Result<void> preview_edit(std::uint64_t control_session, float);
 
@@ -381,13 +384,13 @@ public:
 
     // Several scalar lanes of one object (a colour's R/G/B) as one value: preview writes
     // without history; commit records one entry against the values seen at begin.
-    Result<void> begin_group_edit(ObjectId, std::span<const world::FieldPath>, std::uint64_t control_session);
+    Result<void> begin_group_edit(ObjectId, Span<const world::FieldPath>, std::uint64_t control_session);
 
-    Result<void> preview_group_edit(std::uint64_t control_session, std::span<const Scalar>);
+    Result<void> preview_group_edit(std::uint64_t control_session, Span<const Scalar>);
 
     // A complete scalar patch, validated together and recorded as one history item.
     // Transform paths reject before cancelling any existing edit.
-    Result<void> set_properties(ObjectId, std::span<const PropertyPatch>);
+    Result<void> set_properties(ObjectId, Span<const PropertyPatch>);
 
     // Explicit import publication, never a parameter-history entry. Existing
     // resource roots retain identity and future captures resolve current pixels.
@@ -403,26 +406,26 @@ public:
     // stand-ins and are reported there; without one they fail. Stand-ins are never
     // edited or saved as assets.
     Result<ObjectRoot> material_resource(assets::Reader&, std::string_view key,
-                                         std::vector<MissingResource>* missing = nullptr);
+                                         Array<MissingResource>* missing = nullptr);
 
     Result<ObjectRoot> material_resource(assets::Reader&, const assets::MaterialAsset&,
-                                         std::vector<MissingResource>* missing = nullptr);
+                                         Array<MissingResource>* missing = nullptr);
 
     // Publish author content on the existing asset identity, without history. A
     // supplied MS snapshot is authoritative: never reread newer text from disk.
     Result<ObjectRoot> publish_material(assets::Reader&, const assets::MaterialAsset&,
-                                        std::optional<source::SourceFile> exact_source = {},
-                                        std::vector<MissingResource>* missing = nullptr);
+                                        Optional<source::SourceFile> exact_source = {},
+                                        Array<MissingResource>* missing = nullptr);
 
     // The mesh asset's default material per slot, as this document's shared material assets.
     // Unavailable ones always stand in and are reported in `missing` when given.
-    Result<std::vector<presentation::MaterialBinding>> mesh_defaults(assets::Reader&, const assets::MeshAsset&,
-                                                                     std::vector<MissingResource>* missing = nullptr);
+    Result<Array<presentation::MaterialBinding>> mesh_defaults(assets::Reader&, const assets::MeshAsset&,
+                                                               Array<MissingResource>* missing = nullptr);
 
     // What each slot shows where no component binds it: the default material, else the imported surface.
     // Generated instances read the same defaults as mesh components; a material edit publishes a new surface.
-    Result<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>>
-    mesh_surfaces(assets::Reader&, const assets::MeshAsset&, std::vector<MissingResource>* missing = nullptr);
+    Result<std::shared_ptr<const Array<material::ProgramSurfaceRef>>>
+    mesh_surfaces(assets::Reader&, const assets::MeshAsset&, Array<MissingResource>* missing = nullptr);
 
     // Opens a material asset for inspection: the asset itself must read, while its
     // unavailable textures stand in so the material can be repaired.
@@ -433,13 +436,13 @@ public:
 
     Result<assets::MaterialAsset> material_asset(ObjectId) const;
 
-    Result<std::vector<assets::MaterialAsset>> material_assets() const;
+    Result<Array<assets::MaterialAsset>> material_assets() const;
 
-    std::vector<source::SourceFile> material_sources() const;
+    Array<source::SourceFile> material_sources() const;
 
     Result<MaterialView> inspect_material(ObjectId) const;
 
-    std::vector<ObjectId> material_objects() const;
+    Array<ObjectId> material_objects() const;
 
     Result<void> begin_material_edit(ObjectId, std::uint64_t control_session);
 
@@ -471,7 +474,7 @@ public:
 
     bool material_dirty(std::string_view key) const;
 
-    std::vector<std::string> dirty_materials() const;
+    Array<std::string> dirty_materials() const;
 
     bool material_editing(std::uint64_t control_session) const noexcept;
 
@@ -485,10 +488,10 @@ public:
 
     void bind_project_code(const ProjectCode* code) noexcept;
 
-    Result<std::optional<GraphNodeCatalogEntry>> procedural_node_type(std::string_view name, Project* project);
+    Result<Optional<GraphNodeCatalogEntry>> procedural_node_type(std::string_view name, Project* project);
 
-    Result<std::vector<GraphNodeCatalogEntry>> procedural_node_types(Project* project = nullptr,
-                                                                     std::string_view exclude_graph_key = {});
+    Result<Array<GraphNodeCatalogEntry>> procedural_node_types(Project* project = nullptr,
+                                                               std::string_view exclude_graph_key = {});
 
     Result<const source::Program*> procedural_source_program();
 
@@ -502,12 +505,12 @@ public:
 
     bool has_graph_placeholders() const noexcept;
 
-    Result<std::vector<OpenGraphSnapshot>> snapshot_open_graphs() const;
+    Result<Array<OpenGraphSnapshot>> snapshot_open_graphs() const;
 
-    Result<void> restore_open_graphs(Project* project, std::span<const OpenGraphSnapshot> snapshots);
+    Result<void> restore_open_graphs(Project* project, Span<const OpenGraphSnapshot> snapshots);
 
     // Captures the open author graph for repro, checking effective session freezes against a cold replay.
-    Result<std::optional<std::string>> procedural_graph_snapshot(std::string_view key) const;
+    Result<Optional<std::string>> procedural_graph_snapshot(std::string_view key) const;
 
     // Optional lookup returns a null identity for a selection without a generator. Read failures propagate.
     Result<ObjectId> resolve_procedural_generator(ObjectId target = {}, bool required = true) const;
@@ -516,13 +519,13 @@ public:
 
     bool is_graph_object(ObjectId) const noexcept;
 
-    std::vector<ObjectId> graph_objects() const;
+    Array<ObjectId> graph_objects() const;
 
-    std::vector<std::string> open_graphs() const;
+    Array<std::string> open_graphs() const;
 
-    std::optional<std::string> graph_of_object(ObjectId) const;
+    Optional<std::string> graph_of_object(ObjectId) const;
 
-    std::optional<std::string> graph_node_name(ObjectId) const;
+    Optional<std::string> graph_node_name(ObjectId) const;
 
     const GraphNode* graph_node(std::string_view key, std::string_view name) const noexcept;
 
@@ -532,7 +535,7 @@ public:
 
     bool graph_dirty(std::string_view key) const;
 
-    std::vector<std::string> dirty_graphs() const;
+    Array<std::string> dirty_graphs() const;
 
     bool graph_can_undo(std::string_view key, bool redo = false) const;
 
@@ -550,21 +553,21 @@ public:
                                          std::string_view to_port = {}, bool set_display = false,
                                          Project* project = nullptr);
 
-    Result<void> graph_remove_nodes(std::string_view key, std::span<const std::string> names);
+    Result<void> graph_remove_nodes(std::string_view key, Span<const std::string> names);
 
-    Result<std::vector<std::string>> graph_duplicate_nodes(std::string_view key, std::span<const std::string> names,
-                                                           std::array<float, 2> offset = {36.f, 36.f});
+    Result<Array<std::string>> graph_duplicate_nodes(std::string_view key, Span<const std::string> names,
+                                                     std::array<float, 2> offset = {36.f, 36.f});
 
     Result<void> graph_rename_node(std::string_view key, std::string_view old_name, std::string_view new_name);
 
     Result<void> graph_move_nodes(std::string_view key,
-                                  std::span<const std::pair<std::string, std::array<float, 2>>> moves,
+                                  Span<const std::pair<std::string, std::array<float, 2>>> moves,
                                   bool amend_creation = false);
 
     Result<void> graph_move_canvas_items(std::string_view key,
-                                         std::span<const std::pair<std::string, std::array<float, 2>>> node_moves,
-                                         std::span<const std::pair<std::string, std::array<float, 2>>> note_moves,
-                                         std::span<const std::pair<std::string, std::array<float, 2>>> box_moves);
+                                         Span<const std::pair<std::string, std::array<float, 2>>> node_moves,
+                                         Span<const std::pair<std::string, std::array<float, 2>>> note_moves,
+                                         Span<const std::pair<std::string, std::array<float, 2>>> box_moves);
 
     Result<void> graph_auto_layout(std::string_view key);
 
@@ -574,7 +577,7 @@ public:
     Result<void> graph_disconnect(std::string_view key, std::string_view to_node, std::string_view to_port,
                                   std::string_view from_node = {}, std::string_view from_port = {});
 
-    Result<void> graph_disconnect_edges(std::string_view key, std::span<const GraphConnectionView> edges);
+    Result<void> graph_disconnect_edges(std::string_view key, Span<const GraphConnectionView> edges);
 
     Result<void> graph_rewire(std::string_view key, const GraphConnectionView& remove_edge,
                               std::string_view new_to_node, std::string_view new_to_port);
@@ -590,32 +593,32 @@ public:
 
     Result<void> graph_set_frozen(std::string_view key, std::string_view node_name, bool frozen, Project* = nullptr);
 
-    Result<void> graph_set_node_appearance(std::string_view key, std::span<const std::string> names,
-                                           std::optional<GraphNodeShape> shape = {},
-                                           std::optional<std::optional<std::uint32_t>> color = {},
-                                           std::optional<std::string> comment = {});
+    Result<void> graph_set_node_appearance(std::string_view key, Span<const std::string> names,
+                                           Optional<GraphNodeShape> shape = {},
+                                           Optional<Optional<std::uint32_t>> color = {},
+                                           Optional<std::string> comment = {});
 
     Result<std::string> graph_add_note(std::string_view key, std::array<float, 2> position,
                                        std::array<float, 2> size = {210.f, 116.f}, std::string_view title = "Note",
                                        std::string_view text = {}, std::uint32_t color = 0xd4a72c);
 
     Result<void> graph_update_note(std::string_view key, std::string_view name,
-                                   std::optional<std::array<float, 2>> position = {},
-                                   std::optional<std::array<float, 2>> size = {}, std::optional<std::string> title = {},
-                                   std::optional<std::string> text = {}, std::optional<std::uint32_t> color = {});
+                                   Optional<std::array<float, 2>> position = {},
+                                   Optional<std::array<float, 2>> size = {}, Optional<std::string> title = {},
+                                   Optional<std::string> text = {}, Optional<std::uint32_t> color = {});
 
-    Result<void> graph_remove_notes(std::string_view key, std::span<const std::string> names);
+    Result<void> graph_remove_notes(std::string_view key, Span<const std::string> names);
 
     Result<std::string> graph_add_box(std::string_view key, std::array<float, 2> position,
                                       std::array<float, 2> size = {320.f, 220.f},
                                       std::string_view title = "Network Box", std::uint32_t color = 0x3b5b78);
 
     Result<void> graph_update_box(std::string_view key, std::string_view name,
-                                  std::optional<std::array<float, 2>> position = {},
-                                  std::optional<std::array<float, 2>> size = {}, std::optional<std::string> title = {},
-                                  std::optional<std::uint32_t> color = {});
+                                  Optional<std::array<float, 2>> position = {},
+                                  Optional<std::array<float, 2>> size = {}, Optional<std::string> title = {},
+                                  Optional<std::uint32_t> color = {});
 
-    Result<void> graph_remove_boxes(std::string_view key, std::span<const std::string> names);
+    Result<void> graph_remove_boxes(std::string_view key, Span<const std::string> names);
 
     // Apply one text edit to the open graph. Returns whether an undo step was published.
     Result<bool> graph_apply(std::string_view key, json::Value patch, Project* project = nullptr);
@@ -629,17 +632,17 @@ public:
 
     Result<void> graph_set_properties(std::string_view key, std::string_view node_name, json::Value properties);
 
-    Result<std::vector<GraphPromotedParameterView>> graph_promoted_parameters(std::string_view key,
-                                                                              Project* project = nullptr) const;
+    Result<Array<GraphPromotedParameterView>> graph_promoted_parameters(std::string_view key,
+                                                                        Project* project = nullptr) const;
 
-    Result<std::vector<GraphPromotedParameterView>>
+    Result<Array<GraphPromotedParameterView>>
     graph_asset_node_parameters(std::string_view key, std::string_view node_name, Project* project = nullptr) const;
 
-    std::optional<std::string> graph_controlling_parameter(std::string_view key, std::string_view node_name,
-                                                           std::string_view field_path) const noexcept;
+    Optional<std::string> graph_controlling_parameter(std::string_view key, std::string_view node_name,
+                                                      std::string_view field_path) const noexcept;
 
-    std::optional<std::string> graph_overlapping_parameter(std::string_view key, std::string_view node_name,
-                                                           std::string_view field_path) const noexcept;
+    Optional<std::string> graph_overlapping_parameter(std::string_view key, std::string_view node_name,
+                                                      std::string_view field_path) const noexcept;
 
     Result<std::string> graph_expose_parameter(std::string_view key, std::string_view node_name,
                                                std::string_view field_path, std::string_view desired_name = {},
@@ -653,33 +656,33 @@ public:
                                                std::string_view field_path);
 
     Result<void> graph_update_parameter(std::string_view key, std::string_view param_name,
-                                        std::optional<std::string> new_name = {}, std::optional<std::string> label = {},
-                                        std::optional<std::string> category = {},
-                                        std::optional<std::string> description = {},
-                                        std::optional<std::size_t> new_index = {});
+                                        Optional<std::string> new_name = {}, Optional<std::string> label = {},
+                                        Optional<std::string> category = {},
+                                        Optional<std::string> description = {},
+                                        Optional<std::size_t> new_index = {});
 
     Result<void> graph_remove_parameter(std::string_view key, std::string_view param_name);
 
     Result<void> graph_set_parameter_json(std::string_view key, std::string_view param_name, json::Value value);
 
     Result<void> graph_set_asset_override_json(std::string_view key, std::string_view node_name,
-                                               std::string_view param_name, std::optional<json::Value> value,
+                                               std::string_view param_name, Optional<json::Value> value,
                                                Project* project = nullptr);
 
     Result<void> graph_set_node_asset(std::string_view key, std::string_view node_name,
                                       std::string_view target_asset_key, Project* project = nullptr);
 
     Result<std::pair<std::string, std::string>> graph_extract_asset(Project& project, std::string_view key,
-                                                                    std::span<const std::string> selected_nodes,
+                                                                    Span<const std::string> selected_nodes,
                                                                     const std::filesystem::path& asset_relative_path,
                                                                     std::string_view desired_node_name = {});
 
     Result<void> begin_graph_parameter_edit(std::string_view key, std::string_view node_name,
-                                            std::string_view param_name, std::optional<std::size_t> lane,
+                                            std::string_view param_name, Optional<std::size_t> lane,
                                             std::uint64_t control_session, Project* project = nullptr,
                                             ObjectId generator_component = {});
 
-    Result<void> preview_graph_parameter_edit(std::uint64_t control_session, std::span<const Scalar> values);
+    Result<void> preview_graph_parameter_edit(std::uint64_t control_session, Span<const Scalar> values);
 
     Result<void> commit_graph_parameter_edit(std::uint64_t control_session);
 
@@ -688,7 +691,7 @@ public:
     bool graph_parameter_editing(std::uint64_t control_session) const noexcept;
 
     Result<void> set_promoted_parameter_scalars(const PromotedParameterTarget& target, std::string_view param_name,
-                                                std::span<const Scalar> values, Project* project = nullptr);
+                                                Span<const Scalar> values, Project* project = nullptr);
 
     Result<void> set_promoted_parameter_string(const PromotedParameterTarget& target, std::string_view param_name,
                                                std::string_view value, Project* project = nullptr);
@@ -696,7 +699,7 @@ public:
     Result<void> clear_promoted_parameter_override(const PromotedParameterTarget& target, std::string_view param_name,
                                                    Project* project = nullptr);
 
-    Result<void> set_string_property(ObjectId, std::span<const FieldId>, std::string_view value);
+    Result<void> set_string_property(ObjectId, Span<const FieldId>, std::string_view value);
 
     Result<GraphEvaluation> evaluate_graph(std::string_view key, Project* = nullptr, ObjectId inspected_node = {},
                                            bool record_timings = false);
@@ -739,13 +742,13 @@ public:
     // the game already destroyed the target, warning command_rejected when Play
     // cannot follow the edit, error command_rejected when Play diverged. See
     // docs/modules/editor/projects.md for the batch format.
-    Result<std::vector<world::Diagnostic>> apply_live(std::string_view batch, Project&);
+    Result<Array<world::Diagnostic>> apply_live(std::string_view batch, Project&);
 
     // Editor-side graphs for add and attach changes: identities are kept and
     // references leaving the graph are written as document identities.
     Result<std::string> serialize_live_subtree(ObjectId root) const;
 
-    Result<std::string> serialize_live_components(ObjectId entity, std::span<const ObjectId> components) const;
+    Result<std::string> serialize_live_components(ObjectId entity, Span<const ObjectId> components) const;
 
     // While forwarding, each applied change, undo and redo of this document is also
     // recorded as Play change ops with the values it left. Previews and cancels are
@@ -755,7 +758,7 @@ public:
     // The ops recorded since the last call, in order, with owning texture content. A change
     // that cannot be described stops recording, and every later call fails until
     // forwarding is set again: Play no longer follows the document.
-    Result<std::vector<LiveChange>> take_live_ops();
+    Result<Array<LiveChange>> take_live_ops();
 
     // Imports a complete detached graph, remaps internal references and records
     // one creation history item. Document identities are always fresh.
@@ -766,10 +769,10 @@ public:
                                                         SessionRole = SessionRole::runtime);
 
     // Diagnostics recorded by the load that created this document.
-    std::span<const world::Diagnostic> load_issues() const noexcept { return load_issues_; }
+    Span<const world::Diagnostic> load_issues() const noexcept { return load_issues_; }
 
     // Current unresolved data of the document; entries disappear when edited or discarded.
-    std::vector<world::Diagnostic> issues() const;
+    Array<world::Diagnostic> issues() const;
 
     // ObjectId{} addresses document-level data (top-level keys and World settings).
     bool has_retained(ObjectId) const noexcept;
@@ -784,7 +787,7 @@ public:
 
     std::size_t placeholder_count() const noexcept;
 
-    std::optional<std::uint64_t> document_identity(ObjectId) const;
+    Optional<std::uint64_t> document_identity(ObjectId) const;
 
     Result<ObjectId> local_object(std::uint64_t) const;
 
@@ -847,9 +850,9 @@ private:
     struct EntityChange {
         bool added{};
 
-        std::vector<world::EntityRemoval> removals;
+        Array<world::EntityRemoval> removals;
 
-        std::optional<ReferenceFieldChange> cleared_camera;
+        Optional<ReferenceFieldChange> cleared_camera;
     };
 
     struct ComponentChange {
@@ -880,30 +883,30 @@ private:
 
             std::size_t after_index{};
 
-            std::vector<Entry> transforms;
+            Array<Entry> transforms;
         };
 
-        std::vector<Move> moves;
+        Array<Move> moves;
     };
 
     struct TransformPresenceChange {
         ObjectRoot root;
 
-        std::optional<world::Trs> before;
+        Optional<world::Trs> before;
 
-        std::optional<world::Trs> after;
+        Optional<world::Trs> after;
 
-        std::optional<ObjectId> before_origin;
+        Optional<ObjectId> before_origin;
 
-        std::optional<ObjectId> after_origin;
+        Optional<ObjectId> after_origin;
     };
 
     struct SpaceReferenceChange {
         ObjectRoot root;
 
-        std::optional<ObjectId> before_origin;
+        Optional<ObjectId> before_origin;
 
-        std::optional<ObjectId> after_origin;
+        Optional<ObjectId> after_origin;
 
         world::Trs before;
 
@@ -932,13 +935,13 @@ private:
 
         ObjectId entity;
 
-        std::vector<world::FieldPath> paths;
+        Array<world::FieldPath> paths;
 
         std::uint64_t control_session{};
 
-        std::vector<Scalar> before;
+        Array<Scalar> before;
 
-        std::vector<Scalar> after;
+        Array<Scalar> after;
     };
 
     struct TransformChange {
@@ -952,7 +955,7 @@ private:
             world::Trs after;
         };
 
-        std::vector<Entry> entries;
+        Array<Entry> entries;
 
         std::uint64_t control_session{};
 
@@ -984,23 +987,23 @@ private:
 
         ObjectId entity;
 
-        std::vector<presentation::MaterialBinding> before;
+        Array<presentation::MaterialBinding> before;
 
-        std::vector<presentation::MaterialBinding> after;
+        Array<presentation::MaterialBinding> after;
     };
 
     struct MaterialEntryChange {
         std::string path;
 
-        std::optional<material::Override> before;
+        Optional<material::Override> before;
 
-        std::optional<material::Override> after;
+        Optional<material::Override> after;
     };
 
     struct MaterialValueChange {
         ObjectRoot root;
 
-        std::vector<MaterialEntryChange> entries;
+        Array<MaterialEntryChange> entries;
     };
 
     // Undo and redo restore the stored map, so the scene sees the same pointer again.
@@ -1045,10 +1048,11 @@ private:
 
         std::string slots;
 
-        std::vector<ObjectRoot> materials;
+        Array<ObjectRoot> materials;
 
         // Material instances named solely by $ref in this owner's retained record or slot data.
-        std::vector<std::pair<std::uint64_t, ObjectRoot>> reference_roots;
+        Array<std::pair<std::uint64_t, ObjectRoot>> reference_roots;
+
         void prune_reference_roots();
 
         bool empty() const noexcept { return type.empty() && record.empty() && slots.empty() && materials.empty(); }
@@ -1065,7 +1069,7 @@ private:
     struct Entry {
         Change change;
 
-        std::vector<RetainedSwap> retained;
+        Array<RetainedSwap> retained;
     };
 
     static constexpr std::size_t history_limit = 128;
@@ -1086,13 +1090,13 @@ private:
 
     world::World world_;
 
-    std::optional<presentation::Scene> presentation_;
+    Optional<presentation::Scene> presentation_;
 
     std::unique_ptr<physics::PhysicsScene> physics_;
 
     std::array<Parameter, 3> parameters_{};
 
-    std::vector<Entry> history_;
+    Array<Entry> history_;
 
     std::size_t cursor_{};
 
@@ -1100,17 +1104,17 @@ private:
 
     std::uint64_t revision_{1};
 
-    std::optional<std::size_t> saved_cursor_{0};
+    Optional<std::size_t> saved_cursor_{0};
 
     Selection selection_;
 
-    std::vector<ObjectId> selected_entities_; // Non-owning; validated on write, pruned with membership.
+    Array<ObjectId> selected_entities_; // Non-owning; validated on write, pruned with membership.
 
-    std::optional<FieldChange> active_;
+    Optional<FieldChange> active_;
 
-    std::optional<FieldGroupChange> group_;
+    Optional<FieldGroupChange> group_;
 
-    std::optional<TransformChange> transform_;
+    Optional<TransformChange> transform_;
 
     Map<ObjectId, std::wstring> names_; // Non-owning IDs; prune after collection.
 
@@ -1119,7 +1123,7 @@ private:
 
     Retained retained_document_;
 
-    std::vector<world::Diagnostic> load_issues_;
+    Array<world::Diagnostic> load_issues_;
 
     // Document-local identities never confer Runtime validity or World membership.
     // Detached history objects retain their ID; IDs are never reused.
@@ -1132,7 +1136,7 @@ private:
     // Play copy: document identity to object, including objects the game destroyed.
     Map<std::uint64_t, ObjectId> live_objects_;
 
-    std::vector<ObjectRoot> live_materials_; // Scene materials a Play change defined.
+    Array<ObjectRoot> live_materials_; // Scene materials a Play change defined.
 
     // Document side of Play: pending ops; a keyed op is a preview its next preview replaces.
     struct LiveOp {
@@ -1143,9 +1147,9 @@ private:
 
     bool forwarding_{};
 
-    std::vector<LiveOp> live_ops_;
+    Array<LiveOp> live_ops_;
 
-    std::optional<Error> live_failure_;
+    Optional<Error> live_failure_;
 
     // TRS leaves (1 position, 2 rotation, 4 scale) the active edit's previews sent, per Entity.
     Map<ObjectId, unsigned> live_leaves_;
@@ -1159,15 +1163,15 @@ private:
 
         assets::MaterialAsset author;
 
-        std::optional<source::SourceFile> source_file;
+        Optional<source::SourceFile> source_file;
 
-        std::optional<Error> error;
+        Optional<Error> error;
 
-        std::vector<material::AuthorDiagnostic> diagnostics;
+        Array<material::AuthorDiagnostic> diagnostics;
 
-        std::vector<material::Override> saved;
+        Array<material::Override> saved;
 
-        std::vector<MaterialValueChange> history;
+        Array<MaterialValueChange> history;
 
         std::size_t cursor{};
     };
@@ -1218,7 +1222,7 @@ private:
 
         std::string param_name;
 
-        std::optional<std::size_t> lane; // Specific vector lane, or nullopt for scalar/enum or whole vector.
+        Optional<std::size_t> lane; // Specific vector lane, or nullopt for scalar/enum or whole vector.
 
         TypeId value_type{};
 
@@ -1226,11 +1230,11 @@ private:
 
         FieldRange range{};
 
-        std::vector<FieldRange> lane_ranges;
+        Array<FieldRange> lane_ranges;
 
-        std::vector<detail::ScalarField> lane_fields;
+        Array<detail::ScalarField> lane_fields;
 
-        std::vector<Scalar> current_scalars;
+        Array<Scalar> current_scalars;
 
         struct NodeBackup {
             ObjectRoot target;
@@ -1240,20 +1244,20 @@ private:
             json::Document before_kept;
         };
 
-        std::vector<NodeBackup> node_backups;
+        Array<NodeBackup> node_backups;
 
         json::Document before_overrides;
     };
 
-    std::optional<GraphParameterEdit> graph_param_edit_;
+    Optional<GraphParameterEdit> graph_param_edit_;
 
-    Result<void> reject_if_graph_controlled_field(ObjectId object, std::span<const FieldId> path) const;
+    Result<void> reject_if_graph_controlled_field(ObjectId object, Span<const FieldId> path) const;
 
     Result<const GraphDocument*> resolve_target_graph_document(std::string_view asset_key, Project* project) const;
 
     Map<ObjectId, std::string> scene_material_parents_; // Non-owning; survives parent loss.
 
-    std::vector<std::string> loading_materials_; // Synchronous recursion guard, not a resource cache.
+    Array<std::string> loading_materials_; // Synchronous recursion guard, not a resource cache.
 
     Map<std::string, ObjectRoot> textures_;
 
@@ -1270,12 +1274,12 @@ private:
         // Empty for a scene material; asset key in `materials_` for a shared material asset.
         std::string document_key;
 
-        std::vector<MaterialEntryChange> entries;
+        Array<MaterialEntryChange> entries;
     };
 
-    std::optional<MaterialEdit> material_edit_;
+    Optional<MaterialEdit> material_edit_;
 
-    Result<void> apply_material_entries(ObjectId, std::span<const MaterialEntryChange>, bool forward,
+    Result<void> apply_material_entries(ObjectId, Span<const MaterialEntryChange>, bool forward,
                                         Project* = nullptr);
 
     Result<std::string> admit_material_edit(ObjectId);
@@ -1289,13 +1293,13 @@ private:
     void record_material_edit(MaterialEdit&);
 
     // Reading a named dependency fills its cache. Explicit publication also forwards the change to Play.
-    Result<ObjectRoot> store_material(assets::Reader&, const assets::MaterialAsset&, std::optional<source::SourceFile>,
-                                      std::vector<MissingResource>*);
+    Result<ObjectRoot> store_material(assets::Reader&, const assets::MaterialAsset&, Optional<source::SourceFile>,
+                                      Array<MissingResource>*);
 
     Result<ObjectRoot> texture_resource(assets::Reader&, std::string_view,
-                                        std::vector<MissingResource>* missing = nullptr, std::size_t input = 0);
+                                        Array<MissingResource>* missing = nullptr, std::size_t input = 0);
 
-    Result<void> replace_material_bindings(ObjectId, std::vector<presentation::MaterialBinding>);
+    Result<void> replace_material_bindings(ObjectId, Array<presentation::MaterialBinding>);
 
     Result<void> admit_entity_edit(ObjectId) const;
 
@@ -1307,18 +1311,18 @@ private:
 
     Result<void> apply_reference(const ReferenceFieldChange&, bool forward);
 
-    Result<std::optional<ReferenceFieldChange>> main_camera_removal(std::span<const ObjectId>);
+    Result<Optional<ReferenceFieldChange>> main_camera_removal(Span<const ObjectId>);
 
     Result<void> apply_group(const FieldGroupChange&, bool forward);
 
-    Result<void> write_group(ObjectId, std::span<const world::FieldPath>, std::span<const Scalar>);
+    Result<void> write_group(ObjectId, Span<const world::FieldPath>, Span<const Scalar>);
 
     Result<world::Commit> attach_created(ObjectRoot, std::wstring_view);
 
     struct EnvironmentEdit {
-        std::vector<world::FieldPath> paths;
+        Array<world::FieldPath> paths;
 
-        std::vector<Scalar> values;
+        Array<Scalar> values;
     };
 
     Result<EnvironmentEdit> environment_edit(const rendering::SceneLightingSettings&) const;
@@ -1327,14 +1331,14 @@ private:
     Result<ObjectId> admit_environment_edit(ObjectId) const;
 
     // A Detached Entity holding a new Environment with these values and sky map.
-    Result<ObjectRoot> create_environment(std::span<const world::FieldPath>, std::span<const Scalar>,
+    Result<ObjectRoot> create_environment(Span<const world::FieldPath>, Span<const Scalar>,
                                           const presentation::SkyMapBinding* = nullptr);
 
     Result<void> publish_environment(ObjectRoot);
 
     void set_selection(Selection); // Single-object selection; resets the Entity set.
 
-    Result<void> write_transforms(const TransformChange&, std::span<const world::Trs>);
+    Result<void> write_transforms(const TransformChange&, Span<const world::Trs>);
 
     void prune_selection() noexcept; // After a committed subtree detach, retain only World members.
 
@@ -1355,9 +1359,9 @@ private:
     void remember(Change);
 
     // Releases retained data at the paths a committed change wrote.
-    std::vector<RetainedSwap> release(const Change&);
+    Array<RetainedSwap> release(const Change&);
 
-    void restore(std::span<const RetainedSwap>, bool forward);
+    void restore(Span<const RetainedSwap>, bool forward);
 
     static Result<void> validate_name(std::wstring_view);
 
@@ -1388,8 +1392,8 @@ private:
     Result<std::pair<std::string, std::wstring>> resolve_procedural_graph_asset(std::string_view graph_key,
                                                                                 Project* project) const;
 
-    Result<void> remember_graph_scalar_edit(ObjectRoot target, std::vector<world::FieldPath> paths,
-                                            std::vector<Scalar> before, std::vector<Scalar> after);
+    Result<void> remember_graph_scalar_edit(ObjectRoot target, Array<world::FieldPath> paths,
+                                            Array<Scalar> before, Array<Scalar> after);
 
     void bump_graph_object_epoch(ObjectId object) noexcept;
 };

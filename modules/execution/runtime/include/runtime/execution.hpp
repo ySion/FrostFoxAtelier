@@ -149,9 +149,9 @@ private:
 // their frame. Slot numbers are execution storage, never object identities.
 class ExecutionFrame final {
 public:
-    ExecutionFrame(Runtime& runtime, std::span<ObjectRoot> slots) noexcept;
+    ExecutionFrame(Runtime& runtime, Span<ObjectRoot> slots) noexcept;
 
-    ExecutionFrame(ExecutionScope& scope, std::span<ObjectReference> slots) noexcept;
+    ExecutionFrame(ExecutionScope& scope, Span<ObjectReference> slots) noexcept;
 
     ~ExecutionFrame();
 
@@ -194,9 +194,9 @@ public:
 private:
     Runtime& runtime_;
 
-    std::span<ObjectRoot> slots_;
+    Span<ObjectRoot> slots_;
 
-    std::span<ObjectReference> references_;
+    Span<ObjectReference> references_;
 };
 
 enum class CoroutineState { ready, running, suspended, completed, failed, cancelled };
@@ -206,7 +206,7 @@ struct CoroutineStep {
     // belong to the owner. Empty completion means void, not a zero scalar.
     CoroutineState state;
 
-    std::optional<Scalar> result{};
+    Optional<Scalar> result{};
 };
 
 // Compiler/host-owned stable frame. Destruction releases roots, frame storage
@@ -263,7 +263,7 @@ public:
 
     [[nodiscard]] CoroutineState state() const noexcept;
 
-    [[nodiscard]] Result<std::optional<Scalar>> result() const;
+    [[nodiscard]] Result<Optional<Scalar>> result() const;
 
 private:
     struct Control;

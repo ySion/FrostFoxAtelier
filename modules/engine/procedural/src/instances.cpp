@@ -41,7 +41,7 @@ Result<Publication> publish(const Geometry& geometry, float chunk_size, const Pu
     const auto& indices = geometry.instance_references();
     const auto& transforms = geometry.instance_transforms();
     Publication result;
-    Map<GroupKey, std::vector<Affine>, GroupHash> groups;
+    Map<GroupKey, Array<Affine>, GroupHash> groups;
     for (std::size_t i = 0; i < indices.size(); ++i) {
         const auto& m = transforms[i];
         if (!math::normal_transform({m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]})) {
@@ -56,13 +56,13 @@ Result<Publication> publish(const Geometry& geometry, float chunk_size, const Pu
             key.chunk[axis] = static_cast<std::int32_t>(cell);
         }
         auto& transforms_in_chunk = *groups.try_emplace(key).value;
-        transforms_in_chunk.push_back({m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10], m[12], m[13], m[14]});
+        transforms_in_chunk.add({m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10], m[12], m[13], m[14]});
     }
     const auto references = geometry.references();
     result.collections.reserve(groups.size());
     for (auto [key, values] : groups)
-        result.collections.push_back(
-            {references[key.reference], key.chunk, std::make_shared<const std::vector<Affine>>(std::move(values))});
+        result.collections.add(
+            {references[key.reference], key.chunk, std::make_shared<const Array<Affine>>(std::move(values))});
     std::ranges::sort(result.collections, [](const Collection& a, const Collection& b) {
         return before(a.reference, a.chunk, b.reference, b.chunk);
     });

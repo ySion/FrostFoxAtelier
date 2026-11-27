@@ -7,13 +7,13 @@
 namespace atelier::assets {
 namespace {
 geometry::MeshRef plane() {
-    auto mesh = geometry::Mesh::create(std::vector<geometry::Vertex>{{{-1, 0, -1}, {0, 1, 0}, {0, 1}},
-                                                                     {{-1, 0, 1}, {0, 1, 0}, {0, 0}},
-                                                                     {{1, 0, 1}, {0, 1, 0}, {1, 0}},
-                                                                     {{-1, 0, -1}, {0, 1, 0}, {0, 1}},
-                                                                     {{1, 0, 1}, {0, 1, 0}, {1, 0}},
-                                                                     {{1, 0, -1}, {0, 1, 0}, {1, 1}}},
-                                       std::vector<std::uint8_t>{5, 3});
+    auto mesh = geometry::Mesh::create(Array<geometry::Vertex>{{{-1, 0, -1}, {0, 1, 0}, {0, 1}},
+                                                               {{-1, 0, 1}, {0, 1, 0}, {0, 0}},
+                                                               {{1, 0, 1}, {0, 1, 0}, {1, 0}},
+                                                               {{-1, 0, -1}, {0, 1, 0}, {0, 1}},
+                                                               {{1, 0, 1}, {0, 1, 0}, {1, 0}},
+                                                               {{1, 0, -1}, {0, 1, 0}, {1, 1}}},
+                                       Array<std::uint8_t>{5, 3});
     if (!mesh)
         fatal(mesh.error().message);
     return std::move(*mesh);
@@ -22,9 +22,9 @@ geometry::MeshRef plane() {
 geometry::MeshRef sphere() {
     constexpr unsigned rings = 12;
     constexpr unsigned segments = 24;
-    std::vector<geometry::Vertex> vertices;
+    Array<geometry::Vertex> vertices;
     vertices.reserve(6 * segments * (rings - 1));
-    std::vector<std::uint8_t> edges;
+    Array<std::uint8_t> edges;
     edges.reserve(2 * segments * (rings - 1));
     const auto vertex = [](unsigned y, unsigned x) {
         const auto latitude = std::numbers::pi_v<float> * static_cast<float>(y) / rings;
@@ -42,12 +42,12 @@ geometry::MeshRef sphere() {
             const auto c = vertex(y + 1, x + 1);
             const auto d = vertex(y, x + 1);
             if (y) {
-                vertices.insert(vertices.end(), {a, d, b});
-                edges.push_back(y + 1 == rings ? 7 : 6);
+                vertices.append({a, d, b});
+                edges.add(y + 1 == rings ? 7 : 6);
             }
             if (y + 1 < rings) {
-                vertices.insert(vertices.end(), {d, c, b});
-                edges.push_back(y == 0 ? 7 : 5);
+                vertices.append({d, c, b});
+                edges.add(y == 0 ? 7 : 5);
             }
         }
     auto mesh = geometry::Mesh::create(std::move(vertices), std::move(edges));
@@ -72,7 +72,7 @@ constexpr std::array producers{Producer{"builtin/cube", L"Cube", 1, geometry::cu
                                Producer{"builtin/plane", L"Plane", 1, plane}};
 }
 
-std::span<const MeshAsset> mesh_assets() {
+Span<const MeshAsset> mesh_assets() {
     static const auto assets = [] {
         std::array<MeshAsset, producers.size()> result;
         for (std::size_t i = 0; i < producers.size(); ++i) {

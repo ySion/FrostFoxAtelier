@@ -1,5 +1,7 @@
 #pragma once
 
+#include "foundation/array.hpp"
+#include "foundation/optional.hpp"
 #include "foundation/result.hpp"
 #include <chrono>
 #include <cstddef>
@@ -7,12 +9,10 @@
 #include <expected>
 #include <filesystem>
 #include <memory>
-#include <optional>
 #include <source_location>
 #include <string>
 #include <string_view>
 #include <variant>
-#include <vector>
 
 namespace atelier::logging {
 
@@ -59,9 +59,9 @@ struct SourceLocation {
 
     std::uint32_t column{};
 
-    std::optional<std::uint64_t> version{};
+    Optional<std::uint64_t> version{};
 
-    std::optional<std::uint64_t> offset{};
+    Optional<std::uint64_t> offset{};
 
     // Saved Source snapshots preserve their absolute origin separately from
     // the compiler's file name. Only with this mapping is version a disk hash.
@@ -99,9 +99,9 @@ struct Entry {
 
     SourceLocation source{};
 
-    std::vector<Field> fields{};
+    Array<Field> fields{};
 
-    std::optional<Repeat> repeat{};
+    Optional<Repeat> repeat{};
 };
 
 // One schema check for owned producers and standalone projections. Empty means
@@ -120,7 +120,7 @@ struct RunInfo {
 
     std::filesystem::path directory;
 
-    std::optional<std::string> parent_run_id;
+    Optional<std::string> parent_run_id;
 };
 
 enum class Persistence : std::uint8_t { not_persisted, jsonl };
@@ -167,7 +167,7 @@ struct Error {
 
     std::string message;
 
-    std::optional<std::uint32_t> native_code{};
+    Optional<std::uint32_t> native_code{};
 };
 
 template <class T>
@@ -216,7 +216,7 @@ struct FacilityIssue {
 
     std::string message; // Bounded first-fault detail; not a business result.
 
-    std::optional<std::uint32_t> native_code;
+    Optional<std::uint32_t> native_code;
 };
 
 struct CapturedDiagnostic {
@@ -260,9 +260,9 @@ struct Health {
 
     std::uint64_t last_record_sequence{}; // Assigned by serialization, not durable I/O.
 
-    std::optional<FacilityIssue> first_facility_issue;
+    Optional<FacilityIssue> first_facility_issue;
 
-    std::optional<CapturedDiagnostic> first_error;
+    Optional<CapturedDiagnostic> first_error;
 };
 
 struct CategoryThreshold {
@@ -279,11 +279,11 @@ struct RunOptions {
 
     std::string process_name{"application"};
 
-    std::optional<std::string> parent_run_id{};
+    Optional<std::string> parent_run_id{};
 
     Severity minimum{Severity::info};
 
-    std::vector<CategoryThreshold> categories{};
+    Array<CategoryThreshold> categories{};
 };
 
 struct FlushReport {
@@ -422,7 +422,7 @@ struct ReaderStatus {
 
     bool unquantified_loss{};
 
-    std::optional<ReaderIssue> latest_issue;
+    Optional<ReaderIssue> latest_issue;
 
     bool operator==(const ReaderStatus&) const = default;
 };
@@ -436,13 +436,13 @@ struct PublishedHealth {
 };
 
 struct ReadBatch {
-    std::vector<Record> records; // Owns values; Reader retains no UI history.
+    Array<Record> records; // Owns values; Reader retains no UI history.
 
     ReaderStatus status;
 
-    std::optional<RunInfo> run;
+    Optional<RunInfo> run;
 
-    std::optional<PublishedHealth> health; // Last valid disk snapshot, possibly stale.
+    Optional<PublishedHealth> health; // Last valid disk snapshot, possibly stale.
 };
 
 // One directory, one owner thread. Independent of a local Run/Quill backend.

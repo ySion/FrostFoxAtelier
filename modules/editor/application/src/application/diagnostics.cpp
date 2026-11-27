@@ -1,4 +1,5 @@
 #include "application/diagnostics.hpp"
+#include "foundation/span.hpp"
 #include "foundation/string.hpp"
 #include "platform/utf.hpp"
 #include "renderer/renderer.hpp"
@@ -46,20 +47,20 @@ void error_source(logging::Entry& entry, const SourceLocation& source) {
     entry.source = diagnostic_source(source);
     // Navigation uses bounded line/column values. The diagnostic retains the
     // original six fields even when a location cannot be navigated by the UI.
-    entry.fields.insert(entry.fields.end(), {{"error.path", source.path},
-                                             {"error.version", source.version},
-                                             {"error.offset", std::uint64_t{source.offset}},
-                                             {"error.line", std::uint64_t{source.line}},
-                                             {"error.column", std::uint64_t{source.column}},
-                                             {"error.disk_path", source.disk_path}});
+    entry.fields.append({{"error.path", source.path},
+                         {"error.version", source.version},
+                         {"error.offset", std::uint64_t{source.offset}},
+                         {"error.line", std::uint64_t{source.line}},
+                         {"error.column", std::uint64_t{source.column}},
+                         {"error.disk_path", source.disk_path}});
 }
 
 void error_element(logging::Entry& entry, const ErrorElement& element) {
-    entry.fields.push_back({"error.element_layer", std::string(element.layer.view())});
-    entry.fields.push_back({"error.element_index", std::uint64_t{element.index}});
+    entry.fields.add({"error.element_layer", std::string(element.layer.view())});
+    entry.fields.add({"error.element_index", std::uint64_t{element.index}});
 }
 
-std::string path_field(std::span<const std::string> fields) {
+std::string path_field(Span<const std::string> fields) {
     std::string result;
     for (const auto& field : fields) {
         result += '/';
@@ -130,14 +131,14 @@ Result<logging::Entry> world_diagnostic(const editor::Session& session, const wo
                     {"value", item.value},
                     {"repeats", std::uint64_t{item.repeats}}};
     if (item.error_code) {
-        entry.fields.push_back({"error_code", static_cast<std::uint64_t>(*item.error_code)});
+        entry.fields.add({"error_code", static_cast<std::uint64_t>(*item.error_code)});
         if (item.source)
             error_source(entry, *item.source);
     }
     if (item.element)
         error_element(entry, *item.element);
     if (const auto local = session.document_identity(item.object))
-        entry.fields.push_back({"scene_local_id", *local});
+        entry.fields.add({"scene_local_id", *local});
     // Presentation repeat groups survive a resolved/recurrent value, but are
     // scoped to the actual document and object, never just rendered text.
     const auto identity = std::to_string(document) + "/" + std::string(origin) + "/" +
@@ -151,7 +152,7 @@ Result<logging::Entry> world_diagnostic(const editor::Session& session, const wo
     return entry;
 }
 
-void report_world(const editor::Session& session, std::span<const world::Diagnostic> items,
+void report_world(const editor::Session& session, Span<const world::Diagnostic> items,
                   const std::filesystem::path& root, std::string_view origin) noexcept {
     for (const auto& item : items) {
         auto entry = world_diagnostic(session, item, root, origin);
@@ -164,7 +165,8 @@ void report_world(const editor::Session& session, std::span<const world::Diagnos
 }
 
 void drain_world(editor::Session& session, const std::filesystem::path& root, std::uint64_t& dropped) noexcept {
-    report_world(session, session.take_diagnostics(), root);
+    const auto diagnostics = session.take_diagnostics();
+    report_world(session, diagnostics, root);
     const auto total = session.world().dropped_diagnostics();
     if (total != dropped) {
         logging::Entry entry{.severity = logging::Severity::warning,
@@ -225,13 +227,13 @@ void report_source_capture(const source::DiagnosticReport& report, const std::fi
                     {"timing", report.timing},
                     {"active_time_ns", std::int64_t{report.active_time.count()}}};
     for (std::size_t i = 0; i < counters.size(); ++i)
-        entry.fields.push_back({std::string("counter.") + counters[i], report.calls.values[i]});
+        entry.fields.add({std::string("counter.") + counters[i], report.calls.values[i]});
     const auto resources = [&](const char* prefix, const source::DiagnosticResources& value) {
-        entry.fields.push_back({std::string(prefix) + ".objects", std::uint64_t{value.objects}});
-        entry.fields.push_back({std::string(prefix) + ".roots", std::uint64_t{value.roots}});
-        entry.fields.push_back(
+        entry.fields.add({std::string(prefix) + ".objects", std::uint64_t{value.objects}});
+        entry.fields.add({std::string(prefix) + ".roots", std::uint64_t{value.roots}});
+        entry.fields.add(
             {std::string(prefix) + ".pending_reclamation", std::uint64_t{value.pending_reclamation}});
-        entry.fields.push_back(
+        entry.fields.add(
             {std::string(prefix) + ".collection_phase", static_cast<std::uint64_t>(value.collection_phase)});
     };
     resources("before", report.before);
@@ -241,16 +243,16 @@ void report_source_capture(const source::DiagnosticReport& report, const std::fi
         entry.source.function = report.location->function;
     }
     if (report.error) {
-        entry.fields.push_back({"error_code", static_cast<std::uint64_t>(report.error->code)});
+        entry.fields.add({"error_code", static_cast<std::uint64_t>(report.error->code)});
         // Error and suspended/current locations are independently meaningful.
         if (report.error->source) {
             const auto& location = *report.error->source;
-            entry.fields.insert(entry.fields.end(), {{"error.path", location.path},
-                                                     {"error.version", location.version},
-                                                     {"error.offset", std::uint64_t{location.offset}},
-                                                     {"error.line", std::uint64_t{location.line}},
-                                                     {"error.column", std::uint64_t{location.column}},
-                                                     {"error.disk_path", location.disk_path}});
+            entry.fields.append({{"error.path", location.path},
+                                 {"error.version", location.version},
+                                 {"error.offset", std::uint64_t{location.offset}},
+                                 {"error.line", std::uint64_t{location.line}},
+                                 {"error.column", std::uint64_t{location.column}},
+                                 {"error.disk_path", location.disk_path}});
             if (!report.location)
                 entry.source = diagnostic_source(location);
         }

@@ -19,12 +19,12 @@ struct ArcStation {
 };
 
 struct PolylineArc {
-    std::span<const math::Vector3> positions;
-    std::span<const std::uint32_t> points;
+    Span<const math::Vector3> positions;
+    Span<const std::uint32_t> points;
     PrimitiveRange primitive;
-    std::span<const ArcEdge> edges;
+    Span<const ArcEdge> edges;
 
-    PolylineArc(const Geometry& source, PrimitiveRange primitive, std::span<const ArcEdge> edges)
+    PolylineArc(const Geometry& source, PrimitiveRange primitive, Span<const ArcEdge> edges)
         : positions(source.positions()), points(source.vertex_points()), primitive(primitive), edges(edges) {}
 
     double length() const { return edges.back().end; }
@@ -71,12 +71,12 @@ struct PolylineArc {
 // All primitives share one edge allocation. No output-sized allocation is made while measuring.
 struct PolylineArcs {
     const Geometry& source;
-    std::vector<ArcEdge> edges{};
-    std::vector<std::size_t> offsets{0};
+    Array<ArcEdge> edges{};
+    Array<std::size_t> offsets{0};
 
     Result<void> measure();
     PolylineArc operator[](std::uint32_t p) const {
-        return {source, source.primitive(p), std::span{edges}.subspan(offsets[p], offsets[p + 1] - offsets[p])};
+        return {source, source.primitive(p), edges.view().slice(offsets[p], offsets[p + 1] - offsets[p])};
     }
 };
 

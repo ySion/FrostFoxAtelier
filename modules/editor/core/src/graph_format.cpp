@@ -1,24 +1,24 @@
 #include "editor/graph_format.hpp"
 #include "editor/properties.hpp"
 #include "foundation/map.hpp"
+#include "foundation/scope_exit.hpp"
 #include "foundation/set.hpp"
 #include "procedural/nodes.hpp"
 #include <algorithm>
 #include <cmath>
 #include <format>
 #include <map>
-#include <optional>
 
 namespace atelier::editor {
 // "node.output", or nothing when malformed.
-std::optional<std::pair<std::string_view, std::string_view>> graph_endpoint(json::Value value) {
+Optional<std::pair<std::string_view, std::string_view>> graph_endpoint(json::Value value) {
     if (value.kind() != json::Kind::string)
-        return std::nullopt;
+        return {};
     const std::string_view text = *value.string();
     const auto dot = text.find('.');
     if (dot == text.npos || !valid_graph_identifier(text.substr(0, dot)) ||
         !valid_graph_identifier(text.substr(dot + 1)))
-        return std::nullopt;
+        return {};
     return std::pair{text.substr(0, dot), text.substr(dot + 1)};
 }
 
@@ -147,7 +147,7 @@ std::string_view graph_node_shape_name(GraphNodeShape shape) noexcept {
     return {};
 }
 
-std::optional<GraphNodeShape> parse_graph_node_shape(std::string_view text) noexcept {
+Optional<GraphNodeShape> parse_graph_node_shape(std::string_view text) noexcept {
     if (text.empty() || text == "auto")
         return GraphNodeShape::auto_role;
     if (text == "pill")
@@ -166,16 +166,16 @@ std::optional<GraphNodeShape> parse_graph_node_shape(std::string_view text) noex
         return GraphNodeShape::diamond;
     if (text == "circle")
         return GraphNodeShape::circle;
-    return std::nullopt;
+    return {};
 }
 
 std::string format_graph_hex_color(std::uint32_t rgb) {
     return std::format("#{:06x}", rgb & 0xffffffu);
 }
 
-std::optional<std::uint32_t> parse_graph_hex_color(std::string_view text) noexcept {
+Optional<std::uint32_t> parse_graph_hex_color(std::string_view text) noexcept {
     if (text.size() != 7 || text.front() != '#')
-        return std::nullopt;
+        return {};
     text.remove_prefix(1);
     std::uint32_t value = 0;
     for (const char c : text) {
@@ -187,7 +187,7 @@ std::optional<std::uint32_t> parse_graph_hex_color(std::string_view text) noexce
         else if (c >= 'A' && c <= 'F')
             digit = static_cast<std::uint32_t>(c - 'A' + 10);
         else
-            return std::nullopt;
+            return {};
         value = (value << 4u) | digit;
     }
     return value;
@@ -278,12 +278,12 @@ Result<ResolvedGraphTarget> resolve_graph_parameter_target(Runtime& runtime, con
     // Check math vector aggregate path (e.g. "grid1.size").
     TypeId cur_type = *type;
     const FieldInfo* matched_field = nullptr;
-    std::vector<std::string> segments;
+    Array<std::string> segments;
     std::string_view rem = field_path;
     while (true) {
         const auto next_dot = rem.find('.');
         const auto part = rem.substr(0, next_dot);
-        segments.emplace_back(part);
+        segments.emplace(part);
         ATELIER_TRY_BIND(info, runtime.describe(cur_type));
         const auto f_it = std::ranges::find((*info)->fields, part, &FieldInfo::name);
         if (f_it == (*info)->fields.end() || f_it->transient || f_it->read_only ||
@@ -301,14 +301,14 @@ Result<ResolvedGraphTarget> resolve_graph_parameter_target(Runtime& runtime, con
     if (matched_field) {
         ATELIER_TRY_BIND(vec_info, runtime.describe(cur_type));
         if ((*vec_info)->math.vector()) {
-            std::vector<detail::ScalarField> lanes;
+            Array<detail::ScalarField> lanes;
             for (const auto& leaf : *fields) {
                 if (leaf.names.size() == segments.size() + 1 &&
                     std::equal(segments.begin(), segments.end(), leaf.names.begin())) {
                     if (leaf.read_only || leaf.form != ValueForm::inline_value)
                         return std::unexpected(Error{ErrorCode::argument_mismatch,
                                                      "Vector field '" + std::string(target_spec) + "' is read-only."});
-                    lanes.push_back(leaf);
+                    lanes.add(leaf);
                 }
             }
             if (lanes.size() == (*vec_info)->math.components() && !lanes.empty()) {
@@ -332,7 +332,7 @@ Result<ResolvedGraphTarget> resolve_graph_parameter_target(Runtime& runtime, con
 }
 
 Result<procedural::Ports> extract_graph_ports(Runtime& runtime, const GraphDocument& document,
-                                              std::vector<ObjectId>* input_nodes, std::vector<ObjectId>* output_nodes) {
+                                              Array<ObjectId>* input_nodes, Array<ObjectId>* output_nodes) {
     if (input_nodes)
         input_nodes->clear();
     if (output_nodes)
@@ -350,8 +350,8 @@ Result<procedural::Ports> extract_graph_ports(Runtime& runtime, const GraphDocum
         ObjectId id{};
     };
 
-    std::vector<OrderedBoundary> inputs_list;
-    std::vector<OrderedBoundary> outputs_list;
+    Array<OrderedBoundary> inputs_list;
+    Array<OrderedBoundary> outputs_list;
     for (const auto& item : document.nodes) {
         if (!item.node.registered())
             continue;
@@ -369,7 +369,7 @@ Result<procedural::Ports> extract_graph_ports(Runtime& runtime, const GraphDocum
                 return std::unexpected(
                     Error{ErrorCode::invalid_definition,
                           "GraphInput node '" + item.name + "' has invalid port_name '" + port_name + "'."});
-            inputs_list.push_back({order, item.name, std::move(port_name), item.node.id()});
+            inputs_list.add({order, item.name, std::move(port_name), item.node.id()});
         } else if (*type == *out_type) {
             std::string port_name;
             std::int32_t order = 0;
@@ -383,7 +383,7 @@ Result<procedural::Ports> extract_graph_ports(Runtime& runtime, const GraphDocum
                 return std::unexpected(
                     Error{ErrorCode::invalid_definition,
                           "GraphOutput node '" + item.name + "' has invalid port_name '" + port_name + "'."});
-            outputs_list.push_back({order, item.name, std::move(port_name), item.node.id()});
+            outputs_list.add({order, item.name, std::move(port_name), item.node.id()});
         }
     }
 
@@ -399,10 +399,10 @@ Result<procedural::Ports> extract_graph_ports(Runtime& runtime, const GraphDocum
         if (!seen_in.add(entry.port_name))
             return std::unexpected(
                 Error{ErrorCode::invalid_definition, "Duplicate GraphInput port_name '" + entry.port_name + "'."});
-        ports.inputs.push_back(entry.port_name);
-        ports.multiple.push_back(false);
+        ports.inputs.add(entry.port_name);
+        ports.multiple.add(false);
         if (input_nodes)
-            input_nodes->push_back(entry.id);
+            input_nodes->add(entry.id);
     }
 
     if (!outputs_list.empty()) {
@@ -411,16 +411,16 @@ Result<procedural::Ports> extract_graph_ports(Runtime& runtime, const GraphDocum
             if (!seen_out.add(entry.port_name))
                 return std::unexpected(
                     Error{ErrorCode::invalid_definition, "Duplicate GraphOutput port_name '" + entry.port_name + "'."});
-            ports.outputs.push_back(entry.port_name);
+            ports.outputs.add(entry.port_name);
             if (output_nodes)
-                output_nodes->push_back(entry.id);
+                output_nodes->add(entry.id);
         }
     } else if (document.graph.registered()) {
         ATELIER_TRY_BIND(listed, procedural::contents(runtime, document.graph.id()));
         if (listed->display() != ObjectId{}) {
-            ports.outputs.push_back("output");
+            ports.outputs.add("output");
             if (output_nodes)
-                output_nodes->push_back(listed->display());
+                output_nodes->add(listed->display());
         }
     }
     return ports;
@@ -434,9 +434,9 @@ Result<ResolvedPromotedSchema> resolve_promoted_parameter_schema(Runtime& runtim
     ATELIER_TRY_BIND(primary, resolve_graph_parameter_target(runtime, document, param.targets.front()));
     ResolvedPromotedSchema schema;
     schema.primary = *primary;
-    schema.all_targets.push_back(*primary);
+    schema.all_targets.add(*primary);
     for (const auto& leaf : primary->leaves)
-        schema.ranges.push_back(leaf.range);
+        schema.ranges.add(leaf.range);
 
     for (std::size_t i = 1; i < param.targets.size(); ++i) {
         ATELIER_TRY_BIND(next, resolve_graph_parameter_target(runtime, document, param.targets[i]));
@@ -447,17 +447,17 @@ Result<ResolvedPromotedSchema> resolve_promoted_parameter_schema(Runtime& runtim
             ATELIER_TRY_BIND(merged, intersect_field_ranges(schema.ranges[li], next->leaves[li].range));
             schema.ranges[li] = *merged;
         }
-        schema.all_targets.push_back(std::move(*next));
+        schema.all_targets.add(std::move(*next));
     }
     return schema;
 }
 
 void destroy_private_graph_document(Runtime& runtime, GraphDocument& document) noexcept {
-    std::vector<ObjectId> node_ids;
+    Array<ObjectId> node_ids;
     node_ids.reserve(document.nodes.size());
     for (auto& item : document.nodes) {
         if (item.node.registered()) {
-            node_ids.push_back(item.node.id());
+            node_ids.add(item.node.id());
             item.node = {};
         }
     }
@@ -509,18 +509,7 @@ Result<GraphDocument> clone_graph_document(Runtime& runtime, const GraphDocument
     ATELIER_TRY_BIND(graph_type, runtime.native_type<procedural::Graph>());
     ATELIER_TRY_BIND(asset_node_type, runtime.native_type<procedural::AssetNode>());
     GraphDocument cloned;
-    struct Guard {
-        Runtime& rt;
-
-        GraphDocument& doc;
-
-        bool ok{};
-
-        ~Guard() {
-            if (!ok)
-                destroy_private_graph_document(rt, doc);
-        }
-    } guard{runtime, cloned, false};
+    ScopeExit guard{[&]() noexcept { destroy_private_graph_document(runtime, cloned); }};
 
     ATELIER_TRY_BIND(created_graph, runtime.create(*graph_type));
     cloned.graph = std::move(*created_graph);
@@ -566,7 +555,7 @@ Result<GraphDocument> clone_graph_document(Runtime& runtime, const GraphDocument
             id_map.try_emplace(sid, did);
             dst_item.node = std::move(*created_node);
         }
-        cloned.nodes.push_back(std::move(dst_item));
+        cloned.nodes.add(std::move(dst_item));
     }
     std::ranges::sort(cloned.nodes, {}, &GraphNode::name);
 
@@ -594,12 +583,12 @@ Result<GraphDocument> clone_graph_document(Runtime& runtime, const GraphDocument
     cloned.notes = source.notes;
     cloned.boxes = source.boxes;
     cloned.kept = source.kept;
-    guard.ok = true;
+    guard.release();
     return cloned;
 }
 
 Result<void> apply_saved_graph_node_inputs(Runtime& runtime, GraphDocument& document, GraphNode& target,
-                                           const SavedGraphPortMap& saved, std::vector<world::Diagnostic>* issues) {
+                                           const SavedGraphPortMap& saved, Array<world::Diagnostic>* issues) {
     if (!target.node.registered())
         return {};
     const ObjectId graph = document.graph.id();
@@ -683,7 +672,7 @@ Result<void> apply_saved_graph_node_inputs(Runtime& runtime, GraphDocument& docu
             if (const auto kept_val = *inputs_obj.find(pname))
                 diag.value = assets::json_format::preview(*kept_val);
             diag.message = detail::dotted(diag.field) + ": " + problem + " The saved connections are kept.";
-            issues->push_back(std::move(diag));
+            issues->add(std::move(diag));
         }
     }
     target.kept = next_kept.finish();
@@ -734,7 +723,7 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
         if (parameters_opt) {
             ATELIER_TRY_BIND(param_items, parameters_opt->array());
             Set<std::string_view> seen_param_names;
-            std::vector<std::string_view> all_targets;
+            Array<std::string_view> all_targets;
             for (const auto param : *param_items) {
                 ATELIER_TRY(param.allowed_members({"name", "targets", "label", "category", "description"}));
                 ATELIER_TRY_BIND(pname, param.string({"name"}));
@@ -760,7 +749,7 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
                             return std::unexpected(target_item.error(
                                 json::Fault::range, "Promoted parameter targets cannot overlap on the same field."));
                     }
-                    all_targets.push_back(*tspec);
+                    all_targets.add(*tspec);
                 }
                 if (const auto lbl = *param.find("label"))
                     ATELIER_TRY(lbl->string());
@@ -893,7 +882,7 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
     document.graph = std::move(*created);
     const auto graph = document.graph.id();
     const auto report = [&](world::Severity severity, world::DiagnosticKind kind, ObjectId object, std::string type,
-                            std::vector<std::string> field, const json::Value* value, const std::string& detail) {
+                            Array<std::string> field, const json::Value* value, const std::string& detail) {
         world::Diagnostic item;
         item.serial = document.issues.size() + 1;
         item.severity = severity;
@@ -905,24 +894,24 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
             item.value = assets::json_format::preview(*value);
         item.message = detail::dotted(field) + ": " + detail;
         item.field = std::move(field);
-        document.issues.push_back(std::move(item));
+        document.issues.add(std::move(item));
     };
     // Leaves that do not decode are kept at their path under `kept` and reported under `prefix`.
     const auto keeping = [&](json::Builder& kept, json::Value target, ObjectId object, const std::string& type,
-                             std::vector<std::string> prefix) {
+                             Array<std::string> prefix) {
         return PropertyReport{
-            [&, target, object, type, prefix](std::vector<std::string> at, json::Value item, world::DiagnosticKind kind,
+            [&, target, object, type, prefix](Array<std::string> at, json::Value item, world::DiagnosticKind kind,
                                               const std::string& detail) -> Result<void> {
                 const auto slot = kept.object_path_validated(target, at);
                 kept.replace(slot, item);
                 auto field = prefix;
-                field.insert(field.end(), at.begin(), at.end());
+                field.append(at);
                 report(world::Severity::warning, kind, object, type, std::move(field), &item, detail);
                 return {};
             },
-            [&, object, type, prefix](std::vector<std::string> at, json::Value item) -> Result<void> {
+            [&, object, type, prefix](Array<std::string> at, json::Value item) -> Result<void> {
                 auto field = prefix;
-                field.insert(field.end(), at.begin(), at.end());
+                field.append(at);
                 report(world::Severity::info, world::DiagnosticKind::converted, object, type, std::move(field), &item,
                        "Integral number converted exactly to the field's integer type.");
                 return {};
@@ -942,10 +931,14 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
         GraphNode item;
         item.name = name;
         item.position = position ? *assets::json_format::vector<2>(*position) : std::array<float, 2>{};
-        if (const auto shape = *entry.find("shape"))
-            item.shape = *parse_graph_node_shape(*shape->string());
-        if (const auto color = *entry.find("color"))
-            item.color = *parse_graph_hex_color(*color->string());
+        if (const auto shape = *entry.find("shape")) {
+            const auto parsed_shape = parse_graph_node_shape(*shape->string());
+            item.shape = *parsed_shape;
+        }
+        if (const auto color = *entry.find("color")) {
+            const auto parsed_color = parse_graph_hex_color(*color->string());
+            item.color = *parsed_color;
+        }
         if (const auto comment = *entry.find("comment"))
             item.comment = std::string(*comment->string());
         if (const auto asset_field = *entry.find("asset"))
@@ -983,7 +976,7 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
                 kept.erase(kept.root(), "properties");
             item.kept = kept.finish();
         }
-        document.nodes.push_back(std::move(item));
+        document.nodes.add(std::move(item));
     }
     std::ranges::sort(document.nodes, {}, &GraphNode::name);
 
@@ -998,9 +991,11 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
             item.title = std::string(*title->string());
         if (const auto body = *note.find("text"))
             item.text = std::string(*body->string());
-        if (const auto color = *note.find("color"))
-            item.color = *parse_graph_hex_color(*color->string());
-        document.notes.push_back(std::move(item));
+        if (const auto color = *note.find("color")) {
+            const auto parsed_color = parse_graph_hex_color(*color->string());
+            item.color = *parsed_color;
+        }
+        document.notes.add(std::move(item));
     }
     std::ranges::sort(document.notes, {}, &GraphStickyNote::name);
 
@@ -1013,9 +1008,11 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
             item.size = *assets::json_format::vector<2>(*sz);
         if (const auto title = *box.find("title"))
             item.title = std::string(*title->string());
-        if (const auto color = *box.find("color"))
-            item.color = *parse_graph_hex_color(*color->string());
-        document.boxes.push_back(std::move(item));
+        if (const auto color = *box.find("color")) {
+            const auto parsed_color = parse_graph_hex_color(*color->string());
+            item.color = *parsed_color;
+        }
+        document.boxes.add(std::move(item));
     }
     std::ranges::sort(document.boxes, {}, &GraphNetworkBox::name);
 
@@ -1032,13 +1029,13 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
             continue;
         SavedGraphPortMap saved;
         for (const auto& [port_name, value] : *inputs->object_items()) {
-            std::vector<std::string> eps;
+            Array<std::string> eps;
             const bool is_arr = value.kind() == json::Kind::array;
             if (is_arr) {
                 for (const auto connection : *value.array())
-                    eps.emplace_back(*connection.string());
+                    eps.emplace(*connection.string());
             } else {
-                eps.emplace_back(*value.string());
+                eps.emplace(*value.string());
             }
             saved.emplace(std::string(port_name), std::pair{is_arr, std::move(eps)});
         }
@@ -1049,8 +1046,9 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
         for (const auto param : *parameters_opt->array()) {
             GraphPromotedParameter item;
             item.name = std::string(*param.string({"name"}));
-            for (const auto t : *(*param.find("targets"))->array())
-                item.targets.emplace_back(*t.string());
+            const auto targets_field = *param.find("targets");
+            for (const auto t : *targets_field->array())
+                item.targets.emplace(*t.string());
             if (const auto lbl = *param.find("label"))
                 item.label = std::string(*lbl->string());
             if (const auto cat = *param.find("category"))
@@ -1058,8 +1056,8 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
             if (const auto dsc = *param.find("description"))
                 item.description = std::string(*dsc->string());
 
-            std::optional<ResolvedGraphTarget> primary;
-            std::vector<FieldRange> ranges;
+            Optional<ResolvedGraphTarget> primary;
+            Array<FieldRange> ranges;
             for (std::size_t ti = 0; ti < item.targets.size(); ++ti) {
                 const auto& tspec = item.targets[ti];
                 auto resolved = resolve_graph_parameter_target(runtime, document, tspec);
@@ -1072,7 +1070,7 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
                 if (!primary) {
                     primary = std::move(*resolved);
                     for (const auto& leaf : primary->leaves)
-                        ranges.push_back(leaf.range);
+                        ranges.add(leaf.range);
                     continue;
                 }
                 if (resolved->value_type != primary->value_type || resolved->leaves.size() != primary->leaves.size()) {
@@ -1083,7 +1081,7 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
                     continue;
                 }
                 bool range_ok = true;
-                std::vector<FieldRange> next_ranges = ranges;
+                Array<FieldRange> next_ranges = ranges;
                 for (std::size_t li = 0; li < ranges.size(); ++li) {
                     auto merged = intersect_field_ranges(next_ranges[li], resolved->leaves[li].range);
                     if (!merged) {
@@ -1114,8 +1112,8 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
                             if (named(primary->node_name)) {
                                 ATELIER_TRY_BIND(ptype, runtime.type_of(primary->node));
                                 ATELIER_TRY_BIND(pinfo, runtime.describe(*ptype));
-                                std::vector<std::string> fpath = {"nodes", primary->node_name, "properties"};
-                                fpath.insert(fpath.end(), src_leaf.names.begin(), src_leaf.names.end());
+                                Array<std::string> fpath = {"nodes", primary->node_name, "properties"};
+                                fpath.append(src_leaf.names);
                                 report(world::Severity::warning, world::DiagnosticKind::invalid_value, primary->node,
                                        (*pinfo)->name, std::move(fpath), nullptr,
                                        "Primary target value clamped to promoted parameter '" + item.name +
@@ -1127,7 +1125,7 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
                     }
                 }
             }
-            document.parameters.push_back(std::move(item));
+            document.parameters.add(std::move(item));
         }
     }
 
@@ -1199,7 +1197,7 @@ Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document) 
             Error{ErrorCode::argument_mismatch, "Graph template node must belong to the saved graph."});
 
     Set<std::string_view> seen_param_names;
-    std::vector<std::string_view> seen_targets;
+    Array<std::string_view> seen_targets;
     for (const auto& param : document.parameters) {
         if (!valid_graph_identifier(param.name) || !seen_param_names.add(param.name))
             return std::unexpected(
@@ -1220,7 +1218,7 @@ Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document) 
                     return std::unexpected(
                         Error{ErrorCode::argument_mismatch, "Overlapping promoted parameter target path: " + target});
             }
-            seen_targets.push_back(target);
+            seen_targets.add(target);
         }
     }
 
@@ -1316,7 +1314,7 @@ Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document) 
                     return std::unexpected(
                         Error{ErrorCode::argument_mismatch, "Graph input names a missing output port."});
                 auto connection = (*by_node.find(input.from))->name + "." + from->outputs[input.output];
-                const auto& port_name = ports.inputs.at(input.input);
+                const auto& port_name = ports.inputs[input.input];
                 if (ports.multiple[input.input]) {
                     const auto found = *inputs.find(port_name);
                     const auto port = found ? *found : *result.array(inputs, port_name);

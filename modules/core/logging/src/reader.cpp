@@ -57,7 +57,7 @@ struct Budget {
 struct Metadata {
     Handle handle;
 
-    std::optional<Fingerprint> loaded;
+    Optional<Fingerprint> loaded;
 
     Fingerprint reading;
 
@@ -80,19 +80,19 @@ struct Reader::Impl {
 
     ReaderStatus status;
 
-    std::optional<RunInfo> run;
+    Optional<RunInfo> run;
 
-    std::optional<PublishedHealth> health;
+    Optional<PublishedHealth> health;
 
     Metadata manifest;
 
     Metadata summary;
 
-    std::optional<Segment> current;
+    Optional<Segment> current;
 
     RingDeque<FileIdentity> completed;
 
-    std::vector<FileIdentity> pending;
+    InlineArray<FileIdentity, retained_rotated_files + 1> pending;
 
     std::string chunk;
 
@@ -243,8 +243,10 @@ struct Reader::Impl {
         return *result;
     }
 
-    Result<std::optional<std::vector<Segment>>> scan() {
-        std::vector<Segment> result;
+    using Segments = InlineArray<Segment, retained_rotated_files + 1>;
+
+    Result<Optional<Segments>> scan() {
+        Segments result;
         for (unsigned i = static_cast<unsigned>(retained_rotated_files) + 1; i-- != 0;) {
             auto path = directory / (i == 0 ? "events.jsonl" : "events." + std::to_string(i) + ".jsonl");
             auto handle = open_read(path);
@@ -257,11 +259,11 @@ struct Reader::Impl {
             ATELIER_TRY_BIND(identity, file_identity(handle.get()));
             if (std::ranges::any_of(result, [&](const auto& item) { return item.identity == *identity; })) {
                 if (!status.source_ended)
-                    return std::nullopt;
+                    return Optional<Segments>{};
                 issue(ReaderFault::rotation_loss, "Closed archive aliases two segment names to one file", path);
                 continue;
             }
-            result.push_back({std::move(handle), *identity, std::move(path), i});
+            result.add({std::move(handle), *identity, std::move(path), i});
         }
         // Verify that names still identify this snapshot. A rename race is a retry,
         // not corruption or permission to splice two different file tails. Verify
@@ -276,7 +278,7 @@ struct Reader::Impl {
                 if (missing(code)) {
                     if (item == result.end())
                         continue;
-                    return std::nullopt;
+                    return Optional<Segments>{};
                 }
                 return std::unexpected(io_failure("Recheck log segment", code));
             }
@@ -286,11 +288,11 @@ struct Reader::Impl {
                     if (std::ranges::any_of(result, [&](const auto& value) { return value.identity == *identity; }))
                         continue;
                 }
-                return std::nullopt;
+                return Optional<Segments>{};
             }
             ATELIER_TRY_BIND(identity, file_identity(check.get()));
             if (*identity != item->identity)
-                return std::nullopt;
+                return Optional<Segments>{};
         }
         return result;
     }
@@ -314,7 +316,7 @@ struct Reader::Impl {
         lost_current_reported = false;
     }
 
-    void line(std::vector<Record>& records) {
+    void line(Array<Record>& records) {
         auto decoded = read_record(tail);
         if (!decoded) {
             ++status.invalid_lines;
@@ -352,10 +354,10 @@ struct Reader::Impl {
             keys.remove(recent.front());
             recent.pop_front();
         }
-        records.push_back(std::move(value));
+        records.add(std::move(value));
     }
 
-    void consume(Budget& budget, std::vector<Record>& records) {
+    void consume(Budget& budget, Array<Record>& records) {
         while (chunk_cursor < chunk.size() && budget.lines < budget.limit.records && !budget.expired()) {
             const auto newline = chunk.find('\n', chunk_cursor);
             const auto end = newline == std::string::npos ? chunk.size() : newline;
@@ -412,7 +414,7 @@ struct Reader::Impl {
         Budget budget{limit};
         status.caught_up = false;
         status.budget_exhausted = false;
-        std::vector<Record> records;
+        Array<Record> records;
         if (!budget.available()) {
             status.budget_exhausted = true;
             return {std::move(records), status, run, health};
@@ -448,7 +450,7 @@ struct Reader::Impl {
                 pending.clear();
                 for (const auto& item : files)
                     if (!was_completed(item.identity))
-                        pending.push_back(item.identity);
+                        pending.add(item.identity);
                 while (budget.available() || (!chunk.empty() && budget.lines < limit.records && !budget.expired())) {
                     if (!current) {
                         auto next = std::find_if(files.begin(), files.end(),

@@ -1,5 +1,6 @@
 #include "json/json.hpp"
 
+#include "foundation/inline_array.hpp"
 #include "foundation/map.hpp"
 #include "foundation/set.hpp"
 #include "foundation/string.hpp"
@@ -194,7 +195,7 @@ Result<Value> Value::at(std::size_t index) const {
     return Value{child, storage_, root_};
 }
 
-Result<std::optional<Value>> Value::find(std::string_view key) const {
+Result<Optional<Value>> Value::find(std::string_view key) const {
     if (!yyjson_is_obj(Access::scalar(*this)))
         return std::unexpected(error(Fault::type, "Expected object"));
     const auto* name = key.empty() ? "" : key.data();
@@ -202,7 +203,7 @@ Result<std::optional<Value>> Value::find(std::string_view key) const {
                       ? static_cast<void*>(yyjson_mut_obj_getn(Access::mutable_node(*this), name, key.size()))
                       : static_cast<void*>(yyjson_obj_getn(Access::scalar(*this), name, key.size()));
     if (!child)
-        return std::nullopt;
+        return Optional<Value>{};
     return Value{child, storage_, root_};
 }
 
@@ -233,7 +234,7 @@ Result<void> Value::members(std::initializer_list<std::string_view> keys) const 
 Result<void> Value::allowed_members(std::initializer_list<std::string_view> keys) const {
     if (kind() != Kind::object)
         return std::unexpected(error(Fault::type, "Expected object"));
-    std::optional<Error> failure;
+    Optional<Error> failure;
     Access::object(*this, [&](auto key, Value child) {
         if (!failure && std::ranges::find(keys, key) == keys.end())
             failure = child.error(Fault::members, "Unsupported member");
@@ -646,7 +647,7 @@ Value Builder::object_validated(Value parent, std::string_view key) {
     return Value{child, Value::Storage::writable, parent.root_};
 }
 
-Value Builder::object_path_validated(Value parent, std::span<const std::string> keys) {
+Value Builder::object_path_validated(Value parent, Span<const std::string> keys) {
     require_writable(parent);
     for (const auto& key : keys) {
         if (parent.kind() != Kind::object)
@@ -875,14 +876,20 @@ private:
         if (!options_.pretty)
             return;
         output_.emplace('\n');
-        for (std::size_t i = 0; i < depth * 2; ++i)
-            output_.emplace(' ');
+        output_.append(depth * 2, ' ');
     }
 
     void string(std::string_view text) {
         constexpr char hex[] = "0123456789abcdef";
         output_.emplace('"');
-        for (unsigned char c : text) {
+        std::size_t plain = 0;
+        for (std::size_t i = 0; i < text.size(); ++i) {
+            const auto c = static_cast<unsigned char>(text[i]);
+            if (c >= 0x20 && c != '"' && c != '\\')
+                continue;
+            if (i > plain)
+                append(text.substr(plain, i - plain));
+            plain = i + 1;
             switch (c) {
             case '"':
                 append("\\\"");
@@ -906,14 +913,14 @@ private:
                 append("\\t");
                 break;
             default:
-                if (c < 0x20) {
-                    append("\\u00");
-                    output_.emplace(hex[c >> 4]);
-                    output_.emplace(hex[c & 15]);
-                } else
-                    output_.emplace(static_cast<char>(c));
+                append("\\u00");
+                output_.emplace(hex[c >> 4]);
+                output_.emplace(hex[c & 15]);
+                break;
             }
         }
+        if (plain < text.size())
+            append(text.substr(plain));
         output_.emplace('"');
     }
 
@@ -938,8 +945,7 @@ private:
                 append(options_.pretty ? ": " : ":");
                 value(member.value, depth + 1);
             }
-            while (members_.size() != base)
-                members_.pop();
+            members_.truncate(base);
             if (end != base)
                 newline(depth);
             output_.emplace('}');
@@ -970,7 +976,7 @@ private:
 
     Array<char> output_;
 
-    Array<Member> members_;
+    InlineArray<Member, 32> members_;
 };
 }
 

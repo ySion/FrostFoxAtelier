@@ -2,7 +2,9 @@
 #include "../helpers.hpp"
 #include "boolean_profile.hpp"
 #include "foundation/map.hpp"
+#include "foundation/optional.hpp"
 #include "foundation/result.hpp"
+#include "foundation/span.hpp"
 #include "procedural/bvh.hpp"
 #include "procedural/evaluator.hpp"
 #include "procedural/instances.hpp"
@@ -26,7 +28,6 @@
 #include <fstream>
 #include <limits>
 #include <numbers>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -291,7 +292,7 @@ void resampled_wall_and_post_paths() {
     take(read_curve_slices(corner, 0, {{.8f, 1.4f}, {1.f, 4.f}}, stone_points, stone_offsets));
     const auto bad_cuts = read_curve_slices(corner, 0, {{0.f, 1.f}, {2.f, 1.f}}, stone_points, stone_offsets);
     require(!bad_cuts && std::ranges::equal(stone_offsets, std::array{0u, 3u, 5u}) &&
-                std::ranges::equal(std::span{stone_points.data(), 3}, cut.positions()) &&
+                std::ranges::equal(Span{stone_points.data(), 3}, cut.positions()) &&
                 stone_points[3] == corner.positions()[1] && stone_points[4] == corner.positions()[2],
             "A failed batch replaced the previous cuts, or the Source projection disagreed with the slice SOP.");
 
@@ -396,7 +397,7 @@ void beveled_stonework() {
     std::array<bool, 6> seen{};
     for (unsigned p = 0; p < cap.count(Layer::primitive); ++p) {
         const auto face = cap.primitive(p);
-        const auto ids = cap.vertex_points().subspan(face.first, face.count);
+        const auto ids = cap.vertex_points().slice(face.first, face.count);
         for (unsigned side = 0; side < seen.size(); ++side) {
             if (!std::ranges::all_of(
                     ids, [&](auto id) { return near(cap.positions()[id][side / 2], side % 2 == 1 ? 1.f : -1.f); }))
@@ -423,7 +424,7 @@ void beveled_stonework() {
     Array<std::uint32_t> corners;
     Array<std::uint32_t> offsets{0};
     for (unsigned p = 0; p < tiles.count(Layer::primitive); ++p) {
-        const auto quad = tiles.vertex_points().subspan(tiles.primitive(p).first, 4);
+        const auto quad = tiles.vertex_points().slice(tiles.primitive(p).first, 4);
         for (const auto j : {1u, 2u}) {
             corners.add(quad[0]);
             corners.add(quad[j]);
@@ -471,7 +472,9 @@ void beveled_stonework() {
 
     const auto finial = take(tube({.radius_top = 0.f, .radius_bottom = 1.f, .height = 2.f, .segments = 4}));
     const auto tip = take(bevel(finial, {.radius = .1f}));
-    require(bounds(tip)->maximum.y < bounds(finial)->maximum.y &&
+    const auto tip_b = bounds(tip);
+    const auto finial_b = bounds(finial);
+    require(tip_b->maximum.y < finial_b->maximum.y &&
                 take(volume_scatter(tip, {.density = 24.f})).count(Layer::point) > 0,
             "Four bevel strips meeting at a pyramid apex left a spike or an open corner.");
     // Off-center apex over a rectangular base: the four inward planes meet in
@@ -485,13 +488,14 @@ void beveled_stonework() {
         for (std::uint32_t p = 0; p < skew_finial.count(Layer::primitive); ++p) {
             const auto face = skew_finial.primitive(p);
             Vector3 center{};
-            for (const auto point : skew_finial.vertex_points().subspan(face.first, face.count))
+            for (const auto point : skew_finial.vertex_points().slice(face.first, face.count))
                 center += skew_finial.positions()[point];
             center /= static_cast<float>(face.count);
             require(spatial.closest(center, 1e-5f).has_value(),
                     "Bevel displaced a main face of the skew stone finial.");
         }
-        const auto height = bounds(stone)->maximum.y;
+        const auto stone_b = bounds(stone);
+        const auto height = stone_b->maximum.y;
         require(height < 1.59f && height > 1.45f && solid_measures(stone).first > 1.5 &&
                     take(volume_scatter(stone, {.density = 24.f})).count(Layer::point) > 0,
                 "Bevel lost the skew finial silhouette or failed to close its split apex.");
@@ -567,7 +571,8 @@ void boolean_modeling() {
                 std::abs(solid_measures(roundtrip).second - 24) < 1e-6,
             "Cut and recombine did not restore the box boundary.");
     const auto loose = take(Geometry::points({{1e30f, 0, 0}}));
-    const auto with_unused = take(Geometry::merge(std::array{a, loose}));
+    const std::array merge_inputs{a, loose};
+    const auto with_unused = take(Geometry::merge(merge_inputs));
     require(std::abs(solid_measures(take(solid_boolean(with_unused, b, intersect))).first - 4) < 1e-6,
             "An unreferenced point reduced the solid's working precision.");
     auto diagonal = a;
@@ -952,7 +957,7 @@ void graph_evaluation() {
 
 void source_and_spatial_contracts() {
     // 1. -0.0f seam welding, Bvh::acquire cache identity, Geometry::set usage preservation, and Scatter min_distance.
-    std::vector<geometry::Vertex> seam_vertices{
+    Array<geometry::Vertex> seam_vertices{
         {{0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}},  {{0.0f, 0.0f, 2.0f}, {0.0f, 1.0f, 0.0f}},
         {{2.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}},  {{2.0f, -0.0f, -0.0f}, {0.0f, 1.0f, 0.0f}},
         {{-0.0f, 0.0f, 2.0f}, {0.0f, 1.0f, 0.0f}}, {{2.0f, 0.0f, 2.0f}, {0.0f, 1.0f, 0.0f}},
@@ -998,7 +1003,7 @@ void source_and_spatial_contracts() {
     Runtime runtime;
     take(register_types(runtime));
     auto files = take(source::engine_sources(source::default_engine_root()));
-    files.push_back({"Source/Wave.source", 1, R"(
+    files.add({"Source/Wave.source", 1, R"(
 class game.Wave : procedural.Node {
     float lift = 0.25f;
     void process([InOut] Array<vector3>& P,
@@ -1025,7 +1030,7 @@ class game.FrameInputs : procedural.Node {
 )"});
     auto program = take(source::Program::create(runtime));
     {
-        auto req = take(program->request({"procedural_test", 1, std::move(files)}));
+        auto req = take(program->request("procedural_test", 1, std::move(files)));
         auto cand = take(source::Program::prepare(req));
         take(program->try_publish(cand));
     }
@@ -1037,8 +1042,8 @@ class game.FrameInputs : procedural.Node {
     const auto remap_type = take(runtime.find_type("procedural.Remap"));
     const auto wave_type = take(runtime.find_type("game.Wave"));
     const auto jitter_ports = take(ports(runtime, jitter_type));
-    require(jitter_ports.inputs == std::vector<std::string>{"input"} &&
-                jitter_ports.outputs == std::vector<std::string>{"output"},
+    require(jitter_ports.inputs == Array<std::string>{"input"} &&
+                jitter_ports.outputs == Array<std::string>{"output"},
             "Source Node ports(runtime, type) failed without Program.");
 
     Meshes resources;
@@ -1375,7 +1380,7 @@ geometry::MeshRef terrain_mesh(std::uint32_t quads, float size) {
         const float z = float(r) * size / float(quads);
         return Vector3{x, std::sin(x * 0.21f) * std::cos(z * 0.13f) * 4.f + 0.05f * x, z};
     };
-    std::vector<geometry::Vertex> vertices;
+    Array<geometry::Vertex> vertices;
     vertices.reserve(std::size_t{quads} * quads * 6);
     for (std::uint32_t r = 0; r < quads; ++r)
         for (std::uint32_t c = 0; c < quads; ++c)
@@ -1383,7 +1388,7 @@ geometry::MeshRef terrain_mesh(std::uint32_t quads, float size) {
                                         std::array{height(r, c + 1), height(r + 1, c), height(r + 1, c + 1)}}) {
                 const auto n = normalized(math::cross(corners[1] - corners[0], corners[2] - corners[0]));
                 for (const auto& p : corners)
-                    vertices.push_back({{p.x, p.y, p.z}, {n.x, n.y, n.z}});
+                    vertices.add({{p.x, p.y, p.z}, {n.x, n.y, n.z}});
             }
     return take(geometry::Mesh::create(std::move(vertices)));
 }
@@ -1391,7 +1396,7 @@ geometry::MeshRef terrain_mesh(std::uint32_t quads, float size) {
 // Median milliseconds of `samples` runs after two warmups; `prepare` runs untimed before each.
 template <class Prepare, class Run>
 double median_ms(int samples, Prepare prepare, Run run) {
-    std::vector<double> times;
+    Array<double> times;
     for (int i = -2; i < samples; ++i) {
         prepare(i);
         const auto start = std::chrono::steady_clock::now();
@@ -1399,7 +1404,7 @@ double median_ms(int samples, Prepare prepare, Run run) {
         const auto elapsed =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         if (i >= 0)
-            times.push_back(elapsed);
+            times.add(elapsed);
     }
     std::ranges::sort(times);
     return times[times.size() / 2];
@@ -1428,10 +1433,10 @@ void profile(const char* path) {
         const std::string prefix = resolution == 32 ? "volume_" : "volume_large_";
         const auto metric = [&](const std::string& key, double value) { number((prefix + key).c_str(), value); };
         const auto volume_surface = take(sphere(5, resolution, resolution));
-        std::vector<double> volume_times;
-        std::vector<double> build_times;
-        std::vector<double> classify_times;
-        std::vector<double> remaining_times;
+        Array<double> volume_times;
+        Array<double> build_times;
+        Array<double> classify_times;
+        Array<double> remaining_times;
         std::uint32_t retained = 0;
         timing::FrameRecord volume_record;
         for (int i = -2; i < samples; ++i) {
@@ -1446,15 +1451,14 @@ void profile(const char* path) {
             retained = result.count(Layer::point);
             volume_record = record;
             if (i >= 0) {
-                volume_times.push_back(std::chrono::duration<double, std::milli>(record.time(phases::volume)).count());
-                build_times.push_back(std::chrono::duration<double, std::milli>(record.time(phases::build)).count());
-                classify_times.push_back(
-                    std::chrono::duration<double, std::milli>(record.time(phases::classify)).count());
+                volume_times.add(std::chrono::duration<double, std::milli>(record.time(phases::volume)).count());
+                build_times.add(std::chrono::duration<double, std::milli>(record.time(phases::build)).count());
+                classify_times.add(std::chrono::duration<double, std::milli>(record.time(phases::classify)).count());
                 // Subtract within each sample; a difference of medians is not a median remainder.
-                remaining_times.push_back(std::chrono::duration<double, std::milli>(record.time(phases::volume) -
-                                                                                    record.time(phases::build) -
-                                                                                    record.time(phases::classify))
-                                              .count());
+                remaining_times.add(std::chrono::duration<double, std::milli>(record.time(phases::volume) -
+                                                                              record.time(phases::build) -
+                                                                              record.time(phases::classify))
+                                        .count());
             }
         }
         std::ranges::sort(volume_times);
@@ -1512,7 +1516,7 @@ void profile(const char* path) {
         auto source_prog = take(source::Program::create(source_rt));
         {
             auto req = take(source_prog->request(
-                {"profile_procedural", 1, take(source::engine_sources(source::default_engine_root()))}));
+                "profile_procedural", 1, take(source::engine_sources(source::default_engine_root()))));
             auto cand = take(source::Program::prepare(req));
             take(source_prog->try_publish(cand));
         }
@@ -1568,7 +1572,7 @@ void profile(const char* path) {
 
     const auto terrain = terrain_mesh(128, 64);
     const auto terrain_surface = import_mesh(*terrain);
-    std::optional<Bvh> bvh;
+    Optional<Bvh> bvh;
     number("bvh_build_ms", median_ms(samples, [](int) {}, [&] { bvh.emplace(take(Bvh::build(terrain_surface))); }));
     number("bvh_triangles", terrain_surface.count(Layer::primitive));
     number("bvh_rays_ms",
@@ -1630,7 +1634,7 @@ void profile(const char* path) {
     take(connect(runtime, graph, merged.id(), 0, copied.id(), 0));
     take(set_display(runtime, graph, copied.id()));
 
-    std::optional<Evaluator> evaluator;
+    Optional<Evaluator> evaluator;
     number("cold_ms", median_ms(
                           samples, [&](int) { evaluator.emplace(runtime, graph_root, resources); },
                           [&] { take(evaluator->evaluate(true)); }));
@@ -1801,7 +1805,7 @@ void generative_modeling_and_l3_contracts() {
         take(register_types(runtime));
         auto program = take(source::Program::create(runtime));
         auto files = take(source::engine_sources(source::default_engine_root()));
-        files.push_back({"Source/L3Test.source", 1, R"(
+        files.add({"Source/L3Test.source", 1, R"(
 class test.MultiBuilder : procedural.Node {
     float height = 1.5f;
 
@@ -1904,7 +1908,7 @@ class test.BadWarpedQuad : procedural.Node {
     }
 }
 )"});
-        const auto req = take(program->request({"l3_test", 1, std::move(files)}));
+        const auto req = take(program->request("l3_test", 1, std::move(files)));
         auto cand = take(source::Program::prepare(req));
         take(program->try_publish(cand));
 
@@ -2073,7 +2077,7 @@ void asset_subgraph_and_cache_pool_contracts() {
             "Unconnected AssetNode input leaked standalone preview_fallback instead of empty Geometry.");
 
     // 2. Enforce exact max_subgraph_depth = 8 boundary: 8 AssetNode hops succeed, 9 AssetNode hops reject.
-    std::vector<ObjectRoot> chain_graphs;
+    Array<ObjectRoot> chain_graphs;
     for (int d = 0; d < 10; ++d) {
         auto g = take(runtime.create(type<Graph>(runtime)));
         const auto n = take(add_node(runtime, g.id(), d == 9 ? type<Box>(runtime) : type<AssetNode>(runtime)));
@@ -2084,7 +2088,7 @@ void asset_subgraph_and_cache_pool_contracts() {
                 runtime, prev_nodes.nodes().front(),
                 {"project/depth_" + std::to_string(d), {{}, {}, {"output"}}, g, {}, {n.id()}, {}, 1}));
         }
-        chain_graphs.push_back(std::move(g));
+        chain_graphs.add(std::move(g));
     }
     Evaluator ok_depth_eval{runtime, chain_graphs[1], resources, nullptr, shared_pool};
     take(ok_depth_eval.evaluate());
@@ -2149,9 +2153,10 @@ void parametric_primitives_and_alignment_contracts() {
     // 3. Generalized Tube: Cone (radius_top = 0) and 180-deg Hollow Barrel Vault:
     const auto cone = take(tube(
         {.radius_top = 0.f, .radius_bottom = 3.f, .height = 4.f, .base_on_ground = true, .segments = 32, .rows = 2}));
+    const auto cone_b = bounds(cone);
     const double expected_cone_vol = (1.0 / 3.0) * (0.5 * 32.0 * 9.0 * std::sin(2.0 * std::numbers::pi / 32.0)) * 4.0;
     require(
-        bounds(cone)->minimum.y == 0.f && std::abs(solid_measures(cone).first - expected_cone_vol) < 1e-3 &&
+        cone_b->minimum.y == 0.f && std::abs(solid_measures(cone).first - expected_cone_vol) < 1e-3 &&
             take(volume_scatter(cone, {.density = 4.f, .seed = 3, .cell_size = 0.5f})).count(Layer::point) > 10,
         "Cone Tube (radius_top = 0) failed base_on_ground, analytic volume or VolumeScatter closed-manifold check.");
 
@@ -2171,9 +2176,10 @@ void parametric_primitives_and_alignment_contracts() {
     // 4. Wedge: symmetric gabled roof (0.5) and right-angle ramp (0.0):
     const auto roof =
         take(wedge({.size = {4.f, 3.f, 6.f}, .peak_ratio = 0.5f, .base_on_ground = true, .divisions_z = 2}));
+    const auto roof_b = bounds(roof);
     const auto ramp =
         take(wedge({.size = {4.f, 3.f, 6.f}, .peak_ratio = 0.0f, .base_on_ground = true, .divisions_z = 1}));
-    require(bounds(roof)->minimum.y == 0.f &&
+    require(roof_b->minimum.y == 0.f &&
                 std::abs(solid_measures(take(solid_boolean(roof, {}, BooleanOperation::unite))).first - 36.0) < 1e-4 &&
                 std::abs(solid_measures(take(solid_boolean(ramp, {}, BooleanOperation::unite))).first - 36.0) < 1e-4,
             "Wedge gabled roof or right-angle ramp failed watertight manifold volume check.");
@@ -2278,9 +2284,10 @@ void parametric_primitives_and_alignment_contracts() {
                                   .base_on_ground = true,
                                   .major_segments = 32,
                                   .minor_segments = 16}));
+    const auto ring_b = bounds(ring);
     const double expected_ring_vol = 0.5 * 32.0 * 16.0 * 2.0 * 0.25 * std::sin(2.0 * std::numbers::pi / 32.0) *
                                      std::sin(2.0 * std::numbers::pi / 16.0);
-    require(near(bounds(ring)->minimum.y, 0.f, 1e-5f) &&
+    require(near(ring_b->minimum.y, 0.f, 1e-5f) &&
                 std::abs(solid_measures(take(solid_boolean(ring, {}, BooleanOperation::unite))).first -
                          expected_ring_vol) < 1e-4,
             "Full Torus failed base_on_ground or closed-manifold Boolean volume check.");
@@ -2308,7 +2315,7 @@ void source_sop_batch1_contracts() {
     Runtime runtime;
     take(register_types(runtime));
     auto files = take(source::engine_sources(source::default_engine_root()));
-    files.push_back({"Source/Batch1Probe.source", 1, R"(
+    files.add({"Source/Batch1Probe.source", 1, R"(
 void test_orient_contracts(const vector3& up, const vector3& forward, const vector3& euler_deg, const vector3& axis,
                            float rad, quaternion& up_frame, quaternion& euler_q, quaternion& axis_q,
                            quaternion& between_q) {
@@ -2330,7 +2337,7 @@ void test_remap_contracts(float val, float in_a, float in_b, float out_a, float 
 }
 )"});
     auto program = take(source::Program::create(runtime));
-    auto cand = take(source::Program::prepare(take(program->request({"batch1_sop", 1, std::move(files)}))));
+    auto cand = take(source::Program::prepare(take(program->request("batch1_sop", 1, std::move(files)))));
     take(program->try_publish(cand));
 
     auto eval_orient = take(take(program->pin("test_orient_contracts"))
@@ -2429,9 +2436,9 @@ void source_sop_batch2_contracts() {
     // 1. Compile-time enforcement of read-only self.<String> invariants.
     const auto expect_compile_reject = [&](std::string_view snippet, const char* label) {
         auto prog = take(source::Program::create(runtime));
-        std::vector<source::SourceFile> bad;
-        bad.push_back({"bad.source", 1, std::string{snippet}});
-        auto req = prog->request({"bad_mod", 1, std::move(bad)});
+        Array<source::SourceFile> bad;
+        bad.add({"bad.source", 1, std::string{snippet}});
+        auto req = prog->request("bad_mod", 1, std::move(bad));
         if (req) {
             auto prep = source::Program::prepare(std::move(*req));
             require(!prep.has_value(), label);
@@ -2474,7 +2481,7 @@ class test.ParallelSelfStr : procedural.Node {
 
     // 2. End-to-end topology queries, polyline_length, dynamic self.<String> L3 column naming, and RailPanel vertex order.
     auto files = take(source::engine_sources(source::default_engine_root()));
-    files.push_back({"batch2_sop.source", 1, R"(
+    files.add({"batch2_sop.source", 1, R"(
 uint test.hash_label(const String& s) {
     uint acc = s.size();
     for (uint i = 0u; i < s.size(); i += 1u) {
@@ -2556,7 +2563,7 @@ bool test.probe_closest(const procedural.Spatial& spatial,
 }
 )"});
     auto program = take(source::Program::create(runtime));
-    auto cand = take(source::Program::prepare(take(program->request({"batch2_sop", 1, std::move(files)}))));
+    auto cand = take(source::Program::prepare(take(program->request("batch2_sop", 1, std::move(files)))));
     take(program->try_publish(cand));
 
     // Build mixed Geometry: primitive 0 is a triangle polygon (3 corners), primitive 1 is a bent polyline
@@ -2626,8 +2633,8 @@ bool test.probe_closest(const procedural.Spatial& spatial,
     auto reserved_p = String::literal<"P">();
     take(runtime.write(probe.id(), attr_field, ValueInput{string_type, &reserved_p}));
     take(evaluator.evaluate());
-    require(evaluator.output() == nullptr && evaluator.display_error() &&
-                evaluator.display_error()->message.contains("Point attribute P is set by"),
+    const auto p_err = evaluator.display_error();
+    require(evaluator.output() == nullptr && p_err && p_err->message.contains("Point attribute P is set by"),
             "set_output_column allowed overwriting reserved attribute P.");
 
     // Primary-stream COW SOP declaring [Port] const Geometry& input alongside [Out] shares port 0 ("input") cleanly:
@@ -2748,7 +2755,8 @@ bool test.probe_closest(const procedural.Spatial& spatial,
         {{in_a.id(), ring_a_geo, 3u, 0u}, {in_b.id(), ring_b_geo, 4u, 0u}}};
     rp_eval.set_external_inputs(ring_inputs);
     take(rp_eval.evaluate());
-    require(rp_eval.output() == nullptr && rp_eval.display_error() && rp_eval.display_error()->message.contains("open"),
+    const auto rp_err = rp_eval.display_error();
+    require(rp_eval.output() == nullptr && rp_err && rp_err->message.contains("open"),
             "RailPanel failed to reject closed polyline loops.");
 }
 
@@ -2758,7 +2766,7 @@ void source_sop_batch3_contracts() {
     Meshes resources;
 
     auto files = take(source::engine_sources(source::default_engine_root()));
-    files.push_back({"Source/Procedural/Batch3Diag.source", 1, R"(
+    files.add({"Source/Procedural/Batch3Diag.source", 1, R"(
 class test.RunOverFailSop : procedural.Node {
     [RunOver]
     procedural.Layer layer = procedural.Layer::primitive;
@@ -2790,7 +2798,7 @@ class test.BadSliceSop : procedural.Node {
 )"});
 
     auto program = take(source::Program::create(runtime));
-    auto candidate = take(source::Program::prepare(take(program->request({"Batch3Procedural", 1, std::move(files)}))));
+    auto candidate = take(source::Program::prepare(take(program->request("Batch3Procedural", 1, std::move(files)))));
     take(program->try_publish(candidate));
 
     const auto graph_type = take(runtime.native_type<procedural::Graph>());
@@ -2869,7 +2877,7 @@ void source_sop_batch4_contracts() {
     Meshes resources;
 
     auto files = take(source::engine_sources(source::default_engine_root()));
-    files.push_back({"Source/Procedural/Batch4Profile.source", 1, R"(
+    files.add({"Source/Procedural/Batch4Profile.source", 1, R"(
 const Array<vector3> test.QUAD_PTS = {
     vector3(-0.5f, 0.0f, -0.5f),
     vector3( 0.5f, 0.0f, -0.5f),
@@ -2899,7 +2907,7 @@ class test.ConstQuadSop : procedural.Node {
 )"});
 
     auto program = take(source::Program::create(runtime));
-    auto candidate = take(source::Program::prepare(take(program->request({"Batch4Procedural", 1, std::move(files)}))));
+    auto candidate = take(source::Program::prepare(take(program->request("Batch4Procedural", 1, std::move(files)))));
     take(program->try_publish(candidate));
 
     // Verify engine/procedural stdlib functions are published in Program::functions() with parallel_safe & DESC:

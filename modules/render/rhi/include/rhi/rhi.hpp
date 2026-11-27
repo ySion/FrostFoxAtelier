@@ -1,5 +1,8 @@
 #pragma once
 
+#include "foundation/optional.hpp"
+#include "foundation/span.hpp"
+
 #include <gfx.h>
 
 #include <array>
@@ -7,8 +10,6 @@
 #include <expected>
 #include <filesystem>
 #include <memory>
-#include <optional>
-#include <span>
 #include <string>
 
 namespace atelier::rhi {
@@ -216,7 +217,7 @@ public:
 
     // Empty while the job runs; then its Pipeline or its failure, exactly once.
     // A job cancelled by close returns ErrorCode::closed.
-    [[nodiscard]] std::optional<Result<Pipeline>> take(PipelineJob& job);
+    [[nodiscard]] Optional<Result<Pipeline>> take(PipelineJob& job);
 
     [[nodiscard]] Result<TargetInfo> target() const;
 
@@ -310,9 +311,9 @@ public:
 
     [[nodiscard]] const CommandTraceInfo& info() const noexcept;
 
-    [[nodiscard]] std::span<const RecordedCommand> commands() const noexcept;
+    [[nodiscard]] Span<const RecordedCommand> commands() const noexcept;
 
-    [[nodiscard]] std::span<const RecordedBinding> bindings() const noexcept;
+    [[nodiscard]] Span<const RecordedBinding> bindings() const noexcept;
 
 private:
     friend class CommandTraceScope;

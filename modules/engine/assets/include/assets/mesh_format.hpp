@@ -104,7 +104,7 @@ public:
 
     void count(std::size_t value) { u32(static_cast<std::uint32_t>(value)); }
 
-    void floats(std::span<const float> values) {
+    void floats(Span<const float> values) {
         for (float value : values)
             u32(std::bit_cast<std::uint32_t>(value));
     }
@@ -152,7 +152,7 @@ public:
         return *size;
     }
 
-    Result<void> floats(std::span<float> values) {
+    Result<void> floats(Span<float> values) {
         for (float& value : values) {
             ATELIER_TRY_BIND(bits, u32());
             value = std::bit_cast<float>(*bits);
@@ -277,7 +277,7 @@ inline Result<MeshAsset> decode(std::string_view bytes) {
     ATELIER_TRY_BIND(vertex_count, in.count<geometry::Vertex>(12 * 4));
     if (!*vertex_count || *vertex_count % 3 || *vertex_count > std::numeric_limits<int>::max())
         return std::unexpected(Error{ErrorCode::invalid_storage, "Mesh snapshot requires a nonempty triangle list."});
-    std::vector<geometry::Vertex> vertices(*vertex_count);
+    Array<geometry::Vertex> vertices(*vertex_count);
     for (auto& vertex : vertices) {
         ATELIER_TRY(in.floats(vertex.position));
         ATELIER_TRY(in.floats(vertex.normal));
@@ -287,7 +287,7 @@ inline Result<MeshAsset> decode(std::string_view bytes) {
     ATELIER_TRY_BIND(mask_count, in.count<std::uint8_t>(1));
     if (*mask_count != *vertex_count / 3)
         return std::unexpected(Error{ErrorCode::invalid_storage, "Mesh snapshot requires one edge mask per triangle."});
-    std::vector<std::uint8_t> masks(*mask_count);
+    Array<std::uint8_t> masks(*mask_count);
     for (auto& mask : masks) {
         ATELIER_TRY_BIND(value, in.u8());
         mask = *value;
@@ -295,22 +295,22 @@ inline Result<MeshAsset> decode(std::string_view bytes) {
     ATELIER_TRY_BIND(slot_count, in.count<geometry::MaterialSlot>(4));
     if (!*slot_count)
         return std::unexpected(Error{ErrorCode::invalid_storage, "Mesh snapshot requires material slots."});
-    std::vector<geometry::MaterialSlot> slots;
+    Array<geometry::MaterialSlot> slots;
     slots.reserve(*slot_count);
     for (std::size_t i = 0; i < *slot_count; ++i) {
         ATELIER_TRY_BIND(slot, in.text());
-        slots.push_back({std::move(*slot)});
+        slots.add({std::move(*slot)});
     }
     ATELIER_TRY_BIND(part_count, in.count<geometry::MeshPart>(3 * 4));
     if (!*part_count || *part_count > *vertex_count / 3)
         return std::unexpected(Error{ErrorCode::invalid_storage, "Mesh snapshot has an invalid part count."});
-    std::vector<geometry::MeshPart> parts;
+    Array<geometry::MeshPart> parts;
     parts.reserve(*part_count);
     for (std::size_t i = 0; i < *part_count; ++i) {
         ATELIER_TRY_BIND(first, in.u32());
         ATELIER_TRY_BIND(count, in.u32());
         ATELIER_TRY_BIND(material, in.u32());
-        parts.push_back({*first, *count, *material});
+        parts.add({*first, *count, *material});
     }
     ATELIER_TRY_BIND(default_count, in.count<SlotMaterial>(2 * 4));
     if (*default_count > *slot_count)
@@ -319,7 +319,7 @@ inline Result<MeshAsset> decode(std::string_view bytes) {
     for (std::size_t i = 0; i < *default_count; ++i) {
         ATELIER_TRY_BIND(slot, in.text());
         ATELIER_TRY_BIND(key, in.text());
-        asset.materials.push_back({std::move(*slot), std::move(*key)});
+        asset.materials.add({std::move(*slot), std::move(*key)});
     }
     ATELIER_TRY(in.finish());
     auto mesh =

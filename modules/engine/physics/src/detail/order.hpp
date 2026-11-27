@@ -1,10 +1,9 @@
 #pragma once
 
+#include "foundation/array.hpp"
 #include "foundation/map.hpp"
 #include "runtime/runtime.hpp"
 #include <algorithm>
-#include <span>
-#include <vector>
 
 namespace atelier::physics::detail {
 // A lookup table's stable traversal order, independent of its hash policy.
@@ -17,13 +16,13 @@ public:
     // Erasure may invalidate while a caller walks this snapshot; get() must not be
     // called again during that walk. No snapshot survives another get() after edits.
     template <class T>
-    std::span<const ObjectId> get(const Map<ObjectId, T>& entries) {
+    Span<const ObjectId> get(const Map<ObjectId, T>& entries) {
         if (stale_) {
             keys_.clear();
             keys_.reserve(entries.size());
             for (const auto [id, entry] : entries) {
                 (void)entry;
-                keys_.push_back(id);
+                keys_.add(id);
             }
             std::ranges::sort(keys_,
                               [&](ObjectId a, ObjectId b) { return entries.at(a).revision < entries.at(b).revision; });
@@ -33,7 +32,7 @@ public:
     }
 
 private:
-    std::vector<ObjectId> keys_;
+    Array<ObjectId> keys_;
 
     bool stale_{true};
 };

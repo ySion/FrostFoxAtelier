@@ -21,11 +21,11 @@
                     }
                     return value;
                 };
-                std::vector<detail::TextKey> visible_text;
+                Array<detail::TextKey> visible_text;
                 const auto cache_line=[&](std::size_t row) {
                     const detail::TextKey text_key{key,row+1,false};
                     self.text.set(text_key,row_text(row),appearance.font,false);
-                    visible_text.push_back(text_key);
+                    visible_text.add(text_key);
                     return text_key;
                 };
                 const auto caret_key=cache_line(caret_row);
@@ -62,7 +62,7 @@
                     const auto& paragraph=*paragraph_result;
                     const auto x=body.x-static_cast<float>(state.scroll_x)*scale,y=body.y+(row*line_height-static_cast<float>(state.scroll))*scale;
                     const auto start=buffer.line_start(row),end=start+static_cast<std::uint32_t>(buffer.line(row).size());
-                    code.lines.push_back({row,start,paragraph,x,y});
+                    code.lines.add({row,start,paragraph,x,y});
                     if (paint && row==caret_row && editing) quad({body.x,y,body.width,line_height*scale},body_clip,appearance.tree_alternate);
                     if (paint && first!=last && first<=end && last>=start && !composition) {
                         ATELIER_TRY_BIND(ranges,paragraph->selection(std::max(first,start)-start,std::min(last,end)-start));
@@ -75,7 +75,7 @@
                             static_cast<float>(body_clip.right-body_clip.left),static_cast<float>(body_clip.bottom-body_clip.top)})));
                         if (raster->coverage) quad({x+raster->left,y+raster->top,static_cast<float>(raster->coverage->width),static_cast<float>(raster->coverage->height)},body_clip,appearance.foreground,raster->coverage);
                     }
-                    self.text.set(number_key,std::to_wstring(row+1),appearance.font,false,TextAlign::right);visible_text.push_back(number_key);
+                    self.text.set(number_key,std::to_wstring(row+1),appearance.font,false,TextAlign::right);visible_text.add(number_key);
                     if (paint) {
                         ATELIER_TRY_BIND(numbers,self.text.raster(number_key,margin/scale-8,scale));
                         if (numbers->coverage) quad({bounds.x+numbers->left,y+numbers->top,static_cast<float>(numbers->coverage->width),static_cast<float>(numbers->coverage->height)},
@@ -95,9 +95,9 @@
                         }
                     }
                 }
-                output->code_editors.push_back(std::move(code));
+                output->code_editors.add(std::move(code));
                 prepare_scrollbar({key,{bounds.x+bounds.width-gutter,body.y,appearance.scrollbar_width*scale,body.height},{},{},{},{},clip,state.scroll_limit,state.scroll,body.height/scale,false},appearance,enabled);
                 prepare_scrollbar({key,{body.x,body.y+body.height+scale,body.width,appearance.scrollbar_width*scale},{},{},{},{},clip,state.scroll_x_limit,state.scroll_x,body.width/scale,true},appearance,enabled);
-                std::sort(visible_text.begin(),visible_text.end());visible_text.erase(std::unique(visible_text.begin(),visible_text.end()),visible_text.end());
+                std::sort(visible_text.begin(),visible_text.end());visible_text.deduplicate();
                 for (auto previous:state.table_text) if (!std::binary_search(visible_text.begin(),visible_text.end(),previous)) self.text.erase(previous);
                 state.table_text=std::move(visible_text);

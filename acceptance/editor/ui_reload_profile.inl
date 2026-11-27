@@ -9,7 +9,7 @@ atelier::Result<void> profile_accepted_dispatch(atelier::editor::Workspace& work
     ui::ControlKey next_key = 1000;
     const std::array<KeyBinding, 1> shelf_keys{{{"shelf", 11}}}, group_keys{{{"title", 12}}};
     const auto tools = [](ui::ControlKey key, std::wstring title) {
-        return ItemList{std::make_shared<const std::vector<Item>>(
+        return ItemList{std::make_shared<const Array<Item>>(
             std::initializer_list<Item>{{key, {std::move(title), 1., ActionBinding{key}}}})};
     };
     std::array<InputValue, 12> inputs{false,
@@ -177,10 +177,10 @@ atelier::Result<void> profile_editor_ui_reload(Application& app, const std::file
            "detect_ms,debounce_ms,read_ms,compile_ms,rebind_ms,append_updates_ms,other_to_commit_ms,"
            "commit_to_accept_begin_ms,ui_accept_ms,total_ms,debounce_accepted,accepted_gap_ms,compile_input_gap_ms,ui_lower_ns,stage_ms,worker_ms,result_wait_ms,install_ms,worker_inputs,worker_old_frames\n";
     frames << "trial,step,input_from_save_ms,accepted_id,accepted_from_save_ms,input_gap_ms,accepted_gap_ms,step_ms";
-    std::vector<const timing::Marker*> phases;
+    Array<const timing::Marker*> phases;
     for (const auto* phase : timing::catalog())
         if (phase->parent() == &timing::frame || phase == &renderer::phases::present) {
-            phases.push_back(phase);
+            phases.add(phase);
             frames << ',' << phase->key() << "_ms";
         }
     frames << '\n';
@@ -219,7 +219,7 @@ atelier::Result<void> profile_editor_ui_reload(Application& app, const std::file
             next.insert(at + function.find("return") + std::string_view("return").size(), "\t/* tool shelf */\n    ");
         const auto revision = workspace.ui_revision() + 1;
         ATELIER_TRY_BIND(old_height, height_px());
-        std::vector<Step> steps;
+        Array<Step> steps;
         steps.reserve(128);
         const auto write_begin = Clock::now();
         ATELIER_TRY(editor::write_file(author, next));
@@ -228,7 +228,7 @@ atelier::Result<void> profile_editor_ui_reload(Application& app, const std::file
             if (Clock::now() - saved >= std::chrono::seconds(15))
                 return command_error("No accepted frame for the saved UI revision.");
             ATELIER_TRY_BIND(sample, step());
-            const auto& current = steps.emplace_back(std::move(*sample));
+            const auto& current = steps.emplace(std::move(*sample));
             if (!current.accepted_id)
                 continue;
             ATELIER_TRY_BIND(pixels, height_px());
@@ -245,7 +245,7 @@ atelier::Result<void> profile_editor_ui_reload(Application& app, const std::file
         const auto accepted_dpi = app.presented()->drawing->dpi_scale;
         // The interval containing compilation ends when the window can poll input again.
         ATELIER_TRY_BIND(following, step());
-        steps.push_back(std::move(*following));
+        steps.add(std::move(*following));
         const auto containing = [&](Clock::time_point point) {
             return std::ranges::find_if(steps, [&](const auto& s) {
                 return s.frame.begin <= point && point <= s.frame.begin + s.frame.time(timing::frame);

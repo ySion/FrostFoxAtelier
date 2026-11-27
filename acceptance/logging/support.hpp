@@ -64,8 +64,7 @@ inline log::ReadBatch drain(log::Reader& reader, bool final = true,
     log::ReadBatch collected;
     for (unsigned polls = 0; polls != 20000; ++polls) {
         auto next = reader.poll(budget);
-        for (auto& record : next.records)
-            collected.records.push_back(std::move(record));
+        collected.records.append(std::move(next.records));
         collected.status = next.status;
         if (next.run)
             collected.run = std::move(next.run);

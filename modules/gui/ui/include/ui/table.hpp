@@ -1,7 +1,7 @@
 #pragma once
 
+#include "foundation/array.hpp"
 #include "ui/style.hpp"
-#include <vector>
 
 namespace atelier::ui {
 
@@ -82,7 +82,7 @@ struct TableCell {
 struct TableRow {
     TableKey key{};
 
-    std::vector<TableCell> cells; // Same order and count as columns.
+    Array<TableCell> cells; // Same order and count as columns.
 
     bool enabled{true};
 
@@ -93,9 +93,9 @@ struct TableRow {
 // order, business values, selection and committed column widths. Session owns
 // scrolling, focus and an in-flight column preview; it never sorts cell text.
 struct TableData {
-    std::vector<TableColumn> columns;
+    Array<TableColumn> columns;
 
-    std::vector<TableRow> rows;
+    Array<TableRow> rows;
 
     TableSort sort;
 

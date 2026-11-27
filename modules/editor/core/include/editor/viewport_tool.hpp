@@ -3,16 +3,16 @@
 #include "editor/camera.hpp"
 #include "editor/operator_parameters.hpp"
 #include "editor/session.hpp"
+#include "foundation/array.hpp"
+#include "foundation/optional.hpp"
+#include "foundation/span.hpp"
 #include "geometry/mesh.hpp"
 #include "material/program_resources.hpp"
 #include "renderer/overlay.hpp"
 #include "ui/session.hpp"
 
 #include <memory>
-#include <optional>
-#include <span>
 #include <string>
-#include <vector>
 
 namespace atelier::editor {
 // XYZ Euler angles in degrees, applied X then Y then Z (Houdini "Rx Ry Rz").
@@ -31,7 +31,7 @@ struct ViewportScene {
 
         geometry::MeshRef geometry;
 
-        std::shared_ptr<const std::vector<std::uint32_t>> material_slots;
+        std::shared_ptr<const Array<std::uint32_t>> material_slots;
     };
 
     struct Locator {
@@ -46,11 +46,11 @@ struct ViewportScene {
 
     std::uint64_t scene_identity{};
 
-    std::vector<Mesh> meshes;
+    Array<Mesh> meshes;
 
-    std::vector<material::ProgramSurfaceRef> materials;
+    Array<material::ProgramSurfaceRef> materials;
 
-    std::vector<Locator> locators;
+    Array<Locator> locators;
 };
 
 // Camera and owned geometry for one accepted viewport, in physical pixels.
@@ -87,7 +87,7 @@ struct ViewportView {
     bool contains(float x, float y) const noexcept;
 
     // Screen position; empty outside the camera's near/far depth interval.
-    std::optional<math::Vector2> project(math::Vector3) const noexcept;
+    Optional<math::Vector2> project(math::Vector3) const noexcept;
 
     struct Ray {
         math::Vector3 origin;
@@ -124,18 +124,18 @@ public:
 
     TransformTool displayed_tool(ToolSettings) const noexcept;
 
-    Result<void> snap_selection(Session&, std::span<const ObjectId>, ToolSettings,
-                                std::optional<math::Vector3> destination = {});
+    Result<void> snap_selection(Session&, Span<const ObjectId>, ToolSettings,
+                                Optional<math::Vector3> destination = {});
 
-    Result<void> cursor_to_selection(const Session&, std::span<const ObjectId>);
+    Result<void> cursor_to_selection(const Session&, Span<const ObjectId>);
 
     Result<void> place_duplicates(Session&, const ViewportView&, ToolSettings, math::Vector2 pointer);
 
     void cursor_to_grid(ToolSettings) noexcept;
 
-    Result<void> select_all(Session&, std::span<const ObjectId>, SelectAll);
+    Result<void> select_all(Session&, Span<const ObjectId>, SelectAll);
 
-    Result<void> clear(Session& session, std::span<const ObjectId> entities, TransformChannel channel) {
+    Result<void> clear(Session& session, Span<const ObjectId> entities, TransformChannel channel) {
         return clear_channel(session, entities,
                              channel == TransformChannel::location   ? Operation::move
                              : channel == TransformChannel::rotation ? Operation::rotate
@@ -163,12 +163,12 @@ public:
     void forget(const Session&) noexcept;
 
     // Locators come from the same owned group as scene rendering.
-    void overlay(const Session&, const ViewportView&, ToolSettings, std::vector<renderer::OverlayShape>&) const;
+    void overlay(const Session&, const ViewportView&, ToolSettings, Array<renderer::OverlayShape>&) const;
 
     // Topmost Entity under a physical-pixel point in view.scene. No live extraction.
-    std::optional<ObjectId> pick(const Session&, const ViewportView&, float x, float y) const;
+    Optional<ObjectId> pick(const Session&, const ViewportView&, float x, float y) const;
 
-    std::vector<ObjectId> pick_box(const Session&, const ViewportView&, ui::Rect) const;
+    Array<ObjectId> pick_box(const Session&, const ViewportView&, ui::Rect) const;
 
     enum class Handle : std::uint8_t {
         none,
@@ -195,9 +195,9 @@ private:
     enum class Operation : std::uint8_t { move, rotate, scale };
 
     struct Targets {
-        std::vector<ObjectId> entities;
+        Array<ObjectId> entities;
 
-        std::vector<world::Trs> transforms;
+        Array<world::Trs> transforms;
 
         world::Trs active_frame;
 
@@ -221,9 +221,9 @@ private:
 
         std::uint64_t session{};
 
-        std::vector<ObjectId> entities;
+        Array<ObjectId> entities;
 
-        std::vector<world::Trs> before;
+        Array<world::Trs> before;
 
         world::Trs active_frame;
 
@@ -260,9 +260,9 @@ private:
         ui::PointerButton button{ui::PointerButton::primary};
     };
 
-    std::optional<Gesture> gesture_;
+    Optional<Gesture> gesture_;
 
-    std::optional<Marquee> marquee_;
+    Optional<Marquee> marquee_;
 
     Handle hover_{Handle::none};
 
@@ -270,11 +270,11 @@ private:
 
     std::uint64_t next_session_{(1ULL << 62) + 1};
 
-    static Result<void> preview_world(Session&, std::uint64_t, std::span<const ObjectId>, std::span<const world::Trs>,
+    static Result<void> preview_world(Session&, std::uint64_t, Span<const ObjectId>, Span<const world::Trs>,
                                       bool local_scale = false);
 
-    static std::optional<Targets> targets(const Session&, std::span<const ObjectId>, ObjectId active, PivotMode,
-                                          math::Vector3 cursor);
+    static Optional<Targets> targets(const Session&, Span<const ObjectId>, ObjectId active, PivotMode,
+                                     math::Vector3 cursor);
 
     struct Hit {
         ObjectId entity;
@@ -284,7 +284,7 @@ private:
         math::Vector3 normal{0, 1, 0};
     };
 
-    static std::optional<Hit> trace(const ViewportView&, float x, float y, bool locators);
+    static Optional<Hit> trace(const ViewportView&, float x, float y, bool locators);
 
     Result<void> place_cursor(const ViewportView&, math::Vector2, ToolSettings, bool control);
 
@@ -297,12 +297,12 @@ private:
 
     Result<void> finish(Session&);
 
-    Result<void> clear_channel(Session&, std::span<const ObjectId>, Operation);
+    Result<void> clear_channel(Session&, Span<const ObjectId>, Operation);
 
     Result<void> select_click(Session&, const ViewportView&, math::Vector2, ToolSettings, bool shift, bool control);
 
     Result<void> select_box(Session&, const ViewportView&, ToolSettings, const Marquee&);
 
-    static Result<void> combine(Session&, std::span<const ObjectId> hits, ObjectId active, SelectMode);
+    static Result<void> combine(Session&, Span<const ObjectId> hits, ObjectId active, SelectMode);
 };
 }

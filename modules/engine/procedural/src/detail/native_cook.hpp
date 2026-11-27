@@ -1,10 +1,10 @@
 #pragma once
 
+#include "foundation/span.hpp"
 #include "math/vector.hpp"
 
 #include <array>
 #include <memory>
-#include <span>
 #include <utility>
 
 namespace atelier::procedural {
@@ -52,12 +52,12 @@ struct NativeCook {
 
     const Node* active_node{};
 
-    std::span<Geometry> outputs{};
+    Span<Geometry> outputs{};
 
     bool uses_primary_stream{};
 
     NativeCook(std::shared_ptr<const BooleanStats>& stats, BooleanPreparationCache& cache, std::size_t bytes,
-               const Node* node = nullptr, std::span<Geometry> out_span = {}, bool primary_stream = false) noexcept
+               const Node* node = nullptr, Span<Geometry> out_span = {}, bool primary_stream = false) noexcept
         : boolean_stats(stats), preparation(cache), budget(bytes), active_node(node), outputs(out_span),
           uses_primary_stream(primary_stream), previous(std::exchange(current, this)) {}
 

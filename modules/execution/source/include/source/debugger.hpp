@@ -43,7 +43,7 @@ struct DebugValue {
 
     ParameterPassing passing{ParameterPassing::value};
 
-    std::optional<Scalar> scalar;
+    Optional<Scalar> scalar;
 
     ObjectId object;
 
@@ -53,7 +53,7 @@ struct DebugValue {
 
     std::string text;
 
-    std::vector<DebugValue> children;
+    Array<DebugValue> children;
 
     std::size_t total_children{};
 
@@ -65,7 +65,7 @@ struct DebugFrame {
 
     DiagnosticLocation location;
 
-    std::vector<DebugValue> locals;
+    Array<DebugValue> locals;
 };
 
 struct DebugSnapshot {
@@ -77,9 +77,9 @@ struct DebugSnapshot {
 
     DebugStopReason reason{DebugStopReason::entry};
 
-    std::vector<DebugFrame> frames; // Innermost first. All data is owned; no live addresses or roots.
+    Array<DebugFrame> frames; // Innermost first. All data is owned; no live addresses or roots.
 
-    std::optional<Error> error;
+    Optional<Error> error;
 
     bool truncated{};
 
@@ -118,12 +118,12 @@ class Debugger final {
 public:
     explicit Debugger(DebugHandler = {}, DebugOptions = {});
 
-    Result<void> set_breakpoints(std::vector<DebugBreakpoint>);
+    Result<void> set_breakpoints(Array<DebugBreakpoint>);
 
     [[nodiscard]] DebugStatus status() const noexcept;
 
     [[nodiscard]] bool active() const noexcept;
 
-    [[nodiscard]] std::optional<DebugSnapshot> last_stop() const;
+    [[nodiscard]] Optional<DebugSnapshot> last_stop() const;
 };
 }

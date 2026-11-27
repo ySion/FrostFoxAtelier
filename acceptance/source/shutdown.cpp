@@ -5,7 +5,6 @@
 #include <windows.h>
 #include <cstdio>
 #include <functional>
-#include <optional>
 
 namespace {
 using namespace atelier;
@@ -36,7 +35,7 @@ struct Signal {
 }
 
 void verify_source_shutdown() {
-    std::optional<Runtime> runtime{std::in_place};
+    Optional<Runtime> runtime{std::in_place};
     const auto type = take(NativeRegistration<Signal>{*runtime, "shutdown.Signal", TypeKind::object}
                                .method<&Signal::signal>("signal")
                                .publish());

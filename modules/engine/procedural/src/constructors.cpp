@@ -472,8 +472,10 @@ Result<Geometry> tube(const TubeSettings& settings) {
     };
 
     Array<Vector3> positions;
-    std::vector<std::uint32_t> outer_base(settings.rows + 1, UINT32_MAX);
-    std::vector<std::uint32_t> inner_base(settings.rows + 1, UINT32_MAX);
+    Array<std::uint32_t> outer_base;
+    outer_base.resize(settings.rows + 1, UINT32_MAX);
+    Array<std::uint32_t> inner_base;
+    inner_base.resize(settings.rows + 1, UINT32_MAX);
     std::uint32_t bottom_apex = UINT32_MAX;
     std::uint32_t top_apex = UINT32_MAX;
 
@@ -514,7 +516,7 @@ Result<Geometry> tube(const TubeSettings& settings) {
         }
     }
 
-    std::vector<std::uint32_t> axis_pts;
+    Array<std::uint32_t> axis_pts;
     if (!hollow && !full_circle && settings.end_caps) {
         axis_pts.resize(settings.rows + 1, UINT32_MAX);
         for (std::uint32_t k = 0; k <= settings.rows; ++k) {
@@ -940,7 +942,8 @@ Result<Geometry> circle(const CircleSettings& settings) {
     Array<Vector3> positions;
     positions.reserve(settings.segments + 2);
     positions.add(settings.center);
-    std::vector<Vector2> ring_uvs(settings.segments + 1);
+    Array<Vector2> ring_uvs;
+    ring_uvs.resize(settings.segments + 1);
     for (std::uint32_t i = 0; i <= settings.segments; ++i) {
         const double theta = start_rad + arc_rad * double(i) / settings.segments;
         const auto [p, uv] = make_pt(theta);
@@ -992,7 +995,8 @@ Result<Geometry> torus(const TorusSettings& settings) {
 
     Array<Vector3> positions;
     positions.reserve(std::size_t{ring_count} * settings.minor_segments);
-    std::vector<Vector3> point_normals(std::size_t{ring_count} * settings.minor_segments);
+    Array<Vector3> point_normals;
+    point_normals.resize(std::size_t{ring_count} * settings.minor_segments);
 
     float min_y = 0.f;
     bool first_pt = true;

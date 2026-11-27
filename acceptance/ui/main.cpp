@@ -12,7 +12,6 @@
 #include <cstdio>
 #include <limits>
 #include <string>
-#include <vector>
 
 using namespace atelier;
 
@@ -61,7 +60,7 @@ ui::Control leaf(std::uint64_t key, ui::ControlKind kind, float y, std::wstring 
 struct Consumer {
     ui::Session ui;
 
-    std::vector<ui::Control> controls;
+    Array<ui::Control> controls;
 
     std::shared_ptr<const ui::UiFrame> frame;
 
@@ -151,15 +150,20 @@ ui ListView(in Items<Group> groups) { Repeat groups { items: input.groups; } }
     const auto row = [](ui::ControlKey key, ui::ControlKey fold, ui::ControlKey target) {
         return Item{key, {ActionBinding{target}}, {{"fold", fold}, {"run", key + 2}}};
     };
-    const auto inputs = [](std::vector<Item> rows) {
-        auto entries = ItemList{std::make_shared<const std::vector<Item>>(std::move(rows))};
-        std::vector<Item> groups{{50, {std::move(entries)}}};
-        return std::array<InputValue, 1>{ItemList{std::make_shared<const std::vector<Item>>(std::move(groups))}};
+    const auto inputs = [](Array<Item> rows) {
+        auto entries = ItemList{std::make_shared<const Array<Item>>(std::move(rows))};
+        Array<Item> groups{{50, {std::move(entries)}}};
+        return std::array<InputValue, 1>{ItemList{std::make_shared<const Array<Item>>(std::move(groups))}};
     };
     auto first = row(100, 101, 501);
     auto second = row(200, 201, 502);
     ui::ControlKey next = 1000;
-    auto root = take(Instance::create(list, 0, next, {}, inputs({first, second})));
+    const auto initial_inputs = inputs({first, second});
+    auto root = take(Instance::create(list, 0, next, {}, initial_inputs));
+    const auto update_rows = [&](Array<Item> rows) {
+        const auto next_inputs = inputs(std::move(rows));
+        return root->update(next_inputs);
+    };
     Consumer consumer;
     const auto accept_frame = [&] {
         consumer.frame = accepted(consumer.ui.prepare());
@@ -216,7 +220,7 @@ ui ListView(in Items<Group> groups) { Repeat groups { items: input.groups; } }
     require(consumer.ui.input(point(*old_frame, ui::EventKind::pointer_down)).capture == ui::Capture::acquire,
             "Command press was not captured.");
     first = row(100, 109, 701);
-    take(root->update(inputs({second, first})));
+    take(update_rows({second, first}));
     const auto controls = root->controls();
     require(std::ranges::find(controls, 200, &ui::Control::key) < std::ranges::find(controls, 100, &ui::Control::key) &&
                 selected(109) && !selected(201),
@@ -236,7 +240,7 @@ ui ListView(in Items<Group> groups) { Repeat groups { items: input.groups; } }
     require(!fold(101, false) && fold(109, false) && fold(201, true), "Rebound fold aliases routed to the wrong row.");
     auto invalid = first;
     invalid.inputs = {ActionBinding{0}};
-    require(!root->update(inputs({second, invalid})), "Invalid row command was accepted.");
+    require(!update_rows({second, invalid}), "Invalid row command was accepted.");
     take(root->update());
     present();
     require(selected(109) && !selected(201) && has_detail(100) && !has_detail(200) &&
@@ -249,15 +253,15 @@ ui ListView(in Items<Group> groups) { Repeat groups { items: input.groups; } }
                 root->controls().size() == initial + 1,
             "Local patches used positions from before reorder or rollback.");
     require(fold(201, false) && fold(201, true), "Removed row did not receive its last events.");
-    take(root->update(inputs({first})));
+    take(update_rows({first}));
     present();
     require(!fold(201, true), "Retired item still received events.");
-    take(root->update(inputs({first, second})));
+    take(update_rows({first, second}));
     present();
     require(!selected(201) && root->controls().size() == initial, "Reinserted item retained retired state.");
     const auto last_frame = consumer.frame;
     next = std::numeric_limits<ui::ControlKey>::max() - 1;
-    const auto refused = root->update(inputs({first, second, row(300, 301, 503), row(400, 401, 504)}));
+    const auto refused = update_rows({first, second, row(300, 301, 503), row(400, 401, 504)});
     require(!refused && refused.error().code == ErrorCode::capacity_exceeded &&
                 refused.error().message == "UI control keys exhausted." &&
                 next == std::numeric_limits<ui::ControlKey>::max() && root->controls().size() == initial &&
@@ -273,14 +277,14 @@ void integral_slider_and_number_quantization() {
     Consumer consumer;
     accepted(consumer.ui.set_surface({{640, 480}, 1.5f, 2}));
     const auto build_row = [&](double current) {
-        std::vector<ui::Control> controls;
+        Array<ui::Control> controls;
         ui::Control root;
         root.key = 10;
         root.kind = ui::ControlKind::container;
         root.layout = ui_layout::NodeInput::column();
         root.layout.width = ui_layout::Axis::fixed(360);
         root.layout.height = ui_layout::Axis::content(40);
-        controls.push_back(std::move(root));
+        controls.add(std::move(root));
 
         ui::ParameterRow row{11, 12, 13, 14, 10, L"Stories"};
         ui::NumberField field;
@@ -293,7 +297,7 @@ void integral_slider_and_number_quantization() {
         field.fine_step = 1;
         field.integral = true;
         field.slider = ui::SliderRange{16, 1, 6};
-        accepted(ui::append_number_row(controls, row, std::span{&field, 1}));
+        accepted(ui::append_number_row(controls, row, Span{&field, 1}));
         consumer.controls = std::move(controls);
         consumer.prepare();
     };
@@ -304,7 +308,7 @@ void integral_slider_and_number_quantization() {
     const float mid_y = slider->bounds.y + slider->bounds.height * .5f;
 
     // 1. Click-jump on slider quantizes to whole integer, and slow sub-integer drag steps accumulate without deadzone.
-    std::vector<double> previews;
+    Array<double> previews;
     double committed = -1;
     const auto collect_edits = [&](const ui::Reply& reply) {
         for (const auto& effect : reply.effects) {
@@ -312,7 +316,7 @@ void integral_slider_and_number_quantization() {
                 if (act->kind == ui::ActionKind::edit_preview) {
                     const double v = std::get<double>(act->value);
                     require(std::trunc(v) == v, "Integral control emitted a fractional preview.");
-                    previews.push_back(v);
+                    previews.add(v);
                 } else if (act->kind == ui::ActionKind::edit_commit) {
                     committed = std::get<double>(act->value);
                     require(std::trunc(committed) == committed, "Integral control committed a fractional value.");

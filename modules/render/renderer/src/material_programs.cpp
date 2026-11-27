@@ -100,12 +100,12 @@ MaterialBatchState::~MaterialBatchState() {
     --live_batches;
 }
 
-Result<void> MaterialBatchState::submit(std::span<const material::ProgramSurfaceRef> input,
-                                        std::vector<std::weak_ptr<MaterialProgramSet>>& sets) {
+Result<void> MaterialBatchState::submit(Span<const material::ProgramSurfaceRef> input,
+                                        Array<std::weak_ptr<MaterialProgramSet>>& sets) {
     ATELIER_TRY(invalid(!input.empty() &&
                             input.size() <= std::numeric_limits<std::uint32_t>::max() / sizeof(ProgramSurfaceRecord),
                         "Material batch needs a representable nonempty Surface table"));
-    surfaces.assign(input.begin(), input.end());
+    surfaces.assign(input);
     struct ProgramUse {
         material::DefinitionRef definition;
 
@@ -126,28 +126,26 @@ Result<void> MaterialBatchState::submit(std::span<const material::ProgramSurface
         use->masked |= surface->policy().coverage == material::Coverage::mask;
     }
     std::ranges::sort(ordered_programs);
-    std::vector<material::DefinitionRef> definitions;
-    std::vector<bool> masked_programs;
+    Array<material::DefinitionRef> definitions;
+    BitVector masked_programs;
     definitions.reserve(ordered_programs.size());
     masked_programs.reserve(ordered_programs.size());
     for (const auto* program : ordered_programs) {
         auto& use = unique.at(program);
         use.index = static_cast<std::uint32_t>(definitions.size());
-        definitions.push_back(use.definition);
-        masked_programs.push_back(use.masked);
+        definitions.add(use.definition);
+        masked_programs.add(use.masked);
     }
-    for (auto it = sets.begin(); it != sets.end();) {
-        auto existing = it->lock();
-        if (!existing) {
-            it = sets.erase(it);
-            continue;
-        }
+    sets.remove_if([&](const std::weak_ptr<MaterialProgramSet>& weak) {
+        auto existing = weak.lock();
+        if (!existing)
+            return true;
         if (!existing->failure && existing->masked_programs == masked_programs &&
             std::ranges::equal(existing->definitions, definitions,
                                [](const auto& a, const auto& b) { return &a->program() == &b->program(); }))
             code = std::move(existing);
-        ++it;
-    }
+        return false;
+    });
     Map<std::pair<const material::Image*, bool>, std::uint32_t> image_indices;
     for (const auto& surface : surfaces) {
         const auto& policy = surface->policy();
@@ -157,12 +155,12 @@ Result<void> MaterialBatchState::submit(std::span<const material::ProgramSurface
         ATELIER_TRY(invalid(inputs.size() + surface->inputs().size() <=
                                 std::numeric_limits<std::uint32_t>::max() / sizeof(ProgramInputRecord),
                             "Material input table exceeds addressing"));
-        records.push_back({unique.at(&surface->program()).index,
-                           static_cast<std::uint32_t>(parameters.size()),
-                           static_cast<std::uint32_t>(inputs.size()),
-                           {policy.coverage == material::Coverage::mask ? 1u : 0u, policy.double_sided ? 1u : 0u,
-                            policy.emission_two_sided ? 1u : 0u}});
-        parameters.insert(parameters.end(), surface->parameters().begin(), surface->parameters().end());
+        records.add({unique.at(&surface->program()).index,
+                     static_cast<std::uint32_t>(parameters.size()),
+                     static_cast<std::uint32_t>(inputs.size()),
+                     {policy.coverage == material::Coverage::mask ? 1u : 0u, policy.double_sided ? 1u : 0u,
+                      policy.emission_two_sided ? 1u : 0u}});
+        parameters.append(surface->parameters());
         parameters.resize((parameters.size() + 3) & ~std::size_t(3));
         for (std::size_t i = 0; i < surface->inputs().size(); ++i) {
             const auto& binding = surface->inputs()[i];
@@ -174,22 +172,22 @@ Result<void> MaterialBatchState::submit(std::span<const material::ProgramSurface
                 const auto [slot, added] =
                     image_indices.try_emplace({binding.image.get(), srgb}, static_cast<std::uint32_t>(images.size()));
                 if (added)
-                    images.emplace_back(binding.image, srgb);
+                    images.emplace(binding.image, srgb);
                 record.texture = *slot;
             }
-            inputs.push_back(record);
+            inputs.add(record);
         }
     }
     if (parameters.empty())
         parameters.resize(4);
     if (inputs.empty())
-        inputs.emplace_back();
+        inputs.emplace();
     if (!code) {
         code = std::make_shared<MaterialProgramSet>();
         code->definitions = std::move(definitions);
         code->masked_programs = std::move(masked_programs);
         ATELIER_TRY(code->submit(context));
-        sets.push_back(code);
+        sets.add(code);
     }
     return {};
 }
@@ -245,9 +243,7 @@ float4 atelier_material_sample_grad(uint environment,uint local_slot,float2 uv,f
     return material_textures[index].SampleGrad(material_repeat_sampler,uv,d0,d1);
 }
 )hlsl";
-    prefix += std::ranges::any_of(masked_programs, [](bool masked) { return masked; })
-                  ? "#define MATERIAL_HAS_MASKED 1\n"
-                  : "#define MATERIAL_HAS_MASKED 0\n";
+    prefix += masked_programs.any() ? "#define MATERIAL_HAS_MASKED 1\n" : "#define MATERIAL_HAS_MASKED 0\n";
     for (std::size_t i = 0; i < definitions.size(); ++i) {
         auto hlsl = definitions[i]->program().hlsl("MaterialProgram" + std::to_string(i));
         if (!hlsl)
@@ -323,7 +319,7 @@ ByteAddressBuffer material_parameters;
         auto job = context.submit(desc);
         if (!job)
             return std::unexpected(Error{job.error(), false});
-        pending.push_back({pass, std::move(*job)});
+        pending.add({pass, std::move(*job)});
         return {};
     };
     const auto compute = [&](MaterialPass pass, const char* source, const char* entry) {
@@ -388,10 +384,10 @@ Result<Preparation> MaterialProgramSet::preparation(rhi::Context& context) {
     if (failure)
         return std::unexpected(*failure);
     constexpr auto total = static_cast<std::uint32_t>(MaterialPass::count);
-    for (auto it = pending.begin(); it != pending.end();) {
-        auto result = context.take(it->job);
+    for (std::size_t i = 0; i < pending.size();) {
+        auto result = context.take(pending[i].job);
         if (!result) {
-            ++it;
+            ++i;
             continue;
         }
         if (!*result) {
@@ -399,8 +395,8 @@ Result<Preparation> MaterialProgramSet::preparation(rhi::Context& context) {
             pending.clear();
             return std::unexpected(*failure);
         }
-        pipelines[static_cast<std::size_t>(it->pass)] = std::move(**result);
-        it = pending.erase(it);
+        pipelines[static_cast<std::size_t>(pending[i].pass)] = std::move(**result);
+        pending.remove_at(i);
     }
     return Preparation{total - static_cast<std::uint32_t>(pending.size()), total, pending.empty()};
 }
@@ -428,8 +424,7 @@ MaterialBatch::MaterialBatch(MaterialBatch&&) noexcept = default;
 
 MaterialBatch& MaterialBatch::operator=(MaterialBatch&&) noexcept = default;
 
-std::span<const material::ProgramSurfaceRef> MaterialBatch::surfaces() const noexcept {
-    return state_ ? std::span<const material::ProgramSurfaceRef>(state_->surfaces)
-                  : std::span<const material::ProgramSurfaceRef>{};
+Span<const material::ProgramSurfaceRef> MaterialBatch::surfaces() const noexcept {
+    return state_ ? state_->surfaces.view() : Span<const material::ProgramSurfaceRef>{};
 }
 } // namespace atelier::renderer

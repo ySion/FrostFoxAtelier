@@ -34,7 +34,7 @@
             a.context_target==b.context_target && a.context_group==b.context_group && a.edit_command==b.edit_command &&
             a.menu_branch==b.menu_branch;
     }
-    Result<Reply> apply_controls(std::span<const Control> controls,bool sparse) {
+    Result<Reply> apply_controls(Span<const Control> controls,bool sparse) {
         if (controls.size()>10000) return std::unexpected(Error{ErrorCode::capacity_exceeded});
         // Sparse order has no meaning. Resolve references through the entire
         // proposed batch, then the retained state; full input validates preorder.
@@ -59,7 +59,7 @@
             const auto* found=proposed.find(earlier);
             return found && found->second<current_idx;
         };
-        std::vector<ControlKey> next_order;
+        Array<ControlKey> next_order;
         Map<ControlKey,TableIndex> table_indices;
         Map<ControlKey,const Control*> previous_rows; // Per tree: the last described row.
         ControlKey next_popup=sparse?popup:0;
@@ -108,7 +108,7 @@
                 while (parent && parent!=next_popup) parent=lookup(parent)->parent;
                 if (parent!=next_popup) return std::unexpected(Error{ErrorCode::invalid_control,control.key});
             }
-            next_order.push_back(control.key);
+            next_order.add(control.key);
         }
         // A target property can invalidate an unchanged reset menu item.
         if (check_commands) for (const auto& [key,state]:states) if (state.control.edit_command)
@@ -124,26 +124,26 @@
         }
 
         struct Change { State* state; Control value; };
-        std::vector<Change> changes;
+        Array<Change> changes;
         std::map<ControlKey,State> additions,removed;
-        std::vector<ControlKey> added_keys,removed_keys;
-        std::vector<ControlKey> tree_reveals; // Rows that became the host's primary row.
+        Array<ControlKey> added_keys,removed_keys;
+        Array<ControlKey> tree_reveals; // Rows that became the host's primary row.
         bool structural=!sparse && next_order!=order;
         for (const auto& control:controls) {
             if (auto* previous=live(control.key)) {
                 if (previous->control==control) continue;
-                changes.push_back({previous,control});
+                changes.add({previous,control});
                 if (control.kind==ControlKind::tree_item && control.tree_primary &&
-                    (previous->control.kind!=ControlKind::tree_item || !previous->control.tree_primary)) tree_reveals.push_back(control.key);
+                    (previous->control.kind!=ControlKind::tree_item || !previous->control.tree_primary)) tree_reveals.add(control.key);
                 structural|=previous->control.parent!=control.parent || previous->control.kind!=control.kind;
             } else {
                 auto& value=additions[control.key];
                 value.control=control; value.incarnation=detail::new_identity();
-                if (control.kind==ControlKind::tree_item && control.tree_primary) tree_reveals.push_back(control.key);
-                added_keys.push_back(control.key);
+                if (control.kind==ControlKind::tree_item && control.tree_primary) tree_reveals.add(control.key);
+                added_keys.add(control.key);
             }
         }
-        if (!sparse) for (const auto& [key,state]:states) if (!proposed.contains(key)) removed_keys.push_back(key);
+        if (!sparse) for (const auto& [key,state]:states) if (!proposed.contains(key)) removed_keys.add(key);
         if (changes.empty() && added_keys.empty() && removed_keys.empty() && !structural) return Reply{};
         const auto revision=detail::new_identity();
         const auto absent=[&](ControlKey key) {
@@ -186,8 +186,8 @@
         const bool popup_invalid=next_popup && absent(lookup(next_popup)->popup_owner);
         const bool interaction_changes=cancelling || clear_focus || clear_keyboard || refresh_edit ||
             next_popup!=popup || popup_invalid;
-        auto old_press=interaction_changes?press:std::optional<Press>{};
-        auto old_edit=interaction_changes?edit:std::optional<Edit>{};
+        auto old_press=interaction_changes?press:Optional<Press>{};
+        auto old_edit=interaction_changes?edit:Optional<Edit>{};
         const auto old_focus=focus,old_hover=hover,old_keyboard=keyboard_pressed;
         const auto old_tooltip=tooltip_hover;
         const auto old_keyboard_key=keyboard_key,old_terminal=terminal_key;

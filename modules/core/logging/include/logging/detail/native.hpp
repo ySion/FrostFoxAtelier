@@ -3,7 +3,6 @@
 #include "logging/logging.hpp"
 #include <quill/Logger.h>
 #include <algorithm>
-#include <optional>
 #include <tuple>
 
 namespace atelier::logging::detail {
@@ -39,12 +38,12 @@ auto argument(const T& value) noexcept {
     if constexpr (std::is_array_v<T>) {
         const auto end = std::find(std::begin(value), std::end(value), '\0');
         if (end == std::end(value))
-            return std::optional<std::string_view>{};
-        return std::optional{std::string_view{value, static_cast<std::size_t>(end - value)}};
+            return Optional<std::string_view>{};
+        return Optional{std::string_view{value, static_cast<std::size_t>(end - value)}};
     } else if constexpr (std::is_same_v<T, std::string> || std::is_same_v<T, std::string_view>) {
-        return std::optional{std::string_view{value}};
+        return Optional{std::string_view{value}};
     } else
-        return std::optional{value};
+        return Optional{value};
 }
 
 template <class T>

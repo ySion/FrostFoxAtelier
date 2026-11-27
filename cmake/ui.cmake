@@ -3,6 +3,7 @@ include_guard(GLOBAL)
 # The renderer consumes only this CPU protocol, never the controls/text backend.
 add_library(atelier_ui_protocol INTERFACE)
 target_include_directories(atelier_ui_protocol INTERFACE "${PROJECT_SOURCE_DIR}/modules/gui/ui_protocol/include")
+target_link_libraries(atelier_ui_protocol INTERFACE atelier_foundation_headers)
 target_compile_features(atelier_ui_protocol INTERFACE cxx_std_23)
 
 function(atelier_add_ui)

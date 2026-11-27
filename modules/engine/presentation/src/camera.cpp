@@ -38,7 +38,7 @@ Result<void> CameraComponent::validate() const {
 
 world::World::Admission detail::unique_camera(world::CapabilityId cameras) {
     return [cameras](const world::World& world,
-                     std::span<const world::World::AdmissionCandidate> candidates) -> Result<void> {
+                     Span<const world::World::AdmissionCandidate> candidates) -> Result<void> {
         ATELIER_TRY_BIND(members, world.members(cameras));
         Map<ObjectId, ObjectId> owners;
         owners.reserve(candidates.size() + members->size());

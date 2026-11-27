@@ -179,7 +179,8 @@ void verify_rejected_graph(editor::Session& document, ObjectId root, editor::Pro
                 issues[2].kind == world::DiagnosticKind::reference_dropped &&
                 issues[2].severity == world::Severity::warning && take(play.world().members()).empty(),
             "Play failed to reuse rejected identities, preserve the edit error or skip a destroyed target.");
-    const auto identity = *document.document_identity(root);
+    const auto root_identity = document.document_identity(root);
+    const auto identity = *root_identity;
     const auto gone = play.local_object(identity);
     require(!gone &&
                 gone.error().message == "Document identity does not belong to a live Entity, Component or material.",
@@ -280,14 +281,14 @@ void verify_roundtrip() {
             "Rejected subtree capture lost its diagnostic or published provisional identities.");
     take(runtime.write(move, take(runtime.find_field(move_type, "speed")), Scalar{4.f}));
     const FieldId meter_field = take(runtime.find_field(move_type, "runtime_meter"));
-    take(runtime.write(move, std::span{&meter_field, 1}, Scalar{99.f}));
+    take(runtime.write(move, Span<const FieldId>{&meter_field, 1}, Scalar{99.f}));
     const auto inspected = take(document.properties(move));
     const auto meter_prop = std::ranges::find(inspected, "runtime_meter", &editor::Property::name);
     require(meter_prop != inspected.end() && meter_prop->transient && meter_prop->read_only &&
                 std::get<float>(meter_prop->value) == 99.f,
             "Inspector properties did not expose transient read-only field.");
     const std::array patch{editor::PropertyPatch{{meter_field}, Scalar{5.f}}};
-    require(!document.set_properties(move, patch) && !document.begin_edit(move, std::span{&meter_field, 1}, 1),
+    require(!document.set_properties(move, patch) && !document.begin_edit(move, Span<const FieldId>{&meter_field, 1}, 1),
             "Inspector allowed editing a ReadOnly field.");
     const auto mask_type = take(runtime.find_type("game.LayerMask"));
     const FieldId mask_field = take(runtime.find_field(move_type, "mask"));
@@ -319,16 +320,16 @@ void verify_roundtrip() {
     auto reopened = take(load_old(editor::LoadPolicy::strict));
     require(reopened->load_issues().empty(), "Strict load reported a transient field.");
     old_scene.set_validated(cache, "future_field", "keep");
-    std::vector<std::vector<std::string>> kept_paths;
+    Array<Array<std::string>> kept_paths;
     take(editor::decode_properties(
         runtime, {move_type, move}, props,
-        {[&](std::vector<std::string> at, json::Value, world::DiagnosticKind kind, const std::string&) -> Result<void> {
+        {[&](Array<std::string> at, json::Value, world::DiagnosticKind kind, const std::string&) -> Result<void> {
              require(kind == world::DiagnosticKind::unknown_field, "Unexpected tolerant decode diagnostic.");
-             kept_paths.push_back(std::move(at));
+             kept_paths.add(std::move(at));
              return {};
          },
-         [](std::vector<std::string>, json::Value) -> Result<void> { return {}; }}));
-    require(kept_paths == std::vector<std::vector<std::string>>{{"cache", "future_field"}},
+         [](Array<std::string>, json::Value) -> Result<void> { return {}; }}));
+    require(kept_paths == Array<Array<std::string>>{{"cache", "future_field"}},
             "Shared tolerant decode_properties did not skip transient fields.");
     old_scene.set_validated(props, "speed", "legacy speed");
     const auto strict = load_old(editor::LoadPolicy::strict);
@@ -339,16 +340,18 @@ void verify_roundtrip() {
                                     [](const auto& issue) {
                                         return issue.kind == world::DiagnosticKind::unknown_field &&
                                                issue.field ==
-                                                   std::vector<std::string>{"properties", "cache", "future_field"};
+                                                   Array<std::string>{"properties", "cache", "future_field"};
                                     }) &&
                 std::ranges::any_of(issues,
                                     [](const auto& issue) {
                                         return issue.kind == world::DiagnosticKind::mismatch &&
-                                               issue.field == std::vector<std::string>{"properties", "speed"};
+                                               issue.field == Array<std::string>{"properties", "speed"};
                                     }),
             "Strict load lost its first error or tolerant load lost a rejected field.");
-    const auto owner = take(tolerant->local_object(*document.document_identity(entity)));
-    const auto restored_move = take(tolerant->local_object(*document.document_identity(move)));
+    const auto doc_ent_id = document.document_identity(entity);
+    const auto doc_move_id = document.document_identity(move);
+    const auto owner = take(tolerant->local_object(*doc_ent_id));
+    const auto restored_move = take(tolerant->local_object(*doc_move_id));
     const auto kept = take(tolerant->retained(restored_move));
     const auto visible = tolerant->issues();
     require(kept.entries.size() == 2 && visible.size() == 2 &&
@@ -376,8 +379,8 @@ void verify_roundtrip() {
             restored_entity, take(restored.find_field(take(restored.find_type("game.Entity")), "health"))))) == 75 &&
             std::get<float>(take(restored.read(components.front().id(),
                                                take(restored.find_field(restored_move_type, "speed"))))) == 4.f &&
-            std::get<float>(take(restored.read(components.front().id(), std::span{&restored_meter, 1}))) == 1.f &&
-            std::get<EnumValue>(take(restored.read(components.front().id(), std::span{&restored_mask, 1}))).bits == 3u,
+            std::get<float>(take(restored.read(components.front().id(), Span<const FieldId>{&restored_meter, 1}))) == 1.f &&
+            std::get<EnumValue>(take(restored.read(components.front().id(), Span<const FieldId>{&restored_mask, 1}))).bits == 3u,
         "Scene roundtrip changed authored fields, Flags enum mask or serialized a Transient field.");
     old_scene.erase(cache, "future_field");
     take(old_scene.set(props, "speed", 4.f));
@@ -395,8 +398,8 @@ void verify_roundtrip() {
     old_scene.set_validated(range, "discarded_with_range", "obsolete");
     auto recovered = take(load_old(editor::LoadPolicy::tolerant));
     const auto diagnostics = recovered->load_issues();
-    require(diagnostics.size() == 3 && diagnostics[0].field == std::vector<std::string>{"properties"} &&
-                diagnostics.back().field == std::vector<std::string>{"properties", "range"},
+    require(diagnostics.size() == 3 && diagnostics[0].field == Array<std::string>{"properties"} &&
+                diagnostics.back().field == Array<std::string>{"properties", "range"},
             "Scene recovery must diagnose each invalid record.");
     auto& recovered_runtime = recovered->world().runtime();
     const auto recovered_owner = take(recovered->world().members()).front().id();
@@ -523,15 +526,15 @@ void verify_procedural_generator_scene() {
     require(gen_comp != ObjectId{}, "ProceduralGeneratorEntity did not attach ProceduralGeneratorComponent.");
     take(doc.assign_material(project, gen_comp, "default", mat_key));
     const auto gen_type = doc.presentation_types().procedural_generator_component;
-    take(doc.set_properties(
-        gen_comp, std::array{editor::PropertyPatch{{take(doc.world().runtime().find_field(gen_type, "override_seed"))},
-                                                   Scalar{true}}}));
-    take(doc.set_properties(gen_comp,
-                            std::array{editor::PropertyPatch{{take(doc.world().runtime().find_field(gen_type, "seed"))},
-                                                             Scalar{std::int32_t{99}}}}));
-    take(doc.set_properties(
-        gen_comp, std::array{editor::PropertyPatch{{take(doc.world().runtime().find_field(gen_type, "chunk_size"))},
-                                                   Scalar{12.f}}}));
+    const std::array override_seed_patch{
+        editor::PropertyPatch{{take(doc.world().runtime().find_field(gen_type, "override_seed"))}, Scalar{true}}};
+    take(doc.set_properties(gen_comp, override_seed_patch));
+    const std::array seed_99_patch{
+        editor::PropertyPatch{{take(doc.world().runtime().find_field(gen_type, "seed"))}, Scalar{std::int32_t{99}}}};
+    take(doc.set_properties(gen_comp, seed_99_patch));
+    const std::array chunk_patch{
+        editor::PropertyPatch{{take(doc.world().runtime().find_field(gen_type, "chunk_size"))}, Scalar{12.f}}};
+    take(doc.set_properties(gen_comp, chunk_patch));
     take(doc.sync_procedural_generators(&project));
     take(doc.presentation().update());
     const auto initial_slots = doc.presentation().generator_slots();
@@ -543,17 +546,15 @@ void verify_procedural_generator_scene() {
 
     // Recooking an already-renderable generator must not advance World::revision() (no full-scene relayout).
     const std::uint64_t rev_before_seed = doc.world().revision();
-    take(doc.set_properties(gen_comp,
-                            std::array{editor::PropertyPatch{{take(doc.world().runtime().find_field(gen_type, "seed"))},
-                                                             Scalar{std::int32_t{101}}}}));
+    const std::array seed_101_patch{
+        editor::PropertyPatch{{take(doc.world().runtime().find_field(gen_type, "seed"))}, Scalar{std::int32_t{101}}}};
+    take(doc.set_properties(gen_comp, seed_101_patch));
     take(doc.sync_procedural_generators(&project));
     take(doc.presentation().update());
     require(doc.world().revision() == rev_before_seed &&
                 doc.presentation().generator_slots()[0].item->output_generation > initial_gen,
             "Recooking an active ProceduralGeneratorComponent unnecessarily bumped World::revision().");
-    take(doc.set_properties(gen_comp,
-                            std::array{editor::PropertyPatch{{take(doc.world().runtime().find_field(gen_type, "seed"))},
-                                                             Scalar{std::int32_t{99}}}}));
+    take(doc.set_properties(gen_comp, seed_99_patch));
     take(doc.sync_procedural_generators(&project));
     take(doc.presentation().update());
     require(doc.world().revision() == rev_before_seed,
@@ -903,7 +904,7 @@ void verify_examples_procedural_showcases() {
             const Scalar five_floors{std::int32_t{5}};
 
             // cancel_edit during live slider preview rolls back cooked output without advancing history or dirty state:
-            take(loaded.session->begin_graph_parameter_edit({}, {}, "floors", std::nullopt, 887, &project, hall_comp));
+            take(loaded.session->begin_graph_parameter_edit({}, {}, "floors", {}, 887, &project, hall_comp));
             take(loaded.session->preview_graph_parameter_edit(887, {&five_floors, 1}));
             take(loaded.session->presentation().update());
             require(loaded.session->presentation().generator_slots()[1].item->surface_geometry->vertices().size() >
@@ -924,7 +925,7 @@ void verify_examples_procedural_showcases() {
                 fatal(play_base.error->message);
             play_base.session->enter_play();
 
-            take(loaded.session->begin_graph_parameter_edit({}, {}, "floors", std::nullopt, 888, &project, hall_comp));
+            take(loaded.session->begin_graph_parameter_edit({}, {}, "floors", {}, 888, &project, hall_comp));
             take(loaded.session->preview_graph_parameter_edit(888, {&five_floors, 1}));
             take(loaded.session->commit_edit(888));
             take(loaded.session->presentation().update());

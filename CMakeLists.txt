@@ -113,7 +113,7 @@ atelier_headless_acceptance(runtime_acceptance
 
 add_library(atelier_ui_layout STATIC modules/gui/ui_layout/src/layout.cpp)
 target_include_directories(atelier_ui_layout PUBLIC modules/gui/ui_layout/include)
-target_link_libraries(atelier_ui_layout PRIVATE atelier_foundation_headers)
+target_link_libraries(atelier_ui_layout PUBLIC atelier_foundation_headers)
 target_compile_features(atelier_ui_layout PUBLIC cxx_std_23)
 atelier_target(atelier_ui_layout)
 
@@ -153,7 +153,7 @@ include(cmake/geometry.cmake)
 add_library(atelier_rendering STATIC modules/engine/rendering/src/sky_map.cpp)
 atelier_target(atelier_rendering)
 target_include_directories(atelier_rendering PUBLIC modules/engine/rendering/include)
-target_link_libraries(atelier_rendering PUBLIC atelier_math PRIVATE atelier_foundation_headers)
+target_link_libraries(atelier_rendering PUBLIC atelier_math atelier_foundation_headers)
 
 include(cmake/procedural.cmake)
 atelier_add_procedural()

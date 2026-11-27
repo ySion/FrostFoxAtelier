@@ -15,7 +15,7 @@
         retire_keyboard(reply);
         if (next && press) {
             auto cancelled=cancel(); reply.capture=cancelled.capture;
-            for (auto& effect:cancelled.effects) reply.effects.push_back(std::move(effect));
+            for (auto& effect:cancelled.effects) reply.effects.add(std::move(effect));
             if (cancelled.error) {reply.error=cancelled.error;return;}
         }
         if (popup && !popup_dismissed) restore_popup_focus(reply);
@@ -35,7 +35,7 @@
         }
         reply.redraw=true;
     }
-    void context_request(Reply& reply, const ControlBox& box, float x, float y, std::optional<TableSelection> table={}) {
+    void context_request(Reply& reply, const ControlBox& box, float x, float y, Optional<TableSelection> table={}) {
         if (!finish_edit(reply,true)) return;
         if (focusable(box.kind)) set_focus(reply,box.key);
         action(reply,ActionKind::context_menu,box.context_target?box.context_target:box.key,
@@ -116,12 +116,12 @@
         // fields and sliders keep their normal editing and focus behaviour.
         if (!menu) return false;
         if (event.kind==EventKind::key_down && (event.key==Key::up || event.key==Key::down || event.key==Key::home || event.key==Key::end)) {
-            std::vector<ControlKey> keys;
+            Array<ControlKey> keys;
             for (const auto& box:published->controls)
-                if (box.kind==ControlKind::menu_item && current(box) && popup_member(box.key)) keys.push_back(box.key);
+                if (box.kind==ControlKind::menu_item && current(box) && popup_member(box.key)) keys.add(box.key);
             if (!keys.empty()) {
-                const auto at=std::find(keys.begin(),keys.end(),focus);
-                auto index=at==keys.end()?std::size_t{}:static_cast<std::size_t>(at-keys.begin());
+                const auto at=keys.find(focus);
+                auto index=at==keys.npos?std::size_t{}:at;
                 if (event.key==Key::home) index=0;
                 else if (event.key==Key::end) index=keys.size()-1;
                 else index=(index+keys.size()+(event.key==Key::up?-1:1))%keys.size();

@@ -2,6 +2,8 @@
 #include "editor/view_options.hpp"
 #include "editor/performance.hpp"
 #include "editor/property_row.hpp"
+#include "foundation/array.hpp"
+#include "foundation/optional.hpp"
 #include "renderer/renderer.hpp"
 #include "ui_language/live_document.hpp"
 
@@ -54,7 +56,7 @@ class WorldPanel {
 public:
     Result<bool> apply(const ui::Action&, renderer::ViewSettings& candidate);
 
-    std::vector<ui::MenuItem> menu(ui::ControlKey, const renderer::ViewSettings&) const;
+    Array<ui::MenuItem> menu(ui::ControlKey, const renderer::ViewSettings&) const;
 
     void append(ui_language::ControlOutput, ui::ControlKey, ui_language::LiveDocument&, const renderer::ViewSettings&,
                 bool editable, std::wstring_view main_camera, ui_language::ActionBinding clear_camera) const;
@@ -80,7 +82,7 @@ private:
 
     unsigned slot_{};
 
-    std::optional<Edit> edit_;
+    Optional<Edit> edit_;
 
     FramePerformance performance_;
 

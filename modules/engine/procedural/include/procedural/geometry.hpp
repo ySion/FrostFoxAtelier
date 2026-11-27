@@ -1,7 +1,9 @@
 #pragma once
 
 #include "foundation/array.hpp"
+#include "foundation/optional.hpp"
 #include "foundation/shared_array.hpp"
+#include "foundation/span.hpp"
 #include "foundation/string.hpp"
 #include "geometry/mesh.hpp"
 #include "math/math.hpp"
@@ -9,10 +11,7 @@
 
 #include <cstdint>
 #include <memory>
-#include <optional>
-#include <span>
 #include <variant>
-#include <vector>
 
 #include "procedural/geometry.gen.hpp"
 
@@ -191,7 +190,7 @@ public:
 
     [[nodiscard]] std::uint32_t count(Layer layer) const noexcept;
 
-    [[nodiscard]] std::span<const std::uint32_t> vertex_points() const noexcept { return vertex_points_.array(); }
+    [[nodiscard]] Span<const std::uint32_t> vertex_points() const noexcept { return vertex_points_.array(); }
 
     [[nodiscard]] PrimitiveRange primitive(std::uint32_t index) const noexcept {
         if (offsets_.empty())
@@ -203,7 +202,7 @@ public:
     // Shared vertex count of every primitive, or 0 when sizes differ or nothing exists.
     [[nodiscard]] std::uint32_t uniform_primitive_size() const noexcept { return offsets_.empty() ? uniform_ : 0; }
 
-    [[nodiscard]] std::span<const Attribute> attributes() const noexcept { return attributes_; }
+    [[nodiscard]] Span<const Attribute> attributes() const noexcept { return attributes_; }
 
     [[nodiscard]] const Attribute* find(StringView name) const noexcept;
 
@@ -238,7 +237,7 @@ public:
     // Returns the existing column for writing, or adds one filled with `fill`. Usage defaults
     // to the conventional one for the name (P point, N normal, v and up vector, Cd color).
     template <Element T>
-    Result<Array<T>*> add(StringView name, Layer layer, T fill = T{}, std::optional<Usage> usage = {}) {
+    Result<Array<T>*> add(StringView name, Layer layer, T fill = T{}, Optional<Usage> usage = {}) {
         if (find(name))
             return write<T>(name, layer);
         const auto resolved = usage ? *usage : conventional_usage(name);
@@ -249,19 +248,19 @@ public:
             return failure("Attribute name requires valid UTF-8.");
         Array<T> values;
         values.resize(count(layer), fill);
-        attributes_.push_back({std::move(*owned_name), layer, resolved, SharedArray<T>{std::move(values)}});
+        attributes_.add({std::move(*owned_name), layer, resolved, SharedArray<T>{std::move(values)}});
         return &std::get<SharedArray<T>>(attributes_.back().data).write();
     }
 
     // Takes ownership of a complete column. Replaces an existing attribute only when its
     // layer and column type match, preserving its existing usage when `usage` is omitted.
-    Result<void> set(String name, Layer layer, ColumnData data, std::optional<Usage> usage = {});
+    Result<void> set(String name, Layer layer, ColumnData data, Optional<Usage> usage = {});
 
     Result<void> remove(StringView name);
 
     static Result<void> admit_name(StringView name);
 
-    [[nodiscard]] std::span<const Reference> references() const noexcept { return references_; }
+    [[nodiscard]] Span<const Reference> references() const noexcept { return references_; }
 
     [[nodiscard]] const Array<std::uint32_t>& instance_references() const noexcept {
         return instance_references_.array();
@@ -273,7 +272,7 @@ public:
 
     // Replaces the instance layer, dropping its attributes. References must be distinct
     // and each index must name one; transforms must be finite and affine.
-    Result<void> set_instances(std::vector<Reference> references, Array<std::uint32_t> indices,
+    Result<void> set_instances(Array<Reference> references, Array<std::uint32_t> indices,
                                Array<math::Matrix4> transforms);
 
     Array<math::Matrix4>& write_instance_transforms();
@@ -292,12 +291,12 @@ public:
     Result<Geometry> remove_flagged(Layer layer, StringView flag) const;
 
     // The same with one flag per element of `layer`.
-    Result<Geometry> remove_flagged(Layer layer, std::span<const bool> removed) const;
+    Result<Geometry> remove_flagged(Layer layer, Span<const bool> removed) const;
 
     // Concatenates layers in input order. Attributes join by name; an element without a
     // value takes the type's default. Detail values come from the first input that has
     // them. A name with different layers, types or usages is an error.
-    static Result<Geometry> merge(std::span<const Geometry> inputs);
+    static Result<Geometry> merge(Span<const Geometry> inputs);
 
     [[nodiscard]] static Usage conventional_usage(StringView name) noexcept;
 
@@ -367,9 +366,9 @@ private:
 
     SharedArray<PrimitiveKind> kinds_;
 
-    std::vector<Attribute> attributes_; // P first.
+    Array<Attribute> attributes_; // P first.
 
-    std::vector<Reference> references_;
+    Array<Reference> references_;
 
     SharedArray<std::uint32_t> instance_references_;
 

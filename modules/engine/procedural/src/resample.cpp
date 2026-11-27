@@ -23,8 +23,9 @@ Result<Geometry> resample(const Geometry& input, const ResampleSettings& setting
     detail::PolylineArcs curves{input};
     ATELIER_TRY(curves.measure());
     const auto primitive_count = input.count(Layer::primitive);
-    std::vector<GridEdge> grid_edges(curves.edges.size());
-    std::vector<double> steps;
+    Array<GridEdge> grid_edges;
+    grid_edges.resize(curves.edges.size());
+    Array<double> steps;
     steps.reserve(primitive_count);
     // Count the entire lattice before allocating output buffers, including preserved turns.
     std::uint64_t point_count{}, vertex_count{};
@@ -46,7 +47,7 @@ Result<Geometry> resample(const Geometry& input, const ResampleSettings& setting
         if (requested + 1 > element_limit - vertex_count)
             return failure("Resample exceeds the Geometry vertex limit.");
         const auto divisions = static_cast<std::uint32_t>(requested);
-        auto grid = std::span{grid_edges}.subspan(curves.offsets[p], arc.edges.size());
+        auto grid = grid_edges.view().slice(curves.offsets[p], arc.edges.size());
         std::uint64_t count = std::uint64_t(divisions) + 1;
         for (std::size_t i = 0; i + 1 < grid.size(); ++i) {
             auto& edge = grid[i];
@@ -75,7 +76,7 @@ Result<Geometry> resample(const Geometry& input, const ResampleSettings& setting
         vertex_count += count;
         point_count += count - arc.closed();
         grid.back() = {divisions, true, false};
-        steps.push_back(step);
+        steps.add(step);
     }
 
     detail::CurveOutput output(input, false);

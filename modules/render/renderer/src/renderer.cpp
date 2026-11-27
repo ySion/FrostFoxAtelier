@@ -8,9 +8,12 @@
 #include "renderer/scene_visibility.hpp"
 #include "renderer/timing.hpp"
 #include "logging/native.hpp"
+#include "foundation/array.hpp"
 #include "foundation/map.hpp"
+#include "foundation/optional.hpp"
 #include "foundation/result.hpp"
 #include "foundation/set.hpp"
+#include "foundation/span.hpp"
 #include "memory/fatal.hpp"
 
 #include <d3d12sdklayers.h>
@@ -24,7 +27,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
-#include <optional>
 #include <string_view>
 #include <thread>
 #include <type_traits>
@@ -49,7 +51,7 @@ CancellableResult<WeldedMesh> weld(const geometry::Mesh& mesh, const std::functi
 
         using is_avalanching = void;
 
-        std::reference_wrapper<const std::vector<geometry::Vertex>> unique;
+        std::reference_wrapper<const Array<geometry::Vertex>> unique;
 
         std::uint64_t operator()(const geometry::Vertex& v) const noexcept {
             return hash_bytes(as_bytes(Span{&v, 1}));
@@ -60,7 +62,7 @@ CancellableResult<WeldedMesh> weld(const geometry::Mesh& mesh, const std::functi
     struct Equal {
         using is_transparent = void;
 
-        std::reference_wrapper<const std::vector<geometry::Vertex>> unique;
+        std::reference_wrapper<const Array<geometry::Vertex>> unique;
 
         bool operator()(std::uint32_t a, std::uint32_t b) const noexcept { return a == b; }
 
@@ -84,7 +86,7 @@ CancellableResult<WeldedMesh> weld(const geometry::Mesh& mesh, const std::functi
             continue;
         }
         const auto index = static_cast<std::uint32_t>(result.vertices.size());
-        result.vertices.push_back(source[i]);
+        result.vertices.add(source[i]);
         seen.add(index);
         result.indices[i] = index;
     }
@@ -203,15 +205,15 @@ public:
 
         geometry::MeshRef geometry;
 
-        std::shared_ptr<const std::vector<std::uint32_t>> program_slots;
+        std::shared_ptr<const Array<std::uint32_t>> program_slots;
 
         std::uint32_t material_slots{};
 
-        std::optional<Instance> prepared; // Set by the first frame that prepares this content.
+        Optional<Instance> prepared; // Set by the first frame that prepares this content.
     };
 
     // Adds the frame's material slot count; false means an invalid instance. Changes nothing.
-    bool check(std::span<const MeshInstance> meshes, std::uint64_t& material_slots) {
+    bool check(Span<const MeshInstance> meshes, std::uint64_t& material_slots) {
         changed_.clear();
         for (std::size_t i = 0; i < meshes.size(); ++i) {
             const auto& mesh = meshes[i];
@@ -222,13 +224,13 @@ public:
             if (!valid_instance(mesh))
                 return false;
             material_slots += mesh.geometry->materials().size();
-            changed_.push_back(static_cast<std::uint32_t>(i));
+            changed_.add(static_cast<std::uint32_t>(i));
         }
         return true;
     }
 
     // Adopts the meshes of a frame whose renderer-level checks all passed.
-    void commit(std::span<const MeshInstance> meshes) {
+    void commit(Span<const MeshInstance> meshes) {
         for (std::size_t i = meshes.size(); i < entries_.size(); ++i)
             release(entries_[i].stable_key);
         if (entries_.size() != meshes.size())
@@ -248,7 +250,7 @@ public:
                      mesh.geometry,
                      mesh.material_slots,
                      static_cast<std::uint32_t>(mesh.geometry->materials().size()),
-                     std::nullopt};
+                     {}};
         }
         changed_.clear();
     }
@@ -286,9 +288,9 @@ private:
             uses_.remove(key);
     }
 
-    std::vector<Entry> entries_;
+    Array<Entry> entries_;
 
-    std::vector<std::uint32_t> changed_;
+    Array<std::uint32_t> changed_;
 
     Map<std::uint64_t, std::uint32_t> uses_;
 
@@ -372,7 +374,7 @@ struct GridCamera {
     std::array<float, 16> inverse;
 };
 
-std::optional<GridCamera> prepare_grid_camera(const Frame& frame) {
+Optional<GridCamera> prepare_grid_camera(const Frame& frame) {
     if ((!frame.view.reference_grid && !frame.view.origin_axes) || frame.scene_viewport.width == 0 ||
         frame.scene_viewport.height == 0)
         return {};
@@ -388,7 +390,7 @@ std::optional<GridCamera> prepare_grid_camera(const Frame& frame) {
     return GridCamera{vp.elements, inv.elements};
 }
 
-std::optional<std::array<float, 16>> prepare_cavity_projection(const Frame& frame) {
+Optional<std::array<float, 16>> prepare_cavity_projection(const Frame& frame) {
     const auto& c = frame.view.cavity;
     if (!c.enabled || (c.ridge == 0 && c.valley == 0) || frame.view.shading == Shading::scene_lit ||
         frame.view.wireframe == Wireframe::only || frame.meshes.empty() || frame.scene_viewport.width == 0 ||
@@ -546,9 +548,9 @@ struct Renderer::State {
 
     ui::PixelExtent cavity_extent{};
 
-    std::optional<std::array<float, 16>> cavity_projection;
+    Optional<std::array<float, 16>> cavity_projection;
 
-    std::optional<GridCamera> grid_camera;
+    Optional<GridCamera> grid_camera;
 
     std::array<float, 4> raster_transform{1, 1, 0, 0};
 
@@ -590,12 +592,12 @@ struct Renderer::State {
     // Node-based: MeshGroup borrows CachedGeometry* across subsequent frame insertions.
     std::unordered_map<const geometry::Mesh*, CachedGeometry> geometries;
 
-    std::vector<MeshGroup> mesh_groups;
+    Array<MeshGroup> mesh_groups;
 
     // Snapshot index -> group; original snapshot indices of visible, then visible selected instances.
-    std::vector<std::uint32_t> instance_groups;
+    Array<std::uint32_t> instance_groups;
 
-    std::vector<std::uint32_t> draw_instances;
+    Array<std::uint32_t> draw_instances;
 
     detail::FrameSlots<std::uint32_t> draw_order_slots; // draw_instances, read in place.
 
@@ -603,7 +605,7 @@ struct Renderer::State {
 
     std::unique_ptr<detail::SceneLit> scene_lit;
 
-    std::vector<detail::SceneLitDraw> lit_draws;
+    Array<detail::SceneLitDraw> lit_draws;
 
     detail::MaterialFrame materials;
 
@@ -613,7 +615,7 @@ struct Renderer::State {
 
     std::size_t live_material_batches{};
 
-    std::vector<std::weak_ptr<detail::MaterialProgramSet>> material_program_sets;
+    Array<std::weak_ptr<detail::MaterialProgramSet>> material_program_sets;
 
     // Keep only the last used code set across snapshot retirement/empty views.
     // It owns no surface tables or images; this is not an unbounded PSO cache.
@@ -629,18 +631,18 @@ struct Renderer::State {
 
     FrameStats stats;
 
-    std::vector<Instance> instances;
+    Array<Instance> instances;
 
-    std::vector<std::uint8_t> raster_visibility;
+    Array<std::uint8_t> raster_visibility;
 
-    std::vector<UiInstance> ui_instances;
+    Array<UiInstance> ui_instances;
 
     std::size_t overlay_instances{}; // Leading viewport annotations in ui_instances.
 
     // Textured UI instances; their slots are resolved while encoding, when uploads can be recorded.
-    std::vector<std::pair<std::uint32_t, const ui::DrawQuad*>> ui_textured;
+    Array<std::pair<std::uint32_t, const ui::DrawQuad*>> ui_textured;
 
-    std::vector<GfxTexture> ui_textures; // This frame's distinct UI images in first-use order.
+    Array<GfxTexture> ui_textures; // This frame's distinct UI images in first-use order.
 
     detail::FrameSlots<UiInstance> ui_slots; // Overlay then UI instances, read in place.
 
@@ -652,13 +654,13 @@ struct Renderer::State {
         std::size_t bytes;
     };
 
-    std::vector<UiTextureUpload> ui_texture_uploads;
+    Array<UiTextureUpload> ui_texture_uploads;
 
     detail::FrameSlots<std::uint8_t> ui_texture_slots;
 
-    std::vector<std::uint8_t> upload_pixels;
+    Array<std::uint8_t> upload_pixels;
 
-    std::optional<Error> failure;
+    Optional<Error> failure;
 
     Microsoft::WRL::ComPtr<ID3D12InfoQueue> debug;
 
@@ -781,7 +783,7 @@ struct Renderer::State {
         // Bake one neutral clay sphere in linear light, then encode its pixels as
         // sRGB. This is a fixed material capture, shared by every scene instance.
         constexpr unsigned side = 256;
-        std::vector<std::uint8_t> pixels(side * side * 4);
+        Array<std::uint8_t> pixels(side * side * 4);
         for (unsigned y = 0; y < side; ++y)
             for (unsigned x = 0; x < side; ++x) {
                 float nx = 2 * (float(x) + .5f) / side - 1;
@@ -821,7 +823,7 @@ struct Renderer::State {
             SIZE_T size = 0;
             if (FAILED(debug->GetMessage(i, nullptr, &size)))
                 continue;
-            std::vector<std::byte> storage(size);
+            Array<std::byte> storage(size);
             auto* message = reinterpret_cast<D3D12_MESSAGE*>(storage.data());
             if (SUCCEEDED(debug->GetMessage(i, message, &size)) && message->Severity <= D3D12_MESSAGE_SEVERITY_ERROR)
                 return std::unexpected(
@@ -834,7 +836,7 @@ struct Renderer::State {
     Result<GfxTexture> material_texture(material::ImageRef source, bool srgb) {
         if (!source) {
             if (!white_image) {
-                auto image = material::Image::create(1, 1, std::vector<std::uint8_t>{255, 255, 255, 255});
+                auto image = material::Image::create(1, 1, Array<std::uint8_t>{255, 255, 255, 255});
                 if (!image)
                     fatal(image.error().message);
                 white_image = std::move(*image);
@@ -886,10 +888,10 @@ struct Renderer::State {
             materials.program_offsets.clear();
             for (const auto& mesh : frame.meshes) {
                 ATELIER_TRY(check_stop(frame.stop_requested, "prepare"));
-                materials.program_offsets.push_back(static_cast<std::uint32_t>(materials.program_slots.size()));
+                materials.program_offsets.add(static_cast<std::uint32_t>(materials.program_slots.size()));
                 for (auto slot : *mesh.material_slots) {
-                    materials.program_slots.push_back(batch->surfaces[slot]);
-                    materials.program_indices.push_back(slot);
+                    materials.program_slots.add(batch->surfaces[slot]);
+                    materials.program_indices.add(slot);
                 }
             }
             ++materials.revision;
@@ -933,12 +935,12 @@ struct Renderer::State {
             for (std::uint32_t y = 0; y < owner->height; ++y)
                 std::memcpy(upload_pixels.data() + offset + std::size_t(y) * pitch,
                             owner->pixels.data() + std::size_t(y) * owner->row_pitch, pitch);
-            ui_texture_uploads.push_back({image.texture, offset, bytes});
+            ui_texture_uploads.add({image.texture, offset, bytes});
         }
         if (!image.used) {
             image.used = true;
             image.slot = static_cast<std::uint32_t>(ui_textures.size());
-            ui_textures.push_back(image.texture);
+            ui_textures.add(image.texture);
         }
         return image.slot;
     }
@@ -977,7 +979,7 @@ struct Renderer::State {
                         std::min(shape.width, std::min(shape.points[2] * .5f, shape.points[3] * .5f));
                 }
                 if (overlaps(instance.bounds, clip))
-                    ui_instances.push_back(instance);
+                    ui_instances.add(instance);
             }
             overlay_instances = ui_instances.size();
         }
@@ -1000,8 +1002,8 @@ struct Renderer::State {
                                  : item.image                                        ? UiShading::image
                                                                                      : UiShading::solid;
             if (shading == UiShading::coverage || shading == UiShading::image)
-                ui_textured.emplace_back(static_cast<std::uint32_t>(ui_instances.size()), &item);
-            ui_instances.push_back(
+                ui_textured.emplace(static_cast<std::uint32_t>(ui_instances.size()), &item);
+            ui_instances.add(
                 {item.bounds, item.uv, item.color, item.border_color,
                  capsule ? ui::CornerRadii{item.capsule_width * .5f, 0, 0, 0}
                  : proc  ? item.radius
@@ -1275,7 +1277,7 @@ struct Renderer::State {
                 lit_draws.clear();
                 lit_draws.reserve(mesh_groups.size());
                 for (const auto& group : mesh_groups)
-                    lit_draws.push_back({group.geometry->gpu, group.visible_first, group.visible_count});
+                    lit_draws.add({group.geometry->gpu, group.visible_first, group.visible_count});
                 {
                     timing::Scope lit_stage{phases::encode_lit};
                     ATELIER_TRY(
@@ -1354,7 +1356,7 @@ struct Renderer::State {
             (void)key;
             image.used = false;
         }
-        std::optional<timing::Scope> ui_stage{std::in_place, phases::encode_ui};
+        Optional<timing::Scope> ui_stage{std::in_place, phases::encode_ui};
         ui_texture_uploads.clear();
         upload_pixels.clear();
         if (!ui_instances.empty()) {
@@ -1559,7 +1561,7 @@ Result<Preparation> Renderer::preparation(const ViewSettings& view) {
     return s.scene_lit->preparation(view);
 }
 
-Result<MaterialBatch> Renderer::prepare_materials(std::span<const material::ProgramSurfaceRef> surfaces) {
+Result<MaterialBatch> Renderer::prepare_materials(Span<const material::ProgramSurfaceRef> surfaces) {
     if (!state_)
         return std::unexpected(error(rhi::ErrorCode::closed, "Renderer is closed"));
     if (const auto checked = state_->check(); !checked)
@@ -1591,11 +1593,11 @@ Result<Preparation> Renderer::preparation(MaterialBatch& batch) {
             // A descriptor sentinel keeps entirely empty-input programs valid;
             // explicit clears return their linear float4, never this white image.
             if (candidate.images.empty())
-                candidate.images.emplace_back(material::ImageRef{}, false);
+                candidate.images.emplace(material::ImageRef{}, false);
             for (const auto& [image, srgb] : candidate.images) {
                 ATELIER_TRY_BIND(texture, state_->material_texture(image, srgb));
-                candidate.textures.push_back(*texture);
-                candidate.image_owners.push_back(
+                candidate.textures.add(*texture);
+                candidate.image_owners.add(
                     state_->material_images.at({image ? image.get() : state_->white_image.get(), srgb}));
             }
             ATELIER_TRY(state_->material_samplers());
@@ -1660,7 +1662,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
             .status = FrameStatus::not_ready, .accepted_extent = {}, .next_extent = extent, .stats = s.stats};
     bool encoding = false;
     auto attempt = [&]() -> detail::CancellableResult<FrameResult> {
-        std::optional<timing::Scope> stage{std::in_place, phases::prepare};
+        Optional<timing::Scope> stage{std::in_place, phases::prepare};
         ATELIER_TRY(check_stop(frame.stop_requested, "prepare"));
         if (frame.materials) {
             const auto* batch = frame.materials->state_.get();
@@ -1710,10 +1712,10 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
                 ATELIER_TRY_BIND(instance, prepare_instance(mesh));
                 checked.prepared = *instance;
             }
-            s.instances.push_back(*checked.prepared);
+            s.instances.add(*checked.prepared);
             s.instances.back().selected = mesh.selected ? 1.0f : 0.0f;
             const bool visible = frustum.visible(mesh.geometry->bounds(), mesh.world);
-            s.raster_visibility.push_back(visible ? 1u : 0u);
+            s.raster_visibility.add(visible ? 1u : 0u);
             ++s.stats.scene_instances;
             s.stats.scene_culled_instances += visible ? 0u : 1u;
             const auto [found, inserted] = s.geometries.try_emplace(mesh.geometry.get());
@@ -1722,12 +1724,12 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
                 cached.source = mesh.geometry;
             if (cached.group >= s.mesh_groups.size() || s.mesh_groups[cached.group].geometry != &cached) {
                 cached.group = static_cast<std::uint32_t>(s.mesh_groups.size());
-                s.mesh_groups.push_back({&cached});
+                s.mesh_groups.add({&cached});
             }
             auto& group = s.mesh_groups[cached.group];
             group.visible_count += visible ? 1u : 0u;
             group.selected_count += visible && mesh.selected ? 1u : 0u;
-            s.instance_groups.push_back(cached.group);
+            s.instance_groups.add(cached.group);
         }
         std::uint32_t order_size = 0;
         for (auto& group : s.mesh_groups) {
@@ -1738,7 +1740,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
             group.selected_first = order_size;
             order_size += group.selected_count;
         }
-        s.draw_instances.resize(order_size);
+        s.draw_instances.resize_uninitialized(order_size);
         // Firsts advance as fill cursors, then return to the range starts.
         for (std::uint32_t i = 0; i < s.instance_groups.size(); ++i) {
             if (!s.raster_visibility[i])

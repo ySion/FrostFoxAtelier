@@ -1,9 +1,9 @@
 #pragma once
 
 #include "editor/session.hpp"
+#include "foundation/optional.hpp"
 #include "logging/logging.hpp"
 #include <filesystem>
-#include <optional>
 #include <string>
 #include <string_view>
 
@@ -19,7 +19,7 @@ struct RecoveryRecord {
 // cancelled so the existing serializer records the last committed author state.
 class SceneRecovery final {
 public:
-    using Outcome = Result<std::optional<RecoveryRecord>>;
+    using Outcome = Result<Optional<RecoveryRecord>>;
 
     bool attempted() const noexcept { return attempted_; }
 
@@ -27,7 +27,7 @@ public:
 
     const Outcome& outcome() const noexcept { return outcome_; }
 
-    std::optional<logging::Field> diagnostic_field() const;
+    Optional<logging::Field> diagnostic_field() const;
 
     void report_stderr() const noexcept;
 
@@ -39,6 +39,6 @@ private:
 
     bool logged_{};
 
-    Outcome outcome_{std::optional<RecoveryRecord>{}};
+    Outcome outcome_{Optional<RecoveryRecord>{}};
 };
 }

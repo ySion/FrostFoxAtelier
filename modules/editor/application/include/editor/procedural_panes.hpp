@@ -2,16 +2,16 @@
 
 #include "editor/graph_view.hpp"
 #include "editor/session.hpp"
+#include "foundation/array.hpp"
 #include "foundation/map.hpp"
+#include "foundation/optional.hpp"
+#include "foundation/span.hpp"
 #include "procedural/geometry.hpp"
 #include "ui_language/live_document.hpp"
 #include <array>
 #include <cstdint>
 #include <memory>
-#include <optional>
-#include <span>
 #include <string>
-#include <vector>
 
 namespace atelier::editor {
 
@@ -169,18 +169,27 @@ inline constexpr ui::ControlKey lock_toggle = popup_root + 536;
 class GeometryGroupGuide final {
 public:
     void select(procedural::Layer layer, std::string name);
+
     bool resolve(const procedural::Geometry& geometry);
+
     std::string_view name() const noexcept { return name_; }
+
     procedural::Layer layer() const noexcept { return layer_; }
+
     std::size_t count() const noexcept { return count_; }
-    std::span<const std::uint32_t> samples() const noexcept { return samples_; }
+
+    Span<const std::uint32_t> samples() const noexcept { return samples_; }
 
 private:
     std::string name_;
+
     procedural::Layer layer_{procedural::Layer::primitive};
+
     SharedArray<bool> column_;
+
     std::size_t count_{};
-    std::vector<std::uint32_t> samples_;
+
+    Array<std::uint32_t> samples_;
 };
 
 class GeometrySpreadsheet final {
@@ -344,7 +353,7 @@ public:
 
         std::string target_name;
 
-        std::vector<std::string> target_nodes;
+        Array<std::string> target_nodes;
 
         std::wstring title_edit;
 
@@ -374,7 +383,7 @@ public:
 
         std::array<float, 2> context_world_pos{};
 
-        std::optional<ui::Cursor> cursor;
+        Optional<ui::Cursor> cursor;
 
         std::wstring status;
     };
@@ -391,16 +400,16 @@ public:
 
     std::array<float, 2> pan() const noexcept { return {pan_x_, pan_y_}; }
 
-    void sync_graph(std::string_view graph_key, std::span<const GraphNodeView> nodes, ui_layout::Size canvas_dip,
-                    std::span<const GraphNetworkBox> boxes = {}, std::span<const GraphStickyNote> notes = {});
+    void sync_graph(std::string_view graph_key, Span<const GraphNodeView> nodes, ui_layout::Size canvas_dip,
+                    Span<const GraphNetworkBox> boxes = {}, Span<const GraphStickyNote> notes = {});
 
     void reset_zoom(ui_layout::Size canvas_dip);
 
     void step_zoom(int delta_steps, float anchor_dip_x, float anchor_dip_y);
 
-    void frame_nodes(std::span<const GraphNodeView> nodes, ui_layout::Size canvas_dip,
-                     std::span<const std::string> only_selected = {}, std::span<const GraphNetworkBox> boxes = {},
-                     std::span<const GraphStickyNote> notes = {});
+    void frame_nodes(Span<const GraphNodeView> nodes, ui_layout::Size canvas_dip,
+                     Span<const std::string> only_selected = {}, Span<const GraphNetworkBox> boxes = {},
+                     Span<const GraphStickyNote> notes = {});
 
     std::array<float, 2> to_world(float dip_x, float dip_y) const noexcept;
 
@@ -435,43 +444,43 @@ public:
 
     void move_tab_highlight(int delta, std::size_t count) noexcept;
 
-    std::vector<GraphNodeCatalogEntry> filter_catalog(std::span<const GraphNodeCatalogEntry> catalog) const;
+    Array<GraphNodeCatalogEntry> filter_catalog(Span<const GraphNodeCatalogEntry> catalog) const;
 
     Result<std::string> commit_tab_pick(Session& session, std::string_view graph_key,
-                                        std::span<const GraphNodeCatalogEntry> catalog, std::size_t pick_index,
-                                        std::string& primary_selected, std::vector<std::string>& selected_nodes,
+                                        Span<const GraphNodeCatalogEntry> catalog, std::size_t pick_index,
+                                        std::string& primary_selected, Array<std::string>& selected_nodes,
                                         bool set_display = false, Project* project = nullptr);
 
     const Popup& popup() const noexcept { return popup_; }
 
     void open_node_popup(PopupKind kind, const GraphInspectView& view, std::string_view primary_selected,
-                         std::span<const std::string> selected_nodes, ui_layout::Size canvas_dip,
-                         std::optional<std::array<float, 2>> anchor_dip = {});
+                         Span<const std::string> selected_nodes, ui_layout::Size canvas_dip,
+                         Optional<std::array<float, 2>> anchor_dip = {});
 
     void close_popup() noexcept { popup_ = {}; }
 
     Result<bool> apply_action(Session& session, std::string_view graph_key, std::string& primary_selected,
-                              std::vector<std::string>& selected_nodes, ui_layout::Size canvas_dip,
+                              Array<std::string>& selected_nodes, ui_layout::Size canvas_dip,
                               const ui::Action& action, std::wstring& out_status, bool read_only = false);
 
     Result<InteractionOutcome> pointer_event(Session& session, std::string_view graph_key,
-                                             std::string& primary_selected, std::vector<std::string>& selected_nodes,
+                                             std::string& primary_selected, Array<std::string>& selected_nodes,
                                              ui::Rect canvas_px, float dpi_scale, const ui::Event& event,
                                              Project* project = nullptr, bool read_only = false);
 
     Result<InteractionOutcome> key_event(Session& session, std::string_view graph_key, std::string& primary_selected,
-                                         std::vector<std::string>& selected_nodes, ui::Rect canvas_px, float dpi_scale,
+                                         Array<std::string>& selected_nodes, ui::Rect canvas_px, float dpi_scale,
                                          const ui::Event& event, std::uint32_t native_key, Project* project = nullptr,
                                          bool read_only = false);
 
     void append_canvas(ui_language::ControlOutput output, ui::ControlKey canvas_parent, ui_layout::Size canvas_dip,
                        const std::shared_ptr<const GraphInspectView>& topology,
-                       std::span<const GraphNodeCatalogEntry> catalog, std::string_view primary_selected,
-                       std::span<const std::string> selected_nodes, bool read_only = false);
+                       Span<const GraphNodeCatalogEntry> catalog, std::string_view primary_selected,
+                       Span<const std::string> selected_nodes, bool read_only = false);
 
     std::uint64_t idle_revision() const noexcept { return idle_projection_ ? idle_projection_->revision : 0; }
 
-    void append_tab_categories(std::vector<ui::Control>& controls, ui::ControlKey tab_box_key) const;
+    void append_tab_categories(Array<ui::Control>& controls, ui::ControlKey tab_box_key) const;
 
     static bool is_canvas_control(ui::ControlKey key) noexcept;
 
@@ -514,7 +523,7 @@ private:
 
         std::string air_node;
 
-        std::optional<PortRef> hovered_port;
+        Optional<PortRef> hovered_port;
 
         FlagZone flag;
 
@@ -532,16 +541,16 @@ private:
 
         IdleCanvasState state;
 
-        std::vector<std::string> selection;
+        Array<std::string> selection;
 
-        std::vector<GraphNodeCatalogEntry> catalog;
+        Array<GraphNodeCatalogEntry> catalog;
 
-        std::vector<ui::Control> controls;
+        Array<ui::Control> controls;
 
         std::uint64_t revision{};
     };
 
-    std::optional<IdleProjection> idle_projection_;
+    Optional<IdleProjection> idle_projection_;
 
     struct RoutedSegment {
         std::array<float, 2> from;
@@ -566,17 +575,17 @@ private:
 
         ui::Rect region{}; // In canvas DIP at origin; includes a margin around the viewport.
 
-        std::vector<Wire> wires;
+        Array<Wire> wires;
 
-        std::vector<RoutedSegment> segments;
+        Array<RoutedSegment> segments;
     };
 
     WireRoutes wire_routes_;
 
     std::array<float, 2> prepare_wire_routes(const std::shared_ptr<const GraphInspectView>&, ui_layout::Size);
 
-    void append_canvas_popup(std::vector<ui::Control>&, ui::ControlKey parent, float width, float height,
-                             const GraphInspectView&, std::span<const GraphNodeCatalogEntry>, bool read_only) const;
+    void append_canvas_popup(Array<ui::Control>&, ui::ControlKey parent, float width, float height,
+                             const GraphInspectView&, Span<const GraphNodeCatalogEntry>, bool read_only) const;
 
     struct SavedView {
         float pan_x{160.f};
@@ -638,23 +647,23 @@ private:
 
     std::array<float, 2> annotation_origin_size_{};
 
-    std::vector<std::pair<std::string, std::array<float, 2>>> drag_origins_;
+    Array<std::pair<std::string, std::array<float, 2>>> drag_origins_;
 
-    std::vector<std::pair<std::string, std::array<float, 2>>> drag_note_origins_;
+    Array<std::pair<std::string, std::array<float, 2>>> drag_note_origins_;
 
-    std::vector<std::pair<std::string, std::array<float, 2>>> drag_box_origins_;
+    Array<std::pair<std::string, std::array<float, 2>>> drag_box_origins_;
 
     std::array<float, 2> drag_world_delta_{};
 
-    std::optional<GraphConnectionView> splice_wire_;
+    Optional<GraphConnectionView> splice_wire_;
 
     PortRef wire_anchor_{};
 
-    std::optional<GraphConnectionView> detached_wire_;
+    Optional<GraphConnectionView> detached_wire_;
 
-    std::optional<PortRef> snapped_port_;
+    Optional<PortRef> snapped_port_;
 
-    std::optional<PortRef> hovered_port_;
+    Optional<PortRef> hovered_port_;
 
     std::string hovered_node_;
 

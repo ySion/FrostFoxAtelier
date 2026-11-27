@@ -13,7 +13,7 @@ struct DiagnosticMetadata {
 
     std::string source_name;
 
-    std::shared_ptr<const std::vector<DiagnosticLocation>> locations;
+    std::shared_ptr<const Array<DiagnosticLocation>> locations;
 };
 
 struct DiagnosticState {
@@ -37,7 +37,7 @@ struct DiagnosticState {
 
     std::size_t error_size{};
 
-    std::optional<ErrorElement> error_element{};
+    Optional<ErrorElement> error_element{};
 
     std::uint64_t resumes{};
 

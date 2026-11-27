@@ -3,8 +3,6 @@
 #include "procedural/graph.hpp"
 
 #include <array>
-#include <optional>
-#include <vector>
 
 namespace atelier::procedural::detail {
 
@@ -35,7 +33,7 @@ struct ArgPlan {
 
     FieldId name_selector{};
 
-    std::optional<Layer> fixed_layer{};
+    Optional<Layer> fixed_layer{};
 
     bool optional{};
 
@@ -55,13 +53,12 @@ struct NodePlan {
 
     FieldId run_over_field{};
 
-    std::vector<ArgPlan> arguments;
+    Array<ArgPlan> arguments;
 };
 
-std::vector<AttributeRule> attribute_rules(const NodePlan& plan, const TypeInfo& type);
-void append_native_rules(std::vector<AttributeRule>& rules, std::string_view type);
+Array<AttributeRule> attribute_rules(const NodePlan& plan, const TypeInfo& type);
+void append_native_rules(Array<AttributeRule>& rules, std::string_view type);
 
-Result<NodePlan> inspect_node(Runtime& runtime, TypeId type,
-                              std::vector<PortDescription>* port_descriptions = nullptr);
+Result<NodePlan> inspect_node(Runtime& runtime, TypeId type, Array<PortDescription>* port_descriptions = nullptr);
 
 }

@@ -95,7 +95,7 @@ struct Output::Stream {
 
     logging::ReaderStatus status;
 
-    std::optional<logging::PublishedHealth> health;
+    Optional<logging::PublishedHealth> health;
 
     struct RawTail {
         std::string bytes;
@@ -140,7 +140,7 @@ logging::Result<Output::Stream*> Output::add_run(std::filesystem::path directory
     stream->directory = std::move(directory);
     stream->directory_text = std::move(*text);
     stream->reader = std::move(*opened);
-    streams_.push_back(std::move(stream));
+    streams_.add(std::move(stream));
     attachment_error_.clear();
     return streams_.back().get();
 }
@@ -151,7 +151,7 @@ void Output::source_ended(Stream& stream) {
 }
 
 void Output::retain(logging::Record record, std::filesystem::path directory,
-                    std::optional<logging::SubmitStatus> rejection) {
+                    Optional<logging::SubmitStatus> rejection) {
     const auto bytes = record.entry.message.size();
     while (!records_.empty() &&
            (records_.size() >= maximum_records || statistics_.body_bytes + bytes > maximum_body_bytes)) {
@@ -375,7 +375,7 @@ void Output::rebuild() const {
                 continue;
             }
         }
-        rows_.push_back({value.key, value.key, entry.repeat ? entry.repeat->count : 1});
+        rows_.add({value.key, value.key, entry.repeat ? entry.repeat->count : 1});
     }
     for (const auto& row : rows_) {
         const auto& value = *item(row.record_key);
@@ -400,12 +400,12 @@ void Output::rebuild() const {
             delivery += L" · " + submission_name(*value.rejection);
         // Cell identity is table-wide, unlike the stable column keys above.
         const auto cell = row.key * 8;
-        table->rows.push_back({row.key,
-                               {{cell + 1, platform::utf8_to_utf16_validated(logging::name(entry.severity))},
-                                {cell + 2, platform::utf8_to_utf16_validated(entry.category)},
-                                {cell + 3, std::move(message)},
-                                {cell + 4, short_text(std::move(source), 1024)},
-                                {cell + 5, short_text(std::move(delivery))}}});
+        table->rows.add({row.key,
+                         {{cell + 1, platform::utf8_to_utf16_validated(logging::name(entry.severity))},
+                          {cell + 2, platform::utf8_to_utf16_validated(entry.category)},
+                          {cell + 3, std::move(message)},
+                          {cell + 4, short_text(std::move(source), 1024)},
+                          {cell + 5, short_text(std::move(delivery))}}});
     }
     if (std::ranges::find(rows_, selected_, &Row::key) == rows_.end())
         selected_ = 0;
@@ -413,7 +413,7 @@ void Output::rebuild() const {
     dirty_ = false;
 }
 
-const std::vector<Output::Row>& Output::rows() const {
+const Array<Output::Row>& Output::rows() const {
     rebuild();
     return rows_;
 }
@@ -439,9 +439,10 @@ const logging::Record* Output::selected_record() const {
     return record(selected_);
 }
 
-std::optional<logging::SourceLocation> Output::selected_source() const {
+Optional<logging::SourceLocation> Output::selected_source() const {
     const auto* selected = selected_record();
-    return selected && !selected->entry.source.file.empty() ? std::optional{selected->entry.source} : std::nullopt;
+    return selected && !selected->entry.source.file.empty() ? Optional<logging::SourceLocation>{selected->entry.source}
+                                                            : Optional<logging::SourceLocation>{};
 }
 
 std::filesystem::path Output::selected_directory() const {

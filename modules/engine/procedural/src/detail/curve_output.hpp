@@ -21,7 +21,7 @@ private:
     Array<math::Vector3> positions_, tangents_;
     Array<float> lengths_, parameters_;
     Array<std::uint32_t> vertices_, offsets_{0};
-    std::vector<ArcStation> donors_;
+    Array<ArcStation> donors_;
 };
 
 } // namespace atelier::procedural::detail

@@ -1,6 +1,9 @@
 #include "application/play_process.hpp"
 #include "control/control.hpp"
 #include "editor/assets.hpp"
+#include "foundation/array.hpp"
+#include "foundation/optional.hpp"
+#include "foundation/scope_exit.hpp"
 #include "platform/error.hpp"
 #include "platform/utf.hpp"
 #include "logging/native.hpp"
@@ -8,7 +11,6 @@
 #include <algorithm>
 #include <cstdio>
 #include <utility>
-#include <vector>
 
 namespace atelier::application {
 namespace {
@@ -23,7 +25,7 @@ void report_os_failure(std::string_view operation, DWORD error) noexcept {
 }
 
 void report_forced(const std::filesystem::path& directory, std::chrono::steady_clock::duration waited, bool exited,
-                   std::optional<DWORD> exit_code, bool acknowledged) noexcept {
+                   Optional<DWORD> exit_code, bool acknowledged) noexcept {
     const auto path = platform::utf16_to_utf8(directory.generic_wstring());
     if (!path) {
         std::fputs("Play termination diagnostic capture failed.\n", stderr);
@@ -166,18 +168,15 @@ Result<void> PlayProcess::start(const std::filesystem::path& project, const std:
                    std::to_wstring(reinterpret_cast<std::uintptr_t>(to_editor.value));
     SIZE_T bytes{};
     InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
-    std::vector<std::byte> attributes(bytes);
+    Array<std::byte> attributes;
+    attributes.resize(bytes);
     auto* list = reinterpret_cast<PPROC_THREAD_ATTRIBUTE_LIST>(attributes.data());
     if (!InitializeProcThreadAttributeList(list, 1, 0, &bytes))
         return failure("Cannot initialize run handle inheritance");
-    struct Attributes {
-        PPROC_THREAD_ATTRIBUTE_LIST value;
-
-        ~Attributes() { DeleteProcThreadAttributeList(value); }
-    } owner{list};
-    std::vector<HANDLE> handles{write_out.value, write_err.value, stop.value, stop_ack.value, input.value};
+    ScopeExit owner{[list]() noexcept { DeleteProcThreadAttributeList(list); }};
+    Array<HANDLE> handles{write_out.value, write_err.value, stop.value, stop_ack.value, input.value};
     if (live)
-        handles.insert(handles.end(), {from_editor.value, to_editor.value});
+        handles.append({from_editor.value, to_editor.value});
     if (!UpdateProcThreadAttribute(list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles.data(),
                                    handles.size() * sizeof(HANDLE), nullptr, nullptr))
         return failure("Cannot restrict run handle inheritance");

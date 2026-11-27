@@ -100,16 +100,16 @@ FormatResult<T> integer(json::Value value, std::string_view key) {
     return result;
 }
 
-FormatResult<std::optional<std::uint64_t>> optional_integer(json::Value value, std::string_view key) {
+FormatResult<Optional<std::uint64_t>> optional_integer(json::Value value, std::string_view key) {
     ATELIER_TRY_BIND(node, value.at(key));
     if (node->is_null())
-        return std::nullopt;
+        return Optional<std::uint64_t>{};
     ATELIER_TRY_BIND(number, integer<std::uint64_t>(value, key));
     return *number;
 }
 
 FormatResult<void> optional_integer(json::Builder& builder, json::Value parent, std::string_view key,
-                                    const std::optional<std::uint64_t>& value) {
+                                    const Optional<std::uint64_t>& value) {
     if (value)
         return builder.set(parent, key, std::to_string(*value));
     return builder.set_null(parent, key);
@@ -235,7 +235,7 @@ FormatResult<Entry> read_entry_fields(json::Value root) {
             field = std::string{*item};
         } else
             return invalid("Unknown field type");
-        value.fields.push_back({std::string{key}, std::move(field)});
+        value.fields.add({std::string{key}, std::move(field)});
     }
     // The old ordered DOM exposed fields in byte order, independent of input.
     std::ranges::sort(value.fields, {}, &Field::key);

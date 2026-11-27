@@ -1,8 +1,11 @@
 #pragma once
 
 #include "editor/session.hpp"
+#include "foundation/array.hpp"
 #include "foundation/map.hpp"
+#include "foundation/optional.hpp"
 #include "foundation/set.hpp"
+#include "foundation/span.hpp"
 #include "editor/menu_bindings.hpp"
 #include "editor/operators.hpp"
 #include "editor/keymap.hpp"
@@ -30,7 +33,7 @@ std::array<double, 3> hsv_to_rgb(std::array<double, 3>) noexcept;
 
 std::wstring color_hex(std::array<double, 3>);
 
-std::optional<std::array<double, 3>> parse_color_hex(std::wstring_view);
+Optional<std::array<double, 3>> parse_color_hex(std::wstring_view);
 
 namespace control {
 inline constexpr ui::ControlKey workbench = 18;
@@ -345,7 +348,7 @@ struct Workspace {
 
         ObjectId object;
 
-        std::vector<FieldId> path; // Empty for object rows; fields address the actual inspected object.
+        Array<FieldId> path; // Empty for object rows; fields address the actual inspected object.
 
         Kind kind{};
 
@@ -412,13 +415,13 @@ struct Workspace {
 
     std::string selected_graph_node; // Decoupled from Display Flag; empty selects the Graph object itself.
 
-    std::vector<std::string> selected_graph_nodes; // Multi-selection set on the 2D Network canvas.
+    Array<std::string> selected_graph_nodes; // Multi-selection set on the 2D Network canvas.
 
     std::string network_context_node; // Target node for RMB context menu on Network canvas.
 
     std::array<float, 2> network_context_pos{}; // World position for RMB canvas context menu.
 
-    std::optional<bool> sop_show_points{}; // nullopt: auto-enable on pure point clouds, off on surfaces/instances.
+    Optional<bool> sop_show_points{}; // nullopt: auto-enable on pure point clouds, off on surfaces/instances.
 
     bool sop_show_normals{};
 
@@ -444,7 +447,7 @@ struct Workspace {
         selected_graph_node = std::string(node_name);
         selected_graph_nodes.clear();
         if (!selected_graph_node.empty())
-            selected_graph_nodes.push_back(selected_graph_node);
+            selected_graph_nodes.add(selected_graph_node);
     }
 
     struct GraphBreadcrumb {
@@ -453,7 +456,7 @@ struct Workspace {
         std::string asset_node_name;
     };
 
-    std::vector<GraphBreadcrumb> graph_breadcrumbs;
+    Array<GraphBreadcrumb> graph_breadcrumbs;
 
     std::string dived_network_graph; // Active child asset graph when diving in while 3D Viewport stays in World.
 
@@ -486,7 +489,7 @@ struct Workspace {
         ui::ControlKey row{};
     };
 
-    std::optional<TreeDrop> tree_drop(const Session&, const ui::UiFrame&, ObjectId dragged, ui::DragPoint) const;
+    Optional<TreeDrop> tree_drop(const Session&, const ui::UiFrame&, ObjectId dragged, ui::DragPoint) const;
 
     ui::ControlKey tree_drop_row{}; // Highlighted drop target while a Scene Tree drag is live.
 
@@ -495,7 +498,7 @@ struct Workspace {
     struct ColorEdit {
         ObjectId object;
 
-        std::vector<world::FieldPath> paths;
+        Array<world::FieldPath> paths;
 
         std::array<double, 3> original{};
 
@@ -511,10 +514,10 @@ struct Workspace {
 
         bool composition_failed{};
 
-        std::optional<material::Override> material_entry; // Keeps vector4 alpha; no fixed material schema.
+        Optional<material::Override> material_entry; // Keeps vector4 alpha; no fixed material schema.
     };
 
-    std::optional<ColorEdit> color_edit;
+    Optional<ColorEdit> color_edit;
 
     // Inline rename over a tree row: the renamed Entity, drawn once its row is presented.
     // An Entity row (object set) or an Asset Browser cell (asset set); asset paths are project-relative.
@@ -528,7 +531,7 @@ struct Workspace {
         ui::TableKey cell{};
     };
 
-    std::optional<RowRename> row_rename;
+    Optional<RowRename> row_rename;
 
     bool show_workbench() const noexcept { return dock.visible(control::workbench); }
 
@@ -547,7 +550,7 @@ struct Workspace {
     // identity is not a row of the tree, nothing changes.
     enum class EntityTree { scene_tree, structure };
 
-    Result<void> set_tree_expanded(const Session&, EntityTree, std::span<const ObjectId>, bool expanded);
+    Result<void> set_tree_expanded(const Session&, EntityTree, Span<const ObjectId>, bool expanded);
 
     // Expands the Entity's Scene Tree ancestors; false when the tree filter hides its row.
     Result<bool> reveal_in_tree(const Session&, ObjectId entity);
@@ -576,8 +579,8 @@ struct Workspace {
         return ui_document_ ? ui_document_->diagnostic() : std::string_view{};
     }
 
-    std::optional<ui_language::Statistics> ui_statistics(std::string_view component) const noexcept {
-        return ui_document_ ? ui_document_->statistics(component) : std::nullopt;
+    Optional<ui_language::Statistics> ui_statistics(std::string_view component) const noexcept {
+        return ui_document_ ? ui_document_->statistics(component) : Optional<ui_language::Statistics>{};
     }
 
     [[nodiscard]] Result<void> commit_ui_controls();
@@ -631,7 +634,7 @@ struct Workspace {
     bool project_ui_configured{};
 
     // While a Play run follows the document: change batches it has not acknowledged yet.
-    std::optional<std::size_t> play_pending;
+    Optional<std::size_t> play_pending;
 
     bool play_diverged{}; // Play stopped following the document until it restarts.
 
@@ -655,9 +658,9 @@ struct Workspace {
 
     std::wstring structure_query;
 
-    std::optional<ui::ContextMenuRequest> menu;
+    Optional<ui::ContextMenuRequest> menu;
 
-    std::vector<ui::MenuItem> menu_items; // Same model for menubar, combo, pane and parameter menus.
+    Array<ui::MenuItem> menu_items; // Same model for menubar, combo, pane and parameter menus.
 
     bool pie_menu() const noexcept {
         return menu && menu->source == control::viewport &&
@@ -666,9 +669,9 @@ struct Workspace {
 
     // ui supplies tree scroll and focus; trees describe only rows near their viewport.
     // Failure rejects the UI candidate; bindings may have changed, so the host must stop this frame.
-    Result<std::vector<ui::Control>> describe(Session&, ui_layout::Size, const ui::UiFrame*, Project* = nullptr,
-                                              const ui::Session* ui = nullptr,
-                                              const ui::ControlBox* command_focus = nullptr);
+    Result<Array<ui::Control>> describe(Session&, ui_layout::Size, const ui::UiFrame*, Project* = nullptr,
+                                        const ui::Session* ui = nullptr,
+                                        const ui::ControlBox* command_focus = nullptr);
 
     Result<void> describe(ui::ControlList&, Session&, ui_layout::Size, const ui::UiFrame*, Project*, const ui::Session*,
                           const ui::ControlBox* command_focus);
@@ -681,13 +684,13 @@ struct Workspace {
 
     ui::ControlKey object_control(ObjectId) const noexcept;
 
-    ui::ControlKey field_control(ObjectId, std::span<const FieldId>) const noexcept;
+    ui::ControlKey field_control(ObjectId, Span<const FieldId>) const noexcept;
 
     ui::ControlKey reset_control(ObjectId) const noexcept;
 
     ui::ControlKey name_control(ObjectId) const noexcept;
 
-    std::optional<TypeId> component_choice(ui::ControlKey) const noexcept;
+    Optional<TypeId> component_choice(ui::ControlKey) const noexcept;
 
     struct MaterialChoice {
         enum class Kind { assign, clear, edit, texture, create_scene, discard };
@@ -703,7 +706,7 @@ struct Workspace {
         std::string path{};
     };
 
-    std::optional<MaterialChoice> material_choice(ui::ControlKey) const;
+    Optional<MaterialChoice> material_choice(ui::ControlKey) const;
 
     struct NetworkPathChoice {
         enum class Kind { follow_entity, select_graph, unpin_world };
@@ -715,7 +718,7 @@ struct Workspace {
         std::string graph_key;
     };
 
-    std::optional<NetworkPathChoice> network_path_choice(ui::ControlKey) const;
+    Optional<NetworkPathChoice> network_path_choice(ui::ControlKey) const;
 
     Selection menu_selection() const noexcept { return menu_selection_; }
 
@@ -734,9 +737,9 @@ private:
 
     std::filesystem::path ui_source_;
 
-    std::optional<std::string> ui_checkpoint_; // Source only; never keeps another Runtime alive.
+    Optional<std::string> ui_checkpoint_; // Source only; never keeps another Runtime alive.
 
-    std::vector<Binding> bindings_;
+    Array<Binding> bindings_;
 
     std::size_t binding_cursor_{};
 
@@ -746,15 +749,19 @@ private:
 
     std::array<ui::ControlKey, 5> resource_properties_{};
 
-    std::vector<ObjectId> navigation_{ObjectId{}}; // Selection history; never retains scene objects.
+    Array<ObjectId> navigation_{ObjectId{}}; // Selection history; never retains scene objects.
 
     std::size_t navigation_cursor_{};
 
     struct TreeBuild {
-        std::vector<ui::TreeNode> nodes;
-        std::vector<ObjectId> objects;
-        std::vector<ui::TreeRow> rows;
-        std::optional<std::pair<ObjectId, ObjectId>> primary;
+        Array<ui::TreeNode> nodes;
+
+        Array<ObjectId> objects;
+
+        Array<ui::TreeRow> rows;
+
+        Optional<std::pair<ObjectId, ObjectId>> primary;
+
         Map<ObjectId, bool> edits;
 
         std::uint32_t node(ObjectId object) const noexcept {
@@ -765,12 +772,17 @@ private:
 
     struct EntityTreeView {
         Map<ObjectId, bool> expansion;
-        std::vector<ObjectId> objects;
-        std::vector<ui::TreeRow> rows;
-        std::optional<std::pair<ObjectId, ObjectId>> primary;
+
+        Array<ObjectId> objects;
+
+        Array<ui::TreeRow> rows;
+
+        Optional<std::pair<ObjectId, ObjectId>> primary;
 
         Map<ObjectId, bool> requests;
+
         TreeBuild candidate;
+
         bool pending{};
 
         void begin(bool visible) {
@@ -787,22 +799,25 @@ private:
             return at ? *at : initial;
         }
 
-        Result<std::vector<std::uint32_t>> window(ObjectId selected, std::wstring_view filter, ui::TreeViewport,
-                                                  std::span<const ObjectId> pinned);
+        Result<Array<std::uint32_t>> window(ObjectId selected, std::wstring_view filter, ui::TreeViewport,
+                                            Span<const ObjectId> pinned);
+
         void commit(const Set<ObjectId>& live);
     };
 
-    std::optional<Set<ObjectId>> pending_live_;
+    Optional<Set<ObjectId>> pending_live_;
+
     EntityTreeView scene_tree_;
+
     EntityTreeView structure_tree_;
 
     Result<void> build_structure_tree(const Session&, ObjectId entity, TreeBuild&) const;
 
-    std::vector<ComponentType> component_choices_;
+    Array<ComponentType> component_choices_;
 
-    std::vector<MaterialChoice> material_choices_;
+    Array<MaterialChoice> material_choices_;
 
-    std::vector<NetworkPathChoice> network_path_choices_;
+    Array<NetworkPathChoice> network_path_choices_;
 
     std::string last_network_graph_;
 
@@ -824,7 +839,7 @@ private:
         const auto index = static_cast<std::size_t>(at - bindings_.begin());
         if (index == bindings_.size()) {
             ATELIER_TRY_BIND(key, allocate_binding_key());
-            bindings_.push_back(make(*key));
+            bindings_.add(make(*key));
         } else if (index < binding_cursor_) {
             return bindings_[index].key;
         }
@@ -836,17 +851,17 @@ private:
     Result<ui::ControlKey> bind_graph_param(std::string_view graph_key, std::string_view node_name,
                                             std::string_view param_path, Binding::Kind kind, std::size_t lane = 0,
                                             ObjectId object = {}, ObjectId component = {},
-                                            std::span<const FieldId> path = {});
+                                            Span<const FieldId> path = {});
 
-    Result<ui::ControlKey> bind(ObjectId, std::span<const FieldId> = {}, Binding::Kind = Binding::Kind::object);
+    Result<ui::ControlKey> bind(ObjectId, Span<const FieldId> = {}, Binding::Kind = Binding::Kind::object);
 
     Result<ui::ControlKey> bind_operator(OperatorCall);
 
     Result<ui::ControlKey> bind_material(ObjectId, std::string_view, Binding::Kind, ObjectId component = {},
                                          std::string_view slot = {}, std::size_t index = 0);
 
-    Result<std::vector<ui::MenuItem>> material_menu(const Binding&, const Session&, const Project*,
-                                                    std::vector<MaterialChoice>&) const;
+    Result<Array<ui::MenuItem>> material_menu(const Binding&, const Session&, const Project*,
+                                              Array<MaterialChoice>&) const;
 };
 
 RegionKind region_of(ui::ControlKey tab) noexcept;

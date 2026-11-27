@@ -14,6 +14,7 @@
 #include <cassert>
 #include <cstdio>
 #include <mutex>
+#include <vector>
 
 namespace atelier::logging {
 namespace {
@@ -115,7 +116,7 @@ struct State {
         }
     }
 
-    void fault(FacilityFault kind, std::string_view message, std::optional<std::uint32_t> code = {}) noexcept {
+    void fault(FacilityFault kind, std::string_view message, Optional<std::uint32_t> code = {}) noexcept {
         failures.fetch_add(1, std::memory_order_relaxed);
         std::lock_guard lock{first_mutex};
         if (!has_issue) {
@@ -472,7 +473,7 @@ void retain_runs(State& state, const std::filesystem::path& root) noexcept {
 
         std::uint64_t time;
     };
-    std::vector<Candidate> completed;
+    Array<Candidate> completed;
     std::error_code error;
     for (std::filesystem::directory_iterator iterator{root, error};
          !error && iterator != std::filesystem::directory_iterator{}; iterator.increment(error)) {
@@ -498,7 +499,7 @@ void retain_runs(State& state, const std::filesystem::path& root) noexcept {
             continue;
         const auto health = read_health(*summary, *info);
         if (health && health->final)
-            completed.push_back({item.path(), info->started_unix_ns});
+            completed.add({item.path(), info->started_unix_ns});
     }
     if (error) {
         state.fault(FacilityFault::retention_failed, "Enumerate completed run directories");

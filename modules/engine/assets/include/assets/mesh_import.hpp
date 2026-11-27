@@ -1,14 +1,14 @@
 #pragma once
 #include "assets/assets.hpp"
 #include "assets/image_decode.hpp"
+#include "foundation/array.hpp"
+#include "foundation/optional.hpp"
 #include "geometry/mesh.hpp"
 #include "runtime/runtime.hpp"
 #include <array>
 #include <filesystem>
-#include <optional>
 #include <string>
 #include <string_view>
-#include <vector>
 
 namespace atelier::assets {
 inline constexpr std::array<std::string_view, 6> imported_material_inputs{"base_color", "roughness", "metallic",
@@ -25,17 +25,17 @@ struct MeshImport {
 
     // One immutable read per dependency, relative to the source file's directory.
     // Import publishes these exact bytes; project refresh tracks the same paths.
-    std::vector<ImportedFile> files;
+    Array<ImportedFile> files;
 
-    std::vector<std::string> notes; // Source content the import left out, one line each.
+    Array<std::string> notes; // Source content the import left out, one line each.
 
     // Both arrays align with mesh->materials(). An absent author material is
     // nullopt, never inferred from white/default parameter values.
-    std::vector<std::optional<MaterialInstanceAsset>> materials;
+    Array<Optional<MaterialInstanceAsset>> materials;
 
     // StandardPBR input order above. Each nonempty path names an entry in files;
     // its <input>_texture override has an empty key until Project assigns a GUID.
-    std::vector<std::array<std::filesystem::path, imported_material_inputs.size()>> textures;
+    Array<std::array<std::filesystem::path, imported_material_inputs.size()>> textures;
 };
 
 // Wavefront OBJ/MTL or glTF 2.0 (.gltf with external buffers and images).

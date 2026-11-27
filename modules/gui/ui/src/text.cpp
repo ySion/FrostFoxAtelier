@@ -1,6 +1,7 @@
 #include "ui/text.hpp"
 #include "ui/icons.hpp"
 #include "memory/fatal.hpp"
+#include "foundation/inline_array.hpp"
 #include "foundation/map.hpp"
 #include "foundation/result.hpp"
 #include <Windows.h>
@@ -11,7 +12,6 @@
 #include <atomic>
 #include <bit>
 #include <cmath>
-#include <optional>
 #include <string>
 
 namespace atelier::ui::detail {
@@ -68,7 +68,7 @@ struct FontHash {
     }
 };
 
-Clip visible_ink(Clip ink, const std::optional<Clip>& viewport) noexcept {
+Clip visible_ink(Clip ink, const Optional<Clip>& viewport) noexcept {
     if (!viewport)
         return ink;
     Clip clipped{std::max(ink.left, viewport->left), std::max(ink.top, viewport->top),
@@ -80,24 +80,24 @@ struct Rasterizer final : IDWriteTextRenderer {
     struct Run {
         RECT bounds{};
 
-        std::vector<std::uint8_t> pixels;
+        Array<std::uint8_t> pixels;
     };
 
     IDWriteFactory2* factory;
 
     float scale;
 
-    std::optional<Clip> viewport;
+    Optional<Clip> viewport;
 
     RECT ink_bounds{};
 
     ULONG refs{1};
 
-    std::vector<Run> runs;
+    InlineArray<Run, 8> runs;
 
     HRESULT failure{S_OK};
 
-    Rasterizer(IDWriteFactory2* value, float dpi, std::optional<Clip> clip)
+    Rasterizer(IDWriteFactory2* value, float dpi, Optional<Clip> clip)
         : factory(value), scale(dpi), viewport(clip) {}
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) noexcept override {
@@ -162,12 +162,12 @@ struct Rasterizer final : IDWriteTextRenderer {
             return S_OK;
         if (!fits_coverage(width, height))
             return failure = E_OUTOFMEMORY;
-        run.pixels.resize(static_cast<std::size_t>(width * height));
+        run.pixels.resize_uninitialized(static_cast<std::size_t>(width * height));
         failure = analysis->CreateAlphaTexture(DWRITE_TEXTURE_ALIASED_1x1, &run.bounds, run.pixels.data(),
                                                static_cast<UINT32>(run.pixels.size()));
         if (FAILED(failure))
             return failure;
-        runs.push_back(std::move(run));
+        runs.add(std::move(run));
         return S_OK;
     }
 
@@ -202,7 +202,7 @@ struct TextStore::Impl {
 
         std::shared_ptr<const TextSnapshot> snapshot;
 
-        std::optional<float> width;
+        Optional<float> width;
 
         ui_layout::MeasuredSize metrics;
 
@@ -243,7 +243,7 @@ struct TextStore::Impl {
 
     Map<std::pair<TextStore::Symbol, std::uint32_t>, std::shared_ptr<const Coverage>> symbols;
 
-    std::vector<DWRITE_LINE_METRICS> lines;
+    Array<DWRITE_LINE_METRICS> lines;
 
     std::uint64_t provider_revision{new_identity()};
 
@@ -251,7 +251,7 @@ struct TextStore::Impl {
 
     std::shared_ptr<CoverageAccounting> accounting{std::make_shared<CoverageAccounting>()};
 
-    Result<void> initialize(std::span<const std::wstring> font_files) {
+    Result<void> initialize(Span<const std::wstring> font_files) {
         ATELIER_TRY(check(DWriteCreateFactory(DWRITE_FACTORY_TYPE_ISOLATED, __uuidof(IDWriteFactory2),
                                               reinterpret_cast<IUnknown**>(factory.GetAddressOf()))));
         if (!font_files.empty()) {
@@ -274,7 +274,7 @@ struct TextStore::Impl {
         return {};
     }
 
-    Result<Paragraph*> resolve(TextKey key, std::optional<float> width) {
+    Result<Paragraph*> resolve(TextKey key, Optional<float> width) {
         auto* found = entries.find(key);
         if (!found)
             fatal("UI text key is missing.");
@@ -310,7 +310,7 @@ struct TextStore::Impl {
         const auto status = paragraph.layout->GetLineMetrics(nullptr, 0, &count);
         if (status != HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER))
             ATELIER_TRY(check(status));
-        lines.resize(count);
+        lines.resize_uninitialized(count);
         ATELIER_TRY(check(paragraph.layout->GetLineMetrics(lines.data(), count, &count)));
         paragraph.metrics = {metrics.widthIncludingTrailingWhitespace, metrics.height, count ? lines[0].baseline : 0};
         if (width && entry.ellipsis) {
@@ -351,7 +351,7 @@ struct TextSnapshot::Impl {
 
     float width{};
 
-    mutable std::vector<Stop> stops; // Owner-thread query cache; paragraph geometry stays immutable.
+    mutable Array<Stop> stops; // Owner-thread query cache; paragraph geometry stays immutable.
 
     Result<Rect> caret_box(TextPosition position) const {
         FLOAT x{};
@@ -367,15 +367,16 @@ struct TextSnapshot::Impl {
         if (!stops.empty())
             return {};
         ATELIER_TRY_BIND(boundaries, character_boundaries(text));
-        std::vector<Stop> candidate;
+        Array<Stop> candidate;
+        candidate.reserve(boundaries->size());
         for (auto offset : *boundaries) {
             const TextPosition leading{offset, false};
             const TextPosition trailing{offset, offset != 0};
             ATELIER_TRY_BIND(first, caret_box(leading));
             ATELIER_TRY_BIND(last, caret_box(trailing));
-            candidate.push_back({leading, first->x});
+            candidate.add({leading, first->x});
             if (std::abs(first->x - last->x) > .01f)
-                candidate.push_back({trailing, last->x});
+                candidate.add({trailing, last->x});
         }
         std::stable_sort(candidate.begin(), candidate.end(), [](auto a, auto b) { return a.x < b.x; });
         stops = std::move(candidate);
@@ -393,7 +394,7 @@ TextStore::TextStore() = default;
 
 TextStore::~TextStore() = default;
 
-Result<void> TextStore::initialize(std::span<const std::wstring> files) {
+Result<void> TextStore::initialize(Span<const std::wstring> files) {
     auto candidate = std::make_unique<Impl>();
     ATELIER_TRY(candidate->initialize(files));
     impl_ = std::move(candidate);
@@ -429,7 +430,7 @@ std::shared_ptr<const Coverage> TextStore::symbol(Symbol symbol, std::uint32_t p
         return *found;
     }
     auto coverage = std::make_shared<TrackedCoverage>(impl_->accounting, pixels, pixels);
-    const auto bundled = [symbol]() -> std::optional<Icon> {
+    const auto bundled = [symbol]() -> Optional<Icon> {
         switch (symbol) {
         case Symbol::pointer:
             return Icon::pointer;
@@ -509,7 +510,7 @@ std::shared_ptr<const Coverage> TextStore::symbol(Symbol symbol, std::uint32_t p
         case Symbol::search:
             return Icon::search;
         default:
-            return std::nullopt;
+            return {};
         }
     }();
     if (bundled)
@@ -784,7 +785,7 @@ Result<ui_layout::MeasuredSize> TextStore::metrics(TextKey key, float width) {
     return (*paragraph)->metrics;
 }
 
-Result<RasterText> TextStore::raster(TextKey key, float width, float dpi, std::optional<Clip> viewport) {
+Result<RasterText> TextStore::raster(TextKey key, float width, float dpi, Optional<Clip> viewport) {
     ATELIER_TRY_BIND(resolved, impl_->resolve(key, width));
     auto& paragraph = **resolved;
     if (paragraph.raster_scale == dpi && paragraph.raster_region == visible_ink(paragraph.ink_bounds, viewport)) {
@@ -911,19 +912,20 @@ Result<TextPosition> TextSnapshot::move(TextPosition position, int direction, bo
     return position;
 }
 
-Result<std::vector<Rect>> TextSnapshot::selection(std::uint32_t first, std::uint32_t last) const {
+Result<Array<Rect>> TextSnapshot::selection(std::uint32_t first, std::uint32_t last) const {
     if (first == last)
         return {};
     UINT32 count{};
     const auto status = impl_->layout->HitTestTextRange(first, last - first, 0, 0, nullptr, 0, &count);
     if (status != HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER))
         ATELIER_TRY(check(status));
-    std::vector<DWRITE_HIT_TEST_METRICS> metrics(count);
+    Array<DWRITE_HIT_TEST_METRICS> metrics;
+    metrics.resize_uninitialized(count);
     ATELIER_TRY(check(impl_->layout->HitTestTextRange(first, last - first, 0, 0, metrics.data(), count, &count)));
-    std::vector<Rect> result;
+    Array<Rect> result;
     result.reserve(count);
     for (const auto& metric : metrics)
-        result.push_back({metric.left, metric.top, metric.width, metric.height});
+        result.add({metric.left, metric.top, metric.width, metric.height});
     return result;
 }
 } // namespace atelier::ui::detail

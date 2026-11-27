@@ -3,7 +3,6 @@
 #include "procedural/geometry.hpp"
 
 #include <chrono>
-#include <span>
 
 namespace atelier::procedural {
 
@@ -332,7 +331,7 @@ Result<Geometry> ray(const Geometry& points, const Geometry& surface, const RayS
 // shortest rotation from +Z to N without up, identity without N). `variant` (uint,
 // default 0 when absent) picks the reference. Detail attributes carry over; the output
 // has no points. Non-finite inputs and out-of-range variants fail.
-Result<Geometry> copy_to_points(const Geometry& points, std::span<const Reference> references,
+Result<Geometry> copy_to_points(const Geometry& points, Span<const Reference> references,
                                 StringView variant = "variant");
 
 // Real geometry copies in selected target-point order, using the same placement as
@@ -342,8 +341,8 @@ Result<Geometry> copy_to_points(const Geometry& points, std::span<const Referenc
 // point columns broadcast unchanged, overriding compatible columns (P is forbidden).
 // Detail takes the first selected source in source-port order, then target fallback.
 // Preflights layer counts, fills each output buffer once, and never mutates inputs.
-Result<Geometry> realize(std::span<const Geometry> sources, const Geometry& points, StringView group = {},
-                         StringView variant = "variant", std::span<const String> target_attributes = {});
+Result<Geometry> realize(Span<const Geometry> sources, const Geometry& points, StringView group = {},
+                         StringView variant = "variant", Span<const String> target_attributes = {});
 
 struct ExtrudeSettings {
     StringView group{};
@@ -406,6 +405,6 @@ Result<Geometry> sweep(const Geometry& backbone, const SweepSettings& settings =
                        const Geometry* cross_section = nullptr);
 
 // Of the points; empty geometry has none.
-[[nodiscard]] std::optional<math::Bounds> bounds(const Geometry& geometry) noexcept;
+[[nodiscard]] Optional<math::Bounds> bounds(const Geometry& geometry) noexcept;
 
 }

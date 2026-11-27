@@ -4,7 +4,6 @@
 
 #include <array>
 #include <memory>
-#include <vector>
 
 namespace atelier::procedural {
 
@@ -19,11 +18,11 @@ struct Collection {
 
     std::array<std::int32_t, 3> chunk;
 
-    std::shared_ptr<const std::vector<Affine>> transforms; // Never empty.
+    std::shared_ptr<const Array<Affine>> transforms; // Never empty.
 };
 
 struct Publication {
-    std::vector<Collection> collections; // Ordered by reference key, then chunk.
+    Array<Collection> collections; // Ordered by reference key, then chunk.
 
     std::uint64_t dropped{}; // Degenerate instances left out.
 };

@@ -57,16 +57,16 @@ int compare_names(std::wstring_view a, std::wstring_view b) {
 }
 
 // Directory lists preserve the Project scan's path order, independently of the result table's sorting.
-bool listed(const std::vector<AssetBrowser::Item>& directories, const std::filesystem::path& path) {
+bool listed(Span<const AssetBrowser::Item> directories, const std::filesystem::path& path) {
     return std::ranges::binary_search(directories, path, {}, &AssetBrowser::Item::path);
 }
 
 constexpr std::array column_minima{96.f, 64.f, 64.f};
 
-std::optional<std::size_t> column_index(ui::TableKey key) {
+Optional<std::size_t> column_index(ui::TableKey key) {
     if (key >= browser_control::name_column && key <= browser_control::size_column)
         return static_cast<std::size_t>(key - browser_control::name_column);
-    return std::nullopt;
+    return {};
 }
 
 ui::ControlIcon item_icon(assets::AssetKind kind) {
@@ -150,13 +150,13 @@ void AssetBrowser::visit(Location location, bool remember) {
             expansion_.insert_or_assign(ancestor, true);
         }
     if (navigation_.empty()) {
-        navigation_.push_back(location);
+        navigation_.add(location);
         navigation_cursor_ = 0;
     } else if (remember) {
         navigation_.resize(navigation_cursor_ + 1);
-        navigation_.push_back(location);
+        navigation_.add(location);
         if (navigation_.size() > 64)
-            navigation_.erase(navigation_.begin());
+            navigation_.remove_at(0);
         navigation_cursor_ = navigation_.size() - 1;
     } else
         navigation_[navigation_cursor_] = location;
@@ -181,8 +181,8 @@ void AssetBrowser::update_directories(const Project* project) {
     if (project)
         for (const auto& entry : project->entries())
             if (entry.kind == assets::AssetKind::folder) {
-                directories_.push_back({entry.key, entry.path, entry.path.filename().wstring(), entry.kind, 0});
-                targets_.push_back({key_for("nav:" + entry.key), directories_.back()});
+                directories_.add({entry.key, entry.path, entry.path.filename().wstring(), entry.kind, 0});
+                targets_.add({key_for("nav:" + entry.key), directories_.back()});
                 // A directory first appears expanded when it is or holds the current directory.
                 if (!engine_ && !listed(previous, entry.path))
                     if (const auto relative = directory_.lexically_relative(entry.path);
@@ -227,36 +227,36 @@ ui::Result<ui_language::ItemList> AssetBrowser::directory_items() {
 
         ui::ControlIcon icon;
     };
-    std::vector<Node> labels;
+    Array<Node> labels;
     labels.reserve(directories_.size() + 2);
-    std::vector<ui::TreeNode> nodes;
+    Array<ui::TreeNode> nodes;
     nodes.reserve(directories_.size() + 2);
     const auto expanded = [&](const std::filesystem::path& path, bool initial) {
         const auto* at = expansion_.find(path);
         return at ? *at : initial;
     };
-    labels.push_back(
+    labels.add(
         {browser_control::project, L"Project", has_project_, !engine_ && directory_.empty(), ui::ControlIcon::folder});
-    nodes.push_back({ui::no_tree_node, expanded({}, true), {}});
-    std::vector<std::pair<const std::filesystem::path*, std::uint32_t>> path{{nullptr, 0}};
+    nodes.add({ui::no_tree_node, expanded({}, true), {}});
+    Array<std::pair<const std::filesystem::path*, std::uint32_t>> path{{nullptr, 0}};
     for (const auto& entry : directories_) {
         const auto parent = entry.path.parent_path();
         while (path.size() > 1 && *path.back().first != parent)
-            path.pop_back();
-        labels.push_back({directory_control(entry.path), entry.name, true, !engine_ && entry.path == directory_,
-                          ui::ControlIcon::folder});
-        nodes.push_back({path.back().second, expanded(entry.path, false), {}});
-        path.emplace_back(&entry.path, static_cast<std::uint32_t>(nodes.size() - 1));
+            path.pop();
+        labels.add({directory_control(entry.path), entry.name, true, !engine_ && entry.path == directory_,
+                    ui::ControlIcon::folder});
+        nodes.add({path.back().second, expanded(entry.path, false), {}});
+        path.emplace(&entry.path, static_cast<std::uint32_t>(nodes.size() - 1));
     }
-    labels.push_back({browser_control::engine, L"Engine", true, engine_, ui::ControlIcon::mesh});
-    nodes.push_back({});
+    labels.add({browser_control::engine, L"Engine", true, engine_, ui::ControlIcon::mesh});
+    nodes.add({});
     ATELIER_TRY_BIND(rows, ui::flatten_tree(nodes, {}));
-    auto items = std::make_shared<std::vector<ui_language::Item>>();
+    auto items = std::make_shared<Array<ui_language::Item>>();
     items->reserve(rows->size());
     for (std::uint32_t index = 0; index < rows->size(); ++index) {
         const auto& row = (*rows)[index];
         const auto& label = labels[row.node];
-        items->push_back(
+        items->add(
             {label.key,
              {std::wstring(label.name), label.enabled, label.selected, static_cast<double>(label.icon),
               ui_language::TreeRowBinding{index, row.depth, row.branch, row.expanded, label.selected, row.lines},
@@ -268,7 +268,7 @@ ui::Result<ui_language::ItemList> AssetBrowser::directory_items() {
     return ui_language::ItemList{directory_items_};
 }
 
-Result<void> AssetBrowser::set_expanded(std::span<const std::filesystem::path> paths, bool expanded) {
+Result<void> AssetBrowser::set_expanded(Span<const std::filesystem::path> paths, bool expanded) {
     for (const auto& path : paths)
         if (path.empty() ? !has_project_ : !listed(directories_, path))
             return std::unexpected(
@@ -307,15 +307,15 @@ void AssetBrowser::update_items(const Project* project) {
     items_.clear();
     if (engine_) {
         for (const auto& asset : assets::mesh_assets())
-            items_.push_back({asset.key, {}, asset.name, assets::AssetKind::mesh, 0});
+            items_.add({asset.key, {}, asset.name, assets::AssetKind::mesh, 0});
         for (const auto& asset : assets::material_assets())
-            items_.push_back({asset.key, {}, asset.name, assets::AssetKind::material, 0});
+            items_.add({asset.key, {}, asset.name, assets::AssetKind::material, 0});
     } else if (project)
         for (const auto& entry : project->entries())
             if (entry.path.parent_path() == directory_)
-                items_.push_back({entry.key, entry.path, entry.path.filename().wstring(), entry.kind, entry.bytes});
+                items_.add({entry.key, entry.path, entry.path.filename().wstring(), entry.kind, entry.bytes});
     const auto query = folded(query_);
-    std::erase_if(items_, [&](const auto& item) { return !matches_filter(item, query, filter_); });
+    items_.remove_if([&](const auto& item) { return !matches_filter(item, query, filter_); });
     if (selected_) {
         const auto found = std::ranges::find(items_, selected_->key, &Item::key);
         if (found == items_.end())
@@ -360,10 +360,10 @@ const std::shared_ptr<const ui::TableData>& AssetBrowser::table_data() {
         const auto size = item.kind == assets::AssetKind::folder || item.path.empty() ? L""
                           : item.bytes < 1024 ? std::to_wstring(item.bytes) + L" B"
                                               : std::to_wstring(item.bytes / 1024 + (item.bytes % 1024 != 0)) + L" KB";
-        data->rows.push_back({row,
-                              {{(row << 2) | browser_control::name_column, item.name, item_icon(item.kind)},
-                               {(row << 2) | browser_control::type_column, std::wstring(kind_name(item.kind))},
-                               {(row << 2) | browser_control::size_column, size}}});
+        data->rows.add({row,
+                        {{(row << 2) | browser_control::name_column, item.name, item_icon(item.kind)},
+                         {(row << 2) | browser_control::type_column, std::wstring(kind_name(item.kind))},
+                         {(row << 2) | browser_control::size_column, size}}});
     }
     data->sort = sort_;
     table_data_ = std::move(data);
@@ -371,16 +371,16 @@ const std::shared_ptr<const ui::TableData>& AssetBrowser::table_data() {
     return table_data_;
 }
 
-std::vector<ui::MenuItem> AssetBrowser::menu_items(ui::ControlKey source) const {
+Array<ui::MenuItem> AssetBrowser::menu_items(ui::ControlKey source) const {
     namespace id = browser_control;
-    std::vector<ui::MenuItem> items;
+    Array<ui::MenuItem> items;
     const auto radio = [&](ui::ControlKey key, std::wstring title, bool enabled, bool selected,
                            ui::ControlIcon icon = ui::ControlIcon::none) {
         ui::MenuItem item{key, std::move(title), enabled, selected, {}};
         item.behavior = ui::MenuBehavior::radio;
         item.radio_group = source;
         item.icon = icon;
-        items.push_back(std::move(item));
+        items.add(std::move(item));
     };
     if (source == id::filter) {
         const std::array names{L"All types", L"Meshes",   L"Scenes",           L"Source",
@@ -405,7 +405,7 @@ std::vector<ui::MenuItem> AssetBrowser::menu_items(ui::ControlKey source) const 
     } else {
         if (source != id::actions && source != id::results)
             return {};
-        items.push_back(
+        items.add(
             {id::open,
              L"Open",
              selected_ &&
@@ -415,7 +415,7 @@ std::vector<ui::MenuItem> AssetBrowser::menu_items(ui::ControlKey source) const 
              false,
              {}});
         items.back().icon = ui::ControlIcon::folder;
-        items.push_back(
+        items.add(
             {id::add,
              L"Add to Scene",
              can_create_ && selected_ &&
@@ -423,7 +423,7 @@ std::vector<ui::MenuItem> AssetBrowser::menu_items(ui::ControlKey source) const 
              false,
              {}});
         items.back().icon = ui::ControlIcon::plus;
-        items.push_back({id::rename, L"Rename", can_rename(), false, {}, L"F2"});
+        items.add({id::rename, L"Rename", can_rename(), false, {}, L"F2"});
         items.back().icon = ui::ControlIcon::rename;
     }
     return items;
@@ -498,12 +498,13 @@ bool AssetBrowser::apply(const ui::Action& action) {
         if (!expanded)
             return false;
         if (action.key == project) {
-            static_cast<void>(set_expanded(std::array{std::filesystem::path{}}, *expanded));
+            const std::array root_path{std::filesystem::path{}};
+            static_cast<void>(set_expanded(root_path, *expanded));
             return true;
         }
         for (const auto& target : targets_)
             if (target.key == action.key) {
-                static_cast<void>(set_expanded(std::span{&target.item.path, 1}, *expanded));
+                static_cast<void>(set_expanded(Span{&target.item.path, 1}, *expanded));
                 return true;
             }
         return false;
@@ -569,7 +570,7 @@ ui::Result<void> AssetBrowser::append(ui_language::ControlOutput controls, ui::C
     update_directories(project);
     can_create_ = can_create;
     if (navigation_.empty())
-        navigation_.push_back({engine_, directory_});
+        navigation_.add({engine_, directory_});
     update_items(project);
     const auto address = engine_              ? L"Engine"
                          : directory_.empty() ? L"Project"

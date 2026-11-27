@@ -7,15 +7,15 @@ constexpr unsigned warmup_frames = 96;
 void png(const render::Capture& image, const std::filesystem::path& path) {
     // Encoding is outside all measured frames and preserves captured RGBA8.
     std::ofstream output(path, std::ios::binary);
-    const auto integer = [](std::vector<std::uint8_t>& bytes, std::uint32_t value) {
+    const auto integer = [](atelier::Array<std::uint8_t>& bytes, std::uint32_t value) {
         for (int shift : {24, 16, 8, 0})
-            bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+            bytes.add(static_cast<std::uint8_t>(value >> shift));
     };
-    const auto chunk = [&](const char* name, const std::vector<std::uint8_t>& payload) {
-        std::vector<std::uint8_t> bytes;
+    const auto chunk = [&](const char* name, atelier::Span<const std::uint8_t> payload) {
+        atelier::Array<std::uint8_t> bytes;
         integer(bytes, static_cast<std::uint32_t>(payload.size()));
-        bytes.insert(bytes.end(), name, name + 4);
-        bytes.insert(bytes.end(), payload.begin(), payload.end());
+        bytes.append(atelier::Span<const std::uint8_t>{reinterpret_cast<const std::uint8_t*>(name), 4});
+        bytes.append(payload);
         std::uint32_t crc = ~0u;
         for (std::size_t index = 4; index < bytes.size(); ++index) {
             crc ^= bytes[index];
@@ -27,27 +27,26 @@ void png(const render::Capture& image, const std::filesystem::path& path) {
     };
     constexpr std::uint8_t signature[]{137, 80, 78, 71, 13, 10, 26, 10};
     output.write(reinterpret_cast<const char*>(signature), sizeof(signature));
-    std::vector<std::uint8_t> header;
+    atelier::Array<std::uint8_t> header;
     integer(header, image.extent.width);
     integer(header, image.extent.height);
-    header.insert(header.end(), {8, 6, 0, 0, 0});
+    header.append({8, 6, 0, 0, 0});
     chunk("IHDR", header);
-    std::vector<std::uint8_t> raw;
+    atelier::Array<std::uint8_t> raw;
     raw.reserve(image.rgba.size() + image.extent.height);
     for (unsigned y = 0; y < image.extent.height; ++y) {
-        raw.push_back(0);
-        const auto begin = image.rgba.begin() + std::size_t(y) * image.extent.width * 4;
-        raw.insert(raw.end(), begin, begin + image.extent.width * 4);
+        raw.add(0);
+        raw.append(image.rgba.slice(std::size_t(y) * image.extent.width * 4, image.extent.width * 4));
     }
-    std::vector<std::uint8_t> compressed{0x78, 0x01};
+    atelier::Array<std::uint8_t> compressed{0x78, 0x01};
     for (std::size_t offset = 0; offset < raw.size();) {
         const auto count = static_cast<std::uint16_t>(std::min<std::size_t>(65535, raw.size() - offset));
-        compressed.push_back(offset + count == raw.size() ? 1 : 0);
-        compressed.push_back(static_cast<std::uint8_t>(count));
-        compressed.push_back(static_cast<std::uint8_t>(count >> 8));
-        compressed.push_back(static_cast<std::uint8_t>(~count));
-        compressed.push_back(static_cast<std::uint8_t>((~count) >> 8));
-        compressed.insert(compressed.end(), raw.begin() + offset, raw.begin() + offset + count);
+        compressed.add(offset + count == raw.size() ? 1 : 0);
+        compressed.add(static_cast<std::uint8_t>(count));
+        compressed.add(static_cast<std::uint8_t>(count >> 8));
+        compressed.add(static_cast<std::uint8_t>(~count));
+        compressed.add(static_cast<std::uint8_t>((~count) >> 8));
+        compressed.append(raw.slice(offset, count));
         offset += count;
     }
     std::uint32_t a = 1;
@@ -75,7 +74,7 @@ atelier::math::Matrix4 box(float x, float y, float z, float sx, float sy, float 
 }
 
 struct Room {
-    std::vector<render::MeshInstance> meshes;
+    atelier::Array<render::MeshInstance> meshes;
 
     Room() {
         const auto add = [&](const atelier::math::Matrix4& transform, ui::Color color) {
@@ -83,7 +82,7 @@ struct Room {
             mesh.geometry = atelier::geometry::cube_mesh();
             mesh.world = transform;
             mesh.color = color;
-            meshes.push_back(std::move(mesh));
+            meshes.add(std::move(mesh));
         };
         add(box(0, -.15f, 3.5f, 8, .3f, 7), {.62f, .62f, .62f, 1}); // floor
         add(box(0, 2, 7, 8, 4, .2f), {.62f, .62f, .62f, 1}); // back receiver
@@ -145,7 +144,7 @@ std::array<double, 3> mean_rgb(const render::Capture& image, Region region) {
     return result;
 }
 
-double percentile(std::vector<double> values, unsigned percent) {
+double percentile(atelier::Array<double> values, unsigned percent) {
     check(!values.empty(), "SceneLit completed GPU sample set is nonempty");
     std::ranges::sort(values);
     return values[(values.size() - 1) * percent / 100];
@@ -229,10 +228,10 @@ struct RectangleExpected {
     Rgb3 specular;
 };
 
-std::vector<RectangleExpected> rectangle_expected(const render::Frame& frame, const render::Capture& image,
-                                                  const render::Light& light, float plane_z, const Rgb3& base,
-                                                  double roughness, double metallic, unsigned samples) {
-    std::vector<RectangleExpected> expected;
+atelier::Array<RectangleExpected> rectangle_expected(const render::Frame& frame, const render::Capture& image,
+                                                     const render::Light& light, float plane_z, const Rgb3& base,
+                                                     double roughness, double metallic, unsigned samples) {
+    atelier::Array<RectangleExpected> expected;
     const Rgb3 centre{light.position[0], light.position[1], light.position[2]};
     const Rgb3 facing{light.direction[0], light.direction[1], light.direction[2]};
     const Rgb3 right{light.right[0] * double(light.width), light.right[1] * double(light.width),
@@ -300,7 +299,7 @@ std::vector<RectangleExpected> rectangle_expected(const render::Frame& frame, co
             value.diffuse[c] = diffuse[c] * radiance;
             value.specular[c] = specular[c] * radiance;
         }
-        expected.push_back(value);
+        expected.add(value);
     });
     return expected;
 }
@@ -339,8 +338,8 @@ Analytic analytic_rectangle_plane(const render::Frame& frame, const render::Capt
     return result;
 }
 
-std::vector<render::Light> room_lights() {
-    std::vector<render::Light> lights(4);
+atelier::Array<render::Light> room_lights() {
+    atelier::Array<render::Light> lights(4);
     lights[0].kind = render::LightKind::directional;
     lights[0].direction = *atelier::math::try_normalize(Vec3{.4f, -1, .6f});
     lights[0].intensity = 1.5f;
@@ -370,7 +369,7 @@ struct Fixture {
 
     Room room;
 
-    std::vector<render::Light> lights = room_lights();
+    atelier::Array<render::Light> lights = room_lights();
 
     ui::Frame drawing;
 
@@ -412,7 +411,7 @@ struct Fixture {
             frame.scene_viewport = {24, 32, float(drawing.extent.width) - 48, float(drawing.extent.height) - 56};
             frame.camera = camera({static_cast<unsigned>(frame.scene_viewport.width),
                                    static_cast<unsigned>(frame.scene_viewport.height)});
-            drawing.draws.push_back({{4, 4, 16, 16}, {4, 4, 20, 20}, {0, 1, 0, 1}, {0, 0, 1, 1}, {}});
+            drawing.draws.add({{4, 4, 16, 16}, {4, 4, 20, 20}, {0, 1, 0, 1}, {0, 0, 1, 1}, {}});
         }
         frame.view.shading = render::Shading::scene_lit;
         frame.view.lit.probe_volumes[0].minimum = {-5, -1, -1};
@@ -501,11 +500,11 @@ void benchmark(Fixture& f) {
     std::ofstream samples(f.output / "benchmark-gpu.csv");
     samples
         << "submission,completed_sequence,completed_frame_id,gbuffer_ms,as_ms,direct_ms,ddgi_ms,gtao_ms,sssr_ms,temporal_ms,composite_ms,sum_gpu_ms,current_logical_resource_bytes,completed_shadow_queries,completed_probe_queries,ddgi_update_ms,ddgi_gather_ms,ddgi_update_visibility_queries,ddgi_gather_visibility_queries,direct_cluster_ms,shadow_update_ms,direct_shading_ms,ddgi_primary_ms,ddgi_hit_lighting_ms,completed_pass_mask\n";
-    std::vector<double> totals;
-    std::array<std::vector<double>, 8> passes;
-    std::array<std::vector<double>, 2> ddgi_passes;
-    std::array<std::vector<double>, 3> direct_passes;
-    std::array<std::vector<double>, 2> ddgi_update_passes;
+    atelier::Array<double> totals;
+    std::array<atelier::Array<double>, 8> passes;
+    std::array<atelier::Array<double>, 2> ddgi_passes;
+    std::array<atelier::Array<double>, 3> direct_passes;
+    std::array<atelier::Array<double>, 2> ddgi_update_passes;
     std::uint64_t resource_peak = 0;
     std::uint64_t previous_sequence = 0;
     const auto first_measured_frame = f.drawing.id;
@@ -522,11 +521,11 @@ void benchmark(Fixture& f) {
         for (std::size_t pass = 0; pass < passes.size(); ++pass) {
             const double value = stats.scene_lit_gpu_ms[pass];
             check(std::isfinite(value) && value >= 0, "SceneLit GPU timestamps are finite nonnegative milliseconds");
-            passes[pass].push_back(value);
+            passes[pass].add(value);
             sum += value;
             samples << ',' << value;
         }
-        totals.push_back(sum);
+        totals.add(sum);
         resource_peak = std::max(resource_peak, stats.scene_lit_resource_bytes);
         samples << ',' << sum << ',' << stats.scene_lit_resource_bytes << ',' << stats.scene_lit_shadow_rays << ','
                 << stats.scene_lit_probe_rays;
@@ -534,7 +533,7 @@ void benchmark(Fixture& f) {
         for (std::size_t pass = 0; pass < ddgi_passes.size(); ++pass) {
             const double value = stats.scene_lit_ddgi_gpu_ms[pass];
             check(std::isfinite(value) && value >= 0, "DDGI subpass timestamps are finite nonnegative milliseconds");
-            ddgi_passes[pass].push_back(value);
+            ddgi_passes[pass].add(value);
             ddgi_sum += value;
             samples << ',' << value;
         }
@@ -552,7 +551,7 @@ void benchmark(Fixture& f) {
             for (std::size_t i = 0; i < values.size(); ++i) {
                 const double value = values[i];
                 check(std::isfinite(value) && value >= 0, "GPU subpass timestamps are finite nonnegative milliseconds");
-                series[i].push_back(value);
+                series[i].add(value);
                 sum += value;
                 samples << ',' << value;
             }

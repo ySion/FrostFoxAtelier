@@ -1,5 +1,6 @@
 #include "ui/style_sheet.hpp"
 #include "ui/text.hpp"
+#include "foundation/inline_array.hpp"
 #include "foundation/map.hpp"
 #include "foundation/result.hpp"
 #include "platform/utf.hpp"
@@ -63,14 +64,14 @@ class Parser {
     };
 
     struct Block {
-        std::vector<StyleSelector> selectors;
+        Array<StyleSelector> selectors;
 
-        std::vector<Declaration> declarations;
+        Array<Declaration> declarations;
     };
 
     std::string source_;
 
-    std::span<const NamedImage> images_;
+    Span<const NamedImage> images_;
 
     std::size_t at_{};
 
@@ -78,7 +79,7 @@ class Parser {
 
     Map<std::string, std::shared_ptr<const ColorImage>> gradients_;
 
-    std::vector<Block> blocks_;
+    Array<Block> blocks_;
 
     std::unexpected<StyleDiagnostic> fail(std::string message, std::size_t position) const {
         StyleDiagnostic error{1, 1, std::move(message)};
@@ -189,7 +190,7 @@ class Parser {
             ATELIER_TRY_BIND(id, identifier());
             any = true;
             if (prefix == '.')
-                result.classes.push_back(*id);
+                result.classes.add(*id);
             else if (*id == "role") {
                 ATELIER_TRY(expect('('));
                 ATELIER_TRY_BIND(role, identifier());
@@ -249,17 +250,17 @@ class Parser {
         return result;
     }
 
-    ParseResult<std::vector<float>> lengths(Value input) const {
+    ParseResult<InlineArray<float, 4>> lengths(Value input) const {
         ATELIER_TRY_BIND(resolved, resolve(input));
         input = *resolved;
         auto remaining = input.text;
-        std::vector<float> values;
+        InlineArray<float, 4> values;
         while (!remaining.empty()) {
             const auto end = remaining.find_first_of(" \t\r\n");
             ATELIER_TRY_BIND(value, number({remaining.substr(0, end), input.position}));
-            values.push_back(*value);
-            if (values.size() > 4)
+            if (values.size() == 4)
                 return fail("Expected one, two or four lengths", input.position);
+            values.add(*value);
             remaining = end == remaining.npos ? std::string_view{} : trim(remaining.substr(end));
         }
         if (values.size() != 1 && values.size() != 2 && values.size() != 4)
@@ -335,8 +336,8 @@ class Parser {
             const float t = static_cast<float>(row) / 63;
             for (auto pair : {std::pair{a->r * a->a, b->r * b->a}, std::pair{a->g * a->a, b->g * b->a},
                               std::pair{a->b * a->a, b->b * b->a}})
-                image->pixels.push_back(encode(std::lerp(pair.first, pair.second, t)));
-            image->pixels.push_back(static_cast<std::uint8_t>(std::lround(std::lerp(a->a, b->a, t) * 255)));
+                image->pixels.add(encode(std::lerp(pair.first, pair.second, t)));
+            image->pixels.add(static_cast<std::uint8_t>(std::lround(std::lerp(a->a, b->a, t) * 255)));
         }
         gradients_.try_emplace(std::string(input->text), image);
         return image;
@@ -564,9 +565,9 @@ class Parser {
     }
 
 public:
-    Parser(std::string_view source, std::span<const NamedImage> images) : source_(source), images_(images) {}
+    Parser(std::string_view source, Span<const NamedImage> images) : source_(source), images_(images) {}
 
-    ParseResult<std::vector<StyleRule>> run() {
+    ParseResult<Array<StyleRule>> run() {
         // Replace comments with spaces to retain exact source locations and value views.
         bool quoted = false;
         char quote = 0;
@@ -613,16 +614,16 @@ public:
             Block block;
             do {
                 ATELIER_TRY_BIND(selected, selector());
-                block.selectors.push_back(std::move(*selected));
+                block.selectors.add(std::move(*selected));
             } while (take(','));
             ATELIER_TRY(expect('{'));
             while (!take('}')) {
                 ATELIER_TRY_BIND(id, identifier());
                 ATELIER_TRY(expect(':'));
                 ATELIER_TRY_BIND(item, value());
-                block.declarations.push_back({std::move(*id), *item});
+                block.declarations.add({std::move(*id), *item});
             }
-            blocks_.push_back(std::move(block));
+            blocks_.add(std::move(block));
             if (blocks_.size() > 1024)
                 return fail("Too many style blocks");
         }
@@ -630,7 +631,7 @@ public:
             (void)name;
             ATELIER_TRY(resolve(item));
         }
-        std::vector<StyleRule> rules;
+        Array<StyleRule> rules;
         for (const auto& block : blocks_) {
             StyleProperties properties;
             for (const auto& d : block.declarations)
@@ -639,7 +640,7 @@ public:
                 if (invalid_state_properties(properties, selector.states))
                     return fail("State selectors may only change paint properties",
                                 block.declarations.empty() ? 0 : block.declarations.front().value.position);
-                rules.push_back({selector, properties});
+                rules.add({selector, properties});
                 if (rules.size() > 4096)
                     return fail("Too many style rules");
             }
@@ -720,7 +721,7 @@ bool StyleSheet::valid_properties(const StyleProperties& p) noexcept {
            (!p.scrollbar_button_size || bounded(*p.scrollbar_button_size, 0, 64));
 }
 
-StyleSheet::Result StyleSheet::create(std::vector<StyleRule> rules) {
+StyleSheet::Result StyleSheet::create(Array<StyleRule> rules) {
     if (rules.size() > 4096)
         return std::unexpected(StyleDiagnostic{0, 0, "Too many style rules"});
     for (auto& rule : rules) {
@@ -734,14 +735,14 @@ StyleSheet::Result StyleSheet::create(std::vector<StyleRule> rules) {
             !std::all_of(s.classes.begin(), s.classes.end(), [](const auto& id) { return valid_class(id); }))
             return std::unexpected(StyleDiagnostic{0, 0, "Invalid selector or style properties"});
         std::sort(s.classes.begin(), s.classes.end());
-        s.classes.erase(std::unique(s.classes.begin(), s.classes.end()), s.classes.end());
+        s.classes.deduplicate();
     }
     std::stable_sort(rules.begin(), rules.end(),
                      [](const auto& a, const auto& b) { return specificity(a.selector) < specificity(b.selector); });
     return std::shared_ptr<const StyleSheet>(new StyleSheet(std::move(rules)));
 }
 
-StyleSheet::Result StyleSheet::parse(std::string_view source, std::span<const NamedImage> images) {
+StyleSheet::Result StyleSheet::parse(std::string_view source, Span<const NamedImage> images) {
     if (source.size() > 1024 * 1024 || source.find('\0') != source.npos)
         return std::unexpected(StyleDiagnostic{1, 1, "Invalid or oversized style source"});
     ATELIER_TRY_BIND(rules, Parser(source, images).run());

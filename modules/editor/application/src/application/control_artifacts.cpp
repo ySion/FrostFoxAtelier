@@ -52,12 +52,12 @@ bool generated_cache(const std::filesystem::path& relative) {
     return part != relative.end() && *part == L"Cache";
 }
 
-json::Result<json::Document> engine_source_hashes(std::span<const language::SourceFile> files) {
+json::Result<json::Document> engine_source_hashes(Span<const language::SourceFile> files) {
     json::Builder hashes;
     for (const auto& file : files)
         if (file.path.starts_with("engine/"))
             ATELIER_TRY(
-                hashes.set(hashes.root(), file.path, foundation::sha256(std::as_bytes(std::span(file.source)))));
+                hashes.set(hashes.root(), file.path, foundation::sha256(as_bytes(Span<const char>{file.source}))));
     return hashes.finish();
 }
 
@@ -69,7 +69,7 @@ std::expected<assets::EngineDependency, Failure> installed_asset(std::string_vie
     return assets::Reader{}.engine_dependency(key, kind).transform_error(dependency_error);
 }
 
-json::Result<json::Document> engine_assets_json(std::span<const assets::EngineDependency> assets) {
+json::Result<json::Document> engine_assets_json(Span<const assets::EngineDependency> assets) {
     json::Builder result;
     ATELIER_TRY(result.set(result.root(), "version", 1u));
     ATELIER_TRY_BIND(records, result.array(result.root(), "records"));
@@ -89,7 +89,7 @@ bool valid_sha256(std::string_view digest) {
            std::ranges::all_of(digest, [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
 }
 
-std::expected<std::vector<assets::EngineDependency>, Failure> installed_assets(json::Value manifest) {
+std::expected<Array<assets::EngineDependency>, Failure> installed_assets(json::Value manifest) {
     ATELIER_TRY_BIND(found, manifest.find("engine_assets"));
     if (!*found)
         return std::unexpected(Failure("invalid_request", "Repro lacks engine assets; export it again"));
@@ -109,7 +109,7 @@ std::expected<std::vector<assets::EngineDependency>, Failure> installed_assets(j
     ATELIER_TRY_BIND(records_value, object.at("records"));
     ATELIER_TRY_BIND(records, records_value->array());
     Set<std::string_view> keys;
-    std::vector<assets::EngineDependency> result;
+    Array<assets::EngineDependency> result;
     for (const auto record : *records) {
         ATELIER_TRY(record.allowed_members({"key", "kind", "semantic_version", "digest_version", "content_sha256"}));
         ATELIER_TRY_BIND(key_text, record.string({"key"}));
@@ -136,7 +136,7 @@ std::expected<std::vector<assets::EngineDependency>, Failure> installed_assets(j
                 Failure("dependency_mismatch", "Installed engine asset semantic version differs: " + key));
         if (current->content_sha256 != *digest)
             return std::unexpected(Failure("dependency_mismatch", "Installed engine asset content differs: " + key));
-        result.push_back(std::move(*current));
+        result.add(std::move(*current));
     }
     std::ranges::sort(result, {}, &assets::EngineDependency::key);
     return result;
@@ -199,23 +199,23 @@ std::expected<void, Failure> scene_references(json::Value scene, const Reference
 // this preflight identifies invalid engine keys before it can reject the load.
 std::expected<void, Failure> preflight_resources(editor::Project& project, json::Value scene) {
     Set<std::pair<assets::AssetKind, std::string>> references;
-    std::vector<std::string> materials;
+    Array<std::string> materials;
     const auto reference = [&](assets::AssetKind kind, const std::string& key) -> std::expected<void, Failure> {
         if (key.empty() || !references.add({kind, key}))
             return {};
         if (key.starts_with("builtin/"))
             ATELIER_TRY(installed_asset(key, kind));
         if (kind == assets::AssetKind::material)
-            materials.push_back(key);
+            materials.add(key);
         return {};
     };
     ATELIER_TRY(scene_references(scene, reference));
     // The cooked candidate supplies SOP dependencies; disconnected or bypassed nodes may name missing assets.
     // Collect before visiting materials; their ordinal need not follow meshes.
-    std::vector<std::string> meshes;
+    Array<std::string> meshes;
     for (const auto& [kind, key] : references)
         if (kind == assets::AssetKind::mesh)
-            meshes.push_back(key);
+            meshes.add(key);
     for (const auto& key : meshes)
         if (auto mesh = project.assets().mesh(key))
             for (const auto& binding : mesh->materials)
@@ -244,7 +244,7 @@ std::expected<void, Failure> preflight_resources(editor::Project& project, json:
         }
         return nullptr; // Strict scene loading diagnoses broken/cyclic parents.
     };
-    const auto entries = [&](std::span<const material::Override> values,
+    const auto entries = [&](Span<const material::Override> values,
                              const assets::MaterialSourceAsset* source) -> std::expected<void, Failure> {
         if (!source)
             return {};
@@ -309,7 +309,7 @@ json::Result<json::Document> image_content(const material::ImageRef& image) {
     json::Builder content;
     ATELIER_TRY(content.set(content.root(), "width", image->width()));
     ATELIER_TRY(content.set(content.root(), "height", image->height()));
-    content.set_validated(content.root(), "rgba_sha256", foundation::sha256(std::as_bytes(image->pixels())));
+    content.set_validated(content.root(), "rgba_sha256", foundation::sha256(as_bytes(image->pixels())));
     return content.finish();
 }
 
@@ -340,17 +340,25 @@ json::Result<std::string> sky_hash(const rendering::SkyMap& map) {
     ATELIER_TRY_BIND(mean, content.array(content.root(), "mean"));
     for (const auto value : {map.mean().x, map.mean().y, map.mean().z})
         ATELIER_TRY(content.append(*mean, value));
-    content.set_validated(content.root(), "pixels", foundation::sha256(std::as_bytes(map.pixels())));
-    content.set_validated(content.root(), "cube", foundation::sha256(std::as_bytes(map.cube())));
+    content.set_validated(content.root(), "pixels", foundation::sha256(as_bytes(map.pixels())));
+    content.set_validated(content.root(), "cube", foundation::sha256(as_bytes(map.cube())));
     return json_hash(content.root());
 }
 
 struct ComApartment {
     HRESULT status = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+
+    ComApartment() = default;
+
+    ComApartment(const ComApartment&) = delete;
+
+    ComApartment& operator=(const ComApartment&) = delete;
+
     ~ComApartment() {
         if (SUCCEEDED(status))
             CoUninitialize();
     }
+
     std::expected<void, Failure> ready() const {
         if (FAILED(status))
             return std::unexpected(Failure("storage_error", "Cannot initialize image encoder"));
@@ -564,7 +572,7 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
     ATELIER_TRY_BIND(scene, assets::json_format::parse(data.scene));
     std::map<std::string, assets::EngineDependency, std::less<>> engine;
     std::set<std::pair<assets::AssetKind, std::string>> references;
-    std::vector<ObjectId> pending;
+    Array<ObjectId> pending;
     const auto add_engine_asset = [&](assets::AssetKind kind, const std::string& key) -> std::expected<void, Failure> {
         const auto at = engine.find(key);
         if (at == engine.end()) {
@@ -582,7 +590,7 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
             ATELIER_TRY(add_engine_asset(kind, key));
         if (kind == assets::AssetKind::material)
             if (const auto object = document.loaded_material(key); object != ObjectId{})
-                pending.push_back(object);
+                pending.add(object);
         return {};
     };
     const auto implicit_surface = [&]() -> std::expected<void, Failure> {
@@ -606,13 +614,13 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
         // local_object intentionally admits only Entities/Components. Enumerate
         // identities, but admit only the material LocalIds in the serialized graph
         // (including retained definitions), not unrelated drafts or Undo roots.
-        std::vector<ObjectId> live;
+        Array<ObjectId> live;
         runtime.changed_objects(0, live);
         Set<std::string> found;
         for (const auto object : live)
             if (const auto id = document.document_identity(object))
                 if (const auto key = std::to_string(*id); locals.contains(key)) {
-                    pending.push_back(object);
+                    pending.add(object);
                     found.add(key);
                 }
         if (found.size() != locals.size())
@@ -623,7 +631,7 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
                 return entry.key == snapshot.key && entry.mesh == snapshot.mesh &&
                        entry.materials == snapshot.materials;
             }))
-            data.meshes.push_back(std::move(snapshot));
+            data.meshes.add(std::move(snapshot));
     };
     ATELIER_TRY_BIND(entities, document.world().members().transform_error(storage_error));
     const auto& types = document.presentation_types();
@@ -645,14 +653,14 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
                     ATELIER_TRY_BIND(
                         key, material::material_key(runtime, binding.resource.id()).transform_error(storage_error));
                     ATELIER_TRY(reference(assets::AssetKind::material, *key));
-                    snapshot.materials.push_back({binding.slot, *key});
-                    pending.push_back(binding.resource.id());
+                    snapshot.materials.add({binding.slot, *key});
+                    pending.add(binding.resource.id());
                 }
                 ATELIER_TRY_BIND(
                     bindings,
                     presentation::read_material_bindings(runtime, component.id()).transform_error(storage_error));
                 for (const auto& binding : *bindings)
-                    pending.push_back(binding.resource.id());
+                    pending.add(binding.resource.id());
                 if (snapshot.mesh)
                     for (std::size_t i = 0; i < snapshot.mesh->materials().size(); ++i) {
                         const auto slot = presentation::material_slot_name(*snapshot.mesh, i);
@@ -676,13 +684,13 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
                     ATELIER_TRY_BIND(
                         encoded, document.procedural_graph_snapshot(proc->source).transform_error(dependency_error));
                     if (*encoded)
-                        data.procedural_graphs.emplace_back(proc->source, std::move(**encoded));
+                        data.procedural_graphs.emplace(proc->source, std::move(**encoded));
                 }
                 ATELIER_TRY_BIND(
                     bindings,
                     presentation::read_material_bindings(runtime, component.id()).transform_error(storage_error));
                 for (const auto& binding : *bindings)
-                    pending.push_back(binding.resource.id());
+                    pending.add(binding.resource.id());
                 if (proc->output && proc->output->surface_mesh &&
                     std::ranges::find(*bindings, std::string_view{"default"}, &presentation::MaterialBinding::slot) ==
                         bindings->end()) {
@@ -695,8 +703,8 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
                         ATELIER_TRY_BIND(
                             key, material::material_key(runtime, binding.resource.id()).transform_error(storage_error));
                         ATELIER_TRY(reference(assets::AssetKind::material, *key));
-                        snapshot.materials.push_back({binding.slot, *key});
-                        pending.push_back(binding.resource.id());
+                        snapshot.materials.add({binding.slot, *key});
+                        pending.add(binding.resource.id());
                     }
                     if (snapshot.mesh) {
                         for (std::size_t i = 0; i < snapshot.mesh->materials().size(); ++i) {
@@ -720,7 +728,7 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
                         snapshot.materials.reserve(dep.slot_materials.size());
                         for (const auto& [slot, mat_key] : dep.slot_materials) {
                             ATELIER_TRY(reference(assets::AssetKind::material, mat_key));
-                            snapshot.materials.push_back({slot, mat_key});
+                            snapshot.materials.add({slot, mat_key});
                         }
                         push_unique_mesh(std::move(snapshot));
                     }
@@ -732,7 +740,7 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
                 if (sky->resolved && std::ranges::none_of(data.skies, [&](const auto& entry) {
                         return entry.first == sky->source && entry.second == sky->resolved;
                     }))
-                    data.skies.emplace_back(sky->source, sky->resolved);
+                    data.skies.emplace(sky->source, sky->resolved);
             }
         }
     }
@@ -768,7 +776,7 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
             return {};
         const auto at = std::ranges::find(data.textures, key, &assets::TextureAsset::key);
         if (at == data.textures.end())
-            data.textures.push_back({key, {}, std::move(image)});
+            data.textures.add({key, {}, std::move(image)});
         else if (at->image != image) {
             ATELIER_TRY_BIND(previous, image_content(at->image));
             if (*previous != *pixels)
@@ -802,7 +810,7 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
                 ATELIER_TRY(content.set(source, "text", file.source));
                 const auto at = std::ranges::find(data.material_sources, file.path, &language::SourceFile::path);
                 if (at == data.material_sources.end())
-                    data.material_sources.push_back(file);
+                    data.material_sources.add(file);
                 else if (at->source != file.source)
                     return std::unexpected(
                         Failure("dependency_mismatch", "One MS Source path has distinct loaded text: " + file.path));
@@ -834,12 +842,13 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
                                  material::material_key(runtime, state->parent.id()).transform_error(storage_error));
                 ATELIER_TRY_BIND(parent, identity(state->parent.id(), *parent_key));
                 ATELIER_TRY(content.set(content.root(), "parent", *parent));
-                pending.push_back(state->parent.id());
+                pending.add(state->parent.id());
             } else
                 ATELIER_TRY(content.set_null(content.root(), "parent"));
-            if (key->empty())
-                content.set_validated(content.root(), "author",
-                                      locals.at(std::to_string(*document.document_identity(object))));
+            if (key->empty()) {
+                const auto doc_id = document.document_identity(object);
+                content.set_validated(content.root(), "author", locals.at(std::to_string(*doc_id)));
+            }
             ATELIER_TRY_BIND(surface, material::capture_program(runtime, object).transform_error(storage_error));
             if (state->textures.size() != state->entries.size())
                 return std::unexpected(
@@ -856,7 +865,7 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
         }
         ATELIER_TRY(resources.set(*records, *object_identity, json_hash(content.root())));
         if (!key->empty() && !key->starts_with("builtin/"))
-            data.materials.push_back(std::move(*asset));
+            data.materials.add(std::move(*asset));
     }
     // Compare every distinct loaded version before deduplicating the declaration.
     for (const auto& mesh : data.meshes)
@@ -868,7 +877,7 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
         }
     for (auto& [key, dependency] : engine) {
         static_cast<void>(key);
-        data.engine_assets.push_back(std::move(dependency));
+        data.engine_assets.add(std::move(dependency));
     }
     data.references.assign(references.begin(), references.end());
     data.material_resources = resources.finish();
@@ -903,7 +912,7 @@ std::expected<void, Failure> validate_candidate_assets(const editor::Session& ca
 std::expected<json::Document, Failure> export_repro(const std::filesystem::path& output, Repro data, WriteState& work) {
     ATELIER_TRY(checkpoint(work));
     json::Builder manifest{data.manifest};
-    std::optional<ComApartment> com;
+    Optional<ComApartment> com;
     if (!data.textures.empty()) {
         ATELIER_TRY(com.emplace().ready());
     }
@@ -1172,7 +1181,7 @@ std::expected<json::Document, Failure> export_repro(const std::filesystem::path&
             published.try_emplace(file.path, &file);
     if (data.ui_source)
         published.try_emplace(data.ui_source->path, &*data.ui_source);
-    std::vector<std::filesystem::path> copied_code;
+    Array<std::filesystem::path> copied_code;
     auto entry = std::filesystem::recursive_directory_iterator(project / "Source", error);
     if (error)
         return storage_failure(error);
@@ -1181,7 +1190,7 @@ std::expected<json::Document, Failure> export_repro(const std::filesystem::path&
         if (error && !std::filesystem::status_known(status))
             return storage_failure(error);
         if (std::filesystem::is_regular_file(status) && entry->path().extension() == L".source")
-            copied_code.push_back(entry->path());
+            copied_code.add(entry->path());
         entry.increment(error);
         if (error)
             return storage_failure(error);
@@ -1499,7 +1508,7 @@ std::expected<ReproBundle, Failure> validate_repro(const std::filesystem::path& 
     return ReproBundle{std::move(*document), std::move(*engine_assets), std::move(*project), std::move(*scene_text)};
 }
 
-std::expected<json::Document, Failure> write_samples(const std::filesystem::path& output, std::vector<Sample> samples,
+std::expected<json::Document, Failure> write_samples(const std::filesystem::path& output, Array<Sample> samples,
                                                      json::Document metadata, WriteState& work) {
     const auto native = platform::windows_file_path(output);
     if (!native)
@@ -1597,7 +1606,7 @@ std::expected<json::Document, Failure> write_trace(const std::filesystem::path& 
                 trace.append(*groups, std::uint64_t{count});
         }
         ATELIER_TRY_BIND(bindings, trace.array(record, "bindings"));
-        for (const auto& owned : snapshot.bindings().subspan(command.first_binding, command.binding_count)) {
+        for (const auto& owned : snapshot.bindings().slice(command.first_binding, command.binding_count)) {
             const auto& binding = owned.detail;
             const auto entry = trace.append_object(*bindings);
             ATELIER_TRY(trace.set_null(entry, "resource"));

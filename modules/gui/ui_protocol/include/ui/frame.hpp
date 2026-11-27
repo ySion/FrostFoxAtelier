@@ -1,8 +1,9 @@
 #pragma once
 
+#include "foundation/array.hpp"
+
 #include <cstdint>
 #include <memory>
-#include <vector>
 
 // CPU rendering protocol. No window, layout, text backend, Runtime or GPU types.
 namespace atelier::ui {
@@ -81,7 +82,7 @@ struct ColorImage {
 
     std::uint32_t row_pitch{};
 
-    std::vector<std::uint8_t> pixels;
+    Array<std::uint8_t> pixels;
 };
 
 // R8 coverage, top-left origin, rows advancing downward. Pixels are UNORM and
@@ -99,7 +100,7 @@ struct Coverage {
 
     std::uint32_t row_pitch{};
 
-    std::vector<std::uint8_t> pixels;
+    Array<std::uint8_t> pixels;
 };
 
 // Maximum edge of a single sampled UI image, in physical pixels.
@@ -153,7 +154,7 @@ struct Frame {
 
     std::uint64_t surface_revision{};
 
-    std::vector<DrawQuad> draws;
+    Array<DrawQuad> draws;
 };
 
 } // namespace atelier::ui

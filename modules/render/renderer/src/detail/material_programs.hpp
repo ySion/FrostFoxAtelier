@@ -1,8 +1,11 @@
 #pragma once
 
 #include "renderer/renderer.hpp"
+#include "foundation/array.hpp"
+#include "foundation/bit_vector.hpp"
+#include "foundation/optional.hpp"
+#include "foundation/span.hpp"
 
-#include <optional>
 #include <thread>
 
 namespace atelier::renderer::detail {
@@ -85,11 +88,11 @@ struct MaterialImageResource {
 struct MaterialProgramSet {
     // Canonical program order, independent of MI count and slot order.
     // Definitions retain the exact code without borrowing a compilation Runtime.
-    std::vector<material::DefinitionRef> definitions;
+    Array<material::DefinitionRef> definitions;
 
     // One bit per program: any Surface using it is Mask, across all definitions.
     // This classification is part of the compiled pipeline-set identity.
-    std::vector<bool> masked_programs;
+    BitVector masked_programs;
 
     std::array<rhi::Pipeline, static_cast<std::size_t>(MaterialPass::count)> pipelines;
 
@@ -99,9 +102,9 @@ struct MaterialProgramSet {
         rhi::PipelineJob job;
     };
 
-    std::vector<Pending> pending;
+    Array<Pending> pending;
 
-    std::optional<Error> failure;
+    Optional<Error> failure;
 
     Result<void> submit(rhi::Context&);
 
@@ -119,23 +122,23 @@ struct MaterialBatchState {
 
     const std::thread::id owner = std::this_thread::get_id();
 
-    std::vector<material::ProgramSurfaceRef> surfaces;
+    Array<material::ProgramSurfaceRef> surfaces;
 
-    std::vector<ProgramSurfaceRecord> records;
+    Array<ProgramSurfaceRecord> records;
 
-    std::vector<std::byte> parameters;
+    Array<std::byte> parameters;
 
-    std::vector<ProgramInputRecord> inputs;
+    Array<ProgramInputRecord> inputs;
 
-    std::vector<std::pair<material::ImageRef, bool>> images;
+    Array<std::pair<material::ImageRef, bool>> images;
 
-    std::vector<std::shared_ptr<MaterialImageResource>> image_owners;
+    Array<std::shared_ptr<MaterialImageResource>> image_owners;
 
-    std::vector<GfxTexture> textures;
+    Array<GfxTexture> textures;
 
     std::shared_ptr<MaterialProgramSet> code;
 
-    std::optional<Error> failure;
+    Optional<Error> failure;
 
     GfxBuffer surface_buffer{};
 
@@ -153,7 +156,7 @@ struct MaterialBatchState {
 
     MaterialBatchState& operator=(const MaterialBatchState&) = delete;
 
-    Result<void> submit(std::span<const material::ProgramSurfaceRef>, std::vector<std::weak_ptr<MaterialProgramSet>>&);
+    Result<void> submit(Span<const material::ProgramSurfaceRef>, Array<std::weak_ptr<MaterialProgramSet>>&);
 
     Result<void> upload(); // Called only after pipelines and Renderer-owned images are ready.
 

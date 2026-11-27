@@ -10,7 +10,7 @@ using world::DiagnosticKind;
 using world::DiagnosticPhase;
 
 world::Diagnostic detail::diagnostic(DiagnosticKind kind, DiagnosticPhase phase, ObjectId object, ObjectId entity,
-                                     std::vector<std::string> field) {
+                                     Array<std::string> field) {
     world::Diagnostic result;
     result.kind = kind;
     result.phase = phase;
@@ -70,11 +70,11 @@ bool same_light(const LightRenderItem& a, const LightRenderItem& b) noexcept {
 }
 }
 
-detail::Presented::Presented(std::span<const world::PresentedPose> poses) {
+detail::Presented::Presented(Span<const world::PresentedPose> poses) {
     offsets_.reserve(poses.size());
     entities_.reserve(poses.size());
     for (const auto& pose : poses) {
-        entities_.push_back(pose.entity);
+        entities_.add(pose.entity);
         auto& offset = *offsets_.try_emplace(pose.entity).value;
         offset.reset();
         if (same_bytes(pose.position, pose.world_position) && same_bytes(pose.rotation, pose.world_rotation))
@@ -104,7 +104,7 @@ Result<const detail::Presented::Offset*> detail::Presented::find(world::World::S
     return nullptr;
 }
 
-const detail::Presented::Offset* detail::Presented::find(std::span<const ObjectId> chain) const {
+const detail::Presented::Offset* detail::Presented::find(Span<const ObjectId> chain) const {
     for (const auto node : chain)
         if (const auto* found = offsets_.find(node))
             return *found ? &**found : nullptr;
@@ -131,9 +131,9 @@ void detail::BucketTracker::reset(std::size_t count) {
 
 void detail::BucketTracker::mark(std::uint32_t slot, std::uint64_t serial, bool material) {
     if (material)
-        materials_dirty[slot] = true;
+        materials_dirty.set(slot);
     if (std::exchange(marks[slot], serial) != serial)
-        dirty.push_back(slot);
+        dirty.add(slot);
 }
 
 void detail::BucketTracker::index_materials(std::size_t slot, Set<ObjectId> dependencies) {
@@ -155,7 +155,7 @@ void detail::BucketTracker::index_materials(std::size_t slot, Set<ObjectId> depe
 namespace {
 
 template <class VisitChain>
-void index_bucket_chains(detail::BucketTracker& tracker, std::span<const world::CapabilityMember> members,
+void index_bucket_chains(detail::BucketTracker& tracker, Span<const world::CapabilityMember> members,
                          VisitChain&& chain) {
     tracker.clear_layout();
     tracker.components.reserve(members.size());
@@ -163,13 +163,13 @@ void index_bucket_chains(detail::BucketTracker& tracker, std::span<const world::
     for (std::size_t slot = 0; slot < members.size(); ++slot) {
         const auto index = static_cast<std::uint32_t>(slot);
         tracker.components.try_emplace(members[slot].component, index);
-        tracker.chain_starts.push_back(static_cast<std::uint32_t>(tracker.chains.size()));
+        tracker.chain_starts.add(static_cast<std::uint32_t>(tracker.chains.size()));
         chain(members[slot].entity, [&](ObjectId node) {
-            tracker.chains.push_back(node);
-            tracker.dependents.try_emplace(node).value->push_back(index);
+            tracker.chains.add(node);
+            tracker.dependents.try_emplace(node).value->add(index);
         });
     }
-    tracker.chain_starts.push_back(static_cast<std::uint32_t>(tracker.chains.size()));
+    tracker.chain_starts.add(static_cast<std::uint32_t>(tracker.chains.size()));
 }
 
 void mark_written_object(detail::BucketTracker& tracker, ObjectId object, std::uint64_t serial) {
@@ -189,21 +189,21 @@ void finalize_dirty_slots(Runtime& runtime, std::uint64_t cursor, detail::Bucket
         if (runtime.changed_since(object, cursor))
             for (const auto slot : slots)
                 tracker.mark(slot, serial, true);
-    std::erase_if(tracker.volatile_slots, [&](std::uint32_t slot) { return !tracker.volatile_flags[slot]; });
+    tracker.volatile_slots.remove_if([&](std::uint32_t slot) { return !tracker.volatile_flags[slot]; });
     for (const auto slot : tracker.volatile_slots)
         tracker.mark(slot, serial);
     std::ranges::sort(tracker.dirty);
 }
 
 template <class SlotT>
-void update_bucket_presented(detail::BucketTracker& tracker, std::vector<SlotT>& slots,
+void update_bucket_presented(detail::BucketTracker& tracker, Array<SlotT>& slots,
                              const detail::Presented& presented, std::uint64_t serial, std::uint64_t& version) {
     if (presented.empty() && tracker.presented_list.empty())
         return;
-    std::vector<std::uint32_t> candidates;
+    Array<std::uint32_t> candidates;
     const auto mark = [&](std::uint32_t slot) {
         if (std::exchange(tracker.presented_marks[slot], serial) != serial)
-            candidates.push_back(slot);
+            candidates.add(slot);
     };
     for (const auto entity : presented.entities())
         if (const auto* found = tracker.dependents.find(entity))
@@ -214,15 +214,15 @@ void update_bucket_presented(detail::BucketTracker& tracker, std::vector<SlotT>&
     tracker.presented_list.clear();
     for (const auto slot : candidates) {
         auto& cached = slots[slot];
-        std::optional<math::Matrix4> drawn;
+        Optional<math::Matrix4> drawn;
         if (cached.item) {
-            const std::span chain{tracker.chains.data() + tracker.chain_starts[slot],
-                                  tracker.chains.data() + tracker.chain_starts[slot + 1]};
+            const Span chain{tracker.chains.data() + tracker.chain_starts[slot],
+                             tracker.chains.data() + tracker.chain_starts[slot + 1]};
             if (const auto* offset = presented.find(chain))
                 drawn = cached.item->world * offset->matrix;
         }
         if (drawn)
-            tracker.presented_list.push_back(slot);
+            tracker.presented_list.add(slot);
         if (drawn.has_value() != cached.presented.has_value() || (drawn && !same_bytes(*drawn, *cached.presented))) {
             cached.presented = drawn;
             cached.changed = version = serial;
@@ -255,9 +255,9 @@ Result<bool> Scene::update_mesh(world::World::SpatialPass& pass, std::size_t slo
             cached->world = **matrix;
         return moved;
     }
-    std::optional<Error> unusable;
+    Optional<Error> unusable;
     Set<ObjectId> dependencies;
-    std::shared_ptr<const std::vector<material::ProgramSurfaceRef>> uncached;
+    std::shared_ptr<const Array<material::ProgramSurfaceRef>> uncached;
     auto read =
         runtime.with_native<const StaticMeshComponent>(object, [&](const StaticMeshComponent& value) -> Result<bool> {
             const auto& geometry = Access::geometry(value);
@@ -297,7 +297,7 @@ Result<bool> Scene::update_mesh(world::World::SpatialPass& pass, std::size_t slo
     // Content identity can stay equal after a reparent or dormant texture edit.
     // Commit the actual live edges independently of the visible change/version.
     mesh_tracker_.index_materials(slot, std::move(dependencies));
-    mesh_tracker_.materials_dirty[slot] = false;
+    mesh_tracker_.materials_dirty.reset(slot);
     if (*read)
         cached->world = **matrix;
     return *read;
@@ -316,7 +316,7 @@ Result<bool> Scene::update_generator(world::World::SpatialPass& pass, std::size_
     };
     if (!member.active) {
         generator_tracker_.index_materials(slot, {});
-        generator_tracker_.materials_dirty[slot] = false;
+        generator_tracker_.materials_dirty.reset(slot);
         return drop();
     }
     ATELIER_TRY_BIND(matrix, pass.matrix(owner));
@@ -331,8 +331,8 @@ Result<bool> Scene::update_generator(world::World::SpatialPass& pass, std::size_
         return moved;
     }
 
-    std::optional<Error> invalid_component;
-    std::optional<Error> unusable;
+    Optional<Error> invalid_component;
+    Optional<Error> unusable;
     Set<ObjectId> dependencies;
     detail::GeneratorCapturedSurfaces captured_surfaces;
     GeneratorRenderItem candidate{owner, object, **matrix, 0, {}, {}, {}};
@@ -361,7 +361,7 @@ Result<bool> Scene::update_generator(world::World::SpatialPass& pass, std::size_
                     continue;
                 const auto key_sv = col.reference.key.view().std_view();
                 geometry::MeshRef mesh = col.reference.mesh;
-                std::shared_ptr<const std::vector<material::ProgramSurfaceRef>> col_surfs;
+                std::shared_ptr<const Array<material::ProgramSurfaceRef>> col_surfs;
                 if (!key_sv.empty()) {
                     for (std::size_t a = 0; a < output->assets.size(); ++a) {
                         if (output->assets[a].key == key_sv) {
@@ -385,11 +385,11 @@ Result<bool> Scene::update_generator(world::World::SpatialPass& pass, std::size_
                     auto& cached_fallback = *fallback_surfaces_.try_emplace(mat_count).value;
                     if (!cached_fallback || (mat_count > 0 && (*cached_fallback)[0] != *def)) {
                         cached_fallback =
-                            std::make_shared<const std::vector<material::ProgramSurfaceRef>>(mat_count, *def);
+                            std::make_shared<const Array<material::ProgramSurfaceRef>>(mat_count, *def);
                     }
                     col_surfs = cached_fallback;
                 }
-                candidate.collections.push_back({std::move(mesh), col.chunk, col.transforms, std::move(col_surfs)});
+                candidate.collections.add({std::move(mesh), col.chunk, col.transforms, std::move(col_surfs)});
             }
             if (!candidate.surface_geometry && candidate.collections.empty())
                 return false;
@@ -419,15 +419,15 @@ Result<bool> Scene::update_generator(world::World::SpatialPass& pass, std::size_
     }
     if (!*read) {
         generator_tracker_.index_materials(slot, std::move(dependencies));
-        generator_tracker_.materials_dirty[slot] = false;
+        generator_tracker_.materials_dirty.reset(slot);
         return drop();
     }
 
     generator_tracker_.index_materials(slot, std::move(dependencies));
-    generator_tracker_.materials_dirty[slot] = false;
+    generator_tracker_.materials_dirty.reset(slot);
 
-    const auto same_collections = [](const std::vector<GeneratorRenderCollection>& a,
-                                     const std::vector<GeneratorRenderCollection>& b) {
+    const auto same_collections = [](Span<const GeneratorRenderCollection> a,
+                                     Span<const GeneratorRenderCollection> b) {
         if (a.size() != b.size())
             return false;
         for (std::size_t i = 0; i < a.size(); ++i)
@@ -449,8 +449,8 @@ Result<bool> Scene::update_generator(world::World::SpatialPass& pass, std::size_
     return true;
 }
 
-Result<void> Scene::index_layout(world::World::SpatialPass& pass, std::span<const world::CapabilityMember> meshes,
-                                 std::span<const world::CapabilityMember> generators) const {
+Result<void> Scene::index_layout(world::World::SpatialPass& pass, Span<const world::CapabilityMember> meshes,
+                                 Span<const world::CapabilityMember> generators) const {
     light_sources_.clear();
     // A chain that cannot be resolved ends where it breaks; reading that slot reports the failure.
     const auto chain = [&](ObjectId entity, auto&& visit) {
@@ -495,9 +495,9 @@ Result<void> Scene::update_meshes(std::uint64_t serial, const detail::Presented*
         lights_dirty_ = true;
         ATELIER_TRY(index_layout(*pass, *meshes, *generators));
         for (std::size_t slot = 0; slot < count; ++slot)
-            mesh_tracker_.dirty.push_back(static_cast<std::uint32_t>(slot));
+            mesh_tracker_.dirty.add(static_cast<std::uint32_t>(slot));
         for (std::size_t slot = 0; slot < gen_count; ++slot)
-            generator_tracker_.dirty.push_back(static_cast<std::uint32_t>(slot));
+            generator_tracker_.dirty.add(static_cast<std::uint32_t>(slot));
     } else {
         runtime.changed_objects(cursor_, written_);
         for (const auto object : written_) {
@@ -519,8 +519,8 @@ Result<void> Scene::update_meshes(std::uint64_t serial, const detail::Presented*
             mesh_slots_[slot].changed = version_ = serial;
         const bool always = !mesh_slots_[slot].item;
         if (always && !mesh_tracker_.volatile_flags[slot])
-            mesh_tracker_.volatile_slots.push_back(slot);
-        mesh_tracker_.volatile_flags[slot] = always;
+            mesh_tracker_.volatile_slots.add(slot);
+        mesh_tracker_.volatile_flags.set(slot, always);
     }
     for (const auto slot : generator_tracker_.dirty) {
         ATELIER_TRY_BIND(changed, update_generator(*pass, slot, (*generators)[slot]));
@@ -528,8 +528,8 @@ Result<void> Scene::update_meshes(std::uint64_t serial, const detail::Presented*
             generator_slots_[slot].changed = version_ = serial;
         const bool always = !generator_slots_[slot].item && (*generators)[slot].active;
         if (always && !generator_tracker_.volatile_flags[slot])
-            generator_tracker_.volatile_slots.push_back(slot);
-        generator_tracker_.volatile_flags[slot] = always;
+            generator_tracker_.volatile_slots.add(slot);
+        generator_tracker_.volatile_flags.set(slot, always);
     }
     // Only slots below a listed Entity, and those presented before, can change their presented matrix.
     if (presented) {
@@ -546,11 +546,11 @@ Result<void> Scene::update_meshes(std::uint64_t serial, const detail::Presented*
     return {};
 }
 
-Result<std::uint64_t> Scene::update(std::span<const world::PresentedPose> presented) const {
+Result<std::uint64_t> Scene::update(Span<const world::PresentedPose> presented) const {
     const auto serial = ++serial_;
     // A still frame shares one empty table instead of building its own.
     static const detail::Presented still{{}};
-    std::optional<detail::Presented> moving;
+    Optional<detail::Presented> moving;
     const auto& offsets = presented.empty() ? still : moving.emplace(presented);
     ATELIER_TRY(update_meshes(serial, &offsets));
     // Lights are extracted again when one was written, one is not drawn, or a presented pose moves or moved one.
@@ -579,7 +579,7 @@ Result<std::uint64_t> Scene::update(std::span<const world::PresentedPose> presen
     return version_;
 }
 
-Result<std::vector<RenderItem>> Scene::render_items() const {
+Result<Array<RenderItem>> Scene::render_items() const {
     ATELIER_TRY(update_meshes(++serial_, nullptr));
     std::size_t expected_items = static_cast<std::size_t>(
         std::ranges::count_if(mesh_slots_, [](const MeshSlot& slot) { return slot.item.has_value(); }));
@@ -592,23 +592,23 @@ Result<std::vector<RenderItem>> Scene::render_items() const {
             if (col.transforms)
                 expected_items += col.transforms->size();
     }
-    std::vector<RenderItem> result;
+    Array<RenderItem> result;
     result.reserve(expected_items);
     for (const auto& slot : mesh_slots_)
         if (slot.item)
-            result.push_back(*slot.item);
+            result.add(*slot.item);
     for (const auto& slot : generator_slots_) {
         if (!slot.item)
             continue;
         const auto& gen = *slot.item;
         if (gen.surface_geometry)
-            result.push_back({gen.entity, gen.component, gen.world, gen.surface_geometry, gen.surface_materials});
+            result.add({gen.entity, gen.component, gen.world, gen.surface_geometry, gen.surface_materials});
         for (const auto& col : gen.collections) {
             if (!col.transforms)
                 continue;
             for (const auto& affine : *col.transforms) {
                 if (const auto inst_world = compose_instance_world(affine, gen.world))
-                    result.push_back({gen.entity, gen.component, *inst_world, col.geometry, col.surfaces});
+                    result.add({gen.entity, gen.component, *inst_world, col.geometry, col.surfaces});
             }
         }
     }

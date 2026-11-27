@@ -1,12 +1,12 @@
 #pragma once
+#include "foundation/array.hpp"
+#include "foundation/span.hpp"
 #include "math/vector.hpp"
 #include <cstdint>
 #include <expected>
 #include <memory>
-#include <span>
 #include <string>
 #include <string_view>
-#include <vector>
 
 namespace atelier::rendering {
 
@@ -39,8 +39,7 @@ public:
     // width * height RGB floats from row 0; width must be 2 * height. Sources wider than
     // width_limit are box-downsampled 2x2 once; mean and cube use the full source.
     // Invalid dimensions or radiance return an error without publishing a resource.
-    [[nodiscard]] static Result<SkyMapRef> create(std::uint32_t width, std::uint32_t height,
-                                                  std::span<const float> rgb);
+    [[nodiscard]] static Result<SkyMapRef> create(std::uint32_t width, std::uint32_t height, Span<const float> rgb);
 
     SkyMap(const SkyMap&) = delete;
 
@@ -51,7 +50,7 @@ public:
     std::uint32_t height() const noexcept { return height_; }
 
     // RGBA16F texels, alpha 1, scaled by 2^-scale_exponent so the peak stays within FP16.
-    std::span<const std::uint16_t> pixels() const noexcept { return pixels_; }
+    Span<const std::uint16_t> pixels() const noexcept { return pixels_; }
 
     int scale_exponent() const noexcept { return scale_exponent_; }
 
@@ -60,22 +59,22 @@ public:
 
     // Solid-angle box-filtered source radiance, unscaled RGBA float, cube_size^2 per face in
     // D3D face order +X -X +Y -Y +Z -Z.
-    std::span<const float> cube() const noexcept { return cube_; }
+    Span<const float> cube() const noexcept { return cube_; }
 
 private:
-    SkyMap(std::uint32_t width, std::uint32_t height, std::span<const float> rgb);
+    SkyMap(std::uint32_t width, std::uint32_t height, Span<const float> rgb);
 
     std::uint32_t width_{};
 
     std::uint32_t height_{};
 
-    std::vector<std::uint16_t> pixels_;
+    Array<std::uint16_t> pixels_;
 
     int scale_exponent_{};
 
     math::Vector3 mean_{};
 
-    std::vector<float> cube_;
+    Array<float> cube_;
 };
 
 // Radiance RGBE (.hdr) with flat, old or new run-length scanlines in -Y H +X W order.

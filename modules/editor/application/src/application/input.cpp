@@ -55,7 +55,7 @@ ui::Key key(WPARAM value) {
 }
 }
 
-std::optional<ui::Event> input_event(NativeEvent message, HWND window) {
+Optional<ui::Event> input_event(NativeEvent message, HWND window) {
     if (message.ime_owned || message.error)
         return {};
     ui::Event event;

@@ -870,6 +870,35 @@ void verify_array_family_enhancements() {
     require(inline_immutables[0].id == 99 && inline_immutables[1].id == 99 && unique_pairs.add_unique({3, 4}) == 0 &&
                 unique_pairs.add_unique({3, 4}) == 0 && unique_pairs.size() == 1,
             "InlineArray const-member launder or braced add_unique failed.");
+
+    Array<int> seq{1, 1, 2, 3, 3, 3, 5};
+    require(seq.deduplicate() == 3 && seq == Array<int>{1, 2, 3, 5}, "Array::deduplicate failed.");
+    seq.append(2, 9);
+    seq.insert_range(1, {7, 8});
+    const Array<int> self_slice_check{1, 7, 8, 2, 3, 5, 9, 9};
+    require(seq == self_slice_check, "Array::append(count, value) or insert_range failed.");
+    seq.insert_range(2, seq.slice(0, 2));
+    seq.truncate(4);
+    require(seq == Array<int>{1, 7, 1, 7}, "Array::insert_range self-alias or truncate failed.");
+    InlineArray<ImmutableItem, 4> truncated_immutables(3, ImmutableItem{11});
+    truncated_immutables.truncate(1);
+    require(truncated_immutables.size() == 1 && truncated_immutables[0].id == 11,
+            "Non-assignable ArraySequence::truncate failed.");
+
+    struct RecursiveTree {
+        int id{};
+
+        Array<RecursiveTree> children{};
+
+        bool operator==(const RecursiveTree&) const = default;
+
+        std::strong_ordering operator<=>(const RecursiveTree&) const = default;
+    };
+    RecursiveTree tree_a{1, {{2, {}}, {3, {{4, {}}}}}};
+    RecursiveTree tree_b = tree_a;
+    require(tree_a == tree_b && !(tree_a < tree_b), "Recursive Array struct copy or defaulted equality failed.");
+    tree_b.children[1].children[0].id = 5;
+    require(tree_a != tree_b && tree_a < tree_b, "Recursive Array struct three-way comparison failed.");
 }
 
 template <class B = atelier::BitVector>
@@ -1043,6 +1072,36 @@ void verify_bit_vector_and_optional() {
     require(opt_borrowed_sv == opt_owned_str && opt_owned_str > "alpha" && opt_owned_str < "gamma" &&
                 opt_str_set.contains(std::nullopt) && opt_str_set.contains(opt_borrowed_sv),
             "Optional<U> conversion, heterogeneous literal <=>, or transparent Hash<Optional> failed.");
+
+    // Wave 2 Phase 3 red-team regressions: Span<Incomplete>, DerivedFromOptional (LWG 3746),
+    // move-only predicate deduplicate, ADL swap, and geometric growth on reused Array::assign.
+    struct ForwardDeclaredNode;
+    Span<ForwardDeclaredNode> forward_span{};
+    require(forward_span.empty() && forward_span.data() == nullptr, "Span<Incomplete> default state failed.");
+
+    struct DerivedOpt : Optional<int> {
+        using Optional<int>::Optional;
+    };
+    const DerivedOpt empty_derived{};
+    const DerivedOpt seven_derived{7};
+    require(Optional<int>{} == empty_derived && empty_derived == Optional<int>{} &&
+                (Optional<int>{} <=> empty_derived) == std::strong_ordering::equal &&
+                Optional<int>{7} == seven_derived && Optional<int>{3} < seven_derived,
+            "DerivedFromOptional comparison hijacked value overload on empty Optional.");
+
+    Array<int> dedup_items{1, 1, 2, 2, 3};
+    auto move_only_eq = [guard = std::make_unique<int>(0)](const int& a, const int& b) noexcept {
+        return *guard + a == b;
+    };
+    require(dedup_items.deduplicate(move_only_eq) == 2 && dedup_items == Array<int>{1, 2, 3},
+            "ArraySequence::deduplicate failed to borrow move-only predicate.");
+
+    Array<int> grow_assign;
+    grow_assign.assign(3, 1);
+    require(grow_assign.capacity() == 3, "Fresh empty Array::assign over-allocated capacity.");
+    grow_assign.assign(4, 2);
+    require(grow_assign.capacity() >= 8 && grow_assign.size() == 4 && grow_assign[3] == 2,
+            "Reused Array::assign failed to grow geometrically.");
 }
 
 void verify_tasks();

@@ -98,15 +98,15 @@ Result<source::SourceSnapshot> ProjectCode::snapshot(const Project& project) {
     return result;
 }
 
-Result<std::optional<source::SourceFile>> ProjectCode::ui_snapshot(const Project& project) {
+Result<Optional<source::SourceFile>> ProjectCode::ui_snapshot(const Project& project) {
     if (project.ui_source().empty())
-        return std::optional<source::SourceFile>{};
+        return Optional<source::SourceFile>{};
     ATELIER_TRY_BIND(path, project.resolve(project.ui_source()));
     auto name = platform::utf16_to_utf8(project.ui_source().generic_wstring());
     if (!name)
         return fail("Invalid UTF-16 text.");
     ATELIER_TRY_BIND(file, source::read_source_file(*path, std::move(*name)));
-    return std::optional<source::SourceFile>{std::move(*file)};
+    return Optional<source::SourceFile>{std::move(*file)};
 }
 
 Result<void> ProjectCode::build(const Project& project) {
@@ -129,11 +129,11 @@ Result<void> ProjectCode::build(const Project& project) {
                         {"snapshot_version", next->sources ? next->sources->version : 0},
                         {"published_content_version", next->published_version}};
         if (request_sequence)
-            entry.fields.push_back({"request_sequence", request_sequence});
+            entry.fields.add({"request_sequence", request_sequence});
         if (code == "source.published")
-            entry.fields.push_back({"code_version", request_sequence});
+            entry.fields.add({"code_version", request_sequence});
         if (error) {
-            entry.fields.push_back({"error_code", static_cast<std::uint64_t>(error->code)});
+            entry.fields.add({"error_code", static_cast<std::uint64_t>(error->code)});
             if (error->source) {
                 const auto& location = *error->source;
                 entry.source = {location.path,
@@ -144,12 +144,13 @@ Result<void> ProjectCode::build(const Project& project) {
                                 location.version,
                                 location.offset,
                                 location.disk_path};
-                entry.fields.insert(entry.fields.end(), {{"error.path", location.path},
-                                                         {"error.version", location.version},
-                                                         {"error.offset", std::uint64_t{location.offset}},
-                                                         {"error.line", std::uint64_t{location.line}},
-                                                         {"error.column", std::uint64_t{location.column}},
-                                                         {"error.disk_path", location.disk_path}});
+                const std::array<logging::Field, 6> source_fields{{{"error.path", location.path},
+                                                                   {"error.version", location.version},
+                                                                   {"error.offset", std::uint64_t{location.offset}},
+                                                                   {"error.line", std::uint64_t{location.line}},
+                                                                   {"error.column", std::uint64_t{location.column}},
+                                                                   {"error.disk_path", location.disk_path}}};
+                entry.fields.append(source_fields);
             }
         }
         static_cast<void>(logging::submit(std::move(entry)));
@@ -325,12 +326,12 @@ Result<void> ProjectCode::poll(const Project& project, bool force) {
     if (!paths)
         return build(project);
     if (!project.ui_source().empty())
-        paths->push_back(project.ui_source());
+        paths->add(project.ui_source());
     const auto engine_root = source::default_engine_root();
     auto engine = source::engine_source_paths(engine_root);
     if (!engine)
         return build(project);
-    std::vector<Stamp> stamps;
+    Array<Stamp> stamps;
     stamps.reserve(paths->size() + engine->size());
     for (const auto& relative : *paths) {
         const auto path = project.resolve(relative);
@@ -346,7 +347,7 @@ Result<void> ProjectCode::poll(const Project& project, bool force) {
         const auto size = std::filesystem::file_size(*native, error);
         if (error)
             return build(project);
-        stamps.push_back({relative, modified, size});
+        stamps.add({relative, modified, size});
     }
     for (const auto& relative : *engine) {
         const auto native = platform::windows_file_path(engine_root / relative);
@@ -359,7 +360,7 @@ Result<void> ProjectCode::poll(const Project& project, bool force) {
         const auto size = std::filesystem::file_size(*native, error);
         if (error)
             return build(project);
-        stamps.push_back({*native, modified, size});
+        stamps.add({*native, modified, size});
     }
     if (!force && stamps == stamps_)
         return {};

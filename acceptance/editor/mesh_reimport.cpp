@@ -49,7 +49,7 @@ std::string binding(const assets::MeshAsset& mesh, std::string_view slot) {
 // Include empty directories as well as every file's exact bytes and modification time.
 auto content_snapshot(const std::filesystem::path& root) {
     using File = std::pair<std::string, std::filesystem::file_time_type>;
-    Map<std::filesystem::path, std::optional<File>> result;
+    Map<std::filesystem::path, Optional<File>> result;
     std::error_code error;
     std::filesystem::recursive_directory_iterator entry(root / "Content", error), end;
     while (!error && entry != end) {
@@ -72,7 +72,7 @@ auto content_snapshot(const std::filesystem::path& root) {
 void verify_failed_imports(editor::Project& project, const std::filesystem::path& source,
                            const assets::MeshAsset& previous) {
     const auto disk = content_snapshot(project.root());
-    const auto directory = std::vector<assets::ProjectEntry>(project.entries().begin(), project.entries().end());
+    const Array<assets::ProjectEntry> directory{project.entries()};
     const auto revision = project.revision();
     const auto path = project.entry(previous.key)->path;
     const auto texture_path = path.parent_path() / "color.bmp";
@@ -128,7 +128,7 @@ void verify_failed_imports(editor::Project& project, const std::filesystem::path
 
 Result<void> verify_catalog_refresh(editor::Project& project, const assets::MeshAsset& published) {
     const auto revision = project.revision();
-    const auto before = std::vector<assets::ProjectEntry>(project.entries().begin(), project.entries().end());
+    const Array<assets::ProjectEntry> before{project.entries()};
     const auto original = project.entry(published.key)->path;
     const std::filesystem::path relative = L"Content/CatalogCandidate.obj";
     const auto candidate = project.root() / relative;

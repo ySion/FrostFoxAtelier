@@ -66,7 +66,7 @@ json::Result<unsigned> integer(json::Value value, unsigned low, unsigned high) {
 Result<editor::CameraState> camera_state(Runtime& runtime, json::Value args) {
     editor::CameraState value;
     ATELIER_TRY_BIND(type, runtime.native_type<editor::CameraState>());
-    ATELIER_TRY(editor::decode_properties(runtime, {*type, {}, std::as_writable_bytes(std::span{&value, 1})}, args));
+    ATELIER_TRY(editor::decode_properties(runtime, {*type, {}, as_writable_bytes(Span{&value, 1})}, args));
     return value;
 }
 
@@ -93,7 +93,7 @@ json::Result<json::Document> view_json(const renderer::ViewSettings& view) {
 
 json::Result<void> numbers(json::Builder& result, json::Value node, std::string_view key, math::Vector3 value) {
     const std::array values{value.x, value.y, value.z};
-    return result.numbers(node, key, std::span{values});
+    return result.numbers(node, key, Span{values});
 }
 
 json::Result<json::Document>
@@ -108,7 +108,7 @@ probe_volumes_json(const std::array<renderer::ProbeVolumeStats, renderer::probe_
         ATELIER_TRY(numbers(result, item, "minimum", volume.minimum));
         ATELIER_TRY(numbers(result, item, "maximum", volume.maximum));
         ATELIER_TRY(numbers(result, item, "spacing", volume.spacing));
-        ATELIER_TRY(result.numbers(item, "counts", std::span{volume.counts}));
+        ATELIER_TRY(result.numbers(item, "counts", Span{volume.counts}));
         ATELIER_TRY(result.set(item, "resident", volume.resident));
         ATELIER_TRY(result.set(item, "updated", volume.updated));
         ATELIER_TRY(result.set(item, "reset_probes", volume.reset_probes));
@@ -129,7 +129,7 @@ json::Result<json::Document> probe_inspection_json(const std::shared_ptr<const r
     ATELIER_TRY(result.set(root, "sequence", v.sequence));
     ATELIER_TRY(result.set(root, "frame_id", v.frame_id));
     ATELIER_TRY(result.set(root, "scene_identity", v.scene_identity));
-    ATELIER_TRY(result.numbers(root, "pixel", std::span{v.pixel}));
+    ATELIER_TRY(result.numbers(root, "pixel", Span{v.pixel}));
     ATELIER_TRY(result.set(root, "history", std::string_view{modes[static_cast<unsigned>(v.history)]}));
     ATELIER_TRY(result.set(root, "rays", v.rays));
     ATELIER_TRY(result.set(root, "updates", v.updates));
@@ -139,10 +139,10 @@ json::Result<json::Document> probe_inspection_json(const std::shared_ptr<const r
     ATELIER_TRY(result.set(receiver, "status", r.identity[0]));
     ATELIER_TRY(result.set(receiver, "volume", r.identity[1]));
     ATELIER_TRY(result.set(receiver, "contributors", r.identity[2]));
-    ATELIER_TRY(result.numbers(receiver, "irradiance_coverage", std::span{r.irradiance}));
+    ATELIER_TRY(result.numbers(receiver, "irradiance_coverage", Span{r.irradiance}));
     ATELIER_TRY(result.set(receiver, "weight_sum", r.weights[0]));
     ATELIER_TRY(result.set(receiver, "dominance", r.weights[1]));
-    ATELIER_TRY(result.numbers(receiver, "position_valid", std::span{r.position}));
+    ATELIER_TRY(result.numbers(receiver, "position_valid", Span{r.position}));
     ATELIER_TRY_BIND(probes, result.array(root, "probes"));
     for (const auto& p : v.probes) {
         if (!p.identity[2])
@@ -152,11 +152,11 @@ json::Result<json::Document> probe_inspection_json(const std::shared_ptr<const r
         ATELIER_TRY(result.set(item, "probe", p.identity[1]));
         ATELIER_TRY(result.set(item, "support_stage", p.identity[2]));
         ATELIER_TRY(result.set(item, "age_frames", p.identity[3]));
-        ATELIER_TRY(result.numbers(item, "irradiance_observations", std::span{p.irradiance}));
-        ATELIER_TRY(result.numbers(item, "spatial_facing_visibility_weight", std::span{p.weights}));
-        ATELIER_TRY(result.numbers(item, "position_distance", std::span{p.position}));
-        ATELIER_TRY(result.numbers(item, "transport_observations", std::span{p.transport}));
-        ATELIER_TRY(result.numbers(item, "response_epoch_min_max_visits", std::span{p.response}));
+        ATELIER_TRY(result.numbers(item, "irradiance_observations", Span{p.irradiance}));
+        ATELIER_TRY(result.numbers(item, "spatial_facing_visibility_weight", Span{p.weights}));
+        ATELIER_TRY(result.numbers(item, "position_distance", Span{p.position}));
+        ATELIER_TRY(result.numbers(item, "transport_observations", Span{p.transport}));
+        ATELIER_TRY(result.numbers(item, "response_epoch_min_max_visits", Span{p.response}));
     }
     ATELIER_TRY(result.set(root, "requested_probe", static_cast<std::int64_t>(v.requested_probe)));
     ATELIER_TRY(result.set(root, "probe_selection", std::string_view{selection}));
@@ -166,13 +166,13 @@ json::Result<json::Document> probe_inspection_json(const std::shared_ptr<const r
         if (!ray.identity[3])
             continue;
         const auto item = result.append_object(*rays);
-        ATELIER_TRY(result.numbers(item, "identity", std::span{ray.identity}));
-        ATELIER_TRY(result.numbers(item, "direct_luminance", std::span{ray.direct}));
-        ATELIER_TRY(result.numbers(item, "surface_roughness", std::span{ray.surface}));
-        ATELIER_TRY(result.numbers(item, "sampling", std::span{ray.sampling}));
-        ATELIER_TRY(result.numbers(item, "light_endpoint_distance", std::span{ray.endpoint_distance}));
+        ATELIER_TRY(result.numbers(item, "identity", Span{ray.identity}));
+        ATELIER_TRY(result.numbers(item, "direct_luminance", Span{ray.direct}));
+        ATELIER_TRY(result.numbers(item, "surface_roughness", Span{ray.surface}));
+        ATELIER_TRY(result.numbers(item, "sampling", Span{ray.sampling}));
+        ATELIER_TRY(result.numbers(item, "light_endpoint_distance", Span{ray.endpoint_distance}));
         ATELIER_TRY(
-            result.numbers(item, "source_radius_range_area_min_distance_squared", std::span{ray.source_parameters}));
+            result.numbers(item, "source_radius_range_area_min_distance_squared", Span{ray.source_parameters}));
     }
     return result.finish();
 }
@@ -193,8 +193,8 @@ json::Result<json::Document> performance_json(const editor::FramePerformance& pe
     ATELIER_TRY(result.set(root, "domain_first_frame", sample.first_frame));
     const std::array extent{sample.extent.width, sample.extent.height};
     const std::array viewport{sample.viewport.x, sample.viewport.y, sample.viewport.width, sample.viewport.height};
-    ATELIER_TRY(result.numbers(root, "extent", std::span{extent}));
-    ATELIER_TRY(result.numbers(root, "viewport", std::span{viewport}));
+    ATELIER_TRY(result.numbers(root, "extent", Span{extent}));
+    ATELIER_TRY(result.numbers(root, "viewport", Span{viewport}));
     const auto configuration = result.object_validated(root, "configuration");
     ATELIER_TRY(result.set(configuration, "antialiasing",
                            std::string_view{aa_names[static_cast<unsigned>(sample.antialiasing)]}));
@@ -212,7 +212,7 @@ json::Result<json::Document> performance_json(const editor::FramePerformance& pe
         "Sum of eight measured main intervals; excludes UI, guides, probe overlays, capture and CPU Present");
     // One row of either section; values without an observation are null.
     const auto statistics = [&](json::Value row,
-                                const std::optional<editor::FramePerformance::Timing>& timing) -> json::Result<void> {
+                                const Optional<editor::FramePerformance::Timing>& timing) -> json::Result<void> {
         const bool active = timing && timing->active_samples;
         result.set_validated(row, "state", !timing ? "unavailable" : timing->current_active ? "measured" : "skipped");
         ATELIER_TRY(result.set(row, "active_samples", std::uint64_t{timing ? timing->active_samples : 0}));
@@ -348,20 +348,20 @@ struct Operation {
 
     bool changes;
 
-    std::vector<std::pair<std::string_view, Argument>> properties;
+    Array<std::pair<std::string_view, Argument>> properties;
 
-    std::vector<std::string> required;
+    Array<std::string> required;
 
     editor::OperatorKind kind{editor::OperatorKind::direct};
 };
 
 constexpr std::array operator_kind_names{"query", "direct", "interactive"};
 
-const std::vector<Operation>& operations() {
+const Array<Operation>& operations() {
     constexpr auto str = Argument::string;
     constexpr auto obj = Argument::object;
     constexpr auto arr = Argument::array;
-    static const std::vector<Operation> values{
+    static const Array<Operation> values{
         {"capabilities",
          "Discover operations, arguments, limits and display options; scope=graph lists the six graph authoring tools",
          false,
@@ -674,7 +674,7 @@ json::Result<void> append_operation(json::Builder& result, json::Value entries, 
             static constexpr std::string_view views[]{"catalog", "library", "topology", "node", "full"};
             static constexpr std::string_view graph_scope[]{"graph"};
             static constexpr std::string_view trace_scope[]{"scene_lit_post"};
-            std::span<const std::string_view> names = trace_scope;
+            Span<const std::string_view> names = trace_scope;
             if (kind == Argument::detail)
                 names = details;
             else if (kind == Argument::graph_view)
@@ -844,9 +844,9 @@ struct EditorControl::Impl {
 
         std::chrono::steady_clock::time_point started;
 
-        std::vector<Case> cases;
+        Array<Case> cases;
 
-        std::vector<unsigned> points;
+        Array<unsigned> points;
 
         std::size_t case_index{};
 
@@ -860,7 +860,7 @@ struct EditorControl::Impl {
 
         std::filesystem::path directory;
 
-        std::vector<control_artifacts::Sample> samples;
+        Array<control_artifacts::Sample> samples;
 
         json::Document manifest;
 
@@ -909,7 +909,7 @@ struct EditorControl::Impl {
         renderer::FrameStats stats;
     };
 
-    std::optional<AcceptedFrame> last_frame;
+    Optional<AcceptedFrame> last_frame;
 
     json::Result<json::Document> frame_json() const {
         if (!last_frame)
@@ -922,13 +922,13 @@ struct EditorControl::Impl {
         ATELIER_TRY(result.set(root, "accepted_count", f.count));
         const std::array viewport{f.bounds.x, f.bounds.y, f.bounds.width, f.bounds.height};
         const std::array extent{f.extent.width, f.extent.height};
-        ATELIER_TRY(result.numbers(root, "viewport", std::span{viewport}));
-        ATELIER_TRY(result.numbers(root, "extent", std::span{extent}));
+        ATELIER_TRY(result.numbers(root, "viewport", Span{viewport}));
+        ATELIER_TRY(result.numbers(root, "extent", Span{extent}));
         ATELIER_TRY(numbers(result, root, "environment", f.environment));
         ATELIER_TRY(numbers(result, root, "lighting_focus", f.lighting_focus));
         const auto camera = result.object_validated(root, "camera");
-        ATELIER_TRY(result.numbers(camera, "view", std::span{f.camera.view}));
-        ATELIER_TRY(result.numbers(camera, "projection", std::span{f.camera.projection}));
+        ATELIER_TRY(result.numbers(camera, "view", Span{f.camera.view}));
+        ATELIER_TRY(result.numbers(camera, "projection", Span{f.camera.projection}));
         ATELIER_TRY(result.set(camera, "far_depth", f.camera.far_depth));
         result.set_validated(camera, "projection_convention", "editor_unjittered");
         ATELIER_TRY_BIND(view, view_json(f.view));
@@ -954,9 +954,9 @@ struct EditorControl::Impl {
         ATELIER_TRY(result.set(gpu, "valid", s.scene_lit_gpu_timing_valid));
         ATELIER_TRY(result.set(gpu, "frame_id", s.scene_lit_gpu_sample_frame_id));
         ATELIER_TRY(result.set(gpu, "sequence", s.scene_lit_gpu_sample_sequence));
-        ATELIER_TRY(result.numbers(gpu, "pass_ms", std::span{s.scene_lit_gpu_ms}));
-        ATELIER_TRY(result.numbers(gpu, "ddgi_pass_ms", std::span{s.scene_lit_ddgi_gpu_ms}));
-        ATELIER_TRY(result.numbers(gpu, "ddgi_update_pass_ms", std::span{s.scene_lit_ddgi_update_gpu_ms}));
+        ATELIER_TRY(result.numbers(gpu, "pass_ms", Span{s.scene_lit_gpu_ms}));
+        ATELIER_TRY(result.numbers(gpu, "ddgi_pass_ms", Span{s.scene_lit_ddgi_gpu_ms}));
+        ATELIER_TRY(result.numbers(gpu, "ddgi_update_pass_ms", Span{s.scene_lit_ddgi_update_gpu_ms}));
         ATELIER_TRY(result.set(gpu, "direct_cluster_ms", s.scene_lit_direct_cluster_gpu_ms));
         ATELIER_TRY(result.set(gpu, "direct_shading_ms", s.scene_lit_direct_shading_gpu_ms));
         ATELIER_TRY(result.set(gpu, "shadow_cache_ms", s.scene_lit_shadow_cache_gpu_ms));
@@ -979,10 +979,10 @@ struct EditorControl::Impl {
         ATELIER_TRY(result.set(cluster, "cells", s.scene_lit_direct_cluster_cells));
         ATELIER_TRY(result.set(cluster, "overflows", s.scene_lit_direct_cluster_overflows));
         ATELIER_TRY(result.set(cluster, "max_sources", s.scene_lit_direct_cluster_max_sources));
-        ATELIER_TRY(result.numbers(cluster, "receiver_histogram", std::span{s.scene_lit_direct_receiver_histogram}));
+        ATELIER_TRY(result.numbers(cluster, "receiver_histogram", Span{s.scene_lit_direct_receiver_histogram}));
         ATELIER_TRY(result.set(cluster, "receiver_max_sources", s.scene_lit_direct_receiver_max_sources));
         ATELIER_TRY(result.set(gpu, "pass_mask", s.scene_lit_gpu_pass_mask));
-        ATELIER_TRY(result.numbers(gpu, "ddgi_visibility_rays", std::span{s.scene_lit_ddgi_visibility_rays}));
+        ATELIER_TRY(result.numbers(gpu, "ddgi_visibility_rays", Span{s.scene_lit_ddgi_visibility_rays}));
         ATELIER_TRY(result.set(gpu, "resource_bytes", s.scene_lit_resource_bytes));
         result.set_validated(gpu, "resource_bytes_source", "current_cpu_logical");
         ATELIER_TRY(result.set(gpu, "shadow_rays", s.scene_lit_shadow_rays));
@@ -1129,8 +1129,8 @@ struct EditorControl::Impl {
         auto camera = app.camera_.state();
         ATELIER_TRY_BIND(type, operation(runtime.native_type<editor::CameraState>()));
         ATELIER_TRY_BIND(fields, operation(editor::detail::author_fields(runtime, *type)));
-        return operation(editor::encode_properties(runtime, {*type, {}, std::as_writable_bytes(std::span{&camera, 1})},
-                                                   *fields, {}));
+        return operation(
+            editor::encode_properties(runtime, {*type, {}, as_writable_bytes(Span{&camera, 1})}, *fields, {}));
     }
 
     std::expected<renderer::ViewSettings, Failure> patched_view(renderer::ViewSettings view, json::Value patch,
@@ -1319,8 +1319,8 @@ struct EditorControl::Impl {
                 }
                 const std::array previous{before.extent.width, before.extent.height};
                 const std::array current{observed.extent.width, observed.extent.height};
-                ATELIER_TRY(response.numbers(error, "previous_extent", std::span{previous}));
-                ATELIER_TRY(response.numbers(error, "current_extent", std::span{current}));
+                ATELIER_TRY(response.numbers(error, "previous_extent", Span{previous}));
+                ATELIER_TRY(response.numbers(error, "current_extent", Span{current}));
                 job->response = response.finish();
             }
         }
@@ -1359,7 +1359,7 @@ struct EditorControl::Impl {
     }
 
     // The directory contains scene members, author objects, and materials bound to live components.
-    Result<bool> any_document_member(std::span<const world::Member> entities, const auto& matches) const {
+    Result<bool> any_document_member(Span<const world::Member> entities, const auto& matches) const {
         const auto& doc = *app.document_;
         const auto& world = doc.world();
         auto& runtime = world.runtime();
@@ -1386,7 +1386,7 @@ struct EditorControl::Impl {
         return false;
     }
 
-    std::expected<void, Failure> prune_handles(std::span<const world::Member> entities) {
+    std::expected<void, Failure> prune_handles(Span<const world::Member> entities) {
         if (!handles.empty()) {
             Set<ObjectId> live;
             ATELIER_TRY(operation(any_document_member(entities, [&](ObjectId id) {
@@ -1455,8 +1455,8 @@ struct EditorControl::Impl {
             for (const auto& declaration : view->declarations) {
                 const std::array values{material::Override{declaration.path, declaration.value, true},
                                         material::Override{declaration.path, declaration.initial, true}};
-                ATELIER_TRY_BIND(encoded, assets::material_format::encode_entries(std::span(values).first(1)));
-                ATELIER_TRY_BIND(initial, assets::material_format::encode_entries(std::span(values).last(1)));
+                ATELIER_TRY_BIND(encoded, assets::material_format::encode_entries(Span{values}.first(1)));
+                ATELIER_TRY_BIND(initial, assets::material_format::encode_entries(Span{values}.last(1)));
                 result.append(*declarations, *encoded->root().at(0));
                 const auto field = *declarations->at(declarations->size() - 1);
                 result.erase(field, "enabled");
@@ -1546,9 +1546,9 @@ struct EditorControl::Impl {
                 const std::array rotation{transform->rotation.x, transform->rotation.y, transform->rotation.z,
                                           transform->rotation.w};
                 const std::array scale{transform->scale.x, transform->scale.y, transform->scale.z};
-                ATELIER_TRY(result.numbers(field, "position", std::span{position}));
-                ATELIER_TRY(result.numbers(field, "rotation", std::span{rotation}));
-                ATELIER_TRY(result.numbers(field, "scale", std::span{scale}));
+                ATELIER_TRY(result.numbers(field, "position", Span{position}));
+                ATELIER_TRY(result.numbers(field, "rotation", Span{rotation}));
+                ATELIER_TRY(result.numbers(field, "scale", Span{scale}));
             }
             return {};
         }
@@ -1642,7 +1642,7 @@ struct EditorControl::Impl {
 
         unsigned limit;
 
-        std::optional<json::Value> cursor;
+        Optional<json::Value> cursor;
 
         json::Builder result{};
 
@@ -1769,7 +1769,7 @@ struct EditorControl::Impl {
             entity_index = *entity_number;
             object_index = *component_number;
         }
-        const auto filter = [&](std::string_view key) -> std::expected<std::optional<std::string>, Failure> {
+        const auto filter = [&](std::string_view key) -> std::expected<Optional<std::string>, Failure> {
             ATELIER_TRY_BIND(argument, args.find(key));
             auto value = *argument;
             if (cursor) {
@@ -1781,9 +1781,9 @@ struct EditorControl::Impl {
             if (*argument && (**argument).is_null())
                 return std::unexpected(Failure("invalid_request", "Inspection filters must be strings"));
             if (!value || value->is_null())
-                return std::nullopt;
+                return Optional<std::string>{};
             ATELIER_TRY_BIND(name, text(*value));
-            return std::move(*name);
+            return Optional<std::string>{std::move(*name)};
         };
         ATELIER_TRY_BIND(entity_filter, filter("entity_name"));
         ATELIER_TRY_BIND(type_filter, filter("type"));
@@ -1825,7 +1825,7 @@ struct EditorControl::Impl {
                     ATELIER_TRY(page->result.set(*next, "entity", entity_index));
                     ATELIER_TRY(page->result.set(*next, "component", object_index));
                     const auto save_filter = [&](std::string_view key,
-                                                 const std::optional<std::string>& value) -> json::Result<void> {
+                                                 const Optional<std::string>& value) -> json::Result<void> {
                         if (!value)
                             return page->result.set_null(*next, key);
                         page->result.set_validated(*next, key, *value);
@@ -1990,9 +1990,9 @@ struct EditorControl::Impl {
                     ATELIER_TRY(result.set(item, "selected_count", *attr.selected_count));
                 ATELIER_TRY(result.set(item, "non_finite_count", attr.non_finite_count));
                 if (!attr.minimum.empty()) {
-                    ATELIER_TRY(result.numbers(item, "minimum", std::span{attr.minimum}));
-                    ATELIER_TRY(result.numbers(item, "maximum", std::span{attr.maximum}));
-                    ATELIER_TRY(result.numbers(item, "mean", std::span{attr.mean}));
+                    ATELIER_TRY(result.numbers(item, "minimum", Span{attr.minimum}));
+                    ATELIER_TRY(result.numbers(item, "maximum", Span{attr.maximum}));
+                    ATELIER_TRY(result.numbers(item, "mean", Span{attr.mean}));
                 }
                 ATELIER_TRY_BIND(samples, result.array(item, "samples"));
                 for (const auto& sample : attr.sample_values)
@@ -2077,7 +2077,7 @@ struct EditorControl::Impl {
     }
 
     static json::Result<void> write_graph_diagnostic(json::Builder& result, json::Value parent, std::string_view key,
-                                                     const std::optional<Error>& error, std::string_view node_name) {
+                                                     const Optional<Error>& error, std::string_view node_name) {
         if (!error)
             return result.set_null(parent, key);
         const auto diag = result.object_validated(parent, key);
@@ -2099,7 +2099,7 @@ struct EditorControl::Impl {
 
     std::expected<json::Document, Failure> graph_inspect_json(const editor::GraphInspectView& view,
                                                               std::string_view inspected_name,
-                                                              std::span<const editor::GraphNodeCatalogEntry> catalog,
+                                                              Span<const editor::GraphNodeCatalogEntry> catalog,
                                                               bool topology_only = false) {
         json::Builder result;
         const auto root = result.root();
@@ -2178,7 +2178,7 @@ struct EditorControl::Impl {
             else
                 ATELIER_TRY(result.set_null(item, "color"));
             ATELIER_TRY(result.set(item, "comment", node.comment));
-            ATELIER_TRY(result.numbers(item, "position", std::span{node.position}));
+            ATELIER_TRY(result.numbers(item, "position", Span{node.position}));
             if (node.status) {
                 const auto st = result.object_validated(item, "status");
                 ATELIER_TRY(result.set(st, "evaluations", node.status->evaluations));
@@ -2225,8 +2225,8 @@ struct EditorControl::Impl {
         for (const auto& note : view.notes) {
             const auto item = result.append_object(*notes);
             ATELIER_TRY(result.set(item, "name", note.name));
-            ATELIER_TRY(result.numbers(item, "position", std::span{note.position}));
-            ATELIER_TRY(result.numbers(item, "size", std::span{note.size}));
+            ATELIER_TRY(result.numbers(item, "position", Span{note.position}));
+            ATELIER_TRY(result.numbers(item, "size", Span{note.size}));
             ATELIER_TRY(result.set(item, "title", note.title));
             ATELIER_TRY(result.set(item, "text", note.text));
             ATELIER_TRY(result.set(item, "color", editor::format_graph_hex_color(note.color)));
@@ -2235,8 +2235,8 @@ struct EditorControl::Impl {
         for (const auto& box : view.boxes) {
             const auto item = result.append_object(*boxes);
             ATELIER_TRY(result.set(item, "name", box.name));
-            ATELIER_TRY(result.numbers(item, "position", std::span{box.position}));
-            ATELIER_TRY(result.numbers(item, "size", std::span{box.size}));
+            ATELIER_TRY(result.numbers(item, "position", Span{box.position}));
+            ATELIER_TRY(result.numbers(item, "size", Span{box.size}));
             ATELIER_TRY(result.set(item, "title", box.title));
             ATELIER_TRY(result.set(item, "color", editor::format_graph_hex_color(box.color)));
         }
@@ -2325,7 +2325,7 @@ struct EditorControl::Impl {
             }
         data.drafts = drafts.finish();
         if (app.project_) {
-            data.roots.assign(app.project_->roots().begin(), app.project_->roots().end());
+            data.roots.assign(app.project_->roots());
             // snapshot_resources already walked the actual parent/default closure
             // against compiled declarations. Do not turn dormant author keys into
             // dependencies or replace its exact Source snapshots with cache contents.
@@ -2346,7 +2346,7 @@ struct EditorControl::Impl {
                 const auto& path = at == entries.end() ? named : at->path;
                 if (!listed.insert(path).second)
                     return {};
-                data.files.push_back(path);
+                data.files.add(path);
                 if (at != entries.end() &&
                     (at->kind == assets::AssetKind::mesh || at->kind == assets::AssetKind::material ||
                      at->kind == assets::AssetKind::texture || at->kind == assets::AssetKind::sky ||
@@ -2365,7 +2365,7 @@ struct EditorControl::Impl {
                         return std::unexpected(
                             Failure("dependency_mismatch", "Asset identity file is missing: " + at->key));
                     if (listed.insert(sidecar).second)
-                        data.files.push_back(std::move(sidecar));
+                        data.files.add(std::move(sidecar));
                 }
                 return {};
             };
@@ -2473,7 +2473,7 @@ struct EditorControl::Impl {
         if (!app.surface_.extent.width || !app.surface_.extent.height || !app.accepted_view_ ||
             app.accepted_view_->bounds.width <= 0 || app.accepted_view_->bounds.height <= 0)
             return std::unexpected(Failure("not_ready", "A visible accepted viewport is required"));
-        std::vector<Case> cases;
+        Array<Case> cases;
         if (compare) {
             ATELIER_TRY_BIND(input, args.at("cases"));
             ATELIER_TRY_BIND(items, input->array());
@@ -2488,7 +2488,7 @@ struct EditorControl::Impl {
                     return std::unexpected(Failure("invalid_request", "Case names must be nonempty and unique"));
                 ATELIER_TRY_BIND(patch, item.at("patch"));
                 ATELIER_TRY_BIND(view, patched_view(app.workspace_.view, *patch, app.lighting_focus()));
-                cases.push_back({std::move(*name), *view});
+                cases.add({std::move(*name), *view});
             }
         } else if (prepare) {
             ATELIER_TRY_BIND(patch_arg, args.find("patch"));
@@ -2507,11 +2507,11 @@ struct EditorControl::Impl {
                 app.scene_.meshes.empty())
                 return std::unexpected(
                     Failure("not_ready", "Scene Lit preparation requires a filled view and a mesh instance"));
-            cases.push_back({"prepare", *view});
+            cases.add({"prepare", *view});
         } else
-            cases.push_back({"current", app.workspace_.view});
+            cases.add({"current", app.workspace_.view});
         ATELIER_TRY_BIND(points_arg, args.find("sample_frames"));
-        std::vector<unsigned> points;
+        Array<unsigned> points;
         if (*points_arg) {
             ATELIER_TRY_BIND(items, (**points_arg).array());
             if (!items->size() || items->size() * cases.size() > 16)
@@ -2520,10 +2520,10 @@ struct EditorControl::Impl {
                 ATELIER_TRY_BIND(n, integer(point, 1, 4096));
                 if (!points.empty() && *n <= points.back())
                     return std::unexpected(Failure("invalid_request", "Sample ordinals must increase strictly"));
-                points.push_back(*n);
+                points.add(*n);
             }
         } else
-            points.push_back(1);
+            points.add(1);
         const auto extent = app.surface_.extent;
         if (std::uint64_t(extent.width) * extent.height > (256 * 1024 * 1024) / (8 * points.size() * cases.size()))
             return std::unexpected(Failure("resource_limit", "Captured color/depth would exceed 256 MiB"));
@@ -2632,7 +2632,7 @@ struct EditorControl::Impl {
             editor::SelectionContext context;
             for (const auto entity : *items) {
                 ATELIER_TRY_BIND(id, object(entity));
-                context.entities.push_back(*id);
+                context.entities.add(*id);
             }
             context.active = context.entities.empty() ? ObjectId{} : context.entities.back();
             ATELIER_TRY_BIND(active, selection.find("active"));
@@ -2685,20 +2685,20 @@ struct EditorControl::Impl {
         if (has_any(info->flags, editor::OperatorFlag::replaces_document) && request.id != "project.build")
             ATELIER_TRY(replaceable());
         const editor::ResolveReference resolve = [&](json::Value value, TypeId type,
-                                                     ValueForm form) -> Result<std::optional<ObjectReference>> {
+                                                     ValueForm form) -> Result<Optional<ObjectReference>> {
             if (value.kind() != json::Kind::string)
-                return std::nullopt;
+                return Optional<ObjectReference>{};
             auto& runtime = app.document_->world().runtime();
             const auto id = object(value);
             if (!id)
                 return std::unexpected(Error{ErrorCode::invalid_storage, id.error().message});
             const auto target = runtime.hold(*id, type);
             if (!target)
-                return std::nullopt;
+                return Optional<ObjectReference>{};
             if (form == ValueForm::strong_reference)
-                return target->reference();
+                return Optional<ObjectReference>{target->reference()};
             const auto reference = runtime.observe(target->reference());
-            return reference ? std::optional{*reference} : std::nullopt;
+            return reference ? Optional<ObjectReference>{*reference} : Optional<ObjectReference>{};
         };
         const auto report = app.call_operator(request, false, resolve);
         if (!report) {
@@ -2748,16 +2748,16 @@ struct EditorControl::Impl {
         const auto focus = camera.state().target;
         ATELIER_TRY_BIND(view_arg, manifest.at("view"));
         ATELIER_TRY_BIND(view, patched_view({}, *view_arg, focus));
-        std::vector<unsigned> indices;
+        Array<unsigned> indices;
         ATELIER_TRY_BIND(selection, manifest.at("selection_indices"));
         ATELIER_TRY_BIND(items, selection->array());
         for (const auto index : *items) {
             ATELIER_TRY_BIND(i, integer(index, 0, editor::Session::maximum_entities));
             if (std::ranges::find(indices, *i) != indices.end())
                 return std::unexpected(Failure("dependency_mismatch", "Invalid repro selection"));
-            indices.push_back(*i);
+            indices.add(*i);
         }
-        std::optional<unsigned> inspection;
+        Optional<unsigned> inspection;
         ATELIER_TRY_BIND(inspection_arg, manifest.find("inspection"));
         if (*inspection_arg) {
             const auto value = **inspection_arg;
@@ -2785,11 +2785,11 @@ struct EditorControl::Impl {
         ATELIER_TRY(operation(editor::validate_view_options(*view, focus)));
 
         ATELIER_TRY_BIND(members, session.world().members().transform_error(operation_failure));
-        std::vector<ObjectId> selected;
+        Array<ObjectId> selected;
         for (const auto i : indices) {
             if (i >= members->size())
                 return std::unexpected(Failure("dependency_mismatch", "Repro selection exceeds scene size"));
-            selected.push_back((*members)[i].id());
+            selected.add((*members)[i].id());
         }
         ATELIER_TRY(operation(session.select_entities(selected, selected.empty() ? ObjectId{} : selected.back())));
         if (inspection) {
@@ -2856,7 +2856,7 @@ struct EditorControl::Impl {
 
             float distance;
         };
-        std::vector<Ray> queries;
+        Array<Ray> queries;
         queries.reserve(rays->size());
         const auto vector = [](json::Value value) -> json::Result<math::Vector3> {
             ATELIER_TRY_BIND(array, value.array());
@@ -2882,7 +2882,7 @@ struct EditorControl::Impl {
             ATELIER_TRY_BIND(distance, limit.f32());
             if (*distance <= 0)
                 return std::unexpected(limit.error(json::Fault::range, "Ray max_distance must be positive"));
-            queries.push_back({*origin, *unit, *distance});
+            queries.add({*origin, *unit, *distance});
         }
         ATELIER_TRY_BIND(surface,
                          operation(app.document_->graph_node_surface(key, node_name, *port, app.project_.get())));
@@ -3067,7 +3067,7 @@ struct EditorControl::Impl {
         if (const auto p = *args.find("prefix")) {
             ATELIER_TRY_ASSIGN(prefix, text(*p, 256));
         }
-        std::optional<std::string> symbol;
+        Optional<std::string> symbol;
         if (const auto s = *args.find("symbol")) {
             ATELIER_TRY_BIND(parsed, text(*s, 256));
             if (parsed->empty())
@@ -3083,7 +3083,7 @@ struct EditorControl::Impl {
         const auto root = result.root();
         ATELIER_TRY_BIND(functions_arr, result.array(root, "functions"));
         if (program) {
-            std::vector<const source::FunctionInfo*> matched_fns;
+            Array<const source::FunctionInfo*> matched_fns;
             for (const auto& fn : program->functions()) {
                 if (symbol) {
                     if (fn.name != *symbol)
@@ -3093,7 +3093,7 @@ struct EditorControl::Impl {
                 }
                 if (!prefix.empty() && !fn.name.starts_with(prefix))
                     continue;
-                matched_fns.push_back(&fn);
+                matched_fns.add(&fn);
             }
             std::ranges::sort(matched_fns, {}, &source::FunctionInfo::name);
             for (const auto* fn : matched_fns) {
@@ -3127,7 +3127,7 @@ struct EditorControl::Impl {
                 return qualifier.starts_with(pref);
             return pref.starts_with(qualifier) && member.starts_with(pref.substr(qualifier.size()));
         };
-        std::vector<std::string> method_param_types;
+        Array<std::string> method_param_types;
         for (const auto& method : (*node_info)->methods) {
             if (!method.preserves_borrows)
                 continue;
@@ -3159,7 +3159,7 @@ struct EditorControl::Impl {
                     }
                     return std::unexpected(operation(std::move(projected)).error());
                 }
-                method_param_types.push_back(std::move(*projected));
+                method_param_types.add(std::move(*projected));
             }
             if (native_only)
                 continue;
@@ -3192,7 +3192,7 @@ struct EditorControl::Impl {
                     return true;
             return false;
         };
-        std::vector<const TypeInfo*> matched_types;
+        Array<const TypeInfo*> matched_types;
         const auto consider_type = [&](TypeId type_id) -> std::expected<void, Failure> {
             ATELIER_TRY_BIND(described, operation(runtime.describe(type_id)));
             const TypeInfo& info = **described;
@@ -3213,7 +3213,7 @@ struct EditorControl::Impl {
                     return {};
                 return std::unexpected(operation(std::move(projected)).error());
             }
-            matched_types.push_back(&info);
+            matched_types.add(&info);
             return {};
         };
         if (symbol) {
@@ -3332,7 +3332,7 @@ struct EditorControl::Impl {
                 ATELIER_TRY(result.set(result.root(), "node", node_name));
                 result.set_validated(result.root(), "properties", props->root());
                 const auto prefix = node_name + ".";
-                std::optional<json::Value> controls;
+                Optional<json::Value> controls;
                 for (const auto& parameter : doc.graph_document(key)->parameters)
                     for (std::string_view target : parameter.targets)
                         if (target.starts_with(prefix)) {
@@ -3705,11 +3705,11 @@ EditorControl::EditorControl(EditorControl&&) noexcept = default;
 
 EditorControl::~EditorControl() = default;
 
-std::optional<EditorControl::ActiveJobInfo> EditorControl::active_job() {
+Optional<EditorControl::ActiveJobInfo> EditorControl::active_job() {
     impl_->reap_finished_writer();
     const auto* job = impl_->active();
     if (!job)
-        return std::nullopt;
+        return {};
     return ActiveJobInfo{job->id, job->kind, job->phase()};
 }
 
@@ -3768,7 +3768,7 @@ void EditorControl::traced(const renderer::Frame& frame, const renderer::Result<
         ATELIER_TRY(metadata.set(root, "ui_frame_id", frame.ui_frame.id));
         ATELIER_TRY(metadata.set(root, "scene_identity", frame.scene_identity));
         const std::array extent{frame.ui_frame.extent.width, frame.ui_frame.extent.height};
-        ATELIER_TRY(metadata.numbers(root, "extent", std::span{extent}));
+        ATELIER_TRY(metadata.numbers(root, "extent", Span{extent}));
         ATELIER_TRY_BIND(view, view_json(frame.view));
         metadata.set_validated(root, "effective_view", view->root());
         metadata.set_validated(root, "attempt", "first_requested_view");
@@ -3778,8 +3778,8 @@ void EditorControl::traced(const renderer::Frame& frame, const renderer::Result<
             ATELIER_TRY(metadata.set(root, "accepted_id", result->accepted_id));
             const std::array accepted{result->accepted_extent.width, result->accepted_extent.height};
             const std::array next{result->next_extent.width, result->next_extent.height};
-            ATELIER_TRY(metadata.numbers(root, "accepted_extent", std::span{accepted}));
-            ATELIER_TRY(metadata.numbers(root, "next_extent", std::span{next}));
+            ATELIER_TRY(metadata.numbers(root, "accepted_extent", Span{accepted}));
+            ATELIER_TRY(metadata.numbers(root, "next_extent", Span{next}));
         } else {
             metadata.set_validated(root, "frame_status", "error");
             const auto error = metadata.object_validated(root, "error");
@@ -3876,7 +3876,7 @@ void EditorControl::rendered(const renderer::Frame& frame, const renderer::Frame
         state.cancel(*job, "invalid_request", metadata.error().describe());
         return;
     }
-    job->samples.push_back({std::move(*capture), std::move(*metadata)});
+    job->samples.add({std::move(*capture), std::move(*metadata)});
     if (++job->point_index == job->points.size()) {
         job->point_index = 0;
         job->accepted = 0;

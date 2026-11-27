@@ -188,19 +188,20 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
             // the Dock ratios. Bypass the default tracking-size clamp, while
             // preserving WM_WINDOWPOSCHANGED/WM_SIZE and product resize work.
             constexpr UINT resize_flags = SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING;
+            const auto report_numbers = [&](json::Value node, std::string_view key, const auto& values) {
+                return report.numbers(node, key, Span{values});
+            };
             const auto calibration = report.object_validated(*root.at("calibration"), docked ? "docked" : "maximized");
             ATELIER_TRY(report.set(calibration, "status", "preparing").transform_error(report_error));
-            ATELIER_TRY(report.numbers(calibration, "target_pixel_extent", std::span<const int>{std::array{2560, 1440}})
+            ATELIER_TRY(report_numbers(calibration, "target_pixel_extent", std::array{2560, 1440})
                             .transform_error(report_error));
             ATELIER_TRY(report.set(calibration, "resize_flags", resize_flags).transform_error(report_error));
-            ATELIER_TRY(report
-                            .numbers(calibration, "system_max_track_extent",
-                                     std::span<const int>{
-                                         std::array{GetSystemMetrics(SM_CXMAXTRACK), GetSystemMetrics(SM_CYMAXTRACK)}})
+            ATELIER_TRY(report_numbers(calibration, "system_max_track_extent",
+                                       std::array{GetSystemMetrics(SM_CXMAXTRACK), GetSystemMetrics(SM_CYMAXTRACK)})
                             .transform_error(report_error));
             const auto attempts = *report.array(calibration, "attempts");
             const auto deadline = Clock::now() + std::chrono::minutes(5);
-            std::vector<std::array<LONG, 4>> visited;
+            Array<std::array<LONG, 4>> visited;
             const auto resize = [&]() -> Result<void> {
                 for (unsigned attempt = 0; attempt <= (docked ? 32u : 8u); ++attempt) {
                     ATELIER_TRY(next_frame(deadline));
@@ -219,32 +220,22 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
                     ATELIER_TRY(report.set(sample, "attempt", attempt).transform_error(report_error));
                     ATELIER_TRY(report.set(sample, "accepted_frame", app.presented()->drawing->id)
                                     .transform_error(report_error));
-                    ATELIER_TRY(report.numbers(sample, "outer_extent", std::span<const LONG>{state.data(), 2})
+                    ATELIER_TRY(report.numbers(sample, "outer_extent", Span<const LONG>{state.data(), 2})
                                     .transform_error(report_error));
-                    ATELIER_TRY(report
-                                    .numbers(sample, "client_extent",
-                                             std::span<const LONG>{
-                                                 std::array{client.right - client.left, client.bottom - client.top}})
+                    ATELIER_TRY(report_numbers(sample, "client_extent",
+                                               std::array{client.right - client.left, client.bottom - client.top})
                                     .transform_error(report_error));
-                    ATELIER_TRY(report
-                                    .numbers(sample, "frame_extent",
-                                             std::span<const unsigned>{std::array{extent.width, extent.height}})
+                    ATELIER_TRY(report_numbers(sample, "frame_extent", std::array{extent.width, extent.height})
                                     .transform_error(report_error));
                     ATELIER_TRY(report.set(sample, "dpi_scale", app.presented()->drawing->dpi_scale)
                                     .transform_error(report_error));
-                    ATELIER_TRY(report
-                                    .numbers(sample, "viewport_rect",
-                                             std::span<const float>{
-                                                 std::array{bounds.x, bounds.y, bounds.width, bounds.height}})
+                    ATELIER_TRY(report_numbers(sample, "viewport_rect",
+                                               std::array{bounds.x, bounds.y, bounds.width, bounds.height})
                                     .transform_error(report_error));
-                    ATELIER_TRY(report
-                                    .numbers(sample, "pixel_center_rect",
-                                             std::span<const int>{
-                                                 std::array{pixels.left, pixels.top, pixels.right, pixels.bottom}})
+                    ATELIER_TRY(report_numbers(sample, "pixel_center_rect",
+                                               std::array{pixels.left, pixels.top, pixels.right, pixels.bottom})
                                     .transform_error(report_error));
-                    ATELIER_TRY(report
-                                    .numbers(sample, "pixel_error",
-                                             std::span<const int>{std::array{2560 - width, 1440 - height}})
+                    ATELIER_TRY(report_numbers(sample, "pixel_error", std::array{2560 - width, 1440 - height})
                                     .transform_error(report_error));
                     if (width == 2560 && height == 1440) {
                         ATELIER_TRY(report.set(calibration, "status", "pass").transform_error(report_error));
@@ -255,7 +246,7 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
                     if (std::ranges::find(visited, state) != visited.end())
                         return command_error(
                             "Scene View calibration repeated a window/pixel state; see calibration attempts.");
-                    visited.push_back(state);
+                    visited.add(state);
                     if (!(attempt < (docked ? 32u : 8u)))
                         return command_error(
                             "Scene View pixel-centre coverage could not reach exactly 2560x1440; see calibration attempts.");
@@ -269,9 +260,7 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
                         (docked && std::abs(1440 - height) > 2 ? double(client.bottom - client.top) / height : 1.));
                     const auto next_width = state[0] + dx;
                     const auto next_height = state[1] + dy;
-                    ATELIER_TRY(report
-                                    .numbers(sample, "requested_outer_extent",
-                                             std::span<const LONG>{std::array{next_width, next_height}})
+                    ATELIER_TRY(report_numbers(sample, "requested_outer_extent", std::array{next_width, next_height})
                                     .transform_error(report_error));
                     if (!(next_width > 0 && next_height > 0 && next_width <= 16384 && next_height <= 16384))
                         return command_error(
@@ -288,15 +277,11 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
                             platform::error_message(std::error_code(resize_error, std::system_category())));
                     if (!GetWindowRect(app.window(), &outer) || !GetClientRect(app.window(), &client))
                         return command_error("Cannot read the resized performance window rectangle.");
-                    ATELIER_TRY(report
-                                    .numbers(sample, "actual_outer_extent",
-                                             std::span<const LONG>{
-                                                 std::array{outer.right - outer.left, outer.bottom - outer.top}})
+                    ATELIER_TRY(report_numbers(sample, "actual_outer_extent",
+                                               std::array{outer.right - outer.left, outer.bottom - outer.top})
                                     .transform_error(report_error));
-                    ATELIER_TRY(report
-                                    .numbers(sample, "actual_client_extent",
-                                             std::span<const LONG>{
-                                                 std::array{client.right - client.left, client.bottom - client.top}})
+                    ATELIER_TRY(report_numbers(sample, "actual_client_extent",
+                                               std::array{client.right - client.left, client.bottom - client.top})
                                     .transform_error(report_error));
                     if (!(outer.right - outer.left == next_width && outer.bottom - outer.top == next_height))
                         return command_error(
@@ -320,22 +305,23 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
         auto accepted_camera = *Access::accepted_view(app);
         auto pixel_range = renderer::detail::raster_viewport(bounds).scissor;
         std::string_view layout = "maximized";
+        const auto report_numbers = [&](json::Value node, std::string_view key, const auto& values) {
+            return report.numbers(node, key, Span{values});
+        };
         const auto viewport_json = [&](json::Value parent) -> json::Result<void> {
             const auto value = report.object_validated(parent, "viewport");
-            ATELIER_TRY(
-                report.numbers(value, "logical_rect_physical_px",
-                               std::span<const float>{std::array{bounds.x, bounds.y, bounds.width, bounds.height}}));
-            ATELIER_TRY(report.numbers(value, "logical_rect_dip",
-                                       std::span<const float>{std::array{bounds.x / dpi, bounds.y / dpi,
-                                                                         bounds.width / dpi, bounds.height / dpi}}));
-            ATELIER_TRY(report.numbers(value, "pixel_center_rect",
-                                       std::span<const int>{std::array{pixel_range.left, pixel_range.top,
-                                                                       pixel_range.right, pixel_range.bottom}}));
-            ATELIER_TRY(report.numbers(value, "receiver_pixel_extent",
-                                       std::span<const int>{std::array{pixel_range.right - pixel_range.left,
-                                                                       pixel_range.bottom - pixel_range.top}}));
-            ATELIER_TRY(report.numbers(value, "frame_extent",
-                                       std::span<const unsigned>{std::array{extent.width, extent.height}}));
+            ATELIER_TRY(report_numbers(value, "logical_rect_physical_px",
+                                       std::array{bounds.x, bounds.y, bounds.width, bounds.height}));
+            ATELIER_TRY(report_numbers(
+                value, "logical_rect_dip",
+                std::array{bounds.x / dpi, bounds.y / dpi, bounds.width / dpi, bounds.height / dpi}));
+            ATELIER_TRY(report_numbers(
+                value, "pixel_center_rect",
+                std::array{pixel_range.left, pixel_range.top, pixel_range.right, pixel_range.bottom}));
+            ATELIER_TRY(report_numbers(
+                value, "receiver_pixel_extent",
+                std::array{pixel_range.right - pixel_range.left, pixel_range.bottom - pixel_range.top}));
+            ATELIER_TRY(report_numbers(value, "frame_extent", std::array{extent.width, extent.height}));
             ATELIER_TRY(report.set(value, "dpi_scale", dpi));
             return {};
         };
@@ -356,14 +342,12 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
         const auto camera_json = [&](json::Value parent) -> json::Result<void> {
             const auto value = report.object_validated(parent, "camera");
             ATELIER_TRY(report.set(value, "view", static_cast<unsigned>(camera.view)));
-            ATELIER_TRY(
-                report.numbers(value, "target",
-                               std::span<const float>{std::array{camera.target.x, camera.target.y, camera.target.z}}));
+            ATELIER_TRY(report_numbers(value, "target", std::array{camera.target.x, camera.target.y, camera.target.z}));
             ATELIER_TRY(report.set(value, "yaw", camera.yaw));
             ATELIER_TRY(report.set(value, "pitch", camera.pitch));
             ATELIER_TRY(report.set(value, "distance", camera.distance));
-            ATELIER_TRY(report.numbers(value, "view_matrix", std::span{accepted_camera.view.elements}));
-            ATELIER_TRY(report.numbers(value, "projection_matrix", std::span{accepted_camera.projection.elements}));
+            ATELIER_TRY(report.numbers(value, "view_matrix", Span{accepted_camera.view.elements}));
+            ATELIER_TRY(report.numbers(value, "projection_matrix", Span{accepted_camera.projection.elements}));
             ATELIER_TRY(report.set(value, "far_depth", accepted_camera.far_depth));
             return {};
         };
@@ -482,7 +466,7 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
             ATELIER_TRY(
                 report.set(inspection, "frame_id", s.scene_lit_gpu_sample_frame_id).transform_error(report_error));
             ATELIER_TRY(report.set(inspection, "valid_receiver_pixels", receivers).transform_error(report_error));
-            ATELIER_TRY(report.numbers(inspection, "histogram", std::span{s.scene_lit_direct_receiver_histogram})
+            ATELIER_TRY(report.numbers(inspection, "histogram", Span{s.scene_lit_direct_receiver_histogram})
                             .transform_error(report_error));
             ATELIER_TRY(report.set(inspection, "max_sources", s.scene_lit_direct_receiver_max_sources)
                             .transform_error(report_error));
@@ -522,7 +506,7 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
             std::uint32_t reflection_work_items{};
         };
         const auto distribution = [&](json::Value parent, std::string_view key,
-                                      std::vector<double> values) -> Result<void> {
+                                      Array<double> values) -> Result<void> {
             if (values.empty())
                 return command_error("Performance distribution has no observations.");
             const auto sum = std::accumulate(values.begin(), values.end(), 0.);
@@ -548,25 +532,25 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
             timing::FrameRecord record;
         };
         // Called right after next_frame, so the last step is the accepted one.
-        const auto collect_cpu = [&](std::vector<CpuSample>& samples) {
+        const auto collect_cpu = [&](Array<CpuSample>& samples) {
             const auto& stats = app.frame_statistics();
-            samples.push_back(
+            samples.add(
                 {app.presented()->drawing->id,
                  {stats.scene_draw_calls, stats.ui_draw_calls, stats.viewport_draw_calls, stats.overlay_draw_calls},
                  stats.scene_instances,
                  stats.scene_culled_instances,
                  app.frame_record()});
         };
-        const auto cpu_json = [&](json::Value parent, const std::vector<CpuSample>& samples) -> Result<void> {
+        const auto cpu_json = [&](json::Value parent, const Array<CpuSample>& samples) -> Result<void> {
             const auto milliseconds = [](std::chrono::nanoseconds value) {
                 return std::chrono::duration<double, std::milli>(value).count();
             };
             // Phases entered in any of these steps, in catalog order; the last stage is the unattributed rest of the frame.
-            std::vector<const timing::Marker*> entered;
+            Array<const timing::Marker*> entered;
             for (const auto* marker : timing::catalog())
                 if (std::ranges::any_of(samples, [&](const auto& sample) { return sample.record.count(*marker) != 0; }))
-                    entered.push_back(marker);
-            std::vector<std::vector<double>> stages(entered.size() + 1);
+                    entered.add(marker);
+            Array<Array<double>> stages(entered.size() + 1);
             for (auto& stage : stages)
                 stage.reserve(samples.size());
             const auto result = report.object_validated(parent, "cpu");
@@ -587,7 +571,7 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
                 double children{};
                 for (std::size_t i = 0; i < entered.size(); ++i) {
                     const auto value = milliseconds(sample.record.time(*entered[i]));
-                    stages[i].push_back(value);
+                    stages[i].add(value);
                     ATELIER_TRY(report.set(row, entered[i]->key(), value).transform_error(report_error));
                     // Entries of the phase in this step; a phase may run once per pass or not at all.
                     ATELIER_TRY(report.set(entries, entered[i]->key(), sample.record.count(*entered[i]))
@@ -596,7 +580,7 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
                         children += value;
                 }
                 const auto unattributed = std::max(0., milliseconds(sample.record.time(timing::frame)) - children);
-                stages.back().push_back(unattributed);
+                stages.back().add(unattributed);
                 ATELIER_TRY(report.set(row, "frame.unattributed", unattributed).transform_error(report_error));
             }
             for (std::size_t i = 0; i < entered.size(); ++i)
@@ -611,11 +595,11 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
             ATELIER_TRY(apply_view(view));
             camera_fixed = !orbit;
             ATELIER_TRY_BIND(fence, warmup(192));
-            std::vector<Sample> samples;
+            Array<Sample> samples;
             samples.reserve(240);
-            std::vector<double> wall;
+            Array<double> wall;
             wall.reserve(512);
-            std::vector<CpuSample> cpu;
+            Array<CpuSample> cpu;
             cpu.reserve(512);
             std::uint64_t sequence = 0;
             unsigned accepted = 0;
@@ -626,7 +610,7 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
                 ATELIER_TRY(orbit_step());
                 ATELIER_TRY_BIND(presented, next_frame(deadline));
                 ATELIER_TRY(invariant());
-                wall.push_back(std::chrono::duration<double, std::milli>(*presented - previous).count());
+                wall.add(std::chrono::duration<double, std::milli>(*presented - previous).count());
                 previous = *presented;
                 ++accepted;
                 collect_cpu(cpu);
@@ -669,7 +653,7 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
                     s.scene_lit_shadow_cache_atlas_cells,    s.scene_lit_shadow_cache_pending_lights};
                 if (!(std::ranges::all_of(sample.ms, [](auto n) { return std::isfinite(n) && n >= 0; })))
                     return command_error("Invalid completed GPU duration.");
-                samples.push_back(sample);
+                samples.add(sample);
                 sequence = sample.sequence;
             }
             const auto elapsed = std::chrono::duration<double, std::milli>(previous - measurement_start).count();
@@ -684,7 +668,7 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
                             .transform_error(report_error));
             ATELIER_TRY(report.set(result, "gpu_sample_state", "completed").transform_error(report_error));
             ATELIER_TRY(
-                report.numbers(result, "wall_present_intervals_ms", std::span{wall}).transform_error(report_error));
+                report.numbers(result, "wall_present_intervals_ms", Span{wall}).transform_error(report_error));
             const auto& motion =
                 orbit ? json::Document::literal<
                             R"({"yaw_degrees_per_frame":0.2,"yaw_amplitude_degrees":12,"camera_cut":false})">()
@@ -697,15 +681,15 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
             ATELIER_TRY(distribution(result, "wall_present_interval_ms", wall));
             const auto gpu_passes = report.object_validated(result, "gpu_passes");
             const auto rows = *report.array(result, "samples");
-            std::vector<double> totals;
+            Array<double> totals;
             totals.reserve(samples.size());
             const auto definitions = editor::FramePerformance::passes();
             for (std::size_t pass = 0; pass < editor::FramePerformance::total_pass; ++pass) {
-                std::vector<double> values;
+                Array<double> values;
                 values.reserve(samples.size());
                 unsigned active = 0;
                 for (const auto& sample : samples) {
-                    values.push_back(sample.ms[pass]);
+                    values.add(sample.ms[pass]);
                     active += (sample.mask & (1u << pass)) != 0;
                 }
                 const auto item = report.object_validated(gpu_passes, definitions[pass].key);
@@ -717,17 +701,17 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
                                 .transform_error(report_error));
             }
             for (const auto& sample : samples) {
-                totals.push_back(std::accumulate(sample.ms.begin(), sample.ms.begin() + 8, 0.));
+                totals.add(std::accumulate(sample.ms.begin(), sample.ms.begin() + 8, 0.));
                 const auto row = report.append_object(rows);
                 ATELIER_TRY(report.set(row, "sequence", sample.sequence).transform_error(report_error));
                 ATELIER_TRY(report.set(row, "frame_id", sample.frame).transform_error(report_error));
                 ATELIER_TRY(report.set(row, "observed_at_frame", sample.observed_frame).transform_error(report_error));
                 ATELIER_TRY(report.set(row, "pass_mask", sample.mask).transform_error(report_error));
-                ATELIER_TRY(report.numbers(row, "pass_ms", std::span{sample.ms}).transform_error(report_error));
+                ATELIER_TRY(report.numbers(row, "pass_ms", Span{sample.ms}).transform_error(report_error));
                 ATELIER_TRY(report.set(row, "logical_resource_bytes", sample.resources).transform_error(report_error));
                 ATELIER_TRY(report.set(row, "probe_rays", sample.probe_rays).transform_error(report_error));
                 ATELIER_TRY(report.set(row, "shadow_rays", sample.shadow_rays).transform_error(report_error));
-                ATELIER_TRY(report.numbers(row, "ddgi_visibility_rays", std::span{sample.ddgi_visibility_rays})
+                ATELIER_TRY(report.numbers(row, "ddgi_visibility_rays", Span{sample.ddgi_visibility_rays})
                                 .transform_error(report_error));
                 ATELIER_TRY(report.set(row, "reflection_work_items", sample.reflection_work_items)
                                 .transform_error(report_error));
@@ -764,9 +748,9 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
             view.shading = shading;
             ATELIER_TRY(apply_view(view));
             ATELIER_TRY_BIND(fence, warmup(192));
-            std::vector<double> wall;
+            Array<double> wall;
             wall.reserve(240);
-            std::vector<CpuSample> cpu;
+            Array<CpuSample> cpu;
             cpu.reserve(240);
             auto previous = frame_end(app.frame_record());
             const auto measurement_start = previous;
@@ -774,7 +758,7 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
             for (unsigned accepted = 0; accepted < 240; ++accepted) {
                 ATELIER_TRY_BIND(presented, next_frame(deadline));
                 ATELIER_TRY(invariant());
-                wall.push_back(std::chrono::duration<double, std::milli>(*presented - previous).count());
+                wall.add(std::chrono::duration<double, std::milli>(*presented - previous).count());
                 previous = *presented;
                 collect_cpu(cpu);
             }
@@ -790,7 +774,7 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
             ATELIER_TRY(
                 report.set(result, "accepted_steps_per_second", 240000. / elapsed).transform_error(report_error));
             ATELIER_TRY(
-                report.numbers(result, "wall_present_intervals_ms", std::span{wall}).transform_error(report_error));
+                report.numbers(result, "wall_present_intervals_ms", Span{wall}).transform_error(report_error));
             ATELIER_TRY(report.set(result, "gpu_sample_state", "unavailable_non_lit").transform_error(report_error));
             ATELIER_TRY(report.set_null(result, "gpu_passes").transform_error(report_error));
             ATELIER_TRY(report.set_null(result, "measured_main_total_ms").transform_error(report_error));

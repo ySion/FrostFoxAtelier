@@ -18,27 +18,35 @@ auto at_path(std::string path) {
     };
 }
 
-std::string port_choices(std::span<const std::string> names) {
+std::string port_choices(Span<const std::string> names) {
     if (names.empty())
         return " (none available)";
     std::string list = " (available: " + names.front();
-    for (const auto& name : names.subspan(1))
+    for (const auto& name : names.slice(1))
         list += ", " + name;
     return list + ")";
 }
+
 struct NodeEdit {
     std::string name;
+
     std::string type;
-    std::optional<std::string> asset;
-    std::optional<std::array<float, 2>> position;
-    std::optional<json::Value> properties;
-    std::optional<json::Value> inputs;
+
+    Optional<std::string> asset;
+
+    Optional<std::array<float, 2>> position;
+
+    Optional<json::Value> properties;
+
+    Optional<json::Value> inputs;
 };
 
 struct PortEdit {
     std::string node;
+
     std::string port;
-    std::vector<std::pair<std::string_view, std::string_view>> endpoints;
+
+    Array<std::pair<std::string_view, std::string_view>> endpoints;
 };
 
 Result<NodeEdit> read_node(std::string_view name, json::Value value) {
@@ -92,16 +100,16 @@ Result<NodeEdit> read_node(std::string_view name, json::Value value) {
 Result<void> Session::apply_graph_patch(std::string_view key, json::Value patch, Project* project) {
     if (auto fields = patch.allowed_members({"asset", "nodes", "remove", "settings"}); !fields)
         return invalid(fields.error().describe());
-    std::vector<NodeEdit> nodes;
+    Array<NodeEdit> nodes;
     if (const auto entries = *patch.find("nodes")) {
         if (entries->kind() != json::Kind::object)
             return invalid("nodes: expected an object keyed by node name");
         for (const auto& [name, value] : *entries->object_items()) {
             ATELIER_TRY_BIND(node, read_node(name, value));
-            nodes.push_back(std::move(*node));
+            nodes.add(std::move(*node));
         }
     }
-    std::vector<std::string> removed;
+    Array<std::string> removed;
     if (const auto remove = *patch.find("remove")) {
         if (remove->kind() != json::Kind::array)
             return invalid("remove: expected an array of node names");
@@ -110,10 +118,10 @@ Result<void> Session::apply_graph_patch(std::string_view key, json::Value patch,
             if (!name || !graph_node(key, *name) || std::ranges::find(removed, *name) != removed.end() ||
                 std::ranges::find(nodes, *name, &NodeEdit::name) != nodes.end())
                 return invalid("remove: expected distinct existing nodes outside nodes");
-            removed.emplace_back(*name);
+            removed.emplace(*name);
         }
     }
-    std::optional<std::string_view> display;
+    Optional<std::string_view> display;
     json::Document root_properties;
     if (const auto settings = *patch.find("settings")) {
         if (settings->kind() != json::Kind::object)
@@ -138,7 +146,7 @@ Result<void> Session::apply_graph_patch(std::string_view key, json::Value patch,
         ATELIER_TRY(graph_set_properties(key, {}, root_properties.root()).transform_error(at_path("settings")));
 
     // All named nodes are available before resolving any input, irrespective of JSON member order.
-    std::vector<std::pair<std::string, std::array<float, 2>>> moves;
+    Array<std::pair<std::string, std::array<float, 2>>> moves;
     for (const auto& edit : nodes) {
         const std::string path = "nodes." + edit.name;
         const auto* node = graph_node(key, edit.name);
@@ -158,7 +166,7 @@ Result<void> Session::apply_graph_patch(std::string_view key, json::Value patch,
                     return invalid(path + ".type: an existing node cannot change type");
             }
             if (edit.position && node->position != *edit.position)
-                moves.emplace_back(edit.name, *edit.position);
+                moves.emplace(edit.name, *edit.position);
         }
         if (edit.asset)
             ATELIER_TRY(
@@ -166,7 +174,7 @@ Result<void> Session::apply_graph_patch(std::string_view key, json::Value patch,
     }
 
     ATELIER_TRY_BIND(contents, procedural::contents(runtime_, loaded_graph(key)));
-    std::vector<PortEdit> wires;
+    Array<PortEdit> wires;
     for (const auto& edit : nodes) {
         if (!edit.inputs || !edit.inputs->size())
             continue;
@@ -193,7 +201,7 @@ Result<void> Session::apply_graph_patch(std::string_view key, json::Value patch,
                                    port_choices(upstream->outputs));
                 if (std::ranges::find(wire.endpoints, *ep) != wire.endpoints.end())
                     return invalid(path + ": duplicate endpoint '" + std::string(*endpoint.string()) + "'");
-                wire.endpoints.push_back(*ep);
+                wire.endpoints.add(*ep);
                 return {};
             };
             if (value.kind() != json::Kind::null) {
@@ -221,7 +229,7 @@ Result<void> Session::apply_graph_patch(std::string_view key, json::Value patch,
                 equal = upstream->outputs[edge.output] == wire.endpoints[n++].second;
             }
             if (!equal || n != wire.endpoints.size())
-                wires.push_back(std::move(wire));
+                wires.add(std::move(wire));
         }
     }
     for (const auto& edit : nodes)

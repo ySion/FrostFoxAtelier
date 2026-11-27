@@ -1,6 +1,6 @@
 #pragma once
-#include <span>
+#include "foundation/span.hpp"
 
 namespace atelier::application {
-int run_project_command(std::span<wchar_t*> arguments);
+int run_project_command(Span<wchar_t*> arguments);
 }

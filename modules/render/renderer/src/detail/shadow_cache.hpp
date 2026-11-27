@@ -1,11 +1,13 @@
 #pragma once
 
+#include "foundation/array.hpp"
+#include "foundation/optional.hpp"
+#include "foundation/span.hpp"
 #include "math/bounds.hpp"
 #include "renderer/renderer.hpp"
 #include "light_frame.hpp"
 
 #include <memory>
-#include <optional>
 
 namespace atelier::renderer::detail {
 
@@ -107,7 +109,7 @@ struct ShadowUpdate {
     // Expanded projection used with the entire rect as viewport/scissor.
     math::Matrix4 view_projection{};
 
-    std::vector<std::uint32_t> instances;
+    Array<std::uint32_t> instances;
 };
 
 struct ShadowPlanStats {
@@ -155,11 +157,11 @@ struct ShadowPlanStats {
 // in over shadow_fade_frames.
 struct ShadowFramePlan {
     // Indexed by light source. Non-casting and dropped lights keep kind 0.
-    std::vector<GpuShadowLight> lights;
+    Array<GpuShadowLight> lights;
 
-    std::vector<GpuShadowFace> faces;
+    Array<GpuShadowFace> faces;
 
-    std::vector<ShadowUpdate> updates;
+    Array<ShadowUpdate> updates;
 
     ShadowPlanStats stats;
 };
@@ -179,8 +181,8 @@ public:
 
     // The successful plan is borrowed until the next prepare/invalidate. A rejected
     // partial plan is never committed; the next prepare invalidates its history.
-    Result<const ShadowFramePlan*> prepare(const Frame&, const LightFrame&, std::span<const ShadowCaster>,
-                                           std::span<const ShadowChange>, std::optional<ShadowReceiverDepth>,
+    Result<const ShadowFramePlan*> prepare(const Frame&, const LightFrame&, Span<const ShadowCaster>,
+                                           Span<const ShadowChange>, Optional<ShadowReceiverDepth>,
                                            std::uint64_t sequence);
 
     // Call only after every update and corresponding shade has been encoded.

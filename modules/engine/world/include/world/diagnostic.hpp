@@ -1,11 +1,11 @@
 #pragma once
 
 #include "runtime/runtime.hpp"
+#include "foundation/array.hpp"
+#include "foundation/optional.hpp"
 #include <cstdint>
-#include <optional>
 #include <string>
 #include <string_view>
-#include <vector>
 
 namespace atelier::world {
 
@@ -139,11 +139,11 @@ struct Diagnostic {
 
     std::string type; // Qualified type name, e.g. world.StaticMeshComponent.
 
-    std::vector<std::string> field; // Field path names; empty when not field-specific.
+    Array<std::string> field; // Field path names; empty when not field-specific.
 
-    std::optional<SourceLocation> source; // Script failures, when the Source program recorded one.
+    Optional<SourceLocation> source; // Script failures, when the Source program recorded one.
 
-    std::optional<ErrorElement> element; // Element-level coordinates when recorded by the producer.
+    Optional<ErrorElement> element; // Element-level coordinates when recorded by the producer.
 
     std::string value; // Truncated preview of the offending value; may be empty.
 
@@ -152,7 +152,7 @@ struct Diagnostic {
     std::uint32_t repeats{1}; // Coalesced identical per-frame failures.
 
     // When forwarding a failed Result, message/source retain its original payload.
-    std::optional<ErrorCode> error_code{};
+    Optional<ErrorCode> error_code{};
 };
 
 }

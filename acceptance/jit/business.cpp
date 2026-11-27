@@ -98,13 +98,17 @@ void reference_coroutine() {
             if (acquired != self) { return 0.0; }
             return acquired.bump(amount);
         })");
-    auto task = take(program->entry().start(id, std::array{Scalar{2.f}}));
+    const std::array start_args{Scalar{2.f}};
+    auto task = take(program->entry().start(id, start_args));
     require(take(task.resume()) == CoroutineState::suspended, "Reference coroutine did not suspend.");
     object.reset();
     take(runtime.begin_collection());
     while (runtime.collection_phase() != CollectionPhase::idle)
         take(runtime.collect_step({16}));
-    require(take(task.resume()) == CoroutineState::completed && std::get<float>(*take(task.result())) == 15,
+    require(take(task.resume()) == CoroutineState::completed,
+            "Suspended strong/weak references or adjusted receiver did not complete.");
+    const auto task_result = take(task.result());
+    require(task_result && std::get<float>(*task_result) == 15,
             "Suspended strong/weak references or adjusted receiver lost identity or data.");
     take(runtime.begin_collection());
     while (runtime.collection_phase() != CollectionPhase::idle)
@@ -126,7 +130,9 @@ void type_bound_stateless() {
     publish(*program, "int run(int x) { return x * 3; }");
     require(source::detail::ProgramAccess::stateless_direct(take(program->pin())),
             "A bound scalar entry without self must select stateless Typed dispatch.");
-    require(std::get<std::int32_t>(*take(program->entry().invoke(object_id, std::array{Scalar{7}}))) == 21,
+    const std::array invoke_args{Scalar{7}};
+    const auto invoke_result = take(program->entry().invoke(object_id, invoke_args));
+    require(invoke_result && std::get<std::int32_t>(*invoke_result) == 21,
             "Generic dispatch failed to finish with an unused optional receiver.");
     const auto typed = take(program->entry().bind<std::int32_t, std::int32_t>());
     require(take(typed.invoke(object_id, 7)) == 21 && take(typed.invoke({}, 7)) == 21,
@@ -154,8 +160,13 @@ void weak_acquisition_during_mark() {
         take(runtime.begin_collection());
         while (runtime.collection_phase() == CollectionPhase::roots)
             take(runtime.collect_step({1}));
-        const bool acquired = direct ? take(typed.invoke(id))
-                                     : std::get<bool>(*take(program->entry().invoke(id, std::span<const Scalar>{})));
+        bool acquired = false;
+        if (direct)
+            acquired = take(typed.invoke(id));
+        else {
+            const auto generic_res = take(program->entry().invoke(id, Span<const Scalar>{}));
+            acquired = generic_res && std::get<bool>(*generic_res);
+        }
         while (runtime.collection_phase() != CollectionPhase::idle)
             take(runtime.collect_step({1}));
         require(acquired && take(runtime.try_acquire(weak)).has_value(),

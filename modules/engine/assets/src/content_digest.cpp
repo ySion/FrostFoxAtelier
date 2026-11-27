@@ -10,12 +10,12 @@ namespace {
 // call per scalar or allocates another mesh-sized byte string.
 class Encoding {
 public:
-    void bytes(std::span<const std::byte> value) {
+    void bytes(Span<const std::byte> value) {
         while (!value.empty()) {
             const auto count = std::min(value.size(), buffer_.size() - used_);
             std::memcpy(buffer_.data() + used_, value.data(), count);
             used_ += count;
-            value = value.subspan(count);
+            value = value.slice(count);
             if (used_ == buffer_.size())
                 flush();
         }
@@ -41,7 +41,7 @@ public:
         }
     }
 
-    void floats(std::span<const float> values) {
+    void floats(Span<const float> values) {
         for (auto value : values)
             u32(std::bit_cast<std::uint32_t>(value));
     }
@@ -54,7 +54,7 @@ public:
 
     void text(std::string_view value) {
         size(value.size());
-        bytes(std::as_bytes(std::span(value)));
+        bytes(as_bytes(Span{value.data(), value.size()}));
     }
 
     std::string finish() {
@@ -86,7 +86,7 @@ Result<std::string> mesh_content_sha256(const MeshAsset& asset) {
     for (std::size_t i = 0; i < mesh.materials().size(); ++i)
         if (auto [at, inserted] = slots.try_emplace(geometry::material_slot_name(mesh, i), i); !inserted)
             *at = mesh.materials().size();
-    std::vector<const std::string*> defaults(mesh.materials().size());
+    Array<const std::string*> defaults(mesh.materials().size());
     for (const auto& binding : asset.materials) {
         const auto* at = slots.find(binding.slot);
         if (!at || *at == defaults.size() || defaults[*at])
@@ -96,7 +96,7 @@ Result<std::string> mesh_content_sha256(const MeshAsset& asset) {
     }
     Encoding out;
     constexpr std::string_view domain = "Atelier.Mesh";
-    out.bytes(std::as_bytes(std::span(domain)));
+    out.bytes(as_bytes(Span{domain.data(), domain.size()}));
     out.u32(mesh_digest_version);
     out.size(mesh.vertices().size());
     for (const auto& v : mesh.vertices()) {

@@ -13,13 +13,13 @@ struct MaterialFrame {
     // after the caller retires it; there is no live Runtime/parent capture here.
     const MaterialBatchState* batch{};
 
-    std::vector<material::ProgramSurfaceRef> captured_programs;
+    Array<material::ProgramSurfaceRef> captured_programs;
 
-    std::vector<material::ProgramSurfaceRef> program_slots;
+    Array<material::ProgramSurfaceRef> program_slots;
 
-    std::vector<std::uint32_t> program_offsets;
+    Array<std::uint32_t> program_offsets;
 
-    std::vector<std::uint32_t> program_indices;
+    Array<std::uint32_t> program_indices;
 
     GfxBuffer program_index_buffer{};
 

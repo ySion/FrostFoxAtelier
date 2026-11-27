@@ -15,10 +15,10 @@ struct FlexState {
     std::size_t begin{}, end{}, lines_begin{}, lines_end{};
     bool enabled{}, row{};
 };
-Buffer<FlexItem> flex_items{BufferAllocator<FlexItem>{&memory}};
-Buffer<FlexLine> flex_lines{BufferAllocator<FlexLine>{&memory}};
-Buffer<FlexState> flex_states{BufferAllocator<FlexState>{&memory}};
-Buffer<double> flex_weights{BufferAllocator<double>{&memory}};
+Buffer<FlexItem> flex_items{&memory};
+Buffer<FlexLine> flex_lines{&memory};
+Buffer<FlexState> flex_states{&memory};
+Buffer<double> flex_weights{&memory};
 
 void prepare_flex_work() {
     flex_items.clear(); flex_lines.clear();
@@ -50,7 +50,7 @@ FlexSpec flex_spec(std::uint32_t index) const { return slots[index].input.flow.v
 Result<void> flex_dependency(std::uint32_t index) const {
     return std::unexpected(Error{ErrorCode::unsupported_dependency, id(index), 0, InputField::flow});
 }
-std::optional<double> flex_height_limit(std::uint32_t index) const {
+Optional<double> flex_height_limit(std::uint32_t index) const {
     const auto& input = slots[index].input;
     if (index == 0) return std::max(0.0, static_cast<double>(working[slots[index].work_index].height) - vertical(input.padding));
     if (input.height.rule == SizeRule::fixed)
@@ -128,9 +128,9 @@ void flex_allocate(std::size_t begin, std::size_t end, double pool) {
         const double start = grow ? (item.minimum - item.basis) / weight : (item.basis - item.maximum) / weight;
         const double stop = grow ? (item.maximum - item.basis) / weight : (item.basis - item.minimum) / weight;
         if (stop <= 0) continue;
-        if (start > 0) events.emplace_back(start, i * 2);
+        if (start > 0) events.emplace(start, i * 2);
         else weight_sums[count + i] = weight;
-        if (std::isfinite(stop)) events.emplace_back(stop, i * 2 + 1);
+        if (std::isfinite(stop)) events.emplace(stop, i * 2 + 1);
     }
     for (auto i = count; i-- > 1;) weight_sums[i] = weight_sums[i * 2] + weight_sums[i * 2 + 1];
     std::sort(events.begin(), events.end());
@@ -162,7 +162,7 @@ void flex_build_lines(std::uint32_t index, double available, bool wrapping) {
         const double size = flex_bound(flex_items[at].basis, flex_items[at]);
         const bool first = flex_lines.size() == state.lines_begin;
         if (first || (wrapping && flex_lines.back().main + slots[index].input.gap + size > available))
-            flex_lines.push_back(FlexLine{at, at});
+            flex_lines.add(FlexLine{at, at});
         auto& line = flex_lines.back();
         if (line.end != line.begin) line.main += slots[index].input.gap;
         line.main += size; line.end = at + 1;
@@ -226,14 +226,14 @@ Result<void> flex_widths(std::uint32_t index, float available) {
                 ATELIER_TRY_BIND(measured_width, intrinsic_width(child));
                 natural = *measured_width;
             }
-            flex_items.push_back(flex_item(child, input.width, natural, horizontal(input.padding)));
+            flex_items.add(flex_item(child, input.width, natural, horizontal(input.padding)));
         } else {
             if (input.width.rule == SizeRule::flex || (wrapping && input.width.rule != SizeRule::fixed && input.width.rule != SizeRule::content))
                 return flex_dependency(child);
             ATELIER_TRY_BIND(result, cell_width(child, available));
             box_for(child).width = *result;
             child_work.slot_width = wrapping ? *result : available;
-            flex_items.push_back(flex_item(child, input.height, 0, vertical(input.padding)));
+            flex_items.add(flex_item(child, input.height, 0, vertical(input.padding)));
         }
     }
     state.end = flex_items.size();

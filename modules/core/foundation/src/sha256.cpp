@@ -18,12 +18,12 @@ Sha256::~Sha256() {
     BCryptDestroyHash(hash_);
 }
 
-void Sha256::add(std::span<const std::byte> bytes) noexcept {
+void Sha256::add(atelier::Span<const std::byte> bytes) noexcept {
     while (!bytes.empty()) {
         const auto count = static_cast<ULONG>(std::min<std::size_t>(bytes.size(), 1024 * 1024));
         if (BCryptHashData(hash_, reinterpret_cast<PUCHAR>(const_cast<std::byte*>(bytes.data())), count, 0) < 0)
             fatal("Cannot hash bytes");
-        bytes = bytes.subspan(count);
+        bytes.remove_prefix(count);
     }
 }
 
@@ -41,7 +41,7 @@ std::string Sha256::finish() noexcept {
     return result;
 }
 
-std::string sha256(std::span<const std::byte> bytes) noexcept {
+std::string sha256(atelier::Span<const std::byte> bytes) noexcept {
     Sha256 hash;
     hash.add(bytes);
     return hash.finish();

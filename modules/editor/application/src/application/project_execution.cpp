@@ -392,7 +392,7 @@ void Application::poll_project() {
                    L"Cannot remove the run's change files: " + diagnostic_text(platform::error_message(error)),
                    logging::Severity::warning);
     }
-    workspace_.play_pending = live_.active() ? std::optional(live_.unacknowledged()) : std::nullopt;
+    workspace_.play_pending = live_.active() ? Optional<std::size_t>{live_.unacknowledged()} : Optional<std::size_t>{};
     workspace_.play_diverged = !live_.divergence().empty();
     if (!play_.running() && !play_snapshot_.empty()) {
         std::error_code error;

@@ -3,14 +3,16 @@
 #include "application/timing.hpp"
 #include "editor/session.hpp"
 #include "editor/viewport_tool.hpp"
+#include "foundation/array.hpp"
 #include "foundation/map.hpp"
+#include "foundation/optional.hpp"
 #include "foundation/result.hpp"
 #include "foundation/set.hpp"
+#include "foundation/span.hpp"
 #include "renderer/renderer.hpp"
 #include "logging/logging.hpp"
 #include <algorithm>
 #include <limits>
-#include <optional>
 #include <tuple>
 
 namespace atelier::application {
@@ -21,9 +23,9 @@ namespace atelier::application {
 class SceneSnapshot final {
 public:
     struct Draw {
-        std::vector<renderer::MeshInstance> meshes;
+        Array<renderer::MeshInstance> meshes;
 
-        std::vector<renderer::Light> lights;
+        Array<renderer::Light> lights;
 
         std::uint64_t identity{};
 
@@ -38,12 +40,12 @@ public:
     std::uint64_t built{};
 
     // Latest candidate, NOT the adopted group. Rendering must use draw().
-    std::vector<renderer::MeshInstance> meshes;
+    Array<renderer::MeshInstance> meshes;
 
     // Candidate geometry membership; the adopted picking group owns its own copy.
-    std::vector<ObjectId> mesh_entities;
+    Array<ObjectId> mesh_entities;
 
-    std::vector<renderer::Light> lights;
+    Array<renderer::Light> lights;
 
     std::uint64_t identity{1};
 
@@ -86,7 +88,7 @@ public:
         }();
         if (!version)
             return std::unexpected(version.error());
-        const auto selection = show_selection ? document.selected_entities() : std::span<const ObjectId>{};
+        const auto selection = show_selection ? document.selected_entities() : Span<const ObjectId>{};
         const bool reselect = !synced_ || !std::ranges::equal(synced_->selection, selection) ||
                               synced_->highlight_generators != highlight_generators;
         bool changed = !synced_ || synced_->version != *version || reselect;
@@ -135,9 +137,9 @@ public:
                     continue;
                 const auto& item = *slots[slot].item;
                 dense_[slot] = static_cast<std::uint32_t>(meshes.size());
-                mesh_entities.push_back(item.entity);
-                mesh_surfaces_.push_back(item.surfaces);
-                meshes.push_back(instance(slots[slot], key(mesh_keys_, item.component), false));
+                mesh_entities.add(item.entity);
+                mesh_surfaces_.add(item.surfaces);
+                meshes.add(instance(slots[slot], key(mesh_keys_, item.component), false));
             }
             static_mesh_count_ = meshes.size();
             mesh_keys_.remove_if([](ObjectId, const Key& item) { return !item.seen; });
@@ -160,10 +162,9 @@ public:
                     if (slice.present) {
                         if (auto* gk = generator_keys_.find(slice.component))
                             gk->seen = true;
-                        mesh_entities.insert(mesh_entities.end(), slice.meshes.size(), slice.entity);
-                        mesh_surfaces_.insert(mesh_surfaces_.end(), slice.mesh_surfaces.begin(),
-                                              slice.mesh_surfaces.end());
-                        meshes.insert(meshes.end(), slice.meshes.begin(), slice.meshes.end());
+                        mesh_entities.append(slice.meshes.size(), slice.entity);
+                        mesh_surfaces_.append(slice.mesh_surfaces);
+                        meshes.append(slice.meshes);
                     }
                     continue;
                 }
@@ -185,7 +186,7 @@ public:
                             return false;
                     return true;
                 }();
-                Map<std::uint64_t, std::shared_ptr<const std::vector<std::uint32_t>>> prev_slots;
+                Map<std::uint64_t, std::shared_ptr<const Array<std::uint32_t>>> prev_slots;
                 if (same_surface_set) {
                     prev_slots.reserve(slice.meshes.size());
                     for (const auto& prev_m : slice.meshes)
@@ -204,25 +205,25 @@ public:
                     ck.seen = false;
                 }
 
-                std::vector<renderer::MeshInstance> next_meshes;
-                std::vector<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>> next_surfaces;
+                Array<renderer::MeshInstance> next_meshes;
+                Array<std::shared_ptr<const Array<material::ProgramSurfaceRef>>> next_surfaces;
                 if (gen.surface_geometry && gen.surface_materials) {
                     ++built;
-                    std::shared_ptr<const std::vector<std::uint32_t>> kept_slots;
+                    std::shared_ptr<const Array<std::uint32_t>> kept_slots;
                     if (const auto* kept = prev_slots.find(gkeys.surface_key))
                         kept_slots = *kept;
                     else
                         bindings_changed = true;
-                    next_surfaces.push_back(gen.surface_materials);
-                    next_meshes.push_back(
+                    next_surfaces.add(gen.surface_materials);
+                    next_meshes.add(
                         {gen_world, false, gen.surface_geometry, gkeys.surface_key, std::move(kept_slots)});
                 }
                 for (const auto& col : gen.collections) {
                     if (!col.geometry || !col.transforms || !col.surfaces)
                         continue;
                     auto& chunk_entry = *gkeys.chunks.try_emplace(col.transforms.get()).value;
-                    std::vector<std::uint64_t> duplicate_keys;
-                    const std::vector<std::uint64_t>* active_keys = nullptr;
+                    Array<std::uint64_t> duplicate_keys;
+                    const Array<std::uint64_t>* active_keys = nullptr;
                     if (chunk_entry.seen) {
                         duplicate_keys.resize(col.transforms->size());
                         for (auto& k : duplicate_keys)
@@ -245,16 +246,16 @@ public:
                             continue;
                         ++built;
                         const std::uint64_t inst_key = (*active_keys)[i];
-                        std::shared_ptr<const std::vector<std::uint32_t>> kept_slots;
+                        std::shared_ptr<const Array<std::uint32_t>> kept_slots;
                         if (const auto* kept = prev_slots.find(inst_key))
                             kept_slots = *kept;
                         else
                             bindings_changed = true;
-                        next_surfaces.push_back(col.surfaces);
-                        next_meshes.push_back({*inst_world, false, col.geometry, inst_key, std::move(kept_slots)});
+                        next_surfaces.add(col.surfaces);
+                        next_meshes.add({*inst_world, false, col.geometry, inst_key, std::move(kept_slots)});
                     }
                 }
-                gkeys.chunks.remove_if([](const std::vector<procedural::Affine>*, const ChunkKeys& item) {
+                gkeys.chunks.remove_if([](const Array<procedural::Affine>*, const ChunkKeys& item) {
                     return !item.seen;
                 });
                 if (same_surface_set && next_meshes.size() != slice.meshes.size())
@@ -268,9 +269,9 @@ public:
                 slice.meshes = std::move(next_meshes);
                 slice.mesh_surfaces = std::move(next_surfaces);
 
-                mesh_entities.insert(mesh_entities.end(), slice.meshes.size(), slice.entity);
-                mesh_surfaces_.insert(mesh_surfaces_.end(), slice.mesh_surfaces.begin(), slice.mesh_surfaces.end());
-                meshes.insert(meshes.end(), slice.meshes.begin(), slice.meshes.end());
+                mesh_entities.append(slice.meshes.size(), slice.entity);
+                mesh_surfaces_.append(slice.mesh_surfaces);
+                meshes.append(slice.meshes);
             }
             generator_keys_.remove_if([](ObjectId, const GeneratorKeys& item) { return !item.seen; });
         }
@@ -285,7 +286,7 @@ public:
             }
             lights.clear();
             for (const auto& item : scene.light_snapshot())
-                lights.push_back(light(item, key(light_keys_, item.component)));
+                lights.add(light(item, key(light_keys_, item.component)));
             light_keys_.remove_if([](ObjectId, const Key& item) { return !item.seen; });
         }
         auto locators = refresh_locators(
@@ -301,14 +302,14 @@ public:
             picking->locators = locators_;
             picking->meshes.reserve(meshes.size());
             for (std::size_t i = 0; i < meshes.size(); ++i)
-                picking->meshes.push_back(
+                picking->meshes.add(
                     {mesh_entities[i], meshes[i].world, meshes[i].geometry, meshes[i].material_slots});
             picking_ = std::move(picking);
             ++request_;
             synced_ = Synced{scene.identity(),
                              *version,
                              document.world().revision(),
-                             {selection.begin(), selection.end()},
+                             Array<ObjectId>(selection),
                              highlight_generators};
         }
         return {};
@@ -335,7 +336,7 @@ public:
             // Reuse preparation only for the exact same Surface table; replace
             // the entire frozen draw request, never graft live values at adoption.
             std::shared_ptr<renderer::MaterialBatch> batch;
-            const auto matches = [&](const std::optional<Prepared>& group) {
+            const auto matches = [&](const Optional<Prepared>& group) {
                 return group && group->draw.materials &&
                        std::ranges::equal(group->draw.materials->surfaces(), surfaces_);
             };
@@ -420,7 +421,7 @@ private:
 
         std::uint64_t world_revision;
 
-        std::vector<ObjectId> selection;
+        Array<ObjectId> selection;
 
         bool highlight_generators{true};
     };
@@ -430,15 +431,15 @@ private:
 
         Draw draw;
 
-        std::optional<renderer::Error> failure;
+        Optional<renderer::Error> failure;
     };
 
-    std::optional<std::tuple<std::uint64_t, std::uint64_t, bool, renderer::Shading>> accepted_material_;
+    Optional<std::tuple<std::uint64_t, std::uint64_t, bool, renderer::Shading>> accepted_material_;
 
     struct ChunkKeys {
-        std::shared_ptr<const std::vector<procedural::Affine>> owner;
+        std::shared_ptr<const Array<procedural::Affine>> owner;
 
-        std::vector<std::uint64_t> keys;
+        Array<std::uint64_t> keys;
 
         bool seen{};
     };
@@ -446,7 +447,7 @@ private:
     struct GeneratorKeys {
         std::uint64_t surface_key{};
 
-        Map<const std::vector<procedural::Affine>*, ChunkKeys> chunks;
+        Map<const Array<procedural::Affine>*, ChunkKeys> chunks;
 
         bool seen{};
     };
@@ -458,36 +459,36 @@ private:
 
         ObjectId component{};
 
-        std::shared_ptr<const std::vector<material::ProgramSurfaceRef>> surface_materials;
+        std::shared_ptr<const Array<material::ProgramSurfaceRef>> surface_materials;
 
-        std::vector<presentation::GeneratorRenderCollection> collections;
+        Array<presentation::GeneratorRenderCollection> collections;
 
-        std::vector<renderer::MeshInstance> meshes;
+        Array<renderer::MeshInstance> meshes;
 
-        std::vector<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>> mesh_surfaces;
+        Array<std::shared_ptr<const Array<material::ProgramSurfaceRef>>> mesh_surfaces;
     };
 
     Map<ObjectId, Key> mesh_keys_;
 
     Map<ObjectId, GeneratorKeys> generator_keys_;
 
-    std::vector<GeneratorSlice> generator_slices_;
+    Array<GeneratorSlice> generator_slices_;
 
     Map<ObjectId, Key> light_keys_;
 
     std::uint64_t next_key_{1};
 
-    std::vector<std::uint32_t> dense_; // Mesh slot to its index in `meshes`, or absent.
+    Array<std::uint32_t> dense_; // Mesh slot to its index in `meshes`, or absent.
 
     std::size_t static_mesh_count_{};
 
-    std::optional<Synced> synced_;
+    Optional<Synced> synced_;
 
-    std::vector<std::shared_ptr<const std::vector<material::ProgramSurfaceRef>>> mesh_surfaces_;
+    Array<std::shared_ptr<const Array<material::ProgramSurfaceRef>>> mesh_surfaces_;
 
-    std::vector<material::ProgramSurfaceRef> surfaces_;
+    Array<material::ProgramSurfaceRef> surfaces_;
 
-    std::vector<editor::ViewportScene::Locator> locators_;
+    Array<editor::ViewportScene::Locator> locators_;
 
     Set<ObjectId> locator_sources_;
 
@@ -497,9 +498,9 @@ private:
 
     std::shared_ptr<const editor::ViewportScene> picking_;
 
-    std::optional<Prepared> pending_;
+    Optional<Prepared> pending_;
 
-    std::optional<Prepared> adopted_;
+    Optional<Prepared> adopted_;
 
     void material_event(std::string_view code, const renderer::Error* error = nullptr) const noexcept {
         logging::Entry entry{.severity = error ? logging::Severity::error : logging::Severity::info,
@@ -510,10 +511,10 @@ private:
                         {"draw_request", pending_->request},
                         {"surfaces", std::uint64_t{surfaces_.size()}}};
         if (pending_->draw.material_request)
-            entry.fields.push_back({"request_generation", pending_->draw.material_request});
+            entry.fields.add({"request_generation", pending_->draw.material_request});
         if (error) {
-            entry.fields.push_back({"terminal", error->terminal});
-            entry.fields.push_back({"error_code", static_cast<std::uint64_t>(error->cause.code)});
+            entry.fields.add({"terminal", error->terminal});
+            entry.fields.add({"error_code", static_cast<std::uint64_t>(error->cause.code)});
         }
         static_cast<void>(logging::submit(std::move(entry)));
     }
@@ -539,21 +540,21 @@ private:
     }
 
     Result<void> bind_materials() {
-        std::vector<material::ProgramSurfaceRef> surfaces;
+        Array<material::ProgramSurfaceRef> surfaces;
         Map<const material::ProgramSurface*, std::uint32_t> indices;
-        Map<const std::vector<material::ProgramSurfaceRef>*,
-            std::shared_ptr<const std::vector<std::uint32_t>>>
+        Map<const Array<material::ProgramSurfaceRef>*,
+            std::shared_ptr<const Array<std::uint32_t>>>
             slot_cache;
         for (std::size_t i = 0; i < meshes.size(); ++i) {
             const auto& source = mesh_surfaces_[i];
             if (!source || source->size() != meshes[i].geometry->materials().size())
                 return std::unexpected(
                     Error{ErrorCode::invalid_definition, "A scene mesh needs one captured Surface per material slot."});
-            std::shared_ptr<const std::vector<std::uint32_t>> mapped;
+            std::shared_ptr<const Array<std::uint32_t>> mapped;
             if (const auto* cached_it = slot_cache.find(source.get())) {
                 mapped = *cached_it;
             } else {
-                std::vector<std::uint32_t> slots;
+                Array<std::uint32_t> slots;
                 slots.reserve(source->size());
                 for (const auto& surface : *source) {
                     if (!surface || surfaces.size() >= absent)
@@ -561,13 +562,13 @@ private:
                     const auto [at, added] =
                         indices.try_emplace(surface.get(), static_cast<std::uint32_t>(surfaces.size()));
                     if (added)
-                        surfaces.push_back(surface);
-                    slots.push_back(*at);
+                        surfaces.add(surface);
+                    slots.add(*at);
                 }
                 if (meshes[i].material_slots && *meshes[i].material_slots == slots)
                     mapped = meshes[i].material_slots;
                 else
-                    mapped = std::make_shared<const std::vector<std::uint32_t>>(std::move(slots));
+                    mapped = std::make_shared<const Array<std::uint32_t>>(std::move(slots));
                 slot_cache.try_emplace(source.get(), mapped);
             }
             if (!meshes[i].material_slots || *meshes[i].material_slots != *mapped)
@@ -585,7 +586,7 @@ private:
         return {};
     }
 
-    Result<bool> refresh_locators(const editor::Session& document, bool rebuild, std::span<const ObjectId> selection) {
+    Result<bool> refresh_locators(const editor::Session& document, bool rebuild, Span<const ObjectId> selection) {
         auto& runtime = document.world().runtime();
         if (!rebuild)
             rebuild = std::ranges::any_of(
@@ -597,7 +598,7 @@ private:
                 return std::unexpected(members.error());
             const Set<ObjectId> rendered(mesh_entities);
             const Set<ObjectId> selected(selection);
-            std::vector<editor::ViewportScene::Locator> locators;
+            Array<editor::ViewportScene::Locator> locators;
             locator_sources_.clear();
             for (const auto& member : *members)
                 if (!rendered.contains(member.id())) {
@@ -617,7 +618,7 @@ private:
                     const auto matrix = world::world_matrix(runtime, member.id());
                     if (!matrix)
                         continue;
-                    locators.push_back(
+                    locators.add(
                         {member.id(), {(*matrix)[12], (*matrix)[13], (*matrix)[14]}, selected.contains(member.id())});
                 }
             changed = locators_ != locators;
@@ -662,7 +663,7 @@ private:
     }
 
     // A mesh is highlighted when its Entity or an ancestor is selected.
-    Result<void> highlight(const editor::Session& document, std::span<const ObjectId> selection,
+    Result<void> highlight(const editor::Session& document, Span<const ObjectId> selection,
                            bool highlight_generators = true) {
         if (selection.empty()) {
             for (auto& mesh : meshes)

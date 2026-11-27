@@ -8,7 +8,6 @@
 #include <cmath>
 #include <limits>
 #include <type_traits>
-#include <vector>
 
 namespace atelier::procedural::detail {
 namespace {
@@ -22,7 +21,7 @@ struct Sample {
 
     std::array<double, 3> weights;
 
-    Sample as_points(std::span<const std::uint32_t> corners) const {
+    Sample as_points(Span<const std::uint32_t> corners) const {
         return {{corners[ids[0]], corners[ids[1]], corners[ids[2]]}, weights};
     }
 };
@@ -88,10 +87,8 @@ Result<Vector3> face_normal(const Geometry& mesh, PrimitiveRange range) {
 
 } // namespace
 
-Result<void> bevel_attributes(const Geometry& source, Geometry& output,
-                              std::span<const std::uint32_t> primitive_sources,
-                              std::span<const std::uint8_t> original_faces,
-                              std::span<const std::uint32_t> point_sources) {
+Result<void> bevel_attributes(const Geometry& source, Geometry& output, Span<const std::uint32_t> primitive_sources,
+                              Span<const std::uint8_t> original_faces, Span<const std::uint32_t> point_sources) {
     const auto invalid = [&](auto p) { return p >= source.count(Layer::primitive); };
     if (primitive_sources.size() != output.count(Layer::primitive) ||
         original_faces.size() != primitive_sources.size() || point_sources.size() != output.count(Layer::point) ||
@@ -113,8 +110,8 @@ Result<void> bevel_attributes(const Geometry& source, Geometry& output,
         });
     };
     const bool sample_corners = needs_samples(Layer::vertex);
-    std::vector<Sample> corner_samples;
-    std::vector<Sample> point_samples;
+    Array<Sample> corner_samples;
+    Array<Sample> point_samples;
     Array<Vector3> normals;
     normals.reserve(output.count(Layer::vertex));
     if (sample_corners)
@@ -122,8 +119,8 @@ Result<void> bevel_attributes(const Geometry& source, Geometry& output,
     if (needs_samples(Layer::point)) {
         point_samples.reserve(point_sources.size());
         for (std::size_t p = 0; p < point_sources.size(); ++p)
-            point_samples.push_back(closest_sample(source, source.primitive(point_sources[p]), output.positions()[p])
-                                        .as_points(source.vertex_points()));
+            point_samples.add(closest_sample(source, source.primitive(point_sources[p]), output.positions()[p])
+                                  .as_points(source.vertex_points()));
     }
     for (std::uint32_t p = 0; p < primitive_sources.size(); ++p) {
         const auto range = output.primitive(p);
@@ -142,7 +139,7 @@ Result<void> bevel_attributes(const Geometry& source, Geometry& output,
                 const auto point = output.vertex_points()[range.first + j];
                 auto sample = closest_sample(source, source.primitive(donor), output.positions()[point]);
                 if (sample_corners)
-                    corner_samples.push_back(sample);
+                    corner_samples.add(sample);
                 if (varying_normal) {
                     if (normal->layer == Layer::point)
                         sample = sample.as_points(source.vertex_points());

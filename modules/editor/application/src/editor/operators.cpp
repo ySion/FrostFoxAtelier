@@ -53,7 +53,7 @@ public:
 
     const std::align_val_t alignment;
 
-    const std::span<std::byte> bytes;
+    const Span<std::byte> bytes;
 
     bool initialized{};
 
@@ -170,7 +170,7 @@ std::string history_violation(const OperatorInfo& info, std::uint64_t recorded, 
 }
 }
 
-std::span<const std::string_view> region_names() noexcept {
+Span<const std::string_view> region_names() noexcept {
     static constexpr std::array<std::string_view, 12> names{"none",       "viewport", "scene_tree", "structure",
                                                             "parameters", "assets",   "code",       "output",
                                                             "world",      "controls", "network",    "spreadsheet"};
@@ -215,12 +215,12 @@ OperatorBinding::OperatorBinding(OperatorCall call) : request(std::move(call)) {
 
 OperatorBinding::~OperatorBinding() = default;
 
-Result<std::optional<bool>> OperatorBinding::state(const OperatorRegistry& registry, const Context& context) {
+Result<Optional<bool>> OperatorBinding::state(const OperatorRegistry& registry, const Context& context) {
     const auto* info = registry.find(request.id);
     if (!info)
         return std::unexpected(rejected("Unknown operator: " + request.id));
     if (!info->state)
-        return std::optional<bool>{};
+        return Optional<bool>{};
     if (info->parameters.empty())
         return info->state(context, {});
     if (parameters_)
@@ -265,7 +265,7 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
     auto& document = context.document;
     auto& runtime = document.world().runtime();
     std::unique_ptr<detail::OperatorValue> value;
-    std::vector<PropertyPatch> patch;
+    Array<PropertyPatch> patch;
     if (info->parameters == "@context.object") {
         const auto object = context.selection.object;
         const auto type = runtime.type_of(object);
@@ -288,7 +288,7 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
                 const auto* scalar = std::get_if<Scalar>(&leaf);
                 if (!scalar)
                     return std::unexpected(rejected("A property patch supports Scalar leaves only."));
-                patch.push_back({field.path, *scalar});
+                patch.add({field.path, *scalar});
                 return {};
             },
             true);
@@ -300,14 +300,14 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
         if (info->seed)
             ATELIER_TRY(info->seed(context, ValueOutput{value->type, value->bytes.data()}));
         const ResolveReference reference = [&](const auto& json, TypeId type,
-                                               ValueForm form) -> Result<std::optional<ObjectReference>> {
+                                               ValueForm form) -> Result<Optional<ObjectReference>> {
             if (json.is_null()) {
                 auto null = runtime.null_reference(type, form);
-                return null ? std::optional{*null} : std::nullopt;
+                return null ? Optional<ObjectReference>{*null} : Optional<ObjectReference>{};
             }
             if (resolve)
                 return resolve(json, type, form);
-            return std::nullopt;
+            return Optional<ObjectReference>{};
         };
         ATELIER_TRY(decode_properties(runtime, PropertyTarget{value->type, {}, value->bytes}, args, reference));
     }
@@ -370,7 +370,7 @@ json::Result<void> scalar_json(Runtime& runtime, json::Builder& builder, json::V
 }
 
 // The fields of the record at `path` inside a live parameter value; with `defaults`, their current values.
-Result<void> record_schema(const detail::OperatorValue& value, TypeId record, std::vector<FieldId>& path, bool defaults,
+Result<void> record_schema(const detail::OperatorValue& value, TypeId record, Array<FieldId>& path, bool defaults,
                            json::Builder& builder, json::Value target) {
     auto& runtime = value.runtime;
     const auto info = runtime.describe(record);
@@ -385,14 +385,14 @@ Result<void> record_schema(const detail::OperatorValue& value, TypeId record, st
         const auto leaf = runtime.describe(field.value.type);
         if (!leaf)
             return std::unexpected(leaf.error());
-        path.push_back(field.id);
+        path.add(field.id);
         const auto made = builder.object(properties, field.name);
         if (!made)
             return std::unexpected(invalid(made.error().describe()));
         const auto schema = *made;
         const bool material_entries = field.value.type == runtime.native_type<MaterialEntriesJson>().value_or(TypeId{});
         String text;
-        std::optional<Scalar> current;
+        Optional<Scalar> current;
         if (field.value.form == ValueForm::inline_value) {
             if ((*leaf)->kind == TypeKind::record && !material_entries) {
                 ATELIER_TRY(record_schema(value, field.value.type, path, defaults, builder, schema));
@@ -448,7 +448,7 @@ Result<void> record_schema(const detail::OperatorValue& value, TypeId record, st
                                           : number                               ? "number"
                                                                                  : "integer");
                 }
-                const auto bound = [&](const char* key, const std::optional<Scalar>& limit) -> json::Result<void> {
+                const auto bound = [&](const char* key, const Optional<Scalar>& limit) -> json::Result<void> {
                     if (limit)
                         return scalar_json(runtime, builder, schema, key, *limit);
                     return {};
@@ -468,7 +468,7 @@ Result<void> record_schema(const detail::OperatorValue& value, TypeId record, st
         }();
         if (!emitted)
             return std::unexpected(invalid(emitted.error().describe()));
-        path.pop_back();
+        path.pop();
     }
     return {};
 }
@@ -489,7 +489,7 @@ Result<json::Document> schema(Runtime& runtime, std::string_view record, bool de
         return builder.finish();
     }
     ATELIER_TRY_BIND(value, parameters(runtime, record));
-    std::vector<FieldId> path;
+    Array<FieldId> path;
     ATELIER_TRY(record_schema(**value, (*value)->type, path, defaults, builder, root));
     const auto title = builder.set(root, "title", record);
     if (!title)

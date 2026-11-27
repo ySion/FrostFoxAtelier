@@ -14,9 +14,9 @@ struct SceneLitDraw {
 };
 
 struct SceneLitDraws {
-    std::span<const SceneLitDraw> draws;
+    Span<const SceneLitDraw> draws;
 
-    std::span<const std::uint32_t> instance_draws; // Every snapshot instance, culled shadow casters included.
+    Span<const std::uint32_t> instance_draws; // Every snapshot instance, culled shadow casters included.
 
     GfxBuffer draw_instances; // Original snapshot indices.
 };

@@ -1,12 +1,12 @@
 #pragma once
+#include "foundation/array.hpp"
 #include "foundation/map.hpp"
+#include "foundation/span.hpp"
 #include "material/image.hpp"
 #include "runtime/runtime.hpp"
 #include <cstdint>
-#include <span>
 #include <string>
 #include <string_view>
-#include <vector>
 namespace atelier::assets {
 // Shared WIC decoding for project texture assets and model-import dependencies.
 Result<material::ImageRef> decode_image(std::string_view bytes);
@@ -21,7 +21,6 @@ struct ImageCache {
 // The first decoding failure stops the remaining work and is returned
 // after every worker has finished. Returned pixels, shared ones included, may total at most
 // pixel_budget bytes; each decode is charged before it allocates. No partial result is published.
-Result<std::vector<material::ImageRef>> decode_images(std::span<const std::string_view> sources,
-                                                      ImageCache* cache = nullptr,
-                                                      std::uint64_t pixel_budget = ~std::uint64_t{});
+Result<Array<material::ImageRef>> decode_images(Span<const std::string_view> sources, ImageCache* cache = nullptr,
+                                                std::uint64_t pixel_budget = ~std::uint64_t{});
 }

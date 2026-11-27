@@ -103,7 +103,7 @@ inline json::Result<material::Policy> policy(json::Value value) {
 }
 
 inline json::Result<void> inputs(json::Builder& builder, json::Value target,
-                                 std::span<const material::TextureDefault> values) {
+                                 Span<const material::TextureDefault> values) {
     Set<std::string_view> paths;
     paths.reserve(values.size());
     for (const auto& value : values) {
@@ -122,9 +122,9 @@ inline json::Result<void> inputs(json::Builder& builder, json::Value target,
     return {};
 }
 
-inline json::Result<std::vector<material::TextureDefault>> inputs(json::Value values) {
+inline json::Result<Array<material::TextureDefault>> inputs(json::Value values) {
     ATELIER_TRY_BIND(items, values.array());
-    std::vector<material::TextureDefault> result;
+    Array<material::TextureDefault> result;
     result.reserve(items->size());
     Set<std::string_view> paths;
     paths.reserve(items->size());
@@ -149,7 +149,7 @@ inline json::Result<std::vector<material::TextureDefault>> inputs(json::Value va
             input.color = material::TextureColor::srgb;
         else
             return std::unexpected(value.error(json::Fault::range, "Unknown material texture color space."));
-        result.push_back(std::move(input));
+        result.add(std::move(input));
     }
     return result;
 }
@@ -158,7 +158,7 @@ inline json::Result<std::vector<material::TextureDefault>> inputs(json::Value va
 // One sparse-author codec for assets, scenes and control payloads. Absence is
 // no entry; disabled keeps its typed value; an empty texture key is a clear.
 inline json::Result<void> encode_entries(json::Builder& builder, json::Value target,
-                                         std::span<const material::Override> entries) {
+                                         Span<const material::Override> entries) {
     Set<std::string_view> paths;
     paths.reserve(entries.size());
     for (const auto& entry : entries) {
@@ -192,15 +192,15 @@ inline json::Result<void> encode_entries(json::Builder& builder, json::Value tar
     return {};
 }
 
-inline json::Result<json::Document> encode_entries(std::span<const material::Override> entries) {
+inline json::Result<json::Document> encode_entries(Span<const material::Override> entries) {
     json::Builder builder{json::Kind::array};
     ATELIER_TRY(encode_entries(builder, builder.root(), entries));
     return builder.finish();
 }
 
-inline json::Result<std::vector<material::Override>> decode_entries(json::Value entries) {
+inline json::Result<Array<material::Override>> decode_entries(json::Value entries) {
     ATELIER_TRY_BIND(items, entries.array());
-    std::vector<material::Override> result;
+    Array<material::Override> result;
     result.reserve(items->size());
     Set<std::string_view> paths;
     paths.reserve(items->size());
@@ -233,7 +233,7 @@ inline json::Result<std::vector<material::Override>> decode_entries(json::Value 
             entry.value = std::move(*binding);
         } else
             return std::unexpected(item.error(json::Fault::range, "Unknown material override type."));
-        result.push_back(std::move(entry));
+        result.add(std::move(entry));
     }
     return result;
 }

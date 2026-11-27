@@ -1,5 +1,6 @@
 #pragma once
 #include "../helpers.hpp"
+#include "foundation/array.hpp"
 #include <gfx.h>
 #include <d3d12sdklayers.h>
 #include <wrl/client.h>
@@ -7,7 +8,6 @@
 #include <cstdio>
 #include <string>
 #include <string_view>
-#include <vector>
 
 namespace rhi_acceptance {
 using Microsoft::WRL::ComPtr;
@@ -41,7 +41,7 @@ inline void check_debug(ID3D12InfoQueue* queue) {
     for (UINT64 i = 0; i < queue->GetNumStoredMessagesAllowedByRetrievalFilter(); ++i) {
         SIZE_T size = 0;
         check_hr(queue->GetMessage(i, nullptr, &size));
-        std::vector<std::byte> storage(size);
+        atelier::Array<std::byte> storage(size);
         auto* message = reinterpret_cast<D3D12_MESSAGE*>(storage.data());
         check_hr(queue->GetMessage(i, message, &size));
         if (message->Severity <= D3D12_MESSAGE_SEVERITY_WARNING) {

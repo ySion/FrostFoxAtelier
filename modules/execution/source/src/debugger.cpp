@@ -9,7 +9,7 @@ Debugger::Debugger(DebugHandler handler, DebugOptions options) : state_(std::mak
     state_->options = options;
 }
 
-Result<void> Debugger::set_breakpoints(std::vector<DebugBreakpoint> breakpoints) {
+Result<void> Debugger::set_breakpoints(Array<DebugBreakpoint> breakpoints) {
     if (active())
         return std::unexpected(Error{ErrorCode::busy, "Cannot change breakpoints during an active invocation."});
     for (const auto& breakpoint : breakpoints) {
@@ -31,8 +31,8 @@ bool Debugger::active() const noexcept {
     return state_ && state_->active;
 }
 
-std::optional<DebugSnapshot> Debugger::last_stop() const {
-    return state_ ? state_->last_stop : std::nullopt;
+Optional<DebugSnapshot> Debugger::last_stop() const {
+    return state_ ? state_->last_stop : Optional<DebugSnapshot>{};
 }
 
 namespace detail {
@@ -46,12 +46,12 @@ std::shared_ptr<const DebugTables> copy_debug_tables(const BusinessCodeInfo& inf
     for (std::uint32_t i = 0; i < info.debug_function_count; ++i) {
         const auto& input = info.debug_functions[i];
         assert(!input.variable_count || input.variables);
-        auto& output = tables->functions.emplace_back();
+        auto& output = tables->functions.emplace();
         output.variables.reserve(input.variable_count);
         for (std::uint32_t j = 0; j < input.variable_count; ++j) {
             const auto& variable = input.variables[j];
             assert(variable.name);
-            output.variables.push_back({variable.name, variable.type, variable.storage, variable.passing});
+            output.variables.add({variable.name, variable.type, variable.storage, variable.passing});
         }
     }
     if (info.debug_site_count)
@@ -61,11 +61,11 @@ std::shared_ptr<const DebugTables> copy_debug_tables(const BusinessCodeInfo& inf
     tables->failure_message_views.reserve(info.failure_message_count);
     for (std::uint32_t i = 0; i < info.failure_message_count; ++i) {
         if (info.failure_messages && info.failure_messages[i].data)
-            tables->failure_messages.emplace_back(info.failure_messages[i].data, info.failure_messages[i].size);
+            tables->failure_messages.emplace(info.failure_messages[i].data, info.failure_messages[i].size);
         else
-            tables->failure_messages.emplace_back();
+            tables->failure_messages.emplace();
         const auto& stored = tables->failure_messages.back();
-        tables->failure_message_views.push_back({stored.data(), stored.size()});
+        tables->failure_message_views.add({stored.data(), stored.size()});
     }
     return tables;
 }
@@ -117,7 +117,7 @@ DebugAccess::begin(Debugger* debugger, const std::shared_ptr<const DebugMetadata
             const auto& source = locations[site].source;
             if (source.path == breakpoint.path && source.version == breakpoint.source_version &&
                 source.line == breakpoint.line && (breakpoint.column == 0 || source.column == breakpoint.column)) {
-                state->bound_sites.push_back(site);
+                state->bound_sites.add(site);
                 bound = true;
             }
         }
@@ -127,8 +127,7 @@ DebugAccess::begin(Debugger* debugger, const std::shared_ptr<const DebugMetadata
                 SourceLocation{breakpoint.path, breakpoint.source_version, 0, breakpoint.line, breakpoint.column}});
     }
     std::sort(state->bound_sites.begin(), state->bound_sites.end());
-    state->bound_sites.erase(std::unique(state->bound_sites.begin(), state->bound_sites.end()),
-                             state->bound_sites.end());
+    state->bound_sites.deduplicate();
     state->active = true;
     state->status = DebugStatus::running;
     return state;

@@ -135,7 +135,7 @@ AFUNCTION() void accumulate(int amount, const int& bias = 0, LayerMask mask = La
 每个输入头产生同路径的 `.gen.hpp`，一个目标产生一份 `reflection.gen.cpp`。头中只有前向声明、元数据构建特化声明与零运行开销的 `Reflected<T, Kind>` 编译期分类特化；实现包含普通成员指针和既有注册代码。生成文件位于 `out/<配置>/generated/<目标>/`，不提交，也不手工编辑。
 
 ```cpp
-auto definitions = std::vector<atelier::TypeDefinition>{
+auto definitions = atelier::Array<atelier::TypeDefinition>{
     atelier::reflection::Definition<models::Counter>::build(runtime)
 };
 auto types = runtime.register_types(std::move(definitions));

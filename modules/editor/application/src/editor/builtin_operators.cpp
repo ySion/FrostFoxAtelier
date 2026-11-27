@@ -152,11 +152,11 @@ Result<void> frame_selected_poll(const Context& context) {
     if (context.selection.entities.empty())
         return unavailable("Select an Entity with a Transform to frame.");
     auto& runtime = context.document.world().runtime();
-    std::vector<ObjectId> pending = context.selection.entities;
+    Array<ObjectId> pending = context.selection.entities;
     Set<ObjectId> seen;
     while (!pending.empty()) {
         const auto object = pending.back();
-        pending.pop_back();
+        pending.pop();
         if (!seen.add(object))
             continue;
         const auto state = world::inspect_entity(runtime, object);
@@ -171,7 +171,7 @@ Result<void> frame_selected_poll(const Context& context) {
         if (!children)
             return std::unexpected(children.error());
         for (const auto& child : *children)
-            pending.push_back(child.id());
+            pending.add(child.id());
     }
     return unavailable("Select an Entity with a Transform to frame.");
 }
@@ -324,8 +324,8 @@ Result<void> scene_rename(OperatorHost& host, const Context& context, const Scen
 
 Result<void> snap_selection(OperatorHost& host, const Context& context, const SceneSnap& p) {
     return host.viewport_tool().snap_selection(context.document, context.selection.entities, context.tools,
-                                               p.to == SnapTarget::cursor ? std::optional{context.cursor}
-                                                                          : std::nullopt);
+                                               p.to == SnapTarget::cursor ? Optional{context.cursor}
+                                                                          : Optional<math::Vector3>{});
 }
 
 Result<void> layout_show(OperatorHost& host, const Context&, const LayoutShow& p) {
@@ -424,7 +424,7 @@ Result<void> scene_space_reference(OperatorHost& host, const Context& context, c
     ATELIER_TRY_BIND(held, runtime.try_acquire(*reference));
     if (!reference->is_null() && !*held)
         return std::unexpected(Error{ErrorCode::invalid_object, "The spatial origin Entity is no longer alive."});
-    std::optional<ObjectId> origin;
+    Optional<ObjectId> origin;
     if (*held)
         origin = (*held)->id();
     else if (p.world_space)
@@ -470,7 +470,7 @@ Result<void> seed_view(const Context& context, ValueOutput out) {
         return std::unexpected(environment.error());
     static_cast<rendering::SceneLightingSettings&>(current.lit) = *environment;
     const auto options = view_options();
-    const std::span storage{static_cast<std::byte*>(out.data), (*info)->size};
+    const Span storage{static_cast<std::byte*>(out.data), (*info)->size};
     for (std::size_t i = 0; i < options.size(); ++i) {
         const auto& option = options[i];
         const auto& field = (*info)->fields[i];
@@ -490,7 +490,7 @@ Result<void> seed_view(const Context& context, ValueOutput out) {
             value = EnumValue{field.value.type, static_cast<std::uint32_t>(number)};
             break;
         }
-        ATELIER_TRY(runtime.write(out.type, storage, std::span{&field.id, 1}, value));
+        ATELIER_TRY(runtime.write(out.type, storage, Span{&field.id, 1}, value));
     }
     return {};
 }
@@ -504,10 +504,10 @@ Result<void> view_settings(OperatorHost& host, const Context& context, const Ope
         return std::unexpected(info.error());
     auto candidate = context.view;
     const auto options = view_options();
-    const std::span storage{static_cast<const std::byte*>(input.data), (*info)->size};
+    const Span storage{static_cast<const std::byte*>(input.data), (*info)->size};
     for (std::size_t i = 0; i < options.size(); ++i) {
         const auto& field = (*info)->fields[i];
-        const auto value = runtime.read(input.type, storage, std::span{&field.id, 1});
+        const auto value = runtime.read(input.type, storage, Span{&field.id, 1});
         if (!value)
             return std::unexpected(value.error());
         const auto number = std::visit(
@@ -529,11 +529,11 @@ Result<void> project_open(const Context& context) {
     return context.project ? Result<void>{} : unavailable("Open a project folder first.");
 }
 
-Result<std::optional<std::filesystem::path>> operation_path(OperatorHost& host, const String& value,
-                                                            PathPurpose purpose, const std::filesystem::path& initial,
-                                                            std::wstring_view filename = {}) {
+Result<Optional<std::filesystem::path>> operation_path(OperatorHost& host, const String& value,
+                                                       PathPurpose purpose, const std::filesystem::path& initial,
+                                                       std::wstring_view filename = {}) {
     if (!value.empty())
-        return std::optional<std::filesystem::path>{platform::utf8_to_utf16_validated({value.c_str(), value.size()})};
+        return Optional<std::filesystem::path>{platform::utf8_to_utf16_validated({value.c_str(), value.size()})};
     auto chosen = host.choose_path(purpose, initial, filename);
     if (chosen && !*chosen)
         host.cancel_operator();
@@ -724,11 +724,11 @@ Result<std::string> resolve_graph_node_name(const Context& context, std::string_
     return node_name;
 }
 
-Result<std::vector<std::string>> resolve_graph_node_targets(const Context& context, std::string_view key,
-                                                            const String& explicit_nodes, bool split_commas,
-                                                            std::string_view action_verb) {
+Result<Array<std::string>> resolve_graph_node_targets(const Context& context, std::string_view key,
+                                                      const String& explicit_nodes, bool split_commas,
+                                                      std::string_view action_verb) {
     const bool is_viewed = (key == context.active_graph || key == context.network_graph);
-    std::vector<std::string> targets;
+    Array<std::string> targets;
     if (!explicit_nodes.empty()) {
         if (split_commas) {
             const std::string_view raw{explicit_nodes.c_str(), explicit_nodes.size()};
@@ -741,19 +741,19 @@ Result<std::vector<std::string>> resolve_graph_node_targets(const Context& conte
                 while (!tok.empty() && (tok.back() == ' ' || tok.back() == '\t'))
                     tok.remove_suffix(1);
                 if (!tok.empty())
-                    targets.emplace_back(tok);
+                    targets.emplace(tok);
                 if (comma == std::string_view::npos)
                     break;
                 pos = comma + 1;
             }
         } else {
-            targets.emplace_back(explicit_nodes.c_str(), explicit_nodes.size());
+            targets.emplace(explicit_nodes.c_str(), explicit_nodes.size());
         }
     } else if (is_viewed) {
         if (!context.selected_graph_nodes.empty())
             targets = context.selected_graph_nodes;
         else if (!context.selected_graph_node.empty())
-            targets.push_back(context.selected_graph_node);
+            targets.add(context.selected_graph_node);
     }
     if (targets.empty())
         return std::unexpected(
@@ -764,7 +764,7 @@ Result<std::vector<std::string>> resolve_graph_node_targets(const Context& conte
 
 Result<OperatorRegistry> OperatorRegistry::builtins() {
     OperatorRegistry registry;
-    const auto add = [&](OperatorInfo info) { registry.operators_.push_back(std::move(info)); };
+    const auto add = [&](OperatorInfo info) { registry.operators_.add(std::move(info)); };
     add({"ui.menu",
          L"Viewport Menu",
          "Open a menu at the viewport pointer",
@@ -1430,26 +1430,26 @@ Result<OperatorRegistry> OperatorRegistry::builtins() {
          with_parameters(+[](OperatorHost&, const Context& c, const GraphSetAppearance& p) -> Result<void> {
              ATELIER_TRY_BIND(key, editable_target_graph_key(c, p.asset));
              ATELIER_TRY_BIND(targets, resolve_graph_node_targets(c, *key, p.node, false, "style"));
-             std::optional<GraphNodeShape> shape;
+             Optional<GraphNodeShape> shape;
              if (!p.shape.empty()) {
                  const auto parsed = parse_graph_node_shape({p.shape.c_str(), p.shape.size()});
                  if (!parsed)
                      return std::unexpected(Error{ErrorCode::argument_mismatch, "Unknown node shape preset."});
                  shape = *parsed;
              }
-             std::optional<std::optional<std::uint32_t>> color;
+             Optional<Optional<std::uint32_t>> color;
              if (!p.color.empty()) {
                  const std::string_view col_sv{p.color.c_str(), p.color.size()};
                  if (col_sv == "default" || col_sv == "auto") {
-                     color = std::optional<std::uint32_t>{};
+                     color = Optional<std::uint32_t>{};
                  } else {
                      const auto parsed = parse_graph_hex_color(col_sv);
                      if (!parsed)
                          return std::unexpected(Error{ErrorCode::argument_mismatch, "Node color must be #RRGGBB."});
-                     color = *parsed;
+                     color = Optional<std::uint32_t>{*parsed};
                  }
              }
-             std::optional<std::string> comment;
+             Optional<std::string> comment;
              if (!p.comment.empty()) {
                  const std::string_view com_sv{p.comment.c_str(), p.comment.size()};
                  comment = com_sv == "-" ? std::string{} : std::string(com_sv);
@@ -1521,16 +1521,16 @@ Result<OperatorRegistry> OperatorRegistry::builtins() {
          with_parameters(+[](OperatorHost&, const Context& c, const GraphUpdateParameter& p) -> Result<void> {
              ATELIER_TRY_BIND(key, editable_target_graph_key(c, p.asset));
              const std::string param_name(p.parameter.c_str(), p.parameter.size());
-             std::optional<std::string> new_name;
+             Optional<std::string> new_name;
              if (!p.name.empty())
                  new_name.emplace(p.name.c_str(), p.name.size());
-             const auto opt_field = [](const String& s) -> std::optional<std::string> {
+             const auto opt_field = [](const String& s) -> Optional<std::string> {
                  if (s.empty())
-                     return std::nullopt;
+                     return {};
                  const std::string_view sv{s.c_str(), s.size()};
-                 return sv == "-" ? std::string{} : std::string(sv);
+                 return Optional<std::string>{sv == "-" ? std::string{} : std::string(sv)};
              };
-             std::optional<std::size_t> new_idx;
+             Optional<std::size_t> new_idx;
              if (p.move_delta != 0) {
                  const auto* doc = c.document.graph_document(*key);
                  if (!doc)
@@ -1572,7 +1572,7 @@ Result<OperatorRegistry> OperatorRegistry::builtins() {
              ATELIER_TRY_BIND(node_name, resolve_graph_node_name(c, *key, p.node, "override"));
              if (p.clear)
                  return c.document.graph_set_asset_override_json(
-                     *key, *node_name, {p.parameter.c_str(), p.parameter.size()}, std::nullopt, c.project);
+                     *key, *node_name, {p.parameter.c_str(), p.parameter.size()}, {}, c.project);
              const auto parsed = json::Document::parse({p.value_json.c_str(), p.value_json.size()}, {8});
              if (!parsed)
                  return std::unexpected(Error{ErrorCode::argument_mismatch, parsed.error().describe()});
@@ -1671,7 +1671,7 @@ Result<OperatorRegistry> OperatorRegistry::builtins() {
              Result<void> result;
              if (p.clear) {
                  result = c.document.set_generator_override_json(
-                     c.project, *target, {p.parameter.c_str(), p.parameter.size()}, std::nullopt);
+                     c.project, *target, {p.parameter.c_str(), p.parameter.size()}, {});
              } else {
                  const auto parsed = json::Document::parse({p.value_json.c_str(), p.value_json.size()}, {8});
                  if (!parsed)

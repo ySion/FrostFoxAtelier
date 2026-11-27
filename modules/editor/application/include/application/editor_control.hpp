@@ -1,8 +1,8 @@
 #pragma once
 #include "renderer/renderer.hpp"
 #include "control/control.hpp"
+#include "foundation/optional.hpp"
 #include <filesystem>
-#include <optional>
 #include <string>
 #include <string_view>
 
@@ -27,7 +27,7 @@ public:
 
     ~EditorControl();
 
-    [[nodiscard]] std::optional<ActiveJobInfo> active_job();
+    [[nodiscard]] Optional<ActiveJobInfo> active_job();
 
     bool poll();
 

@@ -1,8 +1,9 @@
 #pragma once
 
+#include "foundation/span.hpp"
+
 #include <cstddef>
 #include <cstdint>
-#include <span>
 
 // Original, unmodified lookup data; provenance and MIT license are recorded in
 // third_party/smaa. Only scene_lit.cpp needs this header, so the upstream static
@@ -23,11 +24,11 @@ inline constexpr std::uint32_t search_height = SEARCHTEX_HEIGHT;
 
 inline constexpr std::uint32_t search_pitch = SEARCHTEX_PITCH;
 
-inline std::span<const unsigned char> area_bytes() noexcept {
+inline Span<const unsigned char> area_bytes() noexcept {
     return areaTexBytes;
 }
 
-inline std::span<const unsigned char> search_bytes() noexcept {
+inline Span<const unsigned char> search_bytes() noexcept {
     return searchTexBytes;
 }
 

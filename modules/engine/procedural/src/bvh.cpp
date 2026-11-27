@@ -196,11 +196,11 @@ void set_node_span(NodeT& node, std::uint32_t first, std::uint32_t count) noexce
 }
 
 template <class NodeT>
-Result<Array<std::uint32_t>> append_sah_bvh(Array<NodeT>& nodes, std::span<const Bounds> bounds,
-                                            std::span<const Vector3> centers, std::uint32_t max_sah_depth) {
+Result<Array<std::uint32_t>> append_sah_bvh(Array<NodeT>& nodes, Span<const Bounds> bounds,
+                                            Span<const Vector3> centers, std::uint32_t max_sah_depth) {
     const auto count = static_cast<std::uint32_t>(bounds.size());
     Array<std::uint32_t> order;
-    order.resize(count);
+    order.resize_uninitialized(count);
     for (std::uint32_t i = 0; i < count; ++i)
         order[i] = i;
 
@@ -393,9 +393,9 @@ Result<Bvh> Bvh::build(const Geometry& surface) {
     for (std::uint32_t p = 0; p < surface.count(Layer::primitive); ++p)
         result.polygon_tolerances_.add(detail::polygon_scale(surface, surface.primitive(p)).tolerance);
     Array<Bounds> bounds;
-    bounds.resize(count);
+    bounds.resize_uninitialized(count);
     Array<Vector3> centers;
-    centers.resize(count);
+    centers.resize_uninitialized(count);
     for (std::uint32_t i = 0; i < count; ++i) {
         bounds[i] = math::encapsulate(math::encapsulate(Bounds{triangles[i].a, triangles[i].a}, triangles[i].b),
                                       triangles[i].c);
@@ -405,7 +405,7 @@ Result<Bvh> Bvh::build(const Geometry& surface) {
     result.triangles_.reserve(count);
     for (const auto i : *order)
         result.triangles_.add(triangles[i]);
-    result.node_tolerances_.resize(result.nodes_.size());
+    result.node_tolerances_.resize_uninitialized(result.nodes_.size());
     for (std::size_t n = result.nodes_.size(); n-- > 0;) {
         const auto& node = result.nodes_[n];
         if (node.count) {
@@ -428,9 +428,9 @@ Result<std::shared_ptr<const Bvh>> Bvh::acquire(const Geometry& surface) {
                          [&] { return build(surface); });
 }
 
-std::optional<Hit> Bvh::ray(Vector3 origin_float, Vector3 direction_float, float max_distance) const noexcept {
+Optional<Hit> Bvh::ray(Vector3 origin_float, Vector3 direction_float, float max_distance) const noexcept {
     if (nodes_.empty())
-        return std::nullopt;
+        return {};
     const auto origin = Vector3d(origin_float);
     const auto direction = Vector3d(direction_float);
     // Box tests stay in float: an overflowing slab distance is an infinite one, which is right.
@@ -459,7 +459,7 @@ std::optional<Hit> Bvh::ray(Vector3 origin_float, Vector3 direction_float, float
         }
         return near <= far ? near : infinity;
     };
-    std::optional<Hit> hit;
+    Optional<Hit> hit;
     FixedArray<std::pair<std::uint32_t, float>, stack_size> stack;
     if (const float entry = enter(nodes_[0]); entry != infinity)
         stack.add({0, entry});
@@ -516,9 +516,9 @@ std::optional<Hit> Bvh::ray(Vector3 origin_float, Vector3 direction_float, float
     return hit;
 }
 
-std::optional<Hit> Bvh::closest(Vector3 point_float, float max_distance) const noexcept {
+Optional<Hit> Bvh::closest(Vector3 point_float, float max_distance) const noexcept {
     if (nodes_.empty())
-        return std::nullopt;
+        return {};
     const auto point = Vector3d(point_float);
     double best = double(max_distance) * max_distance;
     const auto distance = [&](const Node& node) {
@@ -530,7 +530,7 @@ std::optional<Hit> Bvh::closest(Vector3 point_float, float max_distance) const n
         }
         return sum;
     };
-    std::optional<Hit> hit;
+    Optional<Hit> hit;
     FixedArray<std::pair<std::uint32_t, double>, stack_size> stack;
     stack.add({0, distance(nodes_[0])});
     while (!stack.empty()) {
@@ -604,7 +604,7 @@ bool Bvh::on_surface_band(Vector3 point) const noexcept {
     return false;
 }
 
-std::optional<std::int64_t> Bvh::signed_crossings(Vector3 point, Vector3 direction_float) const noexcept {
+Optional<std::int64_t> Bvh::signed_crossings(Vector3 point, Vector3 direction_float) const noexcept {
     std::int64_t count = 0;
     if (nodes_.empty())
         return count;
@@ -634,12 +634,12 @@ std::optional<std::int64_t> Bvh::signed_crossings(Vector3 point, Vector3 directi
                 if (std::min(std::min(u, v), w) < 0 && std::max(std::max(u, v), w) > 0)
                     continue; // Certified outside, including a parallel line missing the face.
                 if (!u || !v || !w)
-                    return std::nullopt;
+                    return {};
                 // u+v+w = normal dot d. Equal nonzero signs certify its sign without
                 // division. det(a,b,c)/(u+v+w) is t; opposite signs mean a rearward hit.
                 const int numerator = determinant(a, b, c).sign();
                 if (!numerator)
-                    return std::nullopt;
+                    return {};
                 if (numerator == u)
                     count += u;
             }
@@ -655,8 +655,8 @@ namespace {
 
 constexpr std::uint32_t spatial_sah_depth = 24;
 
-Result<Array<std::uint32_t>> append_spatial_tree(Array<SpatialNode>& words, std::span<const Bounds> bounds,
-                                                 std::span<const Vector3> centers) {
+Result<Array<std::uint32_t>> append_spatial_tree(Array<SpatialNode>& words, Span<const Bounds> bounds,
+                                                 Span<const Vector3> centers) {
     const auto root_word = words.size();
     ATELIER_TRY_BIND(order, append_sah_bvh(words, bounds, centers, spatial_sah_depth));
     const std::size_t items_base = words.size();
@@ -760,9 +760,9 @@ Result<Spatial> Spatial::build(const Geometry& geometry) {
     if (!tris.empty()) {
         words[0].u0 = static_cast<std::uint32_t>(words.size());
         Array<Bounds> bounds;
-        bounds.resize(tris.size());
+        bounds.resize_uninitialized(tris.size());
         Array<Vector3> centers;
-        centers.resize(tris.size());
+        centers.resize_uninitialized(tris.size());
         for (std::size_t i = 0; i < tris.size(); ++i) {
             bounds[i] = math::encapsulate(math::encapsulate(Bounds{tris[i].a, tris[i].a}, tris[i].b), tris[i].c);
             centers[i] = math::center(bounds[i]);
@@ -780,9 +780,9 @@ Result<Spatial> Spatial::build(const Geometry& geometry) {
             return failure("Spatial buffer exceeds 32-bit word addressing.");
         words[0].u1 = static_cast<std::uint32_t>(words.size());
         Array<Bounds> bounds;
-        bounds.resize(segs.size());
+        bounds.resize_uninitialized(segs.size());
         Array<Vector3> centers;
-        centers.resize(segs.size());
+        centers.resize_uninitialized(segs.size());
         for (std::size_t i = 0; i < segs.size(); ++i) {
             bounds[i] = math::encapsulate(Bounds{segs[i].a, segs[i].a}, segs[i].b);
             centers[i] = math::center(bounds[i]);

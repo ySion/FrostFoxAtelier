@@ -51,7 +51,7 @@ Result<Types> register_types(Runtime& runtime) {
             "由显式绑定的胶囊部件组成 Ragdoll，模拟后将姿态写回部件 Entity。所属 Entity 要求单位世界缩放。"}
             .base<world::Component>()
             .field<&RagdollComponent::parts>(
-                "parts", {TypeReference::native<world::Entity>(), ValueForm::strong_sequence}, std::nullopt, {}, {},
+                "parts", {TypeReference::native<world::Entity>(), ValueForm::strong_sequence}, {}, {}, {},
                 "按顺序绑定 Ragdoll 部件 Entity，顺序就是 Parent Index 使用的部件编号。修改绑定前必须停用控制组件。")
             .publish();
     ATELIER_TRY(ragdoll);
@@ -77,7 +77,7 @@ Result<Types> register_types(Runtime& runtime) {
             "限制所属 Entity 与目标 Entity 的物理 body 锚点距离。修改目标或距离范围后需重新建立约束。"}
             .base<world::Component>()
             .field<&DistanceConstraintComponent::target>(
-                "target", {TypeReference::native<world::Entity>(), ValueForm::weak_reference}, std::nullopt, {}, {},
+                "target", {TypeReference::native<world::Entity>(), ValueForm::weak_reference}, {}, {}, {},
                 "约束另一端的 Entity，必须具有可用的物理 body。此弱引用不让目标保活，修改绑定前须停用约束。")
             .field<&DistanceConstraintComponent::minimum>("minimum",
                                                           "两端约束锚点的最小距离，单位 m，必须非负且不大于 Maximum。")
@@ -169,7 +169,7 @@ Result<Types> register_types(Runtime& runtime) {
             "通过物理场景执行线段、球扫掠或球重叠查询。配置随 Scene 保存，请求与结果只属于当前运行状态。"}
             .base<world::Component>()
             .field<&SceneQueryComponent::ignored_entities>(
-                "ignored_entities", {TypeReference::native<world::Entity>(), ValueForm::strong_sequence}, std::nullopt,
+                "ignored_entities", {TypeReference::native<world::Entity>(), ValueForm::strong_sequence}, {},
                 {}, {},
                 "显式排除这些 Entity 的物理体，并与 Ignore Self 和调用时的排除集合一起生效。运行时修改会在下次采样使用。")
             .field<&SceneQueryComponent::settings>("settings", "查询形状、筛选方式和结果上限，每次采样读取当前值。")
@@ -235,30 +235,30 @@ Result<ObjectId> constraint_target(Runtime& runtime, ObjectId component) {
 
 namespace {
 template <class T, ReferenceSequence T::* Member>
-Result<std::vector<ObjectId>> bindings(Runtime& runtime, ObjectId component, std::size_t additional_capacity = 0) {
-    return runtime.with_native<const T>(component, [&](const T& value) -> Result<std::vector<ObjectId>> {
+Result<Array<ObjectId>> bindings(Runtime& runtime, ObjectId component, std::size_t additional_capacity = 0) {
+    return runtime.with_native<const T>(component, [&](const T& value) -> Result<Array<ObjectId>> {
         ATELIER_TRY_BIND(field, runtime.reference_field(component, value.*Member));
         ATELIER_TRY_BIND(count, runtime.sequence_size(*field));
-        std::vector<ObjectId> result;
+        Array<ObjectId> result;
         result.reserve(*count + additional_capacity);
         for (std::size_t i = 0; i < *count; ++i) {
             ATELIER_TRY_BIND(reference, runtime.sequence_read(*field, i));
-            result.push_back(reference->id());
+            result.add(reference->id());
         }
         return result;
     });
 }
 
 template <class T, ReferenceSequence T::* Member>
-Result<void> set_bindings(Runtime& runtime, ObjectId component, std::span<const ObjectId> entities,
+Result<void> set_bindings(Runtime& runtime, ObjectId component, Span<const ObjectId> entities,
                           bool requires_inactive = true) {
     ATELIER_TRY_BIND(status, world::inspect_component(runtime, component));
     if (requires_inactive && status->active)
         return std::unexpected(Error{ErrorCode::invalid_member, "Stop the controller before rebinding its Entities."});
     Set<ObjectId> seen;
     seen.reserve(entities.size());
-    std::vector<ObjectRoot> roots;
-    std::vector<ObjectReference> references;
+    Array<ObjectRoot> roots;
+    Array<ObjectReference> references;
     roots.reserve(entities.size());
     references.reserve(entities.size());
     for (auto entity : entities) {
@@ -267,8 +267,8 @@ Result<void> set_bindings(Runtime& runtime, ObjectId component, std::span<const 
                 Error{ErrorCode::invalid_member, "Physics bindings require distinct non-null Entities."});
         ATELIER_TRY(world::inspect_entity(runtime, entity));
         ATELIER_TRY_BIND(held, runtime.hold(entity));
-        roots.push_back(std::move(*held));
-        references.push_back(roots.back().reference());
+        roots.add(std::move(*held));
+        references.add(roots.back().reference());
     }
     return runtime.with_native<T>(component, [&](T& value) -> Result<void> {
         ATELIER_TRY_BIND(field, runtime.reference_field(component, value.*Member));
@@ -279,20 +279,20 @@ Result<void> set_bindings(Runtime& runtime, ObjectId component, std::span<const 
 }
 }
 
-Result<void> set_ragdoll_parts(Runtime& runtime, ObjectId component, std::span<const ObjectId> entities) {
+Result<void> set_ragdoll_parts(Runtime& runtime, ObjectId component, Span<const ObjectId> entities) {
     return set_bindings<RagdollComponent, &RagdollComponent::parts>(runtime, component, entities);
 }
 
-Result<std::vector<ObjectId>> ragdoll_parts(Runtime& runtime, ObjectId component) {
+Result<Array<ObjectId>> ragdoll_parts(Runtime& runtime, ObjectId component) {
     return bindings<RagdollComponent, &RagdollComponent::parts>(runtime, component);
 }
 
-Result<void> set_query_ignored_entities(Runtime& runtime, ObjectId component, std::span<const ObjectId> entities) {
+Result<void> set_query_ignored_entities(Runtime& runtime, ObjectId component, Span<const ObjectId> entities) {
     return set_bindings<SceneQueryComponent, &SceneQueryComponent::ignored_entities>(runtime, component, entities,
                                                                                      false);
 }
 
-Result<std::vector<ObjectId>> query_ignored_entities(Runtime& runtime, ObjectId component) {
+Result<Array<ObjectId>> query_ignored_entities(Runtime& runtime, ObjectId component) {
     return bindings<SceneQueryComponent, &SceneQueryComponent::ignored_entities>(runtime, component);
 }
 
@@ -404,7 +404,7 @@ Result<void> ComponentSimulation::reconcile() {
     Set<ObjectId> seen;
     Set<ObjectId> owners;
     Map<ObjectId, ObjectId> writers;
-    std::vector<std::pair<Entry, bool>> desired_entries;
+    Array<std::pair<Entry, bool>> desired_entries;
     const auto is = [&]<class T>(ObjectId id) -> Result<bool> {
         ATELIER_TRY_BIND(type, runtime.type_of(id));
         ATELIER_TRY_BIND(expected, runtime.native_type<T>());
@@ -440,7 +440,7 @@ Result<void> ComponentSimulation::reconcile() {
                 Error{ErrorCode::invalid_member, "An Entity may have only one active physics pose writer."});
         return {};
     };
-    ATELIER_TRY_BIND(members, owners.empty() ? Result<std::span<const world::Member>>{} : world_.members());
+    ATELIER_TRY_BIND(members, owners.empty() ? Result<Span<const world::Member>>{} : world_.members());
     for (const auto& member : *members) {
         if (!owners.contains(member.id()))
             continue;
@@ -450,7 +450,7 @@ Result<void> ComponentSimulation::reconcile() {
         const auto planned = desired_entries.size();
         bool keep_queries = false;
         auto planned_member = [&]() -> Result<void> {
-            std::optional<Error> duplicate;
+            Optional<Error> duplicate;
             ATELIER_TRY_BIND(status, world::inspect_entity(runtime, member.id()));
             if (status->state != world::EntityState::active)
                 return {};
@@ -463,7 +463,7 @@ Result<void> ComponentSimulation::reconcile() {
                 ATELIER_TRY_BIND(component, world::inspect_component(runtime, item.id()));
                 if (!component->active)
                     continue;
-                auto classification = [&]() -> Result<std::optional<Kind>> {
+                auto classification = [&]() -> Result<Optional<Kind>> {
                     ATELIER_TRY_BIND(character, is.template operator()<CharacterComponent>(item.id()));
                     if (*character)
                         return Kind::character;
@@ -482,7 +482,7 @@ Result<void> ComponentSimulation::reconcile() {
                     ATELIER_TRY_BIND(query, is.template operator()<SceneQueryComponent>(item.id()));
                     if (*query)
                         return Kind::query;
-                    return std::nullopt;
+                    return {};
                 }();
                 ATELIER_TRY(classification);
                 if (!*classification)
@@ -501,7 +501,7 @@ Result<void> ComponentSimulation::reconcile() {
                         return std::unexpected(
                             Error{ErrorCode::invalid_member,
                                   "Physics spatial origin belongs to another World or is detached."});
-                    desired.ancestors.push_back(node);
+                    desired.ancestors.add(node);
                     ATELIER_TRY_BIND(parent, world::spatial_parent(runtime, node));
                     node = *parent;
                 }
@@ -556,7 +556,7 @@ Result<void> ComponentSimulation::reconcile() {
                         if (metadata == ObjectId{})
                             return std::unexpected(
                                 Error{ErrorCode::invalid_member, "Physics binding Entity is missing part metadata."});
-                        desired.metadata.push_back(metadata);
+                        desired.metadata.add(metadata);
                     }
                 }
                 if (kind == Kind::distance || kind == Kind::force || kind == Kind::kinematic) {
@@ -588,7 +588,7 @@ Result<void> ComponentSimulation::reconcile() {
                         for (auto target : desired.targets)
                             ATELIER_TRY(claim(target, item.id()));
                 }
-                desired_entries.emplace_back(std::move(desired), available);
+                desired_entries.emplace(std::move(desired), available);
             }
             if (duplicate) {
                 keep_queries = true;
@@ -601,10 +601,10 @@ Result<void> ComponentSimulation::reconcile() {
                 return std::unexpected(std::move(planned_member).error());
             contained_ = true;
             writers = claimed;
-            desired_entries.erase(
-                std::remove_if(desired_entries.begin() + std::ptrdiff_t(planned), desired_entries.end(),
-                               [&](const auto& entry) { return !keep_queries || entry.first.kind != Kind::query; }),
-                desired_entries.end());
+            const auto kept = std::remove_if(
+                desired_entries.begin() + std::ptrdiff_t(planned), desired_entries.end(),
+                [&](const auto& entry) { return !keep_queries || entry.first.kind != Kind::query; });
+            desired_entries.truncate(static_cast<std::size_t>(kept - desired_entries.begin()));
         }
     }
     // Validate every pose claim before constructing or replacing any controller.
@@ -651,14 +651,14 @@ Result<void> ComponentSimulation::reconcile() {
                 break;
             }
             case Kind::ragdoll: {
-                std::vector<RagdollPart> parts;
+                Array<RagdollPart> parts;
                 for (auto metadata : desired.metadata) {
                     auto part = read<RagdollPartComponent>(runtime, metadata, [&](const auto& v) {
                         return RagdollPart{std::to_string(parts.size()), v.parent_index, v.rest_position, v.radius,
                                            v.capsule_half_height};
                     });
                     ATELIER_TRY(part);
-                    parts.push_back(std::move(*part));
+                    parts.add(std::move(*part));
                 }
                 ATELIER_TRY_BIND(created, scene_.create_ragdoll(desired.entity, parts));
                 desired.special = *created;
@@ -761,7 +761,7 @@ Result<void> ComponentSimulation::before_step(float fixed) {
     return {};
 }
 
-Result<void> ComponentSimulation::append_poses(std::vector<world::SimulationPose>& poses) {
+Result<void> ComponentSimulation::append_poses(Array<world::SimulationPose>& poses) {
     for (const auto id : order_.get(entries_)) {
         const auto& e = entries_.at(id);
         const auto appended = poses.size();
@@ -772,14 +772,14 @@ Result<void> ComponentSimulation::append_poses(std::vector<world::SimulationPose
                     return std::unexpected(
                         Error{ErrorCode::invalid_member, "Ragdoll pose does not match its Entity bindings."});
                 for (std::size_t i = 0; i < e.targets.size(); ++i)
-                    poses.push_back({e.targets[i], pose->positions[i], pose->rotations[i]});
+                    poses.add({e.targets[i], pose->positions[i], pose->rotations[i]});
             }
             return {};
         }();
         if (!appended_pose) {
             if (!contain(world_, appended_pose.error(), id, e.entity))
                 return appended_pose;
-            poses.resize(appended);
+            poses.truncate(appended);
         }
     }
     return {};
@@ -841,9 +841,9 @@ Result<void> ComponentSimulation::sample_query(ObjectId id, QueryIgnore ignore) 
     auto ignored = bindings<SceneQueryComponent, &SceneQueryComponent::ignored_entities>(
         runtime, id, ignore.entities.size() + std::size_t(ignore_self));
     ATELIER_TRY(ignored);
-    ignored->insert(ignored->end(), ignore.entities.begin(), ignore.entities.end());
+    ignored->append(ignore.entities);
     if (ignore_self)
-        ignored->push_back(entry.entity);
+        ignored->add(entry.entity);
     ATELIER_TRY_BIND(result, scene_.trace(math::transform_point(start, *matrix), math::transform_point(end, *matrix),
                                           settings, {*ignored, ignore.components}));
     auto published = runtime.with_native<SceneQueryComponent>(id, [&](auto& q) -> Result<void> {

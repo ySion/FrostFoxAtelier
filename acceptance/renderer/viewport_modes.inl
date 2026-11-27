@@ -1,12 +1,12 @@
 void viewport_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     using atelier::geometry::Vertex;
-    auto quad = take(atelier::geometry::Mesh::create(std::vector<Vertex>{{{-.6f, -.6f, .2f}, {.8f, 0, -.6f}},
-                                                                         {{.6f, -.6f, .2f}, {.8f, 0, -.6f}},
-                                                                         {{.6f, .6f, .2f}, {.8f, 0, -.6f}},
-                                                                         {{-.6f, -.6f, .2f}, {.8f, 0, -.6f}},
-                                                                         {{.6f, .6f, .2f}, {.8f, 0, -.6f}},
-                                                                         {{-.6f, .6f, .2f}, {.8f, 0, -.6f}}},
-                                                     std::vector<std::uint8_t>{5, 3}));
+    auto quad = take(atelier::geometry::Mesh::create(atelier::Array<Vertex>{{{-.6f, -.6f, .2f}, {.8f, 0, -.6f}},
+                                                                            {{.6f, -.6f, .2f}, {.8f, 0, -.6f}},
+                                                                            {{.6f, .6f, .2f}, {.8f, 0, -.6f}},
+                                                                            {{-.6f, -.6f, .2f}, {.8f, 0, -.6f}},
+                                                                            {{.6f, .6f, .2f}, {.8f, 0, -.6f}},
+                                                                            {{-.6f, .6f, .2f}, {.8f, 0, -.6f}}},
+                                                     atelier::Array<std::uint8_t>{5, 3}));
     std::array<render::MeshInstance, 1> meshes{};
     meshes[0].geometry = quad;
     meshes[0].color = {1, 0, 0, 1};

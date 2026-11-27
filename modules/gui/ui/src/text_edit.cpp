@@ -1,4 +1,5 @@
 #include "ui/detail/text_edit.hpp"
+#include "foundation/inline_array.hpp"
 #include "foundation/result.hpp"
 #include <Windows.h>
 #include <icu.h>
@@ -25,19 +26,20 @@ bool valid_document_text(std::wstring_view text) noexcept {
            std::ranges::none_of(text, [](wchar_t c) { return (c < 32 && c != L'\n' && c != L'\t') || c == 127; });
 }
 
-Result<std::vector<std::uint32_t>> character_boundaries(std::wstring_view text) {
+Result<Array<std::uint32_t>> character_boundaries(std::wstring_view text) {
     // ICU retains the source until close. An explicit conversion avoids aliasing
     // wchar_t storage as UChar when these are distinct C++ types.
-    const std::vector<UChar> input(text.begin(), text.end());
+    const InlineArray<UChar, 256> input(text.begin(), text.end());
     UErrorCode error = U_ZERO_ERROR;
     std::unique_ptr<UBreakIterator, decltype(&ubrk_close)> iterator(
         ubrk_open(UBRK_CHARACTER, "root", input.data(), static_cast<std::int32_t>(input.size()), &error), ubrk_close);
     if (U_FAILURE(error) || !iterator)
         return std::unexpected(
             Error{ErrorCode::text_failed, 0, static_cast<std::uint32_t>(E_FAIL), "UI text/resource operation failed"});
-    std::vector<std::uint32_t> result;
+    Array<std::uint32_t> result;
+    result.reserve(input.size() + 1);
     for (auto at = ubrk_first(iterator.get()); at != UBRK_DONE; at = ubrk_next(iterator.get()))
-        result.push_back(static_cast<std::uint32_t>(at));
+        result.add(static_cast<std::uint32_t>(at));
     return result;
 }
 
@@ -54,7 +56,7 @@ Result<TextEdit> TextEdit::create(std::wstring text, std::size_t limit, bool sel
     }
     for (std::size_t i = 0; i < result.current_.text.size(); ++i)
         if (result.current_.text[i] == L'\n')
-            result.lines_.push_back(static_cast<std::uint32_t>(i + 1));
+            result.lines_.add(static_cast<std::uint32_t>(i + 1));
     return result;
 }
 
@@ -118,23 +120,26 @@ Result<void> TextEdit::splice(std::uint32_t first, std::uint32_t last, std::wstr
     for (auto& offset : *local)
         offset += start;
     const auto delta = static_cast<std::int64_t>(inserted.size()) - (last - first);
-    std::vector<std::uint32_t> new_lines;
+    Array<std::uint32_t> new_lines;
     for (std::size_t i = 0; i < segment.size(); ++i)
         if (segment[i] == L'\n')
-            new_lines.push_back(start + static_cast<std::uint32_t>(i + 1));
-    boundaries_.reserve(boundaries_.size() + local->size());
-    lines_.reserve(lines_.size() + new_lines.size());
+            new_lines.add(start + static_cast<std::uint32_t>(i + 1));
     current_.text.replace(first, last - first, inserted);
-    auto at = boundaries_.erase(std::lower_bound(boundaries_.begin(), boundaries_.end(), start),
-                                std::upper_bound(boundaries_.begin(), boundaries_.end(), end));
-    for (auto tail = at; tail != boundaries_.end(); ++tail)
-        *tail = static_cast<std::uint32_t>(*tail + delta);
-    boundaries_.insert(at, local->begin(), local->end());
-    auto row = lines_.erase(std::upper_bound(lines_.begin(), lines_.end(), start),
-                            std::upper_bound(lines_.begin(), lines_.end(), end));
-    for (auto tail = row; tail != lines_.end(); ++tail)
-        *tail = static_cast<std::uint32_t>(*tail + delta);
-    lines_.insert(row, new_lines.begin(), new_lines.end());
+    const auto b_first =
+        static_cast<std::size_t>(std::lower_bound(boundaries_.begin(), boundaries_.end(), start) - boundaries_.begin());
+    const auto b_last =
+        static_cast<std::size_t>(std::upper_bound(boundaries_.begin(), boundaries_.end(), end) - boundaries_.begin());
+    boundaries_.remove_at(b_first, b_last - b_first);
+    for (std::size_t tail = b_first; tail < boundaries_.size(); ++tail)
+        boundaries_[tail] = static_cast<std::uint32_t>(boundaries_[tail] + delta);
+    boundaries_.insert_range(b_first, *local);
+    const auto l_first =
+        static_cast<std::size_t>(std::upper_bound(lines_.begin(), lines_.end(), start) - lines_.begin());
+    const auto l_last = static_cast<std::size_t>(std::upper_bound(lines_.begin(), lines_.end(), end) - lines_.begin());
+    lines_.remove_at(l_first, l_last - l_first);
+    for (std::size_t tail = l_first; tail < lines_.size(); ++tail)
+        lines_[tail] = static_cast<std::uint32_t>(lines_[tail] + delta);
+    lines_.insert_range(l_first, new_lines);
     ++revision_;
     ++selection_revision_;
     return {};

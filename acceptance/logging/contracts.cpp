@@ -6,7 +6,7 @@ void roundtrip(const fs::path& root) {
     const auto directory = root / "run";
     auto run = start(directory);
     auto expected = entry("roundtrip", "中文🙂\nowned text");
-    expected.fields.push_back({"identity", std::uint64_t{9007199254741017ULL}});
+    expected.fields.add({"identity", std::uint64_t{9007199254741017ULL}});
     require(log::submit(expected).status == log::SubmitStatus::accepted, "Record was not admitted.");
     healthy(run->finish());
     const auto read = read_finished(directory);

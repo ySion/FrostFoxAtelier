@@ -87,7 +87,7 @@ double surface_tolerance(double coordinate_scale, double extent) noexcept {
     return 8 * std::numeric_limits<float>::epsilon() * std::max(coordinate_scale, extent);
 }
 
-PolygonScale polygon_scale(std::span<const math::Vector3> corners) noexcept {
+PolygonScale polygon_scale(Span<const math::Vector3> corners) noexcept {
     if (corners.empty())
         return {0.0, 0.0};
     return polygon_scale_impl(static_cast<std::uint32_t>(corners.size()),
@@ -101,7 +101,7 @@ PolygonScale polygon_scale(const Geometry& surface, PrimitiveRange range) noexce
                               [&](std::uint32_t i) noexcept { return positions[corners[range.first + i]]; });
 }
 
-Result<void> validate_polygon(std::span<const math::Vector3> corners) {
+Result<void> validate_polygon(Span<const math::Vector3> corners) {
     return validate_polygon_impl(static_cast<std::uint32_t>(corners.size()),
                                  [&](std::uint32_t i) noexcept { return corners[i]; });
 }

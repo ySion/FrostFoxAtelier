@@ -22,19 +22,14 @@ class Array : public detail::ArraySequence<Array<T>, T> {
 
     static_assert(std::is_object_v<T> && !std::is_const_v<T> && !std::is_volatile_v<T>);
 
-    static_assert(std::is_nothrow_destructible_v<T>);
-
-    static_assert(std::is_nothrow_move_constructible_v<T> || std::is_copy_constructible_v<T>,
-                  "Array elements require a non-throwing move constructor or a copy constructor.");
-
 public:
     static constexpr std::size_t max_size = Elements::max_size;
 
     Array() noexcept = default;
 
-    explicit Array(std::size_t count) noexcept
-        requires std::default_initializable<T>
-    {
+    template <class U = T>
+        requires std::same_as<U, T> && std::default_initializable<U>
+    explicit Array(std::size_t count) noexcept {
         if (count) {
             data_ = Elements::allocate(count);
             capacity_ = count;
@@ -43,9 +38,9 @@ public:
         }
     }
 
-    Array(std::size_t count, const T& value) noexcept
-        requires std::is_copy_constructible_v<T>
-    {
+    template <class U = T>
+        requires std::same_as<U, T> && std::is_copy_constructible_v<U>
+    Array(std::size_t count, const T& value) noexcept {
         if (count) {
             data_ = Elements::allocate(count);
             capacity_ = count;
@@ -54,9 +49,9 @@ public:
         }
     }
 
-    explicit Array(Span<const T> values) noexcept
-        requires std::is_copy_constructible_v<T>
-    {
+    template <class U = T>
+        requires std::same_as<U, T> && std::is_copy_constructible_v<U>
+    explicit Array(Span<const T> values) noexcept {
         if (!values.empty()) {
             data_ = Elements::allocate(values.size());
             capacity_ = values.size();
@@ -161,17 +156,13 @@ public:
             values.clear();
     }
 
-    Array(std::initializer_list<T> values) noexcept
-        requires std::is_copy_constructible_v<T>
-        : Array(Span<const T>{values.begin(), values.size()}) {}
+    template <class U = T>
+        requires std::same_as<U, T> && std::is_copy_constructible_v<U>
+    Array(std::initializer_list<T> values) noexcept : Array(Span<const T>{values.begin(), values.size()}) {}
 
-    Array(const Array& other) noexcept
-        requires std::is_copy_constructible_v<T>
-        : Array(other.view()) {}
+    Array(const Array& other) noexcept : Array(other.view()) {}
 
-    Array& operator=(const Array& other) noexcept
-        requires std::is_copy_constructible_v<T>
-    {
+    Array& operator=(const Array& other) noexcept {
         if (this == &other)
             return *this;
         if constexpr (Elements::byte_copy && std::is_trivially_copy_assignable_v<T>) {
@@ -201,7 +192,12 @@ public:
         return *this;
     }
 
-    ~Array() { release(); }
+    ~Array() {
+        static_assert(std::is_nothrow_destructible_v<T>);
+        static_assert(std::is_nothrow_move_constructible_v<T> || std::is_copy_constructible_v<T>,
+                      "Array elements require a non-throwing move constructor or a copy constructor.");
+        release();
+    }
 
     [[nodiscard]] std::size_t size() const noexcept { return size_; }
 
@@ -234,6 +230,8 @@ public:
         std::swap(size_, other.size_);
         std::swap(capacity_, other.capacity_);
     }
+
+    friend void swap(Array& left, Array& right) noexcept { left.swap(right); }
 
 private:
     [[nodiscard]] T* raw_data() noexcept { return data_; }

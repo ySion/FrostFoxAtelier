@@ -56,11 +56,11 @@ Result<SourceFile> read_source_file(const std::filesystem::path& path, std::stri
     return SourceFile{std::move(snapshot_path), version, std::move(text), std::move(*location)};
 }
 
-Result<std::vector<std::filesystem::path>> engine_source_paths(const std::filesystem::path& root) {
+Result<Array<std::filesystem::path>> engine_source_paths(const std::filesystem::path& root) {
     auto native = platform::windows_file_path(root);
     if (!native)
         return fail(platform::error_message(native.error()));
-    std::vector<std::filesystem::path> paths;
+    Array<std::filesystem::path> paths;
     std::error_code error;
     const auto exists = std::filesystem::exists(*native, error);
     if (error)
@@ -76,7 +76,7 @@ Result<std::vector<std::filesystem::path>> engine_source_paths(const std::filesy
         if (error && !std::filesystem::status_known(status))
             return fail(platform::error_message(error));
         if (std::filesystem::is_regular_file(status) && entry->path().extension() == L".source")
-            paths.push_back(entry->path().lexically_relative(*native));
+            paths.add(entry->path().lexically_relative(*native));
         entry.increment(error);
         if (error)
             return fail(platform::error_message(error));
@@ -85,15 +85,16 @@ Result<std::vector<std::filesystem::path>> engine_source_paths(const std::filesy
     return paths;
 }
 
-Result<std::vector<SourceFile>> engine_sources(const std::filesystem::path& root) {
+Result<Array<SourceFile>> engine_sources(const std::filesystem::path& root) {
     ATELIER_TRY_BIND(paths, engine_source_paths(root));
-    std::vector<SourceFile> files;
+    Array<SourceFile> files;
+    files.reserve(paths->size());
     for (const auto& relative : *paths) {
         auto name = platform::utf16_to_utf8(relative.generic_wstring());
         if (!name)
             return fail("Engine source file path is not valid UTF-16.");
         ATELIER_TRY_BIND(file, read_source_file(root / relative, "engine/" + *name));
-        files.push_back(std::move(*file));
+        files.add(std::move(*file));
     }
     return files;
 }

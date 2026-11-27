@@ -29,8 +29,8 @@ Result<void> profile_physics_cpu(const std::filesystem::path& root, std::string_
     const auto& physics = *play->physics_scene();
     const std::array phases{&physics::phases::step, &physics::phases::reconcile, &physics::phases::solve,
                             &physics::phases::write_back};
-    std::array<std::vector<double>, 5> active;
-    std::array<std::vector<double>, 5> sleeping;
+    std::array<Array<double>, 5> active;
+    std::array<Array<double>, 5> sleeping;
     // Costs that only the first steps pay, such as building the broad phase, vanish in the medians.
     json::Builder report;
     const auto first_frames = take(report.array(report.root(), "first_frames"));
@@ -62,8 +62,8 @@ Result<void> profile_physics_cpu(const std::filesystem::path& root, std::string_
         const bool awake = physics.active_body_count() != 0;
         auto& bucket = awake ? active : sleeping;
         for (std::size_t i = 0; i < phases.size(); ++i)
-            bucket[i].push_back(std::chrono::duration<double, std::milli>(recorder.last().time(*phases[i])).count());
-        bucket[4].push_back(
+            bucket[i].add(std::chrono::duration<double, std::milli>(recorder.last().time(*phases[i])).count());
+        bucket[4].add(
             std::chrono::duration<double, std::milli>(recorder.last().time(application::phases::scene)).count());
         quiet = awake ? 0 : quiet + 1;
     }
@@ -243,13 +243,13 @@ Result<void> profile_scene_cpu(const std::filesystem::path& root, std::string_vi
     const auto stages = take(report.object(report.root(), "stages"));
     // An optional inspector receives each sample's frame record, warmup included.
     const auto measure = [&](std::string_view name, auto&& operation, auto&&... inspect) -> Result<void> {
-        std::vector<double> samples;
+        Array<double> samples;
         samples.reserve(121);
         for (unsigned i = 0; i < 141; ++i) {
             ATELIER_TRY_BIND(elapsed, sample(operation));
             (inspect(recorder.last()), ...);
             if (i >= 20)
-                samples.push_back(*elapsed);
+                samples.add(*elapsed);
         }
         const auto total = std::accumulate(samples.begin(), samples.end(), 0.);
         std::ranges::sort(samples);
@@ -281,14 +281,14 @@ Result<void> profile_scene_cpu(const std::filesystem::path& root, std::string_vi
         // Changed frames: the positions of 1 or 50 leaf mesh Entities alternate through Runtime writes.
         auto& runtime = document->world().runtime();
         const auto& x = document->types().position_fields[0];
-        std::vector<std::pair<ObjectId, float>> leaves;
+        Array<std::pair<ObjectId, float>> leaves;
         for (const auto& item : geometry) {
             if (leaves.size() == 50)
                 break;
             if (std::ranges::find(leaves, item.entity, &std::pair<ObjectId, float>::first) != leaves.end() ||
                 !take(world::children(runtime, item.entity)).empty())
                 continue;
-            leaves.emplace_back(item.entity, std::get<float>(take(runtime.read(item.entity, x))));
+            leaves.emplace(item.entity, std::get<float>(take(runtime.read(item.entity, x))));
         }
         require(leaves.size() == 50, "CPU profile requires 50 leaf mesh Entities.");
         bool moved{};
@@ -372,7 +372,8 @@ Result<void> profile_scene_cpu(const std::filesystem::path& root, std::string_vi
                                     &physics::phases::step,
                                     &physics::phases::reconcile,
                                     &physics::phases::events};
-        std::vector<std::vector<double>> phases(timing::catalog().size());
+        Array<Array<double>> phases;
+        phases.resize(timing::catalog().size());
         if (auto measured = measure(
                 "play_update", [&] { return play->update(1.f / 60); },
                 [&](const timing::FrameRecord& record) {
@@ -384,16 +385,15 @@ Result<void> profile_scene_cpu(const std::filesystem::path& root, std::string_vi
                                 record.count(physics::phases::write_back) == steps,
                             "play_update did not record each World and physics phase once per frame.");
                     for (const auto* marker : timing::catalog())
-                        phases[marker->index()].push_back(milliseconds(record.time(*marker)));
+                        phases[marker->index()].add(milliseconds(record.time(*marker)));
                 });
             !measured)
             return std::unexpected(std::move(measured).error());
         const auto phase_records = take(report.object(take(stages.at("play_update")), "phases"));
-        for (const auto module : {std::span<timing::Marker* const>(world::phases::markers),
-                                  std::span<timing::Marker* const>(physics::phases::markers)})
+        for (const auto module : {Span<timing::Marker* const>(world::phases::markers),
+                                  Span<timing::Marker* const>(physics::phases::markers)})
             for (const auto* marker : module) {
-                auto& values = phases[marker->index()];
-                values.erase(values.begin(), values.begin() + 20);
+                Span<double> values = Span<double>(phases[marker->index()]).slice(20);
                 std::ranges::sort(values);
                 const auto record = take(report.object(phase_records, marker->key()));
                 take(report.set(record, "median_ms", values[60]));
@@ -446,7 +446,7 @@ Result<void> profile_scene_cpu(const std::filesystem::path& root, std::string_vi
     {
         // Overhead estimate on the same clock and machine; never a pass condition.
         constexpr std::uint32_t scopes = 10000;
-        std::vector<double> samples;
+        Array<double> samples;
         for (unsigned i = 0; i < 41; ++i) {
             timing::Recorder::Frame frame{recorder};
             for (std::uint32_t n = 0; n < scopes; ++n)
@@ -455,7 +455,7 @@ Result<void> profile_scene_cpu(const std::filesystem::path& root, std::string_vi
             require(record.structure_errors == 0 && record.count(profile_calibration) == scopes,
                     "Scope calibration lost entries.");
             if (i >= 10)
-                samples.push_back(double(record.time(timing::frame).count()) / scopes);
+                samples.add(double(record.time(timing::frame).count()) / scopes);
         }
         std::ranges::sort(samples);
         const auto timing_scope = take(report.object(report.root(), "timing_scope_ns"));

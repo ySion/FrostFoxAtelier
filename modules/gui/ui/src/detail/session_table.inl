@@ -100,7 +100,7 @@
                 if (event.button==PointerButton::secondary) {
                     if (cell) action(reply,ActionKind::select,hit->key,TableSelection{cell->row,cell->column});
                     if (state.control.context_target) context_request(reply,*hit,event.x,event.y,
-                        cell?std::optional{TableSelection{cell->row,cell->column}}:std::nullopt);
+                        cell?Optional{TableSelection{cell->row,cell->column}}:Optional<TableSelection>{});
                     reply.redraw=true; return true;
                 }
                 Press next{hit->key,event.x,event.y,event.x,event.y};
@@ -148,7 +148,7 @@
                     x=static_cast<float>(std::max(cell.clip.left,static_cast<int>(cell.bounds.x)));
                     y=static_cast<float>(std::min(cell.clip.bottom,static_cast<int>(cell.bounds.y+cell.bounds.height))); break;
                 }
-                context_request(reply,*box,x,y,selection.row?std::optional{selection}:std::nullopt);
+                context_request(reply,*box,x,y,selection.row?Optional{selection}:Optional<TableSelection>{});
             }
             reply.consumed=true; return true;
         }

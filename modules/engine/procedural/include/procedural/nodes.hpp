@@ -820,11 +820,11 @@ public:
 
         Ports ports; // Resolved schema.
 
-        std::vector<ObjectId> input_nodes;
+        Array<ObjectId> input_nodes;
 
-        std::vector<ObjectId> output_nodes;
+        Array<ObjectId> output_nodes;
 
-        std::optional<Error> bind_error;
+        Optional<Error> bind_error;
 
         std::uint64_t revision{};
     };

@@ -1,14 +1,14 @@
 #pragma once
 #include "renderer/renderer.hpp"
+#include "foundation/array.hpp"
 #include "foundation/result.hpp"
+#include "foundation/span.hpp"
 #include "memory/fatal.hpp"
 #include <algorithm>
 #include <bit>
 #include <cstring>
-#include <span>
 #include <string>
 #include <utility>
-#include <vector>
 
 namespace atelier::renderer::detail {
 // Persistent CPU-written buffers, one per frame in flight, read by the GPU in
@@ -20,7 +20,7 @@ class FrameSlots {
 public:
     // Returns this frame's slot holding values. A slot that already holds the
     // latest values is not rewritten while changed stays false.
-    Result<GfxBuffer> write(GfxContext gfx, std::uint32_t frames_in_flight, std::span<const T> values, bool changed,
+    Result<GfxBuffer> write(GfxContext gfx, std::uint32_t frames_in_flight, Span<const T> values, bool changed,
                             const char* name) {
         const auto sequence = gfxGetRecordingFrameSequence(gfx);
         if (!sequence)
@@ -75,7 +75,7 @@ private:
         std::uint64_t revision{};
     };
 
-    std::vector<Slot> slots_;
+    Array<Slot> slots_;
 
     std::uint64_t revision_{1};
 
@@ -90,7 +90,7 @@ template <class T>
 class DeviceTable {
 public:
     // Copies values[first, last) in; growing the table copies every value.
-    Result<GfxBuffer> write(GfxContext gfx, std::uint32_t frames_in_flight, std::span<const T> values,
+    Result<GfxBuffer> write(GfxContext gfx, std::uint32_t frames_in_flight, Span<const T> values,
                             std::size_t first, std::size_t last, const char* name) {
         const auto count = static_cast<std::uint32_t>(std::max<std::size_t>(1, values.size()));
         if (buffer_.getCount() < count) {
@@ -105,7 +105,7 @@ public:
             last = values.size();
         }
         if (first < last) {
-            const auto changed = values.subspan(first, last - first);
+            const auto changed = values.slice(first, last - first);
             ATELIER_TRY_BIND(staging, staging_.write(gfx, frames_in_flight, changed, true, name));
             if (const auto copied =
                     gfxCommandCopyBuffer(gfx, buffer_, first * sizeof(T), *staging, 0, changed.size_bytes());
@@ -117,7 +117,7 @@ public:
         return buffer_;
     }
 
-    Result<GfxBuffer> write(GfxContext gfx, std::uint32_t frames_in_flight, std::span<const T> values, bool changed,
+    Result<GfxBuffer> write(GfxContext gfx, std::uint32_t frames_in_flight, Span<const T> values, bool changed,
                             const char* name) {
         return write(gfx, frames_in_flight, values, 0, changed ? values.size() : 0, name);
     }

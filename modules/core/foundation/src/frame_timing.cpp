@@ -16,7 +16,7 @@ const FrameRecord empty_record{};
 
 constinit thread_local Recorder* detail::bound{};
 
-void install(std::initializer_list<std::span<Marker* const>> modules) noexcept {
+void install(std::initializer_list<Span<Marker* const>> modules) noexcept {
     if (frozen)
         fatal("The frame timing catalog is already installed.");
     // Bounded stack diagnostic: fixed declarations can identify a damaged key
@@ -52,7 +52,7 @@ void install(std::initializer_list<std::span<Marker* const>> modules) noexcept {
     frozen = true;
 }
 
-std::span<const Marker* const> catalog() noexcept {
+Span<const Marker* const> catalog() noexcept {
     return {installed.data(), installed_size};
 }
 

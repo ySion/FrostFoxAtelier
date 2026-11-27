@@ -1,7 +1,7 @@
 #pragma once
+#include "foundation/span.hpp"
 #include "renderer/view_settings.hpp"
 #include "runtime/runtime.hpp"
-#include <span>
 #include <string_view>
 
 namespace atelier::editor {
@@ -97,7 +97,7 @@ struct ViewOptionInfo {
 
     double maximum{};
 
-    std::span<const std::string_view> choices{};
+    Span<const std::string_view> choices{};
 
     // Presentation and Control documentation share this table. These strings
     // describe the option; they are not part of its persisted name or value.
@@ -108,7 +108,7 @@ struct ViewOptionInfo {
     std::string_view description;
 };
 
-std::span<const ViewOptionInfo> view_options() noexcept;
+Span<const ViewOptionInfo> view_options() noexcept;
 
 const ViewOptionInfo* view_option(ViewOption) noexcept;
 

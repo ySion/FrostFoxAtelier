@@ -2,6 +2,7 @@
 #include "application/editor_control.hpp"
 #include "application/diagnostics.hpp"
 #include "foundation/result.hpp"
+#include "foundation/scope_exit.hpp"
 #include "logging/native.hpp"
 #include "assets/file.hpp"
 #include "platform/utf.hpp"
@@ -20,19 +21,15 @@ constexpr const wchar_t* placeholder_notice =
 
 using Pick = editor::PathPurpose;
 
-Result<std::optional<std::filesystem::path>> pick(HWND owner, Pick kind, const std::filesystem::path& initial = {},
-                                                  const wchar_t* filename = L"Move.source") {
+Result<Optional<std::filesystem::path>> pick(HWND owner, Pick kind, const std::filesystem::path& initial = {},
+                                             const wchar_t* filename = L"Move.source") {
     const auto initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     if (FAILED(initialized) && initialized != RPC_E_CHANGED_MODE)
         return failed("Cannot initialize the native file dialog.");
-    struct Apartment {
-        bool owns;
-
-        ~Apartment() {
-            if (owns)
-                CoUninitialize();
-        }
-    } apartment{SUCCEEDED(initialized)};
+    ScopeExit apartment{[owns = SUCCEEDED(initialized)]() noexcept {
+        if (owns)
+            CoUninitialize();
+    }};
     Microsoft::WRL::ComPtr<IFileDialog> dialog;
     const bool material = kind == Pick::material_save || kind == Pick::material_source_save;
     const bool procgraph = kind == Pick::procedural_graph_save;
@@ -87,7 +84,7 @@ Result<std::optional<std::filesystem::path>> pick(HWND owner, Pick kind, const s
     }
     hr = dialog->Show(owner);
     if (hr == HRESULT_FROM_WIN32(ERROR_CANCELLED))
-        return std::optional<std::filesystem::path>{};
+        return Optional<std::filesystem::path>{};
     if (FAILED(hr))
         return failed("File dialog failed (HRESULT " + std::to_string(static_cast<unsigned long>(hr)) + ").");
     Microsoft::WRL::ComPtr<IShellItem> item;
@@ -98,13 +95,13 @@ Result<std::optional<std::filesystem::path>> pick(HWND owner, Pick kind, const s
         return failed("The selected location is not a file-system path.");
     const std::filesystem::path result(path);
     CoTaskMemFree(path);
-    return std::optional{result};
+    return Optional<std::filesystem::path>{result};
 }
 }
 
-Result<std::optional<std::filesystem::path>> Application::choose_path(editor::PathPurpose purpose,
-                                                                      const std::filesystem::path& initial,
-                                                                      std::wstring_view filename) {
+Result<Optional<std::filesystem::path>> Application::choose_path(editor::PathPurpose purpose,
+                                                                 const std::filesystem::path& initial,
+                                                                 std::wstring_view filename) {
     close_menu(false);
     return pick(window(), purpose, initial, filename.empty() ? L"Move.source" : std::wstring(filename).c_str());
 }
@@ -191,13 +188,13 @@ Result<void> Application::publish_document(std::unique_ptr<editor::Session> next
                                            Optional<FunctionRef<void()>> commit_location, bool preserve_view) {
     const auto previous_document = document_->presentation().identity();
     const editor::Camera saved_camera = camera_;
-    std::vector<std::uint64_t> saved_selected_entities;
-    std::optional<std::uint64_t> saved_active_entity;
-    std::optional<std::uint64_t> saved_inspected_object;
+    Array<std::uint64_t> saved_selected_entities;
+    Optional<std::uint64_t> saved_active_entity;
+    Optional<std::uint64_t> saved_inspected_object;
     if (preserve_view) {
         for (const auto entity : document_->selected_entities()) {
             if (const auto lid = document_->document_identity(entity))
-                saved_selected_entities.push_back(*lid);
+                saved_selected_entities.add(*lid);
         }
         saved_active_entity = document_->document_identity(document_->selection().entity);
         saved_inspected_object = document_->document_identity(document_->selection().object);
@@ -247,11 +244,11 @@ Result<void> Application::publish_document(std::unique_ptr<editor::Session> next
     if (preserve_view) {
         camera_ = saved_camera;
         workspace_.camera_view = camera_.view();
-        std::vector<ObjectId> restored_entities;
+        Array<ObjectId> restored_entities;
         restored_entities.reserve(saved_selected_entities.size());
         for (const auto lid : saved_selected_entities) {
             if (const auto resolved = document_->local_object(lid))
-                restored_entities.push_back(*resolved);
+                restored_entities.add(*resolved);
         }
         ObjectId restored_active{};
         if (saved_active_entity) {
@@ -432,7 +429,7 @@ Result<void> Application::save_scene(const std::filesystem::path& relative) {
                                   : L"Scene saved; asset refresh failed: " + diagnostic_text(refreshed.error().message);
     auto pending = document_->issues();
     const auto kept = pending.size();
-    std::erase_if(pending, [](const auto& item) { return item.kind != world::DiagnosticKind::reference_dropped; });
+    pending.remove_if([](const auto& item) { return item.kind != world::DiagnosticKind::reference_dropped; });
     report_world(*document_, pending, document_root_, "save");
     if (kept)
         workspace_.status += L" (" + std::to_wstring(kept) + L" unresolved saved item(s) kept)";
@@ -516,7 +513,7 @@ Result<void> Application::save_source(editor::SourceEditor::File& file, bool int
                     return failed("Invalid UTF-16 text.");
                 source::SourceFile exact{author->source_path, source::content_hash(*text), std::move(*text),
                                          std::move(*disk_path)};
-                std::vector<editor::MissingResource> missing;
+                Array<editor::MissingResource> missing;
                 ATELIER_TRY_BIND(published,
                                  document_->publish_material(project_->assets(), asset, std::move(exact), &missing));
                 for (const auto& issue : missing)

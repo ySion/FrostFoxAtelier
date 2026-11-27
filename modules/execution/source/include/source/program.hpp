@@ -114,10 +114,10 @@ class Program final {
 
         DirectScope& operator=(const DirectScope&) = delete;
 
-        [[nodiscard]] bool try_enter(const Version*, const State*, std::optional<std::size_t>, ObjectId,
+        [[nodiscard]] bool try_enter(const Version*, const State*, Optional<std::size_t>, ObjectId,
                                      DirectContext&) noexcept;
 
-        [[nodiscard]] Error enter_error(const Version*, const State*, std::optional<std::size_t>, ObjectId);
+        [[nodiscard]] Error enter_error(const Version*, const State*, Optional<std::size_t>, ObjectId);
 
         [[nodiscard]] bool try_finish(std::uint32_t status) noexcept;
 
@@ -127,7 +127,7 @@ class Program final {
     using DirectCall = std::uint32_t (*)(std::uintptr_t, void*, void*, std::uint64_t*, detail::BusinessFailure*,
                                          detail::BusinessTrace*) noexcept;
 
-    static Result<std::uint64_t> invoke_bound(const Version*, const State*, std::optional<std::size_t>, ObjectId, void*,
+    static Result<std::uint64_t> invoke_bound(const Version*, const State*, Optional<std::size_t>, ObjectId, void*,
                                               DirectCall, Diagnostics*, Debugger*);
 
 public:
@@ -148,11 +148,11 @@ public:
 
         std::shared_ptr<State> owner_;
 
-        std::optional<std::size_t> index_;
+        Optional<std::size_t> index_;
 
         explicit Typed(std::shared_ptr<const Version> version) : version_(std::move(version)) {}
 
-        Typed(std::shared_ptr<State> owner, std::optional<std::size_t> index)
+        Typed(std::shared_ptr<State> owner, Optional<std::size_t> index)
             : owner_(std::move(owner)), index_(index) {}
 
     public:
@@ -234,7 +234,7 @@ public:
 
         std::shared_ptr<atelier::detail::TypePublication> type_publication_;
 
-        std::optional<Error> declaration_error_;
+        Optional<Error> declaration_error_;
 
         std::shared_ptr<const Declaration> declaration_;
 
@@ -300,13 +300,13 @@ public:
         // Project metadata for host validation before commit. Preview class IDs
         // are not live Runtime identities; base IDs already name native types.
         // Views expire on move, destruction or successful publication.
-        std::span<const ClassInfo> classes() const noexcept;
+        Span<const ClassInfo> classes() const noexcept;
 
-        std::span<const EntryInfo> entries() const noexcept;
+        Span<const EntryInfo> entries() const noexcept;
 
-        std::span<const FunctionInfo> functions() const noexcept;
+        Span<const FunctionInfo> functions() const noexcept;
 
-        std::span<const std::string> engine_modules() const noexcept;
+        Span<const std::string> engine_modules() const noexcept;
     };
 
     class Lease {
@@ -352,42 +352,41 @@ public:
             return Typed<R, Args...>{version_};
         }
 
-        Result<std::optional<Scalar>> invoke(ObjectId, std::span<const Scalar>, Diagnostics* = nullptr,
-                                             Debugger* = nullptr) const;
+        Result<Optional<Scalar>> invoke(ObjectId, Span<const Scalar>, Diagnostics* = nullptr,
+                                        Debugger* = nullptr) const;
 
         // Math and plain record results require live, aligned storage of the exact declared type.
         // Failure preserves the complete output; scalar results use the overload above.
-        Result<void> invoke(ObjectId, std::span<const Scalar>, ValueOutput, Diagnostics* = nullptr,
+        Result<void> invoke(ObjectId, Span<const Scalar>, ValueOutput, Diagnostics* = nullptr,
                             Debugger* = nullptr) const;
 
         template <std::ranges::contiguous_range R>
             requires std::same_as<std::ranges::range_value_t<R>, Argument>
-        Result<std::optional<Scalar>> invoke(ObjectId object, const R& arguments, Diagnostics* diagnostics = nullptr,
-                                             Debugger* debugger = nullptr) const {
-            return invoke_arguments(object, std::span<const Argument>{arguments}, diagnostics, debugger);
+        Result<Optional<Scalar>> invoke(ObjectId object, const R& arguments, Diagnostics* diagnostics = nullptr,
+                                        Debugger* debugger = nullptr) const {
+            return invoke_arguments(object, Span<const Argument>{arguments}, diagnostics, debugger);
         }
 
         template <std::ranges::contiguous_range R>
             requires std::same_as<std::ranges::range_value_t<R>, Argument>
         Result<void> invoke(ObjectId object, const R& arguments, ValueOutput output, Diagnostics* diagnostics = nullptr,
                             Debugger* debugger = nullptr) const {
-            return invoke_arguments(object, std::span<const Argument>{arguments}, output, diagnostics, debugger);
+            return invoke_arguments(object, Span<const Argument>{arguments}, output, diagnostics, debugger);
         }
 
     private:
         Result<void> bind_signature(SignatureDefinition) const;
 
-        Result<std::optional<Scalar>> invoke_arguments(ObjectId, std::span<const Argument>, Diagnostics*,
-                                                       Debugger*) const;
+        Result<Optional<Scalar>> invoke_arguments(ObjectId, Span<const Argument>, Diagnostics*, Debugger*) const;
 
-        Result<void> invoke_arguments(ObjectId, std::span<const Argument>, ValueOutput, Diagnostics*, Debugger*) const;
+        Result<void> invoke_arguments(ObjectId, Span<const Argument>, ValueOutput, Diagnostics*, Debugger*) const;
 
     public:
-        Result<Coroutine> start(ObjectId, std::span<const Scalar>, Diagnostics* = nullptr, Debugger* = nullptr) const;
+        Result<Coroutine> start(ObjectId, Span<const Scalar>, Diagnostics* = nullptr, Debugger* = nullptr) const;
 
         Result<CompilationArtifacts> artifacts() const;
 
-        Result<std::vector<DiagnosticLocation>> debug_sites() const;
+        Result<Array<DiagnosticLocation>> debug_sites() const;
     };
 
     class Entry {
@@ -395,9 +394,9 @@ public:
 
         std::weak_ptr<State> owner_;
 
-        std::optional<std::size_t> index_;
+        Optional<std::size_t> index_;
 
-        explicit Entry(std::weak_ptr<State>, std::optional<std::size_t> = {});
+        explicit Entry(std::weak_ptr<State>, Optional<std::size_t> = {});
 
     public:
         Entry() = default;
@@ -416,36 +415,35 @@ public:
             return Typed<R, Args...>{std::move(*owner), index_};
         }
 
-        Result<std::optional<Scalar>> invoke(ObjectId, std::span<const Scalar>, Diagnostics* = nullptr,
-                                             Debugger* = nullptr) const;
+        Result<Optional<Scalar>> invoke(ObjectId, Span<const Scalar>, Diagnostics* = nullptr,
+                                        Debugger* = nullptr) const;
 
-        Result<void> invoke(ObjectId, std::span<const Scalar>, ValueOutput, Diagnostics* = nullptr,
+        Result<void> invoke(ObjectId, Span<const Scalar>, ValueOutput, Diagnostics* = nullptr,
                             Debugger* = nullptr) const;
 
         template <std::ranges::contiguous_range R>
             requires std::same_as<std::ranges::range_value_t<R>, Argument>
-        Result<std::optional<Scalar>> invoke(ObjectId object, const R& arguments, Diagnostics* diagnostics = nullptr,
-                                             Debugger* debugger = nullptr) const {
-            return invoke_arguments(object, std::span<const Argument>{arguments}, diagnostics, debugger);
+        Result<Optional<Scalar>> invoke(ObjectId object, const R& arguments, Diagnostics* diagnostics = nullptr,
+                                        Debugger* debugger = nullptr) const {
+            return invoke_arguments(object, Span<const Argument>{arguments}, diagnostics, debugger);
         }
 
         template <std::ranges::contiguous_range R>
             requires std::same_as<std::ranges::range_value_t<R>, Argument>
         Result<void> invoke(ObjectId object, const R& arguments, ValueOutput output, Diagnostics* diagnostics = nullptr,
                             Debugger* debugger = nullptr) const {
-            return invoke_arguments(object, std::span<const Argument>{arguments}, output, diagnostics, debugger);
+            return invoke_arguments(object, Span<const Argument>{arguments}, output, diagnostics, debugger);
         }
 
     private:
         Result<std::shared_ptr<State>> bind_signature(SignatureDefinition) const;
 
-        Result<std::optional<Scalar>> invoke_arguments(ObjectId, std::span<const Argument>, Diagnostics*,
-                                                       Debugger*) const;
+        Result<Optional<Scalar>> invoke_arguments(ObjectId, Span<const Argument>, Diagnostics*, Debugger*) const;
 
-        Result<void> invoke_arguments(ObjectId, std::span<const Argument>, ValueOutput, Diagnostics*, Debugger*) const;
+        Result<void> invoke_arguments(ObjectId, Span<const Argument>, ValueOutput, Diagnostics*, Debugger*) const;
 
     public:
-        Result<Coroutine> start(ObjectId, std::span<const Scalar>, Diagnostics* = nullptr, Debugger* = nullptr) const;
+        Result<Coroutine> start(ObjectId, Span<const Scalar>, Diagnostics* = nullptr, Debugger* = nullptr) const;
     };
 
     // TypeId{} declares a receiverless typed value environment. A binding failure
@@ -475,13 +473,13 @@ public:
     Result<FunctionSignature> describe(std::string_view name) const;
 
     // Views remain valid until the next successful publication or close.
-    std::span<const ClassInfo> classes() const noexcept;
+    Span<const ClassInfo> classes() const noexcept;
 
-    std::span<const EntryInfo> entries() const noexcept;
+    Span<const EntryInfo> entries() const noexcept;
 
-    std::span<const FunctionInfo> functions() const noexcept;
+    Span<const FunctionInfo> functions() const noexcept;
 
-    std::span<const std::string> engine_modules() const noexcept;
+    Span<const std::string> engine_modules() const noexcept;
 
     // Counts successful publications; 0 before the first.
     std::uint64_t revision() const noexcept;
@@ -498,21 +496,23 @@ public:
     Result<Request> request(std::string_view name, std::string_view source, std::string_view entry_name = {},
                             CompileOptions = {});
 
+    Result<Request> request(std::string name, std::uint64_t version, Array<SourceFile> files, CompileOptions = {});
+
     Result<Request> request(SourceSnapshot, CompileOptions = {});
 
     // For a single input the optional selector inspects borrowed dependency facts
     // synchronously after all bodies pass. Returning false skips LLVM and yields
     // an empty candidate unless the request also has types to publish. Single-input
     // timing is optional, synchronous and independent of generated-code diagnostics.
-    using NeedsCode = FunctionRef<bool(std::span<const EntryFunction>) noexcept>;
+    using NeedsCode = FunctionRef<bool(Span<const EntryFunction>) noexcept>;
 
     // Compiler-only phase. The worker borrows the immutable request and filter; the owner
     // retains the request until join. finish_entry validates the result on the Runtime thread.
-    static Result<Emission> emit_entry(const Request&, std::optional<NeedsCode> = {}, CompileTiming* = nullptr);
+    static Result<Emission> emit_entry(const Request&, Optional<NeedsCode> = {}, CompileTiming* = nullptr);
 
     static Result<Candidate> finish_entry(Emission);
 
-    static Result<Candidate> prepare(const Request&, std::optional<NeedsCode> = {}, CompileTiming* = nullptr);
+    static Result<Candidate> prepare(const Request&, Optional<NeedsCode> = {}, CompileTiming* = nullptr);
 
     // Busy does not consume the candidate. Publishing requires the latest
     // request, unchanged dependencies and the declaration's frozen signature.

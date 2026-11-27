@@ -1,5 +1,6 @@
 #include "detail/node_plan.hpp"
 #include "procedural/operations.hpp"
+#include "foundation/bit_vector.hpp"
 #include "foundation/hash.hpp"
 #include "foundation/map.hpp"
 #include "foundation/result.hpp"
@@ -323,14 +324,14 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
     Array<std::uint32_t> subtriangles;
     Array<std::uint32_t> ordinals;
     Array<Vector2> barycentrics;
-    positions.resize(total);
-    normals.resize(total);
-    ids.resize(total);
-    primitives.resize(total);
+    positions.resize_uninitialized(total);
+    normals.resize_uninitialized(total);
+    ids.resize_uninitialized(total);
+    primitives.resize_uninitialized(total);
     if (triangles->has_subtriangles())
-        subtriangles.resize(total);
-    ordinals.resize(total);
-    barycentrics.resize(total);
+        subtriangles.resize_uninitialized(total);
+    ordinals.resize_uninitialized(total);
+    barycentrics.resize_uninitialized(total);
     const auto filled = tasks::parallel_for(
         {0, total},
         [point_offsets = Span<const std::uint32_t>{point_offsets.view()},
@@ -531,7 +532,7 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
 
 // The native placement contract covers named bindings. Bulk propagation of source geometry
 // and Realize's explicit target_attributes list are separate from these conventional names.
-void detail::append_native_rules(std::vector<AttributeRule>& rules, std::string_view type) {
+void detail::append_native_rules(Array<AttributeRule>& rules, std::string_view type) {
     using enum AttributeAccess;
     if (type == "procedural.Group") {
         const AttributeRule::Condition normal{"criterion", "normal"}, existing{"criterion", "existing"},
@@ -679,15 +680,15 @@ void detail::append_native_rules(std::vector<AttributeRule>& rules, std::string_
             {"points", axis_scale, {}, "point", {}, "vector3", read, "(1,1,1)", "Axis factors multiplied by pscale"},
             {"points", {}, "variant", "point", {}, "uint", read, "source index 0", "Select ordered source"}};
         if (type == "procedural.Realize")
-            rules.push_back({"points",
-                             {},
-                             "group",
-                             "point",
-                             {},
-                             "bool",
-                             group,
-                             "empty selector selects all; named group required",
-                             "Eligible target points"});
+            rules.add({"points",
+                       {},
+                       "group",
+                       "point",
+                       {},
+                       "bool",
+                       group,
+                       "empty selector selects all; named group required",
+                       "Eligible target points"});
     }
 }
 
@@ -762,7 +763,7 @@ Result<void> transform(Geometry& geometry, Vector3 translate, Quaternion rotatio
 Result<Geometry> match_size(const Geometry& geometry, const MatchSizeSettings& settings, const Geometry* reference) {
     if (!math::is_finite(settings.target_position) || !math::is_finite(settings.target_size))
         return failure("MatchSize target_position and target_size must be finite.");
-    const auto ref_bounds = reference ? bounds(*reference) : std::nullopt;
+    const auto ref_bounds = reference ? bounds(*reference) : Optional<math::Bounds>{};
     if (settings.scale_to_fit && !ref_bounds &&
         (settings.target_size.x <= 0.f || settings.target_size.y <= 0.f || settings.target_size.z <= 0.f))
         return failure("MatchSize target_size must be positive when scale_to_fit is enabled.");
@@ -1017,11 +1018,11 @@ Result<Geometry> ray(const Geometry& points, const Geometry& surface, const RayS
         }
     }
     if (settings.remove_misses)
-        return output.remove_flagged(Layer::point, std::span<const bool>{missed.data(), missed.size()});
+        return output.remove_flagged(Layer::point, missed.view());
     return output;
 }
 
-Result<Geometry> copy_to_points(const Geometry& points, std::span<const Reference> references, StringView variant) {
+Result<Geometry> copy_to_points(const Geometry& points, Span<const Reference> references, StringView variant) {
     const auto count = points.count(Layer::point);
     if (count && references.empty())
         return failure("Copy to Points needs at least one reference.");
@@ -1043,15 +1044,13 @@ Result<Geometry> copy_to_points(const Geometry& points, std::span<const Referenc
         if (attribute.layer == Layer::detail)
             if (auto copied = result.set(attribute.name, Layer::detail, attribute.data, attribute.usage); !copied)
                 return std::unexpected(copied.error());
-    if (auto set =
-            result.set_instances({references.begin(), references.end()}, std::move(indices), std::move(transforms));
-        !set)
+    if (auto set = result.set_instances(Array<Reference>{references}, std::move(indices), std::move(transforms)); !set)
         return std::unexpected(set.error());
     return result;
 }
 
-Result<Geometry> realize(std::span<const Geometry> sources, const Geometry& points, StringView group,
-                         StringView variant, std::span<const String> target_attributes) {
+Result<Geometry> realize(Span<const Geometry> sources, const Geometry& points, StringView group, StringView variant,
+                         Span<const String> target_attributes) {
     for (const auto& source : sources)
         if (source.count(Layer::instance))
             return failure("Realize sources cannot contain instances.");
@@ -1072,10 +1071,10 @@ Result<Geometry> realize(std::span<const Geometry> sources, const Geometry& poin
 
         std::array<double, 9> normals;
     };
-    std::vector<Copy> copies;
+    Array<Copy> copies;
     copies.reserve(selected ? static_cast<std::size_t>(std::ranges::count(*selected, true))
                             : points.count(Layer::point));
-    std::vector<bool> used(sources.size());
+    BitVector used(sources.size());
     constexpr std::array layers{Layer::point, Layer::vertex, Layer::primitive};
     std::array<std::uint64_t, 3> totals{};
     for (std::uint32_t i = 0; i < points.count(Layer::point); ++i) {
@@ -1091,8 +1090,8 @@ Result<Geometry> realize(std::span<const Geometry> sources, const Geometry& poin
                 return failure("Realize needs fewer than 2^32 - 1 elements per layer.");
         }
         ATELIER_TRY_BIND(placement, columns->at(i));
-        copies.push_back({picked, i, *placement, normal_rows(placement->matrix)});
-        used[picked] = true;
+        copies.add({picked, i, *placement, normal_rows(placement->matrix)});
+        used.set(picked);
     }
 
     // Schema and first detail values follow source-port order, not target encounter
@@ -1102,11 +1101,11 @@ Result<Geometry> realize(std::span<const Geometry> sources, const Geometry& poin
 
         const Attribute* broadcast{};
     };
-    std::vector<Column> schema;
+    Array<Column> schema;
     const auto admit = [&](const Attribute& attribute, bool broadcast) -> Result<void> {
         auto found = std::ranges::find_if(schema, [&](const Column& c) { return c.first->name == attribute.name; });
         if (found == schema.end()) {
-            schema.push_back({&attribute, broadcast ? &attribute : nullptr});
+            schema.add({&attribute, broadcast ? &attribute : nullptr});
             return {};
         }
         const auto& previous = *found->first;
@@ -1159,7 +1158,7 @@ Result<Geometry> realize(std::span<const Geometry> sources, const Geometry& poin
     }
     ATELIER_TRY_BIND(result,
                      Geometry::primitives(std::move(positions), std::move(vertex_points), offsets, std::move(kinds)));
-    std::vector<const Attribute*> inputs;
+    Array<const Attribute*> inputs;
     for (const auto& column : schema) {
         const auto& attribute = *column.first;
         if (attribute.name == "P") {
@@ -1239,10 +1238,10 @@ Result<Geometry> realize(std::span<const Geometry> sources, const Geometry& poin
     return result;
 }
 
-std::optional<math::Bounds> bounds(const Geometry& geometry) noexcept {
+Optional<math::Bounds> bounds(const Geometry& geometry) noexcept {
     const auto& positions = geometry.positions();
     if (positions.empty())
-        return std::nullopt;
+        return {};
     math::Bounds result{positions[0], positions[0]};
     for (const auto& p : positions)
         result = math::encapsulate(result, p);

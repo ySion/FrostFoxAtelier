@@ -15,14 +15,14 @@ using CodeOwner = std::unique_ptr<BusinessCode, decltype(&atelier_destroy_busine
 struct BoundField {
     std::string name;
 
-    std::vector<FieldId> path;
+    Array<FieldId> path;
 
     BusinessType kind;
 
     // Hard bounds apply here or to the containing math vector.
     bool constrained{};
 
-    std::vector<BusinessAddressStep> access{};
+    Array<BusinessAddressStep> access{};
 
     std::uint64_t minimum{};
 
@@ -38,7 +38,7 @@ struct BoundMethod {
 
     MethodId id;
 
-    std::vector<BusinessParameter> parameters;
+    Array<BusinessParameter> parameters;
 
     BusinessType result{ValueKind::void_value};
 
@@ -48,7 +48,7 @@ struct BoundMethod {
 
     std::uintptr_t entry{};
 
-    std::vector<BusinessAddressStep> receiver_access{};
+    Array<BusinessAddressStep> receiver_access{};
 
     bool operator==(const BoundMethod&) const = default;
 };
@@ -60,7 +60,7 @@ struct BoundEnum {
 
     ValueKind underlying;
 
-    std::vector<std::pair<std::string, std::uint32_t>> values;
+    Array<std::pair<std::string, std::uint32_t>> values;
 
     bool flags{};
 
@@ -90,7 +90,7 @@ struct BoundValue {
 
     BusinessType element{ValueKind::void_value};
 
-    std::vector<BoundValueField> fields;
+    Array<BoundValueField> fields;
 
     void (*sequence_view)(const void*, const void**, std::size_t*) noexcept;
 
@@ -106,7 +106,7 @@ struct BoundValue {
 
     bool zero_default{};
 
-    std::vector<std::byte> initial_value{};
+    Array<std::byte> initial_value{};
 
     bool operator==(const BoundValue&) const = default;
 };
@@ -118,13 +118,13 @@ struct Binding {
 
     std::string_view name;
 
-    std::vector<BoundField> fields;
+    Array<BoundField> fields;
 
-    std::vector<BoundMethod> methods;
+    Array<BoundMethod> methods;
 
-    std::vector<BoundEnum> enumerations{};
+    Array<BoundEnum> enumerations{};
 
-    std::vector<BoundValue> values{};
+    Array<BoundValue> values{};
 
     TypeId f32{};
 
@@ -139,27 +139,27 @@ struct Binding {
     bool operator==(const Binding&) const = default;
 };
 
-Result<Binding> bind_type(Runtime&, TypeId, std::span<const TypeInfo* const> catalog = {}) noexcept;
+Result<Binding> bind_type(Runtime&, TypeId, Span<const TypeInfo* const> catalog = {}) noexcept;
 
 BusinessType value_kind(const Binding&, TypeId);
 
 TypeId value_type_id(const Binding&, BusinessType);
 
-Result<std::vector<TypeDefinition>> type_definitions(const std::vector<language::TypeDeclaration>&,
-                                                     std::span<const language::TypeName>, const Binding&);
+Result<Array<TypeDefinition>> type_definitions(Span<const language::TypeDeclaration>,
+                                               Span<const language::TypeName>, const Binding&);
 
 struct EnvironmentView {
-    std::vector<BusinessFieldBinding> fields;
+    Array<BusinessFieldBinding> fields;
 
-    std::vector<BusinessMethodBinding> methods;
+    Array<BusinessMethodBinding> methods;
 
-    std::vector<std::vector<BusinessEnumItem>> enum_items;
+    Array<Array<BusinessEnumItem>> enum_items;
 
-    std::vector<BusinessEnumBinding> enumerations;
+    Array<BusinessEnumBinding> enumerations;
 
-    std::vector<std::vector<BusinessValueField>> value_fields;
+    Array<Array<BusinessValueField>> value_fields;
 
-    std::vector<BusinessValueBinding> values;
+    Array<BusinessValueBinding> values;
 
     explicit EnvironmentView(const Binding&) noexcept;
 
@@ -188,7 +188,7 @@ inline BusinessValue scalar(bool value) {
 
 BusinessValue scalar(const Scalar&, const Binding&);
 
-std::optional<Scalar> scalar_value(BusinessValue, const Binding* = nullptr);
+Optional<Scalar> scalar_value(BusinessValue, const Binding* = nullptr);
 
 struct AbiArguments {
     InlineArray<BusinessValue, 8> values;
@@ -197,11 +197,11 @@ struct AbiArguments {
 
     Result<void> status;
 
-    AbiArguments(const Binding&, const FunctionSignature&, const BusinessSignature&, std::span<const Scalar>);
+    AbiArguments(const Binding&, const FunctionSignature&, const BusinessSignature&, Span<const Scalar>);
 
-    AbiArguments(const Binding&, const FunctionSignature&, const BusinessSignature&, std::span<const Argument>);
+    AbiArguments(const Binding&, const FunctionSignature&, const BusinessSignature&, Span<const Argument>);
 
-    void initialize(const Binding&, const FunctionSignature&, const BusinessSignature&, std::span<const Argument>);
+    void initialize(const Binding&, const FunctionSignature&, const BusinessSignature&, Span<const Argument>);
 
     AbiArguments(const AbiArguments&) = delete;
 
@@ -245,7 +245,7 @@ struct Invocation {
 
     NativeFailure error_storage;
 
-    std::optional<std::string_view> external_error{};
+    Optional<std::string_view> external_error{};
 
     Invocation(Runtime&, const Binding&, BusinessFrameLayout, BusinessTrace* = nullptr, DebugSessionState* = nullptr,
                ExecutionScope* = nullptr);
@@ -306,7 +306,7 @@ bool same_environment(const Binding&, const BusinessEnvironment&);
 
 std::string_view resolve_failure_layer_view(const Binding&, std::uint32_t packed_layer) noexcept;
 
-std::optional<ErrorElement> resolve_failure_element(const Binding&, const BusinessFailure&);
+Optional<ErrorElement> resolve_failure_element(const Binding&, const BusinessFailure&);
 
 Error execution_error(const Invocation*, const Binding&, const BusinessFailure&,
                       const BusinessFailureMessage* failure_messages = nullptr, std::uint32_t failure_message_count = 0,
@@ -333,7 +333,7 @@ Result<void> execute_invocation(ExecutionScope&, Runtime&, const Binding&, Busin
 
 Result<BusinessValue> execute_admitted(ExecutionScope&, Runtime&, const Binding&, const BusinessCodeInfo&,
                                        BusinessFrameLayout, bool requires_receiver, ObjectId,
-                                       std::span<const BusinessValue>, void* result_data = nullptr,
+                                       Span<const BusinessValue>, void* result_data = nullptr,
                                        BusinessTrace* = nullptr, DebugSessionState* = nullptr,
                                        std::uint32_t* failure_site = nullptr);
 

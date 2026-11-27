@@ -17,7 +17,7 @@ auto invalid(std::string message) {
     return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)});
 }
 
-Result<bool> read_only_path(Runtime& runtime, ObjectId object, std::span<const FieldId> path) {
+Result<bool> read_only_path(Runtime& runtime, ObjectId object, Span<const FieldId> path) {
     ATELIER_TRY_BIND(current, runtime.type_of(object));
     for (const auto step : path) {
         ATELIER_TRY_BIND(info, runtime.describe(*current));
@@ -83,12 +83,12 @@ void Session::remember(Change change) {
     ++revision_;
     if (saved_cursor_ && *saved_cursor_ > cursor_)
         saved_cursor_.reset();
-    history_.erase(history_.begin() + static_cast<std::ptrdiff_t>(cursor_), history_.end());
+    history_.truncate(cursor_);
     auto released = release(change);
-    history_.push_back(Entry{std::move(change), std::move(released)});
+    history_.add(Entry{std::move(change), std::move(released)});
     ++recorded_;
     if (history_.size() > history_limit) {
-        history_.erase(history_.begin());
+        history_.remove_at(0);
         if (saved_cursor_) {
             if (*saved_cursor_)
                 --*saved_cursor_;
@@ -133,19 +133,19 @@ Result<void> Session::validate_name(std::wstring_view name) {
 namespace {
 // The EnvironmentComponent field names of a World Settings option (a view option
 // for which world_option holds), e.g. probe_volume_0_min_x -> volume0.minimum.x.
-std::vector<std::string> environment_field(std::string_view option) {
+Array<std::string> environment_field(std::string_view option) {
     constexpr std::string_view volume = "probe_volume_";
     if (option.starts_with(volume) && option.size() > volume.size() + 2) {
-        std::vector<std::string> names{"volume" + std::string(option.substr(volume.size(), 1))};
+        Array<std::string> names{"volume" + std::string(option.substr(volume.size(), 1))};
         const auto rest = option.substr(volume.size() + 2);
         if (rest.starts_with("min_")) {
-            names.emplace_back("minimum");
-            names.emplace_back(rest.substr(4));
+            names.emplace("minimum");
+            names.emplace(rest.substr(4));
         } else if (rest.starts_with("max_")) {
-            names.emplace_back("maximum");
-            names.emplace_back(rest.substr(4));
+            names.emplace("maximum");
+            names.emplace(rest.substr(4));
         } else
-            names.emplace_back(rest);
+            names.emplace(rest);
         return names;
     }
     if (option.starts_with("sky_color_"))
@@ -211,10 +211,10 @@ Result<void> Session::apply_reference(const ReferenceFieldChange& change, bool f
     return runtime_.write_reference(change.root.id(), change.path, forward ? change.after : change.before);
 }
 
-Result<std::optional<Session::ReferenceFieldChange>> Session::main_camera_removal(std::span<const ObjectId> targets) {
+Result<Optional<Session::ReferenceFieldChange>> Session::main_camera_removal(Span<const ObjectId> targets) {
     ATELIER_TRY_BIND(selected, main_camera());
     if (!world_.contains(*selected))
-        return std::nullopt;
+        return Optional<ReferenceFieldChange>{};
     for (auto node = *selected; node != ObjectId{};) {
         if (std::ranges::find(targets, node) != targets.end()) {
             const auto existing = environment();
@@ -223,12 +223,13 @@ Result<std::optional<Session::ReferenceFieldChange>> Session::main_camera_remova
             ATELIER_TRY_BIND(before, runtime_.read_reference(existing, *field));
             ATELIER_TRY_BIND(after, runtime_.null_reference(types_.entity, ValueForm::weak_reference));
             ATELIER_TRY_BIND(held, runtime_.hold(existing));
-            return ReferenceFieldChange{std::move(*held), *owner, {*field}, *before, *after};
+            return Optional<ReferenceFieldChange>{
+                ReferenceFieldChange{std::move(*held), *owner, {*field}, *before, *after}};
         }
         ATELIER_TRY_BIND(parent, world::parent_entity(runtime_, node));
         node = *parent;
     }
-    return std::nullopt;
+    return Optional<ReferenceFieldChange>{};
 }
 
 Result<Session::EnvironmentEdit> Session::environment_edit(const rendering::SceneLightingSettings& settings) const {
@@ -265,8 +266,8 @@ Result<Session::EnvironmentEdit> Session::environment_edit(const rendering::Scen
             leaf = static_cast<float>(value);
             break;
         }
-        edit.paths.push_back(field->path);
-        edit.values.push_back(leaf);
+        edit.paths.add(field->path);
+        edit.values.add(leaf);
     }
     return edit;
 }
@@ -292,7 +293,7 @@ Result<void> Session::set_environment(const rendering::SceneLightingSettings& se
         FieldGroupChange change{std::move(*root), *entity, edit->paths, 0, {}, edit->values};
         for (const auto& path : edit->paths) {
             ATELIER_TRY_BIND(value, world_.read(existing, path));
-            change.before.push_back(*value);
+            change.before.add(*value);
         }
         ATELIER_TRY(world_.write(existing, edit->paths, edit->values));
         remember(std::move(change));
@@ -327,7 +328,7 @@ Result<void> Session::set_sky_map(const assets::SkyAsset& asset) {
 Result<void> Session::publish_environment(ObjectRoot root) {
     EntityChange change;
     change.added = true;
-    change.removals.emplace_back().root = std::move(root);
+    change.removals.emplace().root = std::move(root);
     const auto id = change.removals.front().id();
     names_.try_emplace(id, L"Environment");
     auto attached = world_.attach(id);
@@ -341,7 +342,7 @@ Result<void> Session::publish_environment(ObjectRoot root) {
     return {};
 }
 
-Result<ObjectRoot> Session::create_environment(std::span<const world::FieldPath> paths, std::span<const Scalar> values,
+Result<ObjectRoot> Session::create_environment(Span<const world::FieldPath> paths, Span<const Scalar> values,
                                                const presentation::SkyMapBinding* sky) {
     ATELIER_TRY_BIND(members, world_.members());
     if (members->size() >= maximum_entities)
@@ -380,7 +381,7 @@ void Session::set_selection(Selection next) {
     selection_ = next;
     selected_entities_.clear();
     if (next.entity != ObjectId{})
-        selected_entities_.push_back(next.entity);
+        selected_entities_.add(next.entity);
 }
 
 void Session::prune_selection() noexcept {
@@ -389,7 +390,7 @@ void Session::prune_selection() noexcept {
         return members && std::ranges::any_of(*members, [&](const auto& member) { return member.id() == entity; });
     };
     const auto old_size = selected_entities_.size();
-    std::erase_if(selected_entities_, [&](ObjectId id) { return !contains(id); });
+    selected_entities_.remove_if([&](ObjectId id) { return !contains(id); });
     const bool lost_active = selection_.entity != ObjectId{} && !contains(selection_.entity);
     if (old_size != selected_entities_.size() || lost_active)
         ++revision_;
@@ -413,20 +414,20 @@ Result<void> Session::select(ObjectId object) {
     return {};
 }
 
-Result<void> Session::select_entities(std::span<const ObjectId> entities, ObjectId active) {
-    std::vector<ObjectId> next;
+Result<void> Session::select_entities(Span<const ObjectId> entities, ObjectId active) {
+    Array<ObjectId> next;
     next.reserve(entities.size());
     for (const auto entity : entities) {
         if (std::ranges::find(next, entity) != next.end())
             continue;
         ATELIER_TRY(admit_entity_edit(entity));
-        next.push_back(entity);
+        next.add(entity);
     }
     if (active == ObjectId{} || std::ranges::find(next, active) == next.end())
         active = next.empty() ? ObjectId{} : next.back();
     else {
-        std::erase(next, active);
-        next.push_back(active);
+        next.remove_all(active);
+        next.add(active);
     }
     if (next == selected_entities_ && selection_ == Selection{active, active})
         return {};
@@ -451,7 +452,7 @@ Result<void> Session::set_transform(ObjectId entity, world::Trs value) {
     ATELIER_TRY_BIND(canonical, world::canonical_transform(value));
     ATELIER_TRY(cancel_edit());
     ATELIER_TRY_BIND(spatial, world::has_transform(runtime_, entity));
-    std::optional<world::Trs> before;
+    Optional<world::Trs> before;
     if (*spatial) {
         ATELIER_TRY_BIND(transform, world::read_transform(runtime_, entity));
         before = *transform;
@@ -481,7 +482,7 @@ Result<void> Session::remove_transform(ObjectId entity) {
     return {};
 }
 
-Result<world::Commit> Session::set_space_reference(ObjectId entity, std::optional<ObjectId> origin,
+Result<world::Commit> Session::set_space_reference(ObjectId entity, Optional<ObjectId> origin,
                                                    world::ReparentRule rule) {
     ATELIER_TRY(admit_entity_edit(entity));
     if (origin && *origin != ObjectId{})
@@ -513,13 +514,13 @@ Result<world::Commit> Session::set_space_reference(ObjectId entity, std::optiona
 }
 
 Result<world::Commit> Session::reparent(ObjectId entity, ObjectId parent, world::ReparentRule rule, std::size_t index) {
-    return reparent(std::span{&entity, 1}, parent, rule, index);
+    return reparent(Span<const ObjectId>{&entity, 1}, parent, rule, index);
 }
 
-Result<world::Commit> Session::reparent(std::span<const ObjectId> entities, ObjectId parent, world::ReparentRule rule,
+Result<world::Commit> Session::reparent(Span<const ObjectId> entities, ObjectId parent, world::ReparentRule rule,
                                         std::size_t index) {
     // The input may be selected_entities(), which publication updates below.
-    const std::vector<ObjectId> targets(entities.begin(), entities.end());
+    const Array<ObjectId> targets(entities);
     if (parent != ObjectId{})
         ATELIER_TRY(admit_entity_edit(parent));
     const auto sibling_index = [&](ObjectId target, ObjectId owner) -> Result<std::size_t> {
@@ -557,20 +558,20 @@ Result<world::Commit> Session::reparent(std::span<const ObjectId> entities, Obje
             move.before_parent = *before_parent;
             ATELIER_TRY_BIND(before_index, sibling_index(entity, move.before_parent));
             move.before_index = *before_index;
-            std::vector<ObjectId> pending{entity};
+            Array<ObjectId> pending{entity};
             while (!pending.empty()) {
                 const auto object = pending.back();
-                pending.pop_back();
+                pending.pop();
                 ATELIER_TRY_BIND(spatial, world::has_transform(runtime_, object));
                 if (*spatial) {
                     ATELIER_TRY_BIND(before, world::read_transform(runtime_, object));
                     ATELIER_TRY_BIND(held, runtime_.hold(object));
-                    move.transforms.push_back({std::move(*held), *before, *before});
+                    move.transforms.add({std::move(*held), *before, *before});
                 }
                 if (rule == world::ReparentRule::keep_world) {
                     ATELIER_TRY_BIND(children, world::children(runtime_, object));
                     for (const auto& child : *children)
-                        pending.push_back(child.id());
+                        pending.add(child.id());
                 }
             }
             ATELIER_TRY_BIND(changed, world_.reparent(entity, parent, rule, index));
@@ -584,11 +585,11 @@ Result<world::Commit> Session::reparent(std::span<const ObjectId> entities, Obje
                     transform.after = *after;
                 }
                 // Live forwarding needs this move's root pose, not the final pose after later moves.
-                std::erase_if(move.transforms, [entity](const auto& transform) {
+                move.transforms.remove_if([entity](const auto& transform) {
                     return transform.root.id() != entity && transform.before == transform.after;
                 });
                 set_selection({entity, entity});
-                change.moves.push_back(std::move(move));
+                change.moves.add(std::move(move));
             }
             if (changed->notification_error)
                 return world::Commit{!change.moves.empty(), std::move(changed->notification_error)};
@@ -610,7 +611,7 @@ Result<world::Commit> Session::create_static_mesh(const assets::MeshAsset& asset
     ATELIER_TRY_BIND(members, world_.members());
     if (members->size() >= maximum_entities)
         return invalid("Editor Entity limit reached.");
-    std::vector<presentation::MaterialBinding> defaults;
+    Array<presentation::MaterialBinding> defaults;
     if (project) {
         ATELIER_TRY_BIND(resolved, mesh_defaults(project->assets(), asset));
         defaults = std::move(*resolved);
@@ -706,14 +707,15 @@ Result<world::Commit> Session::create_camera(math::Vector3 position) {
     ATELIER_TRY_BIND(entity, world::create_entity(runtime_));
     ATELIER_TRY_BIND(camera, world::create_component(runtime_, presentation_types_.camera_component));
     ATELIER_TRY(world_.set_transform(entity->id(), {position, {}, {1, 1, 1}}));
-    ATELIER_TRY_BIND(composed, world_.attach_components(entity->id(), std::array{world::Attachment{camera->id()}}));
+    const std::array parts{world::Attachment{camera->id()}};
+    ATELIER_TRY_BIND(composed, world_.attach_components(entity->id(), parts));
     return attach_created(std::move(*entity), L"Camera");
 }
 
 Result<world::Commit> Session::attach_created(ObjectRoot root, std::wstring_view label) {
     EntityChange change;
     change.added = true;
-    change.removals.emplace_back().root = std::move(root);
+    change.removals.emplace().root = std::move(root);
     const auto id = change.removals.front().id();
     names_.try_emplace(id, std::wstring(label) + L" " + std::to_wstring(next_name_++));
     auto attached = world_.attach(id);
@@ -728,12 +730,12 @@ Result<world::Commit> Session::attach_created(ObjectRoot root, std::wstring_view
     return attached;
 }
 
-Result<world::Commit> Session::erase_entities(std::span<const ObjectId> entities) {
+Result<world::Commit> Session::erase_entities(Span<const ObjectId> entities) {
     if (entities.empty())
         return world::Commit{};
-    const std::vector<ObjectId> requested(entities.begin(), entities.end());
+    const Array<ObjectId> requested(entities);
     ATELIER_TRY_BIND(cancelled, cancel_edit());
-    std::vector<ObjectId> targets;
+    Array<ObjectId> targets;
     for (const auto entity : requested) {
         ATELIER_TRY(admit_entity_edit(entity));
         ATELIER_TRY_BIND(parent, world::parent_entity(runtime_, entity));
@@ -746,7 +748,7 @@ Result<world::Commit> Session::erase_entities(std::span<const ObjectId> entities
             ATELIER_TRY(parent = world::parent_entity(runtime_, *parent));
         }
         if (!included)
-            targets.push_back(entity);
+            targets.add(entity);
     }
     ATELIER_TRY_BIND(clear, main_camera_removal(targets));
     if (*clear)
@@ -841,26 +843,26 @@ Result<ObjectId> Session::admit_property_edit(ObjectId object) const {
     return component->owner;
 }
 
-Result<std::vector<ComponentType>> Session::component_types() const {
-    std::vector<ComponentType> result;
+Result<Array<ComponentType>> Session::component_types() const {
+    Array<ComponentType> result;
     for (const auto type : runtime_.types()) {
         ATELIER_TRY_BIND(info, runtime_.describe(type));
         if ((*info)->kind != TypeKind::object)
             continue;
         ATELIER_TRY_BIND(matches, runtime_.is_a(type, types_.component));
         if (*matches)
-            result.push_back({type, std::string((*info)->name)});
+            result.add({type, std::string((*info)->name)});
     }
     return result;
 }
 
-Result<std::vector<Property>> Session::properties(ObjectId object) const {
+Result<Array<Property>> Session::properties(ObjectId object) const {
     ATELIER_TRY(admit_property_edit(object));
     ATELIER_TRY_BIND(type, runtime_.type_of(object));
     const bool graph_object = is_graph_object(object);
     ATELIER_TRY_BIND(fields, graph_object ? detail::author_fields(world_.runtime(), *type, true)
                                           : detail::scalar_fields(world_.runtime(), *type));
-    std::vector<Property> result;
+    Array<Property> result;
     ATELIER_TRY_BIND(entity, runtime_.is_a(*type, types_.entity));
     bool spatial{};
     if (*entity) {
@@ -889,29 +891,29 @@ Result<std::vector<Property>> Session::properties(ObjectId object) const {
                           std::string(value.view().std_view()),
                           {},
                           std::move(field.metadata)};
-            result.push_back(std::move(prop));
+            result.add(std::move(prop));
             continue;
         }
         ATELIER_TRY_BIND(value, read_property(object, field.path));
-        result.push_back({detail::dotted(field.names),
-                          std::move(field.path),
-                          field.type,
-                          std::move(*value),
-                          std::move(field.label),
-                          std::move(field.category),
-                          std::move(field.description),
-                          field.range,
-                          field.transient,
-                          field.read_only,
-                          false,
-                          {},
-                          {},
-                          std::move(field.metadata)});
+        result.add({detail::dotted(field.names),
+                    std::move(field.path),
+                    field.type,
+                    std::move(*value),
+                    std::move(field.label),
+                    std::move(field.category),
+                    std::move(field.description),
+                    field.range,
+                    field.transient,
+                    field.read_only,
+                    false,
+                    {},
+                    {},
+                    std::move(field.metadata)});
     }
     return result;
 }
 
-Result<Scalar> Session::read_property(ObjectId object, std::span<const FieldId> path) const {
+Result<Scalar> Session::read_property(ObjectId object, Span<const FieldId> path) const {
     ATELIER_TRY(admit_property_edit(object));
     return is_graph_object(object) ? runtime_.read(object, path) : world_.read(object, path);
 }
@@ -931,19 +933,19 @@ Result<void> Session::configure_body(ObjectId component, physics::BodySettings s
     return {};
 }
 
-Result<void> Session::reject_if_graph_controlled_field(ObjectId object, std::span<const FieldId> path) const {
+Result<void> Session::reject_if_graph_controlled_field(ObjectId object, Span<const FieldId> path) const {
     const auto gkey = graph_of_object(object);
     const auto nname = graph_node_name(object);
     if (!gkey || !nname)
         return {};
     ATELIER_TRY_BIND(cur_type, runtime_.type_of(object));
-    std::vector<std::string> fnames;
+    Array<std::string> fnames;
     for (const auto step : path) {
         ATELIER_TRY_BIND(info, runtime_.describe(*cur_type));
         const auto f = std::ranges::find((*info)->fields, step, &FieldInfo::id);
         if (f == (*info)->fields.end())
             break;
-        fnames.push_back(f->name);
+        fnames.add(f->name);
         cur_type = f->value.type;
     }
     const std::string dotted = detail::dotted(fnames);
@@ -953,7 +955,7 @@ Result<void> Session::reject_if_graph_controlled_field(ObjectId object, std::spa
     return {};
 }
 
-Result<void> Session::begin_edit(ObjectId object, std::span<const FieldId> path, std::uint64_t control_session) {
+Result<void> Session::begin_edit(ObjectId object, Span<const FieldId> path, std::uint64_t control_session) {
     if (editing())
         return invalid("A field edit is already active.");
     if (!control_session)
@@ -972,24 +974,23 @@ Result<void> Session::begin_edit(ObjectId object, std::span<const FieldId> path,
         ATELIER_TRY_BIND(transform, world::read_transform(runtime_, object));
         value = *transform;
     }
-    active_.emplace(FieldChange{std::move(*root), *entity, {path.begin(), path.end()}, control_session, value, value});
+    active_.emplace(FieldChange{std::move(*root), *entity, world::FieldPath(path), control_session, value, value});
     return {};
 }
 
-Result<void> Session::begin_group_edit(ObjectId object, std::span<const world::FieldPath> paths,
+Result<void> Session::begin_group_edit(ObjectId object, Span<const world::FieldPath> paths,
                                        std::uint64_t control_session) {
     if (editing())
         return invalid("A field edit is already active.");
     if (!control_session || paths.empty())
         return invalid("A group edit requires a control session and fields.");
     for (std::size_t i = 1; i < paths.size(); ++i)
-        if (std::ranges::find(paths.begin(), paths.begin() + static_cast<std::ptrdiff_t>(i), paths[i]) !=
-            paths.begin() + static_cast<std::ptrdiff_t>(i))
+        if (paths.first(i).contains(paths[i]))
             return invalid("A group edit names the same field more than once.");
     ATELIER_TRY_BIND(entity, admit_property_edit(object));
     const bool graph_object = is_graph_object(object);
     ATELIER_TRY_BIND(root, runtime_.hold(object));
-    FieldGroupChange change{std::move(*root), *entity, {paths.begin(), paths.end()}, control_session, {}, {}};
+    FieldGroupChange change{std::move(*root), *entity, Array<world::FieldPath>(paths), control_session, {}, {}};
     for (const auto& path : paths) {
         if (!graph_object && detail::transform_path(types_, path))
             return invalid("Transform fields use the transform edit.");
@@ -999,14 +1000,14 @@ Result<void> Session::begin_group_edit(ObjectId object, std::span<const world::F
         if (graph_object)
             ATELIER_TRY(reject_if_graph_controlled_field(object, path));
         ATELIER_TRY_BIND(value, graph_object ? runtime_.read(object, path) : world_.read(object, path));
-        change.before.push_back(*value);
+        change.before.add(*value);
     }
     change.after = change.before;
     group_.emplace(std::move(change));
     return {};
 }
 
-Result<void> Session::preview_group_edit(std::uint64_t control_session, std::span<const Scalar> values) {
+Result<void> Session::preview_group_edit(std::uint64_t control_session, Span<const Scalar> values) {
     if (!group_ || group_->control_session != control_session)
         return invalid("No matching group edit.");
     if (values.size() != group_->paths.size())
@@ -1023,11 +1024,11 @@ Result<void> Session::preview_group_edit(std::uint64_t control_session, std::spa
     return {};
 }
 
-Result<void> Session::write_group(ObjectId object, std::span<const world::FieldPath> paths,
-                                  std::span<const Scalar> values) {
+Result<void> Session::write_group(ObjectId object, Span<const world::FieldPath> paths,
+                                  Span<const Scalar> values) {
     if (paths.empty() || values.size() != paths.size())
         return invalid("A group edit needs one value per field.");
-    std::vector<Scalar> previous;
+    Array<Scalar> previous;
     previous.reserve(paths.size());
     for (std::size_t i = 0; i < paths.size(); ++i) {
         ATELIER_TRY(validate_property_scalar(runtime_, values[i]));
@@ -1036,7 +1037,7 @@ Result<void> Session::write_group(ObjectId object, std::span<const world::FieldP
             (std::holds_alternative<EnumValue>(*value) &&
              std::get<EnumValue>(*value).type != std::get<EnumValue>(values[i]).type))
             return invalid("A group edit value changed its field type.");
-        previous.push_back(*value);
+        previous.add(*value);
     }
     if (!is_graph_object(object))
         return world_.write(object, paths, values);
@@ -1058,7 +1059,7 @@ Result<void> Session::apply_group(const FieldGroupChange& change, bool forward) 
     return write_group(change.root.id(), change.paths, values);
 }
 
-Result<void> Session::set_properties(ObjectId object, std::span<const PropertyPatch> patch) {
+Result<void> Session::set_properties(ObjectId object, Span<const PropertyPatch> patch) {
     ATELIER_TRY_BIND(entity, admit_property_edit(object));
     const bool graph_object = is_graph_object(object);
     for (const auto& leaf : patch) {
@@ -1079,9 +1080,9 @@ Result<void> Session::set_properties(ObjectId object, std::span<const PropertyPa
     FieldGroupChange change{std::move(*root), *entity, {}, 0, {}, {}};
     for (const auto& leaf : patch) {
         ATELIER_TRY_BIND(before, read_property(object, leaf.path));
-        change.paths.push_back(leaf.path);
-        change.before.push_back(*before);
-        change.after.push_back(leaf.value);
+        change.paths.add(leaf.path);
+        change.before.add(*before);
+        change.after.add(leaf.value);
     }
     if (!graph_object && change.before == change.after)
         return {};
@@ -1101,7 +1102,7 @@ bool Session::owns_edit(std::uint64_t control_session) const noexcept {
            graph_parameter_editing(control_session);
 }
 
-Result<void> Session::begin_transform(std::span<const ObjectId> entities, std::uint64_t control_session,
+Result<void> Session::begin_transform(Span<const ObjectId> entities, std::uint64_t control_session,
                                       bool amend_creation) {
     if (editing())
         return invalid("A field edit is already active.");
@@ -1117,7 +1118,7 @@ Result<void> Session::begin_transform(std::span<const ObjectId> entities, std::u
         ATELIER_TRY_BIND(state, admit_entity_edit(entity));
         ATELIER_TRY_BIND(value, world::read_transform(runtime_, entity));
         ATELIER_TRY_BIND(root, runtime_.hold(entity));
-        change.entries.push_back({std::move(*root), entity, *value, *value});
+        change.entries.add({std::move(*root), entity, *value, *value});
     }
     if (amend_creation) {
         const auto* creation =
@@ -1143,7 +1144,7 @@ Result<world::Trs> Session::original_transform(std::uint64_t control_session, Ob
     return invalid("The Entity does not belong to this transform edit.");
 }
 
-Result<void> Session::preview_transform(std::uint64_t control_session, std::span<const world::Trs> values) {
+Result<void> Session::preview_transform(std::uint64_t control_session, Span<const world::Trs> values) {
     if (!transform_ || transform_->control_session != control_session)
         return invalid("No matching transform edit.");
     for (const auto& value : values)
@@ -1157,10 +1158,10 @@ Result<void> Session::preview_transform(std::uint64_t control_session, std::span
     return written;
 }
 
-Result<void> Session::write_transforms(const TransformChange& change, std::span<const world::Trs> values) {
+Result<void> Session::write_transforms(const TransformChange& change, Span<const world::Trs> values) {
     if (values.size() != change.entries.size())
         return invalid("Transform preview does not match its targets.");
-    std::vector<world::Trs> previous;
+    Array<world::Trs> previous;
     previous.reserve(values.size());
     for (std::size_t i = 0; i < values.size(); ++i) {
         const auto& entry = change.entries[i];
@@ -1171,7 +1172,7 @@ Result<void> Session::write_transforms(const TransformChange& change, std::span<
         if (*entity != entry.entity)
             return invalid("The transform's owning Entity changed.");
         ATELIER_TRY_BIND(value, world::read_transform(runtime_, entry.root.id()));
-        previous.push_back(*value);
+        previous.add(*value);
     }
     if (!std::ranges::equal(previous, values))
         ++revision_;
@@ -1189,7 +1190,7 @@ Result<void> Session::write_transforms(const TransformChange& change, std::span<
     return {};
 }
 
-Result<void> Session::set_property(ObjectId object, std::span<const FieldId> path, Scalar value,
+Result<void> Session::set_property(ObjectId object, Span<const FieldId> path, Scalar value,
                                    std::uint64_t control_session) {
     ATELIER_TRY_BIND(begun, begin_edit(object, path, control_session));
     auto changed = preview_edit(control_session, std::move(value));
@@ -1460,14 +1461,15 @@ Result<world::Commit> Session::replay(Change& change, bool forward, Project* pro
                 set_selection({item.entity, item.root.id()});
                 return world::Commit{true, {}};
             } else if constexpr (std::is_same_v<T, TransformChange>) {
-                std::vector<world::Trs> values;
+                Array<world::Trs> values;
                 values.reserve(item.entries.size());
                 for (const auto& entry : item.entries)
-                    values.push_back(forward ? entry.after : entry.before);
+                    values.add(forward ? entry.after : entry.before);
                 ATELIER_TRY_BIND(written, write_transforms(item, values));
-                std::vector<ObjectId> entities;
+                Array<ObjectId> entities;
+                entities.reserve(item.entries.size());
                 for (const auto& entry : item.entries) {
-                    entities.push_back(entry.entity);
+                    entities.add(entry.entity);
                 }
                 // Retain the document-history policy: the edited objects become the selection.
                 ATELIER_TRY(select_entities(entities, entities.empty() ? ObjectId{} : entities.back()));
@@ -1533,18 +1535,20 @@ Result<world::Commit> Session::replay(Change& change, bool forward, Project* pro
                     if (item.cleared_camera)
                         ATELIER_TRY(apply_reference(*item.cleared_camera, false));
                     merge(*restored);
-                    std::vector<ObjectId> restored_ids;
+                    Array<ObjectId> restored_ids;
+                    restored_ids.reserve(item.removals.size());
                     for (const auto& removal : item.removals)
-                        restored_ids.push_back(removal.id());
+                        restored_ids.add(removal.id());
                     if (result.changed) {
                         ATELIER_TRY(
                             select_entities(restored_ids, restored_ids.empty() ? ObjectId{} : restored_ids.back()));
                     }
                     return result;
                 }
-                std::vector<ObjectId> targets;
+                Array<ObjectId> targets;
+                targets.reserve(item.removals.size());
                 for (const auto& removal : item.removals)
-                    targets.push_back(removal.id());
+                    targets.add(removal.id());
                 if (item.cleared_camera)
                     ATELIER_TRY(apply_reference(*item.cleared_camera, true));
                 auto removed = world_.detach_batch(targets);

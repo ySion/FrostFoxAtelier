@@ -12,7 +12,9 @@
 #include "editor/project_code.hpp"
 #include "editor/project_ui.hpp"
 #include "renderer/renderer.hpp"
+#include "foundation/optional.hpp"
 #include "foundation/result.hpp"
+#include "foundation/scope_exit.hpp"
 #include "logging/native.hpp"
 #include "platform/utf.hpp"
 #include <algorithm>
@@ -42,7 +44,7 @@ struct RunOptions {
 
     std::uint64_t frames{};
 
-    std::optional<PlayEnd> channel;
+    Optional<PlayEnd> channel;
 };
 
 Result<void> complete(Result<world::Commit> result) {
@@ -72,10 +74,10 @@ void report_performance(const editor::FramePerformance& performance, std::uint64
                     {"structure_errors", performance.structure_errors()}};
     if (cpu.samples) {
         const auto& frame = *cpu.phases[timing::frame.index()];
-        entry.fields.insert(entry.fields.end(), {{"frame_mean_ms", frame.mean},
-                                                 {"frame_p95_ms", frame.p95},
-                                                 {"frame_max_ms", frame.max},
-                                                 {"unattributed_mean_ms", cpu.unattributed->mean}});
+        entry.fields.append({{"frame_mean_ms", frame.mean},
+                             {"frame_p95_ms", frame.p95},
+                             {"frame_max_ms", frame.max},
+                             {"unattributed_mean_ms", cpu.unattributed->mean}});
     }
     static_cast<void>(logging::submit(std::move(entry)));
     for (const auto* marker : timing::catalog())
@@ -95,17 +97,17 @@ void startup_checkpoint() noexcept {
         static_cast<void>(run->flush());
 }
 
-Result<RunOptions> parse_options(std::span<wchar_t*> args) {
+Result<RunOptions> parse_options(Span<wchar_t*> args) {
     if (args.empty() || !*args.front())
         return std::unexpected(Error{ErrorCode::argument_mismatch, "--run-project requires a project folder."});
     RunOptions options;
     options.project = args.front();
-    args = args.subspan(1);
+    args = args.slice(1);
     const auto argument = [&]() -> Result<std::wstring_view> {
         if (args.empty())
             return std::unexpected(Error{ErrorCode::argument_mismatch, "Missing run option value."});
         const std::wstring_view value = args.front();
-        args = args.subspan(1);
+        args = args.slice(1);
         return value;
     };
     const auto handle = [&]() -> Result<HANDLE> {
@@ -121,7 +123,7 @@ Result<RunOptions> parse_options(std::span<wchar_t*> args) {
     HANDLE live_write{};
     while (!args.empty()) {
         const std::wstring_view option = args.front();
-        args = args.subspan(1);
+        args = args.slice(1);
         if (option == L"--headless")
             options.headless = true;
         else if (option == L"--preview-ui")
@@ -168,14 +170,14 @@ void report_failure(const Error& error, std::string_view event, const std::files
 }
 
 Result<void> run_project(RunOptions& options) {
-    struct StopEvent {
-        HANDLE value;
-
-        ~StopEvent() {
-            if (value)
-                CloseHandle(value);
-        }
-    } stop_event{options.stop_event}, stop_ack_event{options.stop_ack_event};
+    ScopeExit stop_event{[&]() noexcept {
+        if (options.stop_event)
+            CloseHandle(options.stop_event);
+    }};
+    ScopeExit stop_ack_event{[&]() noexcept {
+        if (options.stop_ack_event)
+            CloseHandle(options.stop_ack_event);
+    }};
     require_frame_timing();
     ATELIER_TRY_BIND(opened, editor::Project::open(options.project));
     auto& project = *opened;
@@ -208,22 +210,14 @@ Result<void> run_project(RunOptions& options) {
     // Isolated failures keep Play running; under halt the failing call is reported before it stops the run.
     std::uint64_t dropped{};
     const auto report_diagnostics = [&] { drain_world(document, project.root(), dropped); };
-    struct StopWorld {
-        editor::Session& session;
-
-        const std::filesystem::path& root;
-
-        std::uint64_t& dropped;
-
-        ~StopWorld() {
-            if (!session.world().running())
-                return;
-            auto stopped = complete(session.stop());
-            drain_world(session, root, dropped);
-            if (!stopped)
-                report_failure(stopped.error(), "runner.cleanup_failed", root);
-        }
-    } stop_world{document, project.root(), dropped};
+    ScopeExit stop_world{[&]() noexcept {
+        if (!document.world().running())
+            return;
+        auto stopped = complete(document.stop());
+        drain_world(document, project.root(), dropped);
+        if (!stopped)
+            report_failure(stopped.error(), "runner.cleanup_failed", project.root());
+    }};
     editor::ProjectUI project_ui;
     ATELIER_TRY(project_ui.initialize());
     project_ui.sync(&project);
@@ -238,7 +232,7 @@ Result<void> run_project(RunOptions& options) {
     ATELIER_TRY_BIND(styles, editor_styles());
     ATELIER_TRY(ui.set_style_sheet(*styles).transform_error(ui_error));
     std::unique_ptr<Window> window;
-    std::optional<renderer::Renderer> renderer;
+    Optional<renderer::Renderer> renderer;
     if (!options.headless) {
         window = std::make_unique<Window>();
         ATELIER_TRY(window->initialize());
@@ -251,14 +245,10 @@ Result<void> run_project(RunOptions& options) {
         renderer.emplace(std::move(*device));
         window->show();
     }
-    struct CloseRenderer {
-        std::optional<renderer::Renderer>& renderer;
-
-        ~CloseRenderer() {
-            if (renderer)
-                static_cast<void>(renderer->close());
-        }
-    } close_renderer{renderer};
+    ScopeExit close_renderer{[&]() noexcept {
+        if (renderer)
+            static_cast<void>(renderer->close());
+    }};
     const auto effects = [&](this auto&& self, const ui::Reply& reply) -> void {
         if (reply.error)
             report_failure(ui_error(*reply.error), "runner.ui_input_failed", project.root());
@@ -307,7 +297,7 @@ Result<void> run_project(RunOptions& options) {
     double elapsed{};
     bool started{};
     bool first_render{true};
-    std::optional<atelier::presentation::CameraSnapshot> accepted_camera;
+    Optional<atelier::presentation::CameraSnapshot> accepted_camera;
     std::string camera_error;
     auto previous = std::chrono::steady_clock::now();
     std::string ui_error;
@@ -353,7 +343,7 @@ Result<void> run_project(RunOptions& options) {
             break;
         // One frame per loop; the idle sleeps below stay outside it.
         timing::Recorder::Frame timed{recorder};
-        std::optional<std::uint64_t> sampled;
+        Optional<std::uint64_t> sampled;
         if (window) {
             timing::Scope input{phases::input};
             window->poll([&](NativeEvent message) {
@@ -377,7 +367,7 @@ Result<void> run_project(RunOptions& options) {
             });
         }
         if (window && window->closing()) {
-            performance.observe(timed.finish(), std::nullopt);
+            performance.observe(timed.finish(), {});
             break;
         }
         if (loaded.code) {
@@ -450,7 +440,7 @@ Result<void> run_project(RunOptions& options) {
             ATELIER_TRY(document.sync_procedural_generators(&project));
         // Reference writes do not change World revision. Resolve after every update,
         // including its late flush; only value snapshots survive this boundary.
-        std::optional<atelier::presentation::CameraSnapshot> camera;
+        Optional<atelier::presentation::CameraSnapshot> camera;
         renderer::Camera matrices;
         renderer::ViewSettings view;
         math::Vector3 focus{};
@@ -522,11 +512,11 @@ Result<void> run_project(RunOptions& options) {
                     matrices,
                     camera ? ui::Rect{0, 0, static_cast<float>(extent.width), static_cast<float>(extent.height)}
                            : ui::Rect{},
-                    camera ? std::span<const renderer::MeshInstance>{group.meshes}
-                           : std::span<const renderer::MeshInstance>{},
+                    camera ? Span<const renderer::MeshInstance>{group.meshes}
+                           : Span<const renderer::MeshInstance>{},
                     view,
                     {},
-                    camera ? std::span<const renderer::Light>{group.lights} : std::span<const renderer::Light>{},
+                    camera ? Span<const renderer::Light>{group.lights} : Span<const renderer::Light>{},
                     group.identity,
                     camera_cut,
                     rendering::sky_radiance(view.lit),
@@ -547,7 +537,7 @@ Result<void> run_project(RunOptions& options) {
                     first_render = false;
                 }
                 if (drawn->result.status == renderer::FrameStatus::cancelled) {
-                    performance.observe(timed.finish(), std::nullopt);
+                    performance.observe(timed.finish(), {});
                     break;
                 }
                 if (drawn->failure != render_failure) {
@@ -630,7 +620,7 @@ Result<void> run_project(RunOptions& options) {
 }
 }
 
-int run_project_command(std::span<wchar_t*> arguments) {
+int run_project_command(Span<wchar_t*> arguments) {
     auto options = parse_options(arguments);
     if (!options) {
         report_failure(options.error(), "runner.command_rejected", {});

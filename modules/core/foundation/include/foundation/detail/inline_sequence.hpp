@@ -296,6 +296,8 @@ public:
         }
     }
 
+    friend void swap(InlineSequence& left, InlineSequence& right) noexcept { left.swap(right); }
+
 private:
     [[nodiscard]] T* raw_inline() noexcept { return reinterpret_cast<T*>(inline_); }
 

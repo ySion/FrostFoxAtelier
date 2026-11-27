@@ -1,7 +1,9 @@
 #pragma once
 #include "assets/json_format.hpp"
 #include "editor/fields.hpp"
+#include "foundation/array.hpp"
 #include "foundation/function_ref.hpp"
+#include "foundation/optional.hpp"
 #include "procedural/graph.hpp"
 #include "runtime/runtime.hpp"
 #include "world/diagnostic.hpp"
@@ -9,14 +11,12 @@
 #include <cstdint>
 #include <functional>
 #include <map>
-#include <optional>
 #include <string>
 #include <string_view>
-#include <vector>
 
 namespace atelier::editor {
 
-std::optional<std::pair<std::string_view, std::string_view>> graph_endpoint(json::Value value);
+Optional<std::pair<std::string_view, std::string_view>> graph_endpoint(json::Value value);
 
 enum class GraphNodeShape : std::uint8_t {
     auto_role = 0,
@@ -32,11 +32,11 @@ enum class GraphNodeShape : std::uint8_t {
 
 [[nodiscard]] std::string_view graph_node_shape_name(GraphNodeShape shape) noexcept;
 
-[[nodiscard]] std::optional<GraphNodeShape> parse_graph_node_shape(std::string_view text) noexcept;
+[[nodiscard]] Optional<GraphNodeShape> parse_graph_node_shape(std::string_view text) noexcept;
 
 [[nodiscard]] std::string format_graph_hex_color(std::uint32_t rgb);
 
-[[nodiscard]] std::optional<std::uint32_t> parse_graph_hex_color(std::string_view text) noexcept;
+[[nodiscard]] Optional<std::uint32_t> parse_graph_hex_color(std::string_view text) noexcept;
 
 [[nodiscard]] bool valid_graph_identifier(std::string_view text) noexcept;
 
@@ -54,7 +54,7 @@ enum class GraphNodeShape : std::uint8_t {
 struct GraphPromotedParameter {
     std::string name; // [A-Za-z_][A-Za-z0-9_]*, unique in `GraphDocument::parameters`.
 
-    std::vector<std::string> targets; // Non-empty "node.field..." paths sharing one leaf/vector TypeId.
+    Array<std::string> targets; // Non-empty "node.field..." paths sharing one leaf/vector TypeId.
 
     std::string label;
 
@@ -82,7 +82,7 @@ struct ResolvedGraphTarget {
 
     std::string description;
 
-    std::vector<detail::ScalarField> leaves;
+    Array<detail::ScalarField> leaves;
 };
 
 struct GraphStickyNote {
@@ -130,7 +130,7 @@ struct GraphNode {
 
     GraphNodeShape shape{GraphNodeShape::auto_role};
 
-    std::optional<std::uint32_t> color{};
+    Optional<std::uint32_t> color{};
 
     std::string comment{};
 
@@ -145,27 +145,27 @@ struct GraphDocument {
 
     ObjectId template_node{};
 
-    std::vector<GraphPromotedParameter> parameters;
+    Array<GraphPromotedParameter> parameters;
 
-    std::vector<GraphNode> nodes;
+    Array<GraphNode> nodes;
 
-    std::vector<GraphStickyNote> notes;
+    Array<GraphStickyNote> notes;
 
-    std::vector<GraphNetworkBox> boxes;
+    Array<GraphNetworkBox> boxes;
 
     // Saved settings written over the graph's own on save: leaves that did not decode, and a
     // display or template naming no loaded node.
     json::Document kept{};
 
-    std::vector<world::Diagnostic> issues; // From the load.
+    Array<world::Diagnostic> issues; // From the load.
 };
 
 struct ResolvedPromotedSchema {
     ResolvedGraphTarget primary;
 
-    std::vector<ResolvedGraphTarget> all_targets;
+    Array<ResolvedGraphTarget> all_targets;
 
-    std::vector<FieldRange> ranges;
+    Array<FieldRange> ranges;
 };
 
 [[nodiscard]] Result<ResolvedGraphTarget>
@@ -177,8 +177,8 @@ resolve_promoted_parameter_schema(Runtime& runtime, const GraphDocument& documen
 [[nodiscard]] Result<FieldRange> intersect_field_ranges(const FieldRange& a, const FieldRange& b);
 
 [[nodiscard]] Result<procedural::Ports> extract_graph_ports(Runtime& runtime, const GraphDocument& document,
-                                                            std::vector<ObjectId>* input_nodes = nullptr,
-                                                            std::vector<ObjectId>* output_nodes = nullptr);
+                                                            Array<ObjectId>* input_nodes = nullptr,
+                                                            Array<ObjectId>* output_nodes = nullptr);
 
 // Clones an already-loaded GraphDocument in Runtime memory without JSON roundtrips, preserving
 // session-level node bypass and frozen geometry snapshots.
@@ -187,11 +187,11 @@ resolve_promoted_parameter_schema(Runtime& runtime, const GraphDocument& documen
 // Deterministically destroys all Runtime node and graph objects owned by a private cloned GraphDocument.
 void destroy_private_graph_document(Runtime& runtime, GraphDocument& document) noexcept;
 
-using SavedGraphPortMap = std::map<std::string, std::pair<bool, std::vector<std::string>>>;
+using SavedGraphPortMap = std::map<std::string, std::pair<bool, Array<std::string>>>;
 
 [[nodiscard]] Result<void> apply_saved_graph_node_inputs(Runtime& runtime, GraphDocument& document, GraphNode& target,
                                                          const SavedGraphPortMap& saved,
-                                                         std::vector<world::Diagnostic>* issues = nullptr);
+                                                         Array<world::Diagnostic>* issues = nullptr);
 
 using AssetPortResolver = std::function<Result<procedural::Ports>(std::string_view asset_key)>;
 

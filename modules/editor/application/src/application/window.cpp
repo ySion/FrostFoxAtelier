@@ -1,4 +1,5 @@
 #include "application/window.hpp"
+#include "foundation/scope_exit.hpp"
 #include "ui/icons.hpp"
 #include <imm.h>
 #include <algorithm>
@@ -24,9 +25,11 @@ HCURSOR tool_cursor(ui::Icon icon, UINT dpi) {
     const auto size = std::clamp(MulDiv(32, static_cast<int>(dpi), 96), 16, 256);
     const auto glyph = size * 3 / 4;
     const auto padding = (size - glyph) / 2;
-    std::vector<std::uint8_t> alpha(static_cast<std::size_t>(glyph * glyph));
+    Array<std::uint8_t> alpha;
+    alpha.resize(static_cast<std::size_t>(glyph * glyph));
     ui::raster_icon(icon, static_cast<std::uint32_t>(glyph), alpha);
-    std::vector<std::uint32_t> pixels(static_cast<std::size_t>(size * size));
+    Array<std::uint32_t> pixels;
+    pixels.resize_uninitialized(static_cast<std::size_t>(size * size));
     const auto sample = [&](int x, int y) -> unsigned {
         x -= padding;
         y -= padding;
@@ -54,7 +57,8 @@ HCURSOR tool_cursor(ui::Icon icon, UINT dpi) {
     info.bmiHeader.biBitCount = 32;
     info.bmiHeader.biCompression = BI_RGB;
     const auto stride = ((size + 15) / 16) * 2;
-    std::vector<std::uint8_t> mask_bits(static_cast<std::size_t>(stride * size), 0);
+    Array<std::uint8_t> mask_bits;
+    mask_bits.resize(static_cast<std::size_t>(stride * size), 0);
     void* bits{};
     const auto color = CreateDIBSection(nullptr, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
     if (!color)
@@ -89,10 +93,6 @@ struct InputContext {
     }
 };
 
-struct ClipboardScope {
-    ~ClipboardScope() { CloseClipboard(); }
-};
-
 struct MemoryLock {
     HGLOBAL memory;
 
@@ -119,7 +119,7 @@ std::expected<std::wstring, DWORD> composition_text(HIMC context, DWORD index) {
 }
 }
 
-Result<void> Window::initialize(HWND popup_owner, std::optional<ui::PixelExtent> initial_client) {
+Result<void> Window::initialize(HWND popup_owner, Optional<ui::PixelExtent> initial_client) {
     popup_ = popup_owner != nullptr;
     const auto failed = [&](const char* message, DWORD code) {
         if (handle_)
@@ -222,8 +222,10 @@ void Window::cursor(ui::Cursor intent) {
             adjustment_cursor_ = nullptr;
             cursor_size_ = size;
             const int stride = ((size + 15) / 16) * 2;
-            std::vector<BYTE> mask(static_cast<std::size_t>(stride * size), 0xff);
-            std::vector<BYTE> ink(mask.size(), 0);
+            Array<BYTE> mask;
+            mask.resize(static_cast<std::size_t>(stride * size), 0xff);
+            Array<BYTE> ink;
+            ink.resize(mask.size(), 0);
             // Original adjustment glyph: opposing arrows with a central fine-step notch.
             const auto shape = [](int x, int y) {
                 return (y == 16 && x >= 4 && x <= 27) || (x >= 4 && x <= 9 && std::abs(y - 16) == x - 4) ||
@@ -250,7 +252,7 @@ void Window::cursor(ui::Cursor intent) {
         if (adjustment_cursor_)
             cursor_ = adjustment_cursor_;
     }
-    std::optional<ui::Icon> icon;
+    Optional<ui::Icon> icon;
     if (intent == ui::Cursor::pan)
         icon = ui::Icon::pan;
     else if (intent == ui::Cursor::orbit)
@@ -268,12 +270,12 @@ void Window::cursor(ui::Cursor intent) {
         if (found != tool_cursors_.end())
             cursor_ = found->handle;
         else {
-            auto& cached = tool_cursors_.emplace_back(intent, dpi, nullptr);
+            auto& cached = tool_cursors_.emplace(intent, dpi, nullptr);
             cached.handle = tool_cursor(*icon, dpi);
             if (cached.handle)
                 cursor_ = cached.handle;
             else
-                tool_cursors_.pop_back();
+                tool_cursors_.pop();
         }
     }
     SetCursor(relative_pointer_ ? nullptr : cursor_);
@@ -455,7 +457,7 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
                 auto record = event(message, wparam);
                 record.relative_motion =
                     NativeEvent::Motion{float(raw.data.mouse.lLastX), float(raw.data.mouse.lLastY)};
-                events_.push_back(std::move(record));
+                events_.add(std::move(record));
             }
         }
         return DefWindowProcW(handle_, message, wparam, lparam);
@@ -485,7 +487,7 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
         relative_pointer(false);
         // A native modal loop can suspend poll(). Release OS capture now via
         // default processing; defer business cancellation until normal delivery.
-        events_.push_back(event(message, wparam, lparam));
+        events_.add(event(message, wparam, lparam));
         return DefWindowProcW(handle_, message, wparam, lparam);
     case WM_GETMINMAXINFO: {
         if (popup_)
@@ -500,7 +502,7 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
         const auto bounds = *reinterpret_cast<RECT*>(lparam);
         SetWindowPos(handle_, nullptr, bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top,
                      SWP_NOACTIVATE | SWP_NOZORDER);
-        events_.push_back(event(message, wparam)); // LPARAM points to stack storage
+        events_.add(event(message, wparam)); // LPARAM points to stack storage
         return 0;
     }
     case WM_IME_SETCONTEXT:
@@ -542,7 +544,7 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
         if (character < 0x20 || character == 0x7f)
             return 0; // Commands arrive as key events.
         value.text.push_back(character); // Assemble surrogate pairs in ordered pump delivery.
-        events_.push_back(std::move(value));
+        events_.add(std::move(value));
         return 0;
     }
     case WM_SYSKEYDOWN:
@@ -567,7 +569,7 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
         }
         if (value.ime_owned)
             return DefWindowProcW(handle_, message, wparam, lparam);
-        events_.push_back(std::move(value));
+        events_.add(std::move(value));
         return 0;
     }
     case WM_KILLFOCUS:
@@ -575,18 +577,18 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
         input_anchor_.reset();
         high_surrogate_ = 0;
         key_owner_.fill(0);
-        events_.push_back(event(message, wparam, lparam));
+        events_.add(event(message, wparam, lparam));
         return 0;
     case WM_MOUSEMOVE:
         if (!tracking_pointer_) {
             TRACKMOUSEEVENT track{sizeof(TRACKMOUSEEVENT), TME_LEAVE, handle_, 0};
             tracking_pointer_ = TrackMouseEvent(&track) != FALSE;
         }
-        events_.push_back(event(message, wparam, lparam));
+        events_.add(event(message, wparam, lparam));
         return 0;
     case WM_MOUSELEAVE:
         tracking_pointer_ = false;
-        events_.push_back(event(message, wparam, lparam));
+        events_.add(event(message, wparam, lparam));
         return 0;
     case WM_SYSCHAR:
         return 0; // Menu mnemonics are handled by their key event.
@@ -597,7 +599,7 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
         [[fallthrough]];
     case WM_SIZE:
         input_anchor_.reset();
-        events_.push_back(event(message, wparam, lparam));
+        events_.add(event(message, wparam, lparam));
         return 0;
     case WM_SETFOCUS:
     case WM_MOVE:
@@ -610,7 +612,7 @@ LRESULT Window::receive(UINT message, WPARAM wparam, LPARAM lparam) {
     case WM_MBUTTONDOWN:
     case WM_MBUTTONUP:
     case WM_MOUSEWHEEL:
-        events_.push_back(event(message, wparam, lparam));
+        events_.add(event(message, wparam, lparam));
         return 0;
     case WM_MOUSEACTIVATE:
         if (popup_)
@@ -680,7 +682,7 @@ void Window::composition(UINT message, LPARAM flags) {
         }
     }
     if (record.composition)
-        events_.push_back(std::move(record));
+        events_.add(std::move(record));
 }
 
 ui::ClipboardResult Window::clipboard(const ui::ClipboardRequest& request) {
@@ -697,7 +699,7 @@ ui::ClipboardResult Window::clipboard(const ui::ClipboardRequest& request) {
             return result;
         Sleep(5);
     }
-    ClipboardScope close;
+    ScopeExit close{[]() noexcept { CloseClipboard(); }};
     const auto limit = std::min<std::size_t>(request.limit, 1024 * 1024);
     if (request.kind == ui::ClipboardKind::read) {
         const auto memory = GetClipboardData(CF_UNICODETEXT);
@@ -791,14 +793,15 @@ ui::ImeResult Window::ime(const ui::ImeRequest& request) {
     return result;
 }
 
-std::uint32_t Window::text_input(const std::optional<ui::TextInputState>& input) {
-    const auto token = input ? std::optional{input->token} : std::nullopt;
+std::uint32_t Window::text_input(const Optional<ui::TextInputState>& input) {
+    const auto token = input ? Optional<ui::EditToken>{input->token} : Optional<ui::EditToken>{};
     const bool binding_changed =
         input_token_ && (!token || token->key != input_token_->key || token->incarnation != input_token_->incarnation ||
                          token->generation != input_token_->generation);
     // Clear geometry and cancel against the old token before exposing the new
     // binding. Synchronous IMM callbacks snapshot that old token into the queue.
-    input_anchor_ = binding_changed ? std::nullopt : (input ? input->accepted_anchor : std::nullopt);
+    input_anchor_ = binding_changed ? Optional<ui::TextInputAnchor>{}
+                                    : (input ? input->accepted_anchor : Optional<ui::TextInputAnchor>{});
     if (binding_changed && input_enabled_) {
         if (const auto error = cancel_ime())
             return error;
@@ -829,7 +832,7 @@ std::uint32_t Window::text_input(const std::optional<ui::TextInputState>& input)
         candidate_rect_.reset();
     }
     input_token_ = token;
-    input_anchor_ = input ? input->accepted_anchor : std::nullopt;
+    input_anchor_ = input ? input->accepted_anchor : Optional<ui::TextInputAnchor>{};
     if (input && !input_enabled_) {
         if (!ImmAssociateContextEx(handle_, nullptr, IACE_DEFAULT)) {
             input_anchor_.reset();

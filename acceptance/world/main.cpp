@@ -162,7 +162,7 @@ void editing_and_execution() {
 void tick_prerequisite_order() {
     Runtime runtime;
     const auto types = take(w::register_types(runtime));
-    std::vector<ObjectId> ticks;
+    Array<ObjectId> ticks;
     w::World world;
     take(world.initialize(runtime, types));
     auto a = take(w::create_entity(runtime));
@@ -171,13 +171,13 @@ void tick_prerequisite_order() {
     for (const auto id : {a.id(), b.id(), c.id()})
         committed(world.attach(id));
     take(world.bind_behavior(types.entity, {.tick = [&](Runtime&, ObjectId id, float) -> Result<void> {
-                                 ticks.push_back(id);
+                                 ticks.add(id);
                                  return {};
                              }}));
     take(world.add_tick_prerequisite(a.id(), b.id()));
     committed(world.start());
     take(world.update(1.f));
-    require(ticks == std::vector<ObjectId>{b.id(), a.id(), c.id()},
+    require(ticks == Array<ObjectId>{b.id(), a.id(), c.id()},
             "A newly ready earlier entity did not precede the unrelated ready entity.");
     committed(world.close());
 }
@@ -191,7 +191,7 @@ void ordered_lifecycle() {
                  .field<&DerivedCounter::extra>("extra")
                  .publish());
     using Event = std::pair<char, ObjectId>;
-    std::vector<Event> events;
+    Array<Event> events;
 
     w::World world;
     take(world.initialize(runtime, types));
@@ -201,23 +201,23 @@ void ordered_lifecycle() {
     auto b = take(w::create_component(runtime, types.counter));
     auto c = take(w::create_component(runtime, derived));
     committed(world.attach(entity.id()));
-    committed(world.attach_components(entity.id(),
-                                      std::array{w::Attachment{a.id()}, w::Attachment{b.id()}, w::Attachment{c.id()}}));
+    const std::array attachments{w::Attachment{a.id()}, w::Attachment{b.id()}, w::Attachment{c.id()}};
+    committed(world.attach_components(entity.id(), attachments));
     take(world.bind_behavior(types.counter, {.begin = [&](Runtime&, ObjectId id) -> Result<void> {
-                                                 events.emplace_back('B', id);
+                                                 events.emplace('B', id);
                                                  if (id == c.id())
                                                      return std::unexpected(Error{ErrorCode::invocation_failed,
                                                                                   "Injected Begin failure."});
                                                  return {};
                                              },
                                              .end = [&](Runtime&, ObjectId id) -> Result<void> {
-                                                 events.emplace_back('E', id);
+                                                 events.emplace('E', id);
                                                  return {};
                                              }}));
     (void)take(world.start());
     committed(world.close());
     require(!world.running() &&
-                events == std::vector<Event>{{'B', a.id()}, {'B', b.id()}, {'B', c.id()}, {'E', b.id()}, {'E', a.id()}},
+                events == Array<Event>{{'B', a.id()}, {'B', b.id()}, {'B', c.id()}, {'E', b.id()}, {'E', a.id()}},
             "Failed Begin did not unwind exactly the successful prefix once, in reverse order.");
 }
 
@@ -233,7 +233,7 @@ void spatial_tree_and_mesh() {
     auto leaf = take(w::create_entity(runtime));
     auto mesh = take(w::create_component(runtime, types.static_mesh_component));
     auto triangle = take(geometry::Mesh::create(
-        std::vector<geometry::Vertex>{{{0, 0, 0}, {0, 0, -1}}, {{1, 0, 0}, {0, 0, -1}}, {{0, 1, 0}, {0, 0, -1}}}));
+        Array<geometry::Vertex>{{{0, 0, 0}, {0, 0, -1}}, {{1, 0, 0}, {0, 0, -1}}, {{0, 1, 0}, {0, 0, -1}}}));
     take(p::set_geometry(runtime, mesh.id(), triangle));
     const std::array attachments{w::Attachment{mesh.id()}};
     take(world.set_transform(child.id(), {{1, 0, 0}, {}, {1, 1, 1}}));

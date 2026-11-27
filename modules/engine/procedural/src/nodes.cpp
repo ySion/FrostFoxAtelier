@@ -5,7 +5,6 @@
 #include "procedural/random.hpp"
 
 #include <utility>
-#include <vector>
 
 namespace atelier::procedural {
 namespace {
@@ -236,11 +235,11 @@ Result<void> Ray::process(const Geometry& points, const Geometry& surface, Geome
 }
 
 Result<void> CopyToPoints::process(const Context& context, const Geometry& points, Geometry& output) const noexcept {
-    std::vector<Reference> references;
+    Array<Reference> references;
     references.reserve(meshes.size());
     for (const auto& key : meshes) {
         ATELIER_TRY_BIND(reference, invocation_result(context.mesh(key)));
-        references.push_back(std::move(*reference));
+        references.add(std::move(*reference));
     }
     ATELIER_TRY_BIND(result, invocation_result(copy_to_points(points, references, variant)));
     output = std::move(*result);

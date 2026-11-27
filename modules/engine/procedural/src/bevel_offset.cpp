@@ -22,7 +22,7 @@ double independence(Vector3d a, Vector3d b, Vector3d c) {
     return std::abs(math::dot(a, math::cross(b - a, c - a)));
 }
 
-Triple starting_triple(std::span<const Vector3d> normals) {
+Triple starting_triple(Span<const Vector3d> normals) {
     Triple basis{0, 1, 2};
     if (normals.size() == 3)
         return basis;
@@ -69,7 +69,7 @@ struct Intersection {
     double strength{};
 };
 
-Intersection intersect(std::span<const Vector3d> normals, std::span<const double> offsets, Triple t) {
+Intersection intersect(Span<const Vector3d> normals, Span<const double> offsets, Triple t) {
     const auto a = normals[t[0]];
     const auto ba = normals[t[1]] - a;
     const auto ca = normals[t[2]] - a;
@@ -142,8 +142,8 @@ Result<Array<BevelOffsetCell>> ordered_fan(const Array<Candidate>& candidates, I
 
 } // namespace
 
-Result<Array<BevelOffsetCell>> bevel_offset_cells(std::span<const Vector3d> normals, std::span<const double> offsets,
-                                                 double tolerance) {
+Result<Array<BevelOffsetCell>> bevel_offset_cells(Span<const Vector3d> normals, Span<const double> offsets,
+                                                  double tolerance) {
     if (normals.size() < 3 || normals.size() != offsets.size())
         return failure("Bevel corner needs an offset distance for each of its incident supports.");
     const auto seed = intersect(normals, offsets, starting_triple(normals));

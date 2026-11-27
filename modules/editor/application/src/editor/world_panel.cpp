@@ -127,9 +127,9 @@ Result<bool> WorldPanel::apply(const ui::Action& action, renderer::ViewSettings&
     return true;
 }
 
-std::vector<ui::MenuItem> WorldPanel::menu(ui::ControlKey source, const renderer::ViewSettings& view) const {
+Array<ui::MenuItem> WorldPanel::menu(ui::ControlKey source, const renderer::ViewSettings& view) const {
     using namespace world_control;
-    std::vector<ui::MenuItem> items;
+    Array<ui::MenuItem> items;
     if (source == slot) {
         for (unsigned i = 0; i < renderer::probe_volume_limit; ++i) {
             ui::MenuItem item{slot_first + i,
@@ -139,7 +139,7 @@ std::vector<ui::MenuItem> WorldPanel::menu(ui::ControlKey source, const renderer
                               {}};
             item.behavior = ui::MenuBehavior::radio;
             item.radio_group = slot;
-            items.push_back(std::move(item));
+            items.add(std::move(item));
         }
         return items;
     }
@@ -161,7 +161,7 @@ std::vector<ui::MenuItem> WorldPanel::menu(ui::ControlKey source, const renderer
                           {}};
         item.behavior = ui::MenuBehavior::radio;
         item.radio_group = source;
-        items.push_back(std::move(item));
+        items.add(std::move(item));
     }
     return items;
 }
@@ -191,12 +191,11 @@ void WorldPanel::append(ui_language::ControlOutput controls, ui::ControlKey pare
     namespace key = world_control;
     static const renderer::ViewSettings defaults;
     help_.begin();
-    auto groups = std::make_shared<std::vector<Item>>();
-    const auto group = [&](ui::ControlKey id, std::wstring name, std::shared_ptr<std::vector<Item>> rows) {
-        groups->push_back({id, {std::move(name), 0., ItemList{std::move(rows)}}});
+    auto groups = std::make_shared<Array<Item>>();
+    const auto group = [&](ui::ControlKey id, std::wstring name, std::shared_ptr<Array<Item>> rows) {
+        groups->add({id, {std::move(name), 0., ItemList{std::move(rows)}}});
     };
-    const auto row = [&](std::vector<Item>& rows, std::span<const ViewOption> options,
-                         std::wstring label = std::wstring{}) {
+    const auto row = [&](Array<Item>& rows, Span<const ViewOption> options, std::wstring label = std::wstring{}) {
         const auto* option = view_option(options.front());
         const auto id = key::field(option->option);
         if (label.empty())
@@ -214,7 +213,7 @@ void WorldPanel::append(ui_language::ControlOutput controls, ui::ControlKey pare
                 edit.modified |= value != initial;
                 const bool integer = item->kind == ViewValueKind::integer;
                 constexpr std::array names{L"X", L"Y", L"Z"};
-                edit.fields.push_back(
+                edit.fields.add(
                     {key::field(item->option), options.size() == 1 ? L"" : names[i], value, initial, item->minimum,
                      item->maximum, integer ? 1. : .05, integer ? 1. : .005,
                      options.size() == 1 ? ui::VectorAxis::none : static_cast<ui::VectorAxis>(i + 1)});
@@ -247,10 +246,10 @@ void WorldPanel::append(ui_language::ControlOutput controls, ui::ControlKey pare
         if (enumeration)
             property.choice = choice_title(*option, view_value(view, option->option));
         property.help = help_.get(property.key, property.title, identity, option->description);
-        rows.push_back(std::move(property).item());
+        rows.add(std::move(property).item());
     };
-    const auto scalar = [&](std::vector<Item>& rows, ViewOption option) { row(rows, {&option, 1}); };
-    auto volume = std::make_shared<std::vector<Item>>();
+    const auto scalar = [&](Array<Item>& rows, ViewOption option) { row(rows, {&option, 1}); };
+    auto volume = std::make_shared<Array<Item>>();
     scalar(*volume, probe_volume_option(slot_, ProbeVolumeField::enabled));
     scalar(*volume, probe_volume_option(slot_, ProbeVolumeField::placement));
     const bool rolling = view.lit.probe_volumes[slot_].placement == renderer::ProbePlacement::follow_focus;
@@ -268,8 +267,8 @@ void WorldPanel::append(ui_language::ControlOutput controls, ui::ControlKey pare
     scalar(*volume, probe_volume_option(slot_, ProbeVolumeField::blend_cells));
     group(key::root + 100, L"Volume " + std::to_wstring(slot_), std::move(volume));
     auto volume_groups = groups;
-    groups = std::make_shared<std::vector<Item>>();
-    auto global = std::make_shared<std::vector<Item>>();
+    groups = std::make_shared<Array<Item>>();
+    auto global = std::make_shared<Array<Item>>();
     scalar(*global, ViewOption::ddgi);
     scalar(*global, ViewOption::probe_update_budget);
     scalar(*global, ViewOption::probe_rays);
@@ -278,8 +277,8 @@ void WorldPanel::append(ui_language::ControlOutput controls, ui::ControlKey pare
     group(key::root + 101, platform::utf8_to_utf16_validated(view_option(ViewOption::ddgi)->category),
           std::move(global));
     auto propagation = groups;
-    groups = std::make_shared<std::vector<Item>>();
-    auto debug = std::make_shared<std::vector<Item>>();
+    groups = std::make_shared<Array<Item>>();
+    auto debug = std::make_shared<Array<Item>>();
     scalar(*debug, ViewOption::spatial_light_sampling);
     scalar(*debug, ViewOption::probe_feedback_visibility);
     scalar(*debug, ViewOption::probe_visualization);
@@ -293,22 +292,23 @@ void WorldPanel::append(ui_language::ControlOutput controls, ui::ControlKey pare
     group(key::root + 102, platform::utf8_to_utf16_validated(view_option(ViewOption::probe_debug)->category),
           std::move(debug));
     auto diagnostics = groups;
-    groups = std::make_shared<std::vector<Item>>();
-    auto lighting = std::make_shared<std::vector<Item>>();
+    groups = std::make_shared<Array<Item>>();
+    auto lighting = std::make_shared<Array<Item>>();
     scalar(*lighting, ViewOption::exposure_ev);
     scalar(*lighting, ViewOption::shadows);
     scalar(*lighting, ViewOption::direct_candidates);
     group(key::root + 103, platform::utf8_to_utf16_validated(view_option(ViewOption::shadows)->category),
           std::move(lighting));
-    auto sky = std::make_shared<std::vector<Item>>();
+    auto sky = std::make_shared<Array<Item>>();
     scalar(*sky, ViewOption::sky_enabled);
     scalar(*sky, ViewOption::sky_intensity);
-    row(*sky, std::array{ViewOption::sky_color_x, ViewOption::sky_color_y, ViewOption::sky_color_z});
+    const std::array sky_options{ViewOption::sky_color_x, ViewOption::sky_color_y, ViewOption::sky_color_z};
+    row(*sky, sky_options);
     group(key::root + 105, platform::utf8_to_utf16_validated(view_option(ViewOption::sky_enabled)->category),
           std::move(sky));
     auto lighting_groups = groups;
-    groups = std::make_shared<std::vector<Item>>();
-    auto effects = std::make_shared<std::vector<Item>>();
+    groups = std::make_shared<Array<Item>>();
+    auto effects = std::make_shared<Array<Item>>();
     scalar(*effects, ViewOption::antialiasing);
     scalar(*effects, ViewOption::gtao);
     scalar(*effects, ViewOption::ao_radius);
@@ -318,13 +318,12 @@ void WorldPanel::append(ui_language::ControlOutput controls, ui::ControlKey pare
     scalar(*effects, ViewOption::bloom);
     group(key::root + 104, platform::utf8_to_utf16_validated(view_option(ViewOption::antialiasing)->category),
           std::move(effects));
-    auto actual = std::make_shared<std::vector<Item>>();
+    auto actual = std::make_shared<Array<Item>>();
     constexpr std::array labels{L"Placement",   L"World min (m)",  L"World max (m)",
                                 L"Spacing (m)", L"Resident (CPU)", L"This frame (CPU)"};
     for (std::size_t i = 0; i < labels.size(); ++i)
-        actual->push_back(
-            {key::root + 128 + i,
-             {std::wstring(labels[i]), readouts_[slot_][i].empty() ? std::wstring(L"—") : readouts_[slot_][i]}});
+        actual->add({key::root + 128 + i,
+                     {std::wstring(labels[i]), readouts_[slot_][i].empty() ? std::wstring(L"—") : readouts_[slot_][i]}});
     std::uint32_t total{};
     for (const auto& item : view.lit.probe_volumes)
         if (item.enabled)

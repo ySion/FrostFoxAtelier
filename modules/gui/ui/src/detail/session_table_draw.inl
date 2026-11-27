@@ -12,12 +12,12 @@
                 const auto gap=details?0.f:layout.item_gap*scale;
                 const auto stride=row_height+gap;
                 const auto gutter=(appearance.scrollbar_width+2*appearance.scrollbar_inset)*scale;
-                std::vector<float> widths; widths.reserve(data.columns.size());
+                Array<float> widths; widths.reserve(data.columns.size());
                 float content_width{};
                 if (details) for (const auto& column:data.columns) {
                     const auto width=self.press && self.press->key==key && self.press->table_resize && self.press->table_column==column.key?
                         static_cast<float>(self.press->value):column.width;
-                    widths.push_back(width*scale); content_width+=width*scale;
+                    widths.add(width*scale); content_width+=width*scale;
                 }
                 const bool stable=appearance.scrollbar_gutter==ScrollbarGutter::stable;
                 auto body_width=std::max(0.f,inner.width-(stable?gutter:0.f));
@@ -70,7 +70,7 @@
                 const auto header_clip=intersect(table_clip,clip_rect(table.header));
                 const auto body_clip=intersect(table_clip,clip_rect(table.body));
                 if (paint) quad(table.header,header_clip,appearance.indicator_background);
-                std::vector<detail::TextKey> visible_text;
+                Array<detail::TextKey> visible_text;
                 const auto paint_text=[&](TableKey id,bool header,std::wstring_view value,Rect cell,Clip cell_clip,
                     TextAlign alignment,ControlIcon icon,bool row_enabled,float trailing=0.f,bool above=false) -> Result<void> {
                     float x=cell.x+std::max(4.f,appearance.padding.left)*scale;
@@ -94,7 +94,7 @@
                         }
                     }
                     if (value.empty() || width<=0 || !visible({x,cell.y,width,cell.height},cell_clip)) return {};
-                    const detail::TextKey text_key{key,id,header}; visible_text.push_back(text_key);
+                    const detail::TextKey text_key{key,id,header}; visible_text.add(text_key);
                     self.text.set(text_key,value,appearance.font,false,alignment);
                     ATELIER_TRY_BIND(metrics,self.text.metrics(text_key,width/scale));
                     const auto y=cell.y+std::max(0.f,cell.height-metrics->height*scale)*.5f;
@@ -113,7 +113,7 @@
                     const Rect header{column_x,inner.y,widths[column],header_height};
                     if (visible(header,header_clip)) {
                         const auto cell_clip=intersect(header_clip,clip_rect(header));
-                        table.columns.push_back({descriptor.key,header,{header.x+header.width-3*scale,header.y,6*scale,header.height},header_clip});
+                        table.columns.add({descriptor.key,header,{header.x+header.width-3*scale,header.y,6*scale,header.height},header_clip});
                         ATELIER_TRY(paint_text(descriptor.key,true,descriptor.title,header,cell_clip,descriptor.alignment,ControlIcon::none,enabled,
                             data.sort.column==descriptor.key?12.f:0.f));
                         if (paint && data.sort.column==descriptor.key) {
@@ -137,7 +137,7 @@
                         if (!visible(cell,body_clip)) continue;
                         const auto cell_clip=intersect(body_clip,clip_rect(cell));
                         const auto& content=descriptor.cells.front();
-                        table.cells.push_back({descriptor.key,data.columns.front().key,content.key,cell,cell_clip});
+                        table.cells.add({descriptor.key,data.columns.front().key,content.key,cell,cell_clip});
                         if (paint && descriptor.key==selection.row) quad(cell,cell_clip,appearance.selection);
                         ATELIER_TRY(paint_text(content.key,false,content.text,cell,cell_clip,tiles?TextAlign::center:TextAlign::left,content.icon,
                             enabled && descriptor.enabled,0,tiles));
@@ -153,7 +153,7 @@
                         if (!visible(cell,body_clip)) continue;
                         const auto& content=descriptor.cells[column];
                         const auto cell_clip=intersect(body_clip,clip_rect(cell));
-                        table.cells.push_back({descriptor.key,data.columns[column].key,content.key,cell,cell_clip});
+                        table.cells.add({descriptor.key,data.columns[column].key,content.key,cell,cell_clip});
                         ATELIER_TRY(paint_text(content.key,false,content.text,cell,cell_clip,data.columns[column].alignment,content.icon,enabled && descriptor.enabled));
                         if (paint && self.focus==key && selection.row==descriptor.key && selection.column==data.columns[column].key)
                             paint_box(cell,cell_clip,{0,0,0,0},{},{},std::max(1.f,scale),appearance.border,BorderStyle::solid);
@@ -183,4 +183,4 @@
                 std::sort(visible_text.begin(),visible_text.end());
                 for (auto previous:state.table_text) if (!std::binary_search(visible_text.begin(),visible_text.end(),previous)) self.text.erase(previous);
                 state.table_text=std::move(visible_text);
-                output->tables.push_back(std::move(table));
+                output->tables.add(std::move(table));

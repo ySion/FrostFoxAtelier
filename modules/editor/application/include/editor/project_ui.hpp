@@ -1,5 +1,6 @@
 #pragma once
 #include "editor/project.hpp"
+#include "foundation/array.hpp"
 #include "foundation/function_ref.hpp"
 #include "ui_language/live_document.hpp"
 
@@ -41,7 +42,7 @@ private:
 
     std::string error_;
 
-    std::vector<ui::Control> accepted_controls_;
+    Array<ui::Control> accepted_controls_;
 
     bool accepted_{};
 
