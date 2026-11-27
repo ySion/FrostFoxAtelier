@@ -103,14 +103,22 @@
                 const auto last = std::max(selection.caret.offset, selection.anchor.offset);
 
                 // Resolve bracket matching, active indent scope, and caret identifier for occurrence highlighting.
-                const Optional<detail::CodeBracketMatch> bracket_match =
-                    editing && !composition && lang != CodeLanguage::plain
-                        ? detail::find_matching_bracket(buffer, lang, state.code_block_comments.view(), caret_offset)
-                        : Optional<detail::CodeBracketMatch>{};
-                const detail::ActiveIndentScope active_scope =
-                    editing && !composition && lang != CodeLanguage::plain
-                        ? detail::find_active_indent_scope(buffer, lang, state.code_block_comments.view(), caret_offset)
-                        : detail::ActiveIndentScope{0, 0, std::numeric_limits<std::uint32_t>::max()};
+                Optional<detail::CodeBracketMatch> bracket_match;
+                detail::ActiveIndentScope active_scope{0, 0, std::numeric_limits<std::uint32_t>::max()};
+                if (editing && !composition && lang != CodeLanguage::plain) {
+                    if (state.code_scope_revision != document.revision() || state.code_scope_lang != lang ||
+                        state.code_scope_caret != caret_offset) {
+                        state.code_bracket_match = detail::find_matching_bracket(
+                            buffer, lang, state.code_block_comments.view(), caret_offset);
+                        state.code_active_scope = detail::find_active_indent_scope(
+                            buffer, lang, state.code_block_comments.view(), caret_offset);
+                        state.code_scope_revision = document.revision();
+                        state.code_scope_lang = lang;
+                        state.code_scope_caret = caret_offset;
+                    }
+                    bracket_match = state.code_bracket_match;
+                    active_scope = state.code_active_scope;
+                }
 
                 StringView caret_word{};
                 if (editing && !composition) {

@@ -701,6 +701,8 @@ Optional<CodeSignatureHelp> SourceEditor::current_signature_help() const {
 }
 
 bool SourceEditor::update_pointer(const ui::UiFrame* frame, float x, float y, bool ctrl_held) {
+    last_pointer_x_ = x;
+    last_pointer_y_ = y;
     auto* file = active();
     if (!file || !frame) {
         const bool had = hover_info_.has_value();
@@ -728,6 +730,20 @@ bool SourceEditor::update_pointer(const ui::UiFrame* frame, float x, float y, bo
     hover_info_ = std::move(next);
     ctrl_hover_ = ctrl_held;
     return changed;
+}
+
+bool SourceEditor::set_ctrl_hover(const ui::UiFrame* frame, bool ctrl_held) {
+    if (ctrl_held == ctrl_hover_)
+        return false;
+    if (ctrl_held && !hover_info_ && last_pointer_x_ >= 0.f && last_pointer_y_ >= 0.f)
+        return update_pointer(frame, last_pointer_x_, last_pointer_y_, true);
+    ctrl_hover_ = ctrl_held;
+    return hover_info_.has_value() && hover_info_->definition.has_value();
+}
+
+void SourceEditor::dismiss_hover() noexcept {
+    hover_info_.reset();
+    ctrl_hover_ = false;
 }
 
 Result<bool> SourceEditor::apply_action(const ui::Action& action, bool& focus_buffer, ui::ControlKey& focus_bar) {
@@ -1075,12 +1091,22 @@ Result<void> SourceEditor::append(ui_language::ControlOutput controls, ui::Contr
         meta_status = std::wstring(L"Spaces: 4  ·  ") + (file->crlf ? L"CRLF" : L"LF") + L"  ·  UTF-8  ·  " +
                       bounded_wide(code_language_name(file->document->language()));
 
-        if (project && platform::is_subpath_of(file->path, project->root())) {
-            const auto relative = file->path.lexically_normal().lexically_relative(project->root().lexically_normal());
-            breadcrumb_path = project->name() + L"  ›  " + relative.generic_wstring();
-        } else {
-            breadcrumb_path = file->path.filename().wstring();
+        const std::filesystem::path proj_root = project ? project->root() : std::filesystem::path{};
+        const std::wstring proj_name = project ? project->name() : std::wstring{};
+        if (cached_breadcrumb_file_key_ != file->key || cached_breadcrumb_file_path_ != file->path ||
+            cached_breadcrumb_project_root_ != proj_root || cached_breadcrumb_project_name_ != proj_name) {
+            if (project && platform::is_subpath_of(file->path, proj_root)) {
+                const auto relative = file->path.lexically_normal().lexically_relative(proj_root.lexically_normal());
+                cached_breadcrumb_path_ = proj_name + L"  ›  " + relative.generic_wstring();
+            } else {
+                cached_breadcrumb_path_ = file->path.filename().wstring();
+            }
+            cached_breadcrumb_file_key_ = file->key;
+            cached_breadcrumb_file_path_ = file->path;
+            cached_breadcrumb_project_root_ = proj_root;
+            cached_breadcrumb_project_name_ = proj_name;
         }
+        breadcrumb_path = cached_breadcrumb_path_;
 
         const String sym = intelligence_.breadcrumb_for_line(row);
         breadcrumb_symbol = sym.empty() ? L"Symbols (" + std::to_wstring(intelligence_.outline().size()) + L")"
@@ -1202,26 +1228,38 @@ Result<void> SourceEditor::append(ui_language::ControlOutput controls, ui::Contr
         }
     }
 
-    const auto sig_help = (buffer_focused && !composing) ? current_signature_help() : Optional<CodeSignatureHelp>{};
+    Optional<CodeSignatureHelp> sig_help;
+    if (file && buffer_focused && !composing) {
+        const SignatureCacheKey sig_key{file->key, file->document->revision(), intelligence_.generation(),
+                                        file->document->edit().current().caret.offset};
+        if (!(cached_sig_key_ == sig_key)) {
+            cached_sig_help_ = intelligence_.signature_help(*file->document, sig_key.caret_offset);
+            cached_sig_key_ = sig_key;
+        }
+        sig_help = cached_sig_help_;
+    }
     const bool show_comp = completion_open() && buffer_focused && !composing;
     const bool show_sig = sig_help.has_value() && !(show_comp && std::abs(sig_y - popup_y) < 22.0);
     const bool show_hover = hover_info_.has_value() && !show_comp;
 
-    auto comp_rows = std::make_shared<std::vector<Item>>();
+    static const auto empty_items = std::make_shared<std::vector<Item>>();
+    std::shared_ptr<std::vector<Item>> comp_rows = empty_items;
     std::wstring comp_doc;
     if (show_comp) {
-        comp_rows->reserve(completion_items_.size());
+        auto built_comp = std::make_shared<std::vector<Item>>();
+        built_comp->reserve(completion_items_.size());
         for (std::size_t i = 0; i < completion_items_.size(); ++i) {
             const auto& ci = completion_items_[i];
             const bool is_sel = i == completion_selected_;
             if (is_sel)
                 comp_doc = bounded_wide(ci.documentation.empty() ? ci.detail.view() : ci.documentation.view());
-            comp_rows->push_back({source_control::completion_row_first + i,
-                                  {bounded_wide(ci.badge.view()), bounded_wide(ci.badge_class.view()),
-                                   bounded_wide(ci.label.view()), bounded_wide(ci.detail.view()), is_sel,
-                                   ActionBinding{source_control::completion_pick_first + i, true},
-                                   std::wstring(is_sel ? L"code-completion-row-active" : L"code-completion-row")}});
+            built_comp->push_back({source_control::completion_row_first + i,
+                                   {bounded_wide(ci.badge.view()), bounded_wide(ci.badge_class.view()),
+                                    bounded_wide(ci.label.view()), bounded_wide(ci.detail.view()), is_sel,
+                                    ActionBinding{source_control::completion_pick_first + i, true},
+                                    std::wstring(is_sel ? L"code-completion-row-active" : L"code-completion-row")}});
         }
+        comp_rows = std::move(built_comp);
     }
 
     std::wstring match_readout = L"No results";
@@ -1243,15 +1281,33 @@ Result<void> SourceEditor::append(ui_language::ControlOutput controls, ui::Contr
     ATELIER_TRY_BIND(start_play_action, action({"play.start"}));
     ATELIER_TRY_BIND(stop_play_action, action({"play.stop"}));
 
-    auto open_tabs = std::make_shared<std::vector<Item>>();
-    open_tabs->reserve(files_.size());
+    std::uint64_t tabs_digest = 14695981039346656037ull;
+    const auto mix_tab = [&](std::uint64_t v) noexcept {
+        tabs_digest ^= v;
+        tabs_digest *= 1099511628211ull;
+    };
+    mix_tab(files_.size());
+    mix_tab(file ? file->key : 0);
     for (const auto& doc : files_) {
-        const bool is_sel = file && doc->key == file->key;
-        const std::wstring tab_label = bounded(doc->path.filename().wstring() + (doc->dirty() ? L" *" : L""));
-        open_tabs->push_back({doc->key + (source_control::close_document_offset * 2),
-                              {tab_label, is_sel, ActionBinding{doc->key, true},
-                               ActionBinding{doc->key + source_control::close_document_offset, true}}});
+        mix_tab(doc->key);
+        mix_tab(doc->dirty() ? 1u : 0u);
+        for (const wchar_t ch : doc->path.filename().native())
+            mix_tab(static_cast<std::uint64_t>(ch));
     }
+    if (!cached_open_tabs_ || cached_tabs_digest_ != tabs_digest) {
+        auto built_tabs = std::make_shared<std::vector<Item>>();
+        built_tabs->reserve(files_.size());
+        for (const auto& doc : files_) {
+            const bool is_sel = file && doc->key == file->key;
+            const std::wstring tab_label = bounded(doc->path.filename().wstring() + (doc->dirty() ? L" *" : L""));
+            built_tabs->push_back({doc->key + (source_control::close_document_offset * 2),
+                                   {tab_label, is_sel, ActionBinding{doc->key, true},
+                                    ActionBinding{doc->key + source_control::close_document_offset, true}}});
+        }
+        cached_open_tabs_ = std::move(built_tabs);
+        cached_tabs_digest_ = tabs_digest;
+    }
+    auto open_tabs = cached_open_tabs_;
 
     const bool find_or_replace = search_mode_ == CodeSearchMode::find || search_mode_ == CodeSearchMode::replace;
     const bool replace_mode = search_mode_ == CodeSearchMode::replace;

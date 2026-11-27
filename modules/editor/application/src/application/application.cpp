@@ -2762,11 +2762,17 @@ Result<void> Application::input(const ui::Event& event, WPARAM native_key) {
             ui_.dismiss_tooltip();
         return {};
     }
-    if ((event.kind == ui::EventKind::pointer_move || event.kind == ui::EventKind::key_down ||
-         event.kind == ui::EventKind::key_up) &&
-        workspace_.dock.visible(editor::source_control::tab)) {
-        workspace_.source_editor.update_pointer(ui_.presented().get(), pointer_position_.x, pointer_position_.y,
-                                                event.control);
+    if (workspace_.dock.visible(editor::source_control::tab)) {
+        if (event.kind == ui::EventKind::pointer_move) {
+            workspace_.source_editor.update_pointer(ui_.presented().get(), pointer_position_.x, pointer_position_.y,
+                                                    event.control);
+        } else if (event.kind == ui::EventKind::pointer_leave) {
+            workspace_.source_editor.dismiss_hover();
+        } else if (event.kind == ui::EventKind::text || event.kind == ui::EventKind::composition) {
+            workspace_.source_editor.dismiss_hover();
+        } else if (event.kind == ui::EventKind::key_down || event.kind == ui::EventKind::key_up) {
+            workspace_.source_editor.set_ctrl_hover(ui_.presented().get(), event.control);
+        }
     }
     if (event.kind == ui::EventKind::key_down) {
         const auto focused_key = ui_.focused_control();

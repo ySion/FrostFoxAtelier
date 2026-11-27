@@ -37,7 +37,7 @@
                 if (has_title) content_height+=cached->title_size.height*scale;
                 if (has_id) content_height+=(content_height>0?gap:0)+id_box_h;
                 if (has_body) content_height+=(content_height>0?gap+scale:0)+cached->body_size.height*scale;
-                const auto content_width=std::max({cached->title_size.width*scale,id_box_w,cached->body_size.width*scale});
+                const auto content_width=std::max(cached->title_size.width*scale,std::max(id_box_w,cached->body_size.width*scale));
                 const auto w=std::min(maximum_width,content_width)+2*padding;
                 const auto h=std::min(maximum_height,content_height)+2*padding;
                 float x=hover.x+14*scale,y=hover.y+20*scale;

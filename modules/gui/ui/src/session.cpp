@@ -1,5 +1,6 @@
 #include "ui/session.hpp"
 #include "detail/code_syntax.hpp"
+#include "foundation/inline_array.hpp"
 #include "foundation/result.hpp"
 #include "memory/fatal.hpp"
 #include "platform/utf.hpp"
@@ -303,6 +304,44 @@ String wide_to_utf8(std::wstring_view text) {
     if (!converted)
         fatal("Validated UI wide text failed UTF-8 conversion.");
     return std::move(*converted);
+}
+
+StringView wide_to_utf8_scratch(std::wstring_view text, InlineArray<char, 256>& scratch) {
+    scratch.clear();
+    if (text.empty())
+        return {};
+    if (text.size() <= 85) {
+        for (std::size_t i = 0; i < text.size(); ++i) {
+            const auto c = static_cast<std::uint32_t>(static_cast<std::uint16_t>(text[i]));
+            if (c < 0x80u) {
+                scratch.add(static_cast<char>(c));
+            } else if (c < 0x800u) {
+                scratch.add(static_cast<char>(0xc0u | (c >> 6)));
+                scratch.add(static_cast<char>(0x80u | (c & 0x3fu)));
+            } else if (c >= 0xd800u && c <= 0xdbffu) {
+                if (i + 1 >= text.size())
+                    fatal("Validated UI wide text failed UTF-8 conversion.");
+                const auto trail = static_cast<std::uint32_t>(static_cast<std::uint16_t>(text[++i]));
+                if (trail < 0xdc00u || trail > 0xdfffu)
+                    fatal("Validated UI wide text failed UTF-8 conversion.");
+                const std::uint32_t cp = 0x10000u + (((c - 0xd800u) << 10) | (trail - 0xdc00u));
+                scratch.add(static_cast<char>(0xf0u | (cp >> 18)));
+                scratch.add(static_cast<char>(0x80u | ((cp >> 12) & 0x3fu)));
+                scratch.add(static_cast<char>(0x80u | ((cp >> 6) & 0x3fu)));
+                scratch.add(static_cast<char>(0x80u | (cp & 0x3fu)));
+            } else if (c < 0xd800u || c > 0xdfffu) {
+                scratch.add(static_cast<char>(0xe0u | (c >> 12)));
+                scratch.add(static_cast<char>(0x80u | ((c >> 6) & 0x3fu)));
+                scratch.add(static_cast<char>(0x80u | (c & 0x3fu)));
+            } else {
+                fatal("Validated UI wide text failed UTF-8 conversion.");
+            }
+        }
+        return StringView{scratch.data(), scratch.size()};
+    }
+    const String heap = wide_to_utf8(text);
+    scratch.append(Span<const char>{heap.c_str(), heap.size()});
+    return StringView{scratch.data(), scratch.size()};
 }
 
 std::wstring utf8_to_wide(StringView text) {
@@ -633,6 +672,16 @@ struct Session::Impl {
         CodeLanguage code_comment_lang{CodeLanguage::plain};
 
         Array<std::uint8_t> code_block_comments;
+
+        std::uint64_t code_scope_revision{std::numeric_limits<std::uint64_t>::max()};
+
+        CodeLanguage code_scope_lang{CodeLanguage::plain};
+
+        std::uint32_t code_scope_caret{std::numeric_limits<std::uint32_t>::max()};
+
+        Optional<detail::CodeBracketMatch> code_bracket_match;
+
+        detail::ActiveIndentScope code_active_scope{0, 0, std::numeric_limits<std::uint32_t>::max()};
 
         float code_width{};
 
@@ -1127,16 +1176,19 @@ struct Session::Impl {
         if (text_kind(state.control.kind)) {
             input.kind = ui_layout::Kind::measured;
             input.content_key = state.control.key;
-            const String content_u8 =
-                text_field(state.control.kind) ? display(state) : wide_to_utf8(state.control.text);
-            input.content_revision =
-                text_field(state.control.kind)
-                    ? text.set(state.control.key, content_u8.view(), appearance.font, false, appearance.text_align)
-                    : text.set(state.control.key, content_u8.view(), appearance.font,
-                               state.control.kind == ControlKind::label && !state.control.single_line,
-                               appearance.text_align,
-                               (state.control.kind == ControlKind::label && state.control.single_line) ||
-                                   state.control.kind == ControlKind::tree_item);
+            if (text_field(state.control.kind)) {
+                const String content_u8 = display(state);
+                input.content_revision =
+                    text.set(state.control.key, content_u8.view(), appearance.font, false, appearance.text_align);
+            } else {
+                InlineArray<char, 256> u8_scratch;
+                const StringView content_u8 = wide_to_utf8_scratch(state.control.text, u8_scratch);
+                input.content_revision = text.set(
+                    state.control.key, content_u8, appearance.font,
+                    state.control.kind == ControlKind::label && !state.control.single_line, appearance.text_align,
+                    (state.control.kind == ControlKind::label && state.control.single_line) ||
+                        state.control.kind == ControlKind::tree_item);
+            }
         } else if (state.control.kind == ControlKind::viewport || state.control.kind == ControlKind::splitter ||
                    state.control.kind == ControlKind::slider || state.control.kind == ControlKind::table ||
                    state.control.kind == ControlKind::color_plane) {
@@ -2323,11 +2375,12 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
                                                  bound && self.edit->composition ? self.edit->composition->id : 0});
             }
             if (paint) {
-                if (kind == ControlKind::text_edit && !state.control.placeholder.empty() &&
-                    self.display(state).empty() && !(editing && self.edit->composition)) {
+                if (kind == ControlKind::text_edit && !state.control.placeholder.empty() && self.display_empty(state) &&
+                    !(editing && self.edit->composition)) {
                     const detail::TextKey ph_key{key, 0, true};
-                    const String ph_u8 = wide_to_utf8(state.control.placeholder);
-                    self.text.set(ph_key, ph_u8.view(), appearance.font, false, appearance.text_align, true);
+                    InlineArray<char, 256> ph_scratch;
+                    const StringView ph_u8 = wide_to_utf8_scratch(state.control.placeholder, ph_scratch);
+                    self.text.set(ph_key, ph_u8, appearance.font, false, appearance.text_align, true);
                     ATELIER_TRY_BIND(ph_raster, self.text.raster(ph_key, width, scale));
                     if (ph_raster->coverage) {
                         Color muted = appearance.foreground;

@@ -104,6 +104,7 @@ std::optional<ui::Event> input_event(NativeEvent message, HWND window) {
         event.kind = ui::EventKind::pointer_move;
         break;
     case WM_MOUSELEAVE:
+        click_tracker = {};
         event.kind = ui::EventKind::pointer_leave;
         break;
     case WM_LBUTTONDOWN: {
@@ -116,8 +117,8 @@ std::optional<ui::Event> input_event(NativeEvent message, HWND window) {
             std::abs(x - click_tracker.last_x) <= GetSystemMetrics(SM_CXDOUBLECLK) &&
             std::abs(y - click_tracker.last_y) <= GetSystemMetrics(SM_CYDOUBLECLK)) {
             event.clicks = 3;
-            click_tracker.last_dbl_tick = 0;
         }
+        click_tracker = {};
         break;
     }
     case WM_LBUTTONDBLCLK:
@@ -132,6 +133,7 @@ std::optional<ui::Event> input_event(NativeEvent message, HWND window) {
         event.kind = ui::EventKind::pointer_up;
         break;
     case WM_RBUTTONDOWN:
+        click_tracker = {};
         event.kind = ui::EventKind::pointer_down;
         event.button = ui::PointerButton::secondary;
         break;
@@ -140,6 +142,7 @@ std::optional<ui::Event> input_event(NativeEvent message, HWND window) {
         event.button = ui::PointerButton::secondary;
         break;
     case WM_MBUTTONDOWN:
+        click_tracker = {};
         event.kind = ui::EventKind::pointer_down;
         event.button = ui::PointerButton::middle;
         break;
@@ -170,6 +173,7 @@ std::optional<ui::Event> input_event(NativeEvent message, HWND window) {
         event.data = std::move(message.text);
         break;
     case WM_KILLFOCUS:
+        click_tracker = {};
         event.kind = ui::EventKind::focus_lost;
         break;
     case WM_CAPTURECHANGED:

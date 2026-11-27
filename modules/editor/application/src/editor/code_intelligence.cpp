@@ -935,17 +935,12 @@ struct CodeIntelligence::Impl {
         return line;
     }
 
-    static std::uint32_t find_closing_brace_line(std::string_view text, std::size_t start_offset) noexcept {
-        std::size_t pos = start_offset;
-        while (pos < text.size() && text[pos] != '{')
-            ++pos;
-        if (pos >= text.size())
-            return count_lines_up_to(text, start_offset);
-        int depth = 0;
+    static std::size_t find_next_code_brace(std::string_view text, std::size_t start_offset,
+                                            bool allow_line_comments = true) noexcept {
         bool in_str = false;
         bool in_line_comment = false;
         bool in_block_comment = false;
-        for (std::size_t i = pos; i < text.size(); ++i) {
+        for (std::size_t i = start_offset; i < text.size(); ++i) {
             const char c = text[i];
             const char nx = i + 1 < text.size() ? text[i + 1] : '\0';
             if (in_line_comment) {
@@ -967,7 +962,55 @@ struct CodeIntelligence::Impl {
                     in_str = false;
                 continue;
             }
-            if (c == '/' && nx == '/') {
+            if (allow_line_comments && c == '/' && nx == '/') {
+                in_line_comment = true;
+                ++i;
+                continue;
+            }
+            if (c == '/' && nx == '*') {
+                in_block_comment = true;
+                ++i;
+                continue;
+            }
+            if (c == '"') {
+                in_str = true;
+                continue;
+            }
+            if (c == '{')
+                return i;
+        }
+        return std::string_view::npos;
+    }
+
+    static std::size_t skip_brace_block(std::string_view text, std::size_t open_brace,
+                                        bool allow_line_comments = true) noexcept {
+        int depth = 0;
+        bool in_str = false;
+        bool in_line_comment = false;
+        bool in_block_comment = false;
+        for (std::size_t i = open_brace; i < text.size(); ++i) {
+            const char c = text[i];
+            const char nx = i + 1 < text.size() ? text[i + 1] : '\0';
+            if (in_line_comment) {
+                if (c == '\n')
+                    in_line_comment = false;
+                continue;
+            }
+            if (in_block_comment) {
+                if (c == '*' && nx == '/') {
+                    in_block_comment = false;
+                    ++i;
+                }
+                continue;
+            }
+            if (in_str) {
+                if (c == '\\' && i + 1 < text.size())
+                    ++i;
+                else if (c == '"')
+                    in_str = false;
+                continue;
+            }
+            if (allow_line_comments && c == '/' && nx == '/') {
                 in_line_comment = true;
                 ++i;
                 continue;
@@ -986,10 +1029,27 @@ struct CodeIntelligence::Impl {
             else if (c == '}') {
                 --depth;
                 if (depth <= 0)
-                    return count_lines_up_to(text, i);
+                    return i + 1;
             }
         }
-        return count_lines_up_to(text, text.size());
+        return text.size();
+    }
+
+    static std::uint32_t find_closing_brace_line(std::string_view text, std::size_t start_offset,
+                                                 bool allow_line_comments = true) noexcept {
+        const std::size_t pos = find_next_code_brace(text, start_offset, allow_line_comments);
+        if (pos == std::string_view::npos)
+            return count_lines_up_to(text, start_offset);
+        const std::size_t after = skip_brace_block(text, pos, allow_line_comments);
+        return count_lines_up_to(text, after > 0 && after <= text.size() ? after - 1 : text.size());
+    }
+
+    void clear_per_file_caches() {
+        last_ui_declarations.clear();
+        last_ui_locations.clear();
+        last_ui_module.reset();
+        last_ss_tokens.clear();
+        last_ss_classes.clear();
     }
 
     void add_diagnostic_for_file(const ui::CodeDocument* active_doc, const std::filesystem::path& active_file_path,
@@ -1353,42 +1413,53 @@ struct CodeIntelligence::Impl {
             }
             if (text.substr(pos).starts_with("@tokens")) {
                 const std::uint32_t start_ln = count_lines_up_to(text, pos);
-                const std::uint32_t end_ln = find_closing_brace_line(text, pos);
+                const std::uint32_t end_ln = find_closing_brace_line(text, pos, false);
                 outline.add({String::literal<"@tokens">(), String::literal<"Design Tokens">(), ui::ControlIcon::sliders,
                              start_ln, 1u, end_ln, false});
-                const std::size_t brace = text.find('{', pos);
+                const std::size_t brace = find_next_code_brace(text, pos, false);
                 if (brace != std::string_view::npos) {
+                    const std::size_t block_end = skip_brace_block(text, brace, false);
+                    const std::size_t content_limit =
+                        block_end > brace && text[block_end - 1] == '}' ? block_end - 1 : block_end;
                     std::size_t cur = brace + 1;
-                    while (cur < text.size() && text[cur] != '}') {
-                        while (cur < text.size() &&
+                    while (cur < content_limit) {
+                        while (cur < content_limit &&
                                (text[cur] == ' ' || text[cur] == '\t' || text[cur] == '\r' || text[cur] == '\n'))
                             ++cur;
-                        if (cur < text.size() && text[cur] == '/' && cur + 1 < text.size() && text[cur + 1] == '*') {
+                        if (cur + 1 < content_limit && text[cur] == '/' && text[cur + 1] == '*') {
                             cur += 2;
-                            while (cur + 1 < text.size() && !(text[cur] == '*' && text[cur + 1] == '/'))
+                            while (cur + 1 < content_limit && !(text[cur] == '*' && text[cur + 1] == '/'))
                                 ++cur;
-                            cur += 2;
+                            cur = std::min(content_limit, cur + 2);
                             continue;
                         }
-                        if (cur >= text.size() || text[cur] == '}')
+                        if (cur >= content_limit)
                             break;
                         const std::size_t t_start = cur;
-                        while (cur < text.size() && text[cur] != ':' && text[cur] != '}' && text[cur] != '\n')
+                        while (cur < content_limit && text[cur] != ':' && text[cur] != '\n')
                             ++cur;
-                        if (cur < text.size() && text[cur] == ':') {
+                        if (cur < content_limit && text[cur] == ':') {
                             std::string_view tname = text.substr(t_start, cur - t_start);
                             while (!tname.empty() && (tname.back() == ' ' || tname.back() == '\t'))
                                 tname.remove_suffix(1);
                             ++cur;
                             const std::size_t v_start = cur;
-                            while (cur < text.size() && text[cur] != ';' && text[cur] != '}')
+                            while (cur < content_limit && text[cur] != ';') {
+                                if (cur + 1 < content_limit && text[cur] == '/' && text[cur + 1] == '*') {
+                                    cur += 2;
+                                    while (cur + 1 < content_limit && !(text[cur] == '*' && text[cur + 1] == '/'))
+                                        ++cur;
+                                    cur = std::min(content_limit, cur + 2);
+                                    continue;
+                                }
                                 ++cur;
+                            }
                             std::string_view tval = text.substr(v_start, cur - v_start);
                             while (!tval.empty() && (tval.front() == ' ' || tval.front() == '\t'))
                                 tval.remove_prefix(1);
                             while (!tval.empty() && (tval.back() == ' ' || tval.back() == '\t'))
                                 tval.remove_suffix(1);
-                            if (cur < text.size() && text[cur] == ';')
+                            if (cur < content_limit && text[cur] == ';')
                                 ++cur;
                             if (!tname.empty()) {
                                 const std::uint32_t ln = count_lines_up_to(text, t_start);
@@ -1400,7 +1471,7 @@ struct CodeIntelligence::Impl {
                             ++cur;
                         }
                     }
-                    pos = cur < text.size() ? cur + 1 : text.size();
+                    pos = block_end;
                     continue;
                 }
             }
@@ -1414,14 +1485,33 @@ struct CodeIntelligence::Impl {
             }
             if (text[pos] != ' ' && text[pos] != '\t' && text[pos] != '\r' && text[pos] != '\n' && text[pos] != '}') {
                 const std::size_t sel_start = pos;
-                const std::size_t brace = text.find('{', pos);
+                const std::size_t brace = find_next_code_brace(text, pos, false);
                 if (brace != std::string_view::npos) {
                     std::string_view sel = text.substr(sel_start, brace - sel_start);
                     while (!sel.empty() &&
                            (sel.back() == ' ' || sel.back() == '\t' || sel.back() == '\r' || sel.back() == '\n'))
                         sel.remove_suffix(1);
+                    // Also collect any additional `.class` selectors between sel_start and `{`
+                    for (std::size_t si = sel_start + 1; si < brace; ++si) {
+                        if (si + 1 < brace && text[si] == '/' && text[si + 1] == '*') {
+                            si += 2;
+                            while (si + 1 < brace && !(text[si] == '*' && text[si + 1] == '/'))
+                                ++si;
+                            ++si;
+                            continue;
+                        }
+                        if (text[si] == '.') {
+                            const std::size_t cs = si + 1;
+                            std::size_t ce = cs;
+                            while (ce < brace && ui::is_code_ident_char(text[ce], ui::CodeLanguage::style_sheet))
+                                ++ce;
+                            if (ce > cs)
+                                classes.add(u8_safe(text.substr(cs, ce - cs)));
+                            si = ce - 1;
+                        }
+                    }
                     const std::uint32_t s_ln = count_lines_up_to(text, sel_start);
-                    const std::uint32_t e_ln = find_closing_brace_line(text, brace);
+                    const std::uint32_t e_ln = find_closing_brace_line(text, brace, false);
                     if (!sel.empty() && sel.size() <= 72 && outline.size() < 96) {
                         std::string clean_sel(sel);
                         for (char& ch : clean_sel)
@@ -1430,27 +1520,17 @@ struct CodeIntelligence::Impl {
                         outline.add({u8_safe(clean_sel), String::literal<"Rule">(), ui::ControlIcon::material, s_ln, 1u,
                                      e_ln, false});
                     }
-                    std::size_t close_b = brace + 1;
-                    int d = 1;
-                    while (close_b < text.size() && d > 0) {
-                        if (text[close_b] == '{')
-                            ++d;
-                        else if (text[close_b] == '}')
-                            --d;
-                        ++close_b;
-                    }
-                    pos = close_b;
+                    pos = skip_brace_block(text, brace, false);
                     continue;
                 }
             }
             ++pos;
         }
-        if (!tokens.empty())
-            last_ss_tokens = std::move(tokens);
-        if (!classes.empty())
-            last_ss_classes = to_sorted_array(classes);
-
         auto parsed = ui::StyleSheet::parse(text);
+        if (parsed || !tokens.empty())
+            last_ss_tokens = std::move(tokens);
+        if (parsed || !classes.empty())
+            last_ss_classes = to_sorted_array(classes);
         if (!parsed) {
             const auto& diag = parsed.error();
             add_diagnostic_for_file(active.document, active.path, active.path, filename_or_fallback(active.path),
@@ -1486,7 +1566,13 @@ void CodeIntelligence::reset() {
     impl_->active_diagnostics.clear();
     impl_->problems.clear();
     impl_->outline.clear();
+    impl_->clear_per_file_caches();
+    impl_->last_source_module.reset();
+    impl_->last_snapshot.reset();
     impl_->last_source_declarations.clear();
+    impl_->semantic_types.clear();
+    impl_->semantic_functions.clear();
+    impl_->semantic_fields.clear();
     impl_->cached_base_snapshot.reset();
     impl_->cached_project_root.clear();
     ++impl_->generation;
@@ -1498,12 +1584,14 @@ bool CodeIntelligence::sync(const Runtime* world_runtime, const Project* project
     impl_->refresh_native_catalog(world_runtime);
 
     if (!active_file || !active_file->document) {
-        const bool had = !impl_->active_diagnostics.empty() || !impl_->problems.empty() || !impl_->outline.empty();
+        const bool had = !impl_->active_diagnostics.empty() || !impl_->problems.empty() || !impl_->outline.empty() ||
+                         !impl_->last_ui_declarations.empty() || !impl_->last_ss_tokens.empty();
         impl_->active_path.clear();
         impl_->active_language = ui::CodeLanguage::plain;
         impl_->active_diagnostics.clear();
         impl_->problems.clear();
         impl_->outline.clear();
+        impl_->clear_per_file_caches();
         impl_->pending_validation = false;
         if (had)
             ++impl_->generation;
@@ -1525,10 +1613,22 @@ bool CodeIntelligence::sync(const Runtime* world_runtime, const Project* project
     const bool file_switched =
         !Impl::paths_equivalent(impl_->active_path, active_file->path) || impl_->active_language != lang;
     if (file_switched) {
+        const bool left_ui_source =
+            impl_->active_language == ui::CodeLanguage::ui_source && lang != ui::CodeLanguage::ui_source;
         impl_->active_path = active_file->path;
         impl_->active_language = lang;
         impl_->seen_revision = rev;
         impl_->checked_revision = std::numeric_limits<std::uint64_t>::max();
+        impl_->clear_per_file_caches();
+        impl_->outline.clear();
+        if (!project && !impl_->cached_project_root.empty() &&
+            !platform::is_subpath_of(active_file->path, impl_->cached_project_root)) {
+            impl_->last_source_module.reset();
+            impl_->last_snapshot.reset();
+            impl_->last_source_declarations.clear();
+        }
+        if (left_ui_source)
+            impl_->rebuild_semantic_tables();
         impl_->pending_validation = true;
         force_immediate = true;
     } else if (rev != impl_->seen_revision || open_digest != impl_->checked_open_digest) {

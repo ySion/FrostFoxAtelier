@@ -168,7 +168,7 @@ utf8_to_utf16_into(StringView text, InlineArray<wchar_t, N>& out, std::size_t ma
     std::size_t i = 0;
     std::size_t units = 0;
     if !consteval {
-        while (utf16_offset - units >= 16 && text.size() - i >= 16) {
+        while (units <= utf16_offset && utf16_offset - units >= 16 && text.size() - i >= 16) {
             const auto chunk = _mm_loadu_si128(reinterpret_cast<const __m128i*>(text.data() + i));
             if (_mm_movemask_epi8(chunk) != 0)
                 break;

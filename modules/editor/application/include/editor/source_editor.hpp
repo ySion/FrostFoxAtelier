@@ -213,6 +213,10 @@ public:
 
     bool update_pointer(const ui::UiFrame* frame, float x, float y, bool ctrl_held);
 
+    bool set_ctrl_hover(const ui::UiFrame* frame, bool ctrl_held);
+
+    void dismiss_hover() noexcept;
+
     // Applies UI actions emitted by CodePanel controls; sets focus_buffer / focus_bar when needed.
     Result<bool> apply_action(const ui::Action& action, bool& focus_buffer, ui::ControlKey& focus_bar);
 
@@ -283,6 +287,10 @@ private:
 
     float hover_px_y_{};
 
+    float last_pointer_x_{-1.f};
+
+    float last_pointer_y_{-1.f};
+
     bool ctrl_hover_{};
 
     // Navigation history & Problems drawer
@@ -326,6 +334,36 @@ private:
     std::uint64_t cached_problems_cols_gen_{};
 
     std::shared_ptr<const ui::TableData> cached_problems_table_;
+
+    struct SignatureCacheKey {
+        ui::ControlKey file_key{};
+
+        std::uint64_t doc_revision{};
+
+        std::uint64_t intel_generation{};
+
+        std::uint32_t caret_offset{};
+
+        bool operator==(const SignatureCacheKey&) const noexcept = default;
+    };
+
+    SignatureCacheKey cached_sig_key_{};
+
+    Optional<CodeSignatureHelp> cached_sig_help_;
+
+    ui::ControlKey cached_breadcrumb_file_key_{};
+
+    std::filesystem::path cached_breadcrumb_file_path_;
+
+    std::filesystem::path cached_breadcrumb_project_root_;
+
+    std::wstring cached_breadcrumb_project_name_;
+
+    std::wstring cached_breadcrumb_path_;
+
+    std::uint64_t cached_tabs_digest_{};
+
+    std::shared_ptr<std::vector<ui_language::Item>> cached_open_tabs_;
 
     void push_nav_location();
 

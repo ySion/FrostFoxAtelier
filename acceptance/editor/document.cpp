@@ -2409,6 +2409,39 @@ Result<void> verify_code_editor_intelligence() {
     require(const_hover && const_hover->tooltip.identity == L"Source Constant" && const_hover->definition.has_value(),
             "Hover on Source const failed or missed definition link.");
 
+    // 8. Cross-file per-document cache isolation & .ss comment-brace outline immunity:
+    const auto plain_ss_path = project.root() / L"Config" / L"secondary.ss";
+    take(editor::write_file(plain_ss_path, "/* brace in comment: { } */\n"
+                                           ".card-header {\n"
+                                           "    /* inner closing brace: } */\n"
+                                           "    color: #dfe4ec;\n"
+                                           "}\n"
+                                           ".card-footer {\n"
+                                           "    color: #9aa4b2;\n"
+                                           "}\n"));
+    take(source_ed.open(ss_path));
+    source_ed.active()->document->locate(1, 1);
+    source_ed.active()->document->edit().select(
+        {static_cast<std::uint32_t>(source_ed.active()->document->text().size()), true}, true);
+    take(source_ed.active()->document->edit().replace(
+        "@tokens {\n    leaked-accent: #ff5500;\n}\nbutton {\n    color: token(leaked-accent);\n}\n"));
+    source_ed.sync_intelligence(nullptr, &project, nullptr, true);
+    take(source_ed.open(plain_ss_path));
+    source_ed.sync_intelligence(nullptr, &project, nullptr, true);
+    require(source_ed.intelligence().active_diagnostics().empty() && source_ed.intelligence().outline().size() == 2 &&
+                source_ed.intelligence().outline()[0].name == ".card-header" &&
+                source_ed.intelligence().outline()[1].name == ".card-footer",
+            "secondary.ss outline was corrupted by braces inside /* ... */ comments.");
+    const auto& sec_doc = *source_ed.active()->document;
+    const auto sec_token_pos = static_cast<std::uint32_t>(sec_doc.text().find("#9aa4b2"));
+    source_ed.active()->document->edit().select({sec_token_pos, false}, false);
+    source_ed.active()->document->edit().select({sec_token_pos + 7, true}, true);
+    take(source_ed.active()->document->edit().replace("token(leaked"));
+    const auto leaked_pos = source_ed.active()->document->edit().current().caret.offset;
+    const auto sec_comps = source_ed.intelligence().completions(*source_ed.active()->document, leaked_pos, true);
+    for (const auto& ci : sec_comps)
+        require(ci.label != "leaked-accent", "Stale @tokens leaked across .ss files on file switch.");
+
     source_ed.clear();
     std::filesystem::remove_all(temp_root, ec);
     return {};

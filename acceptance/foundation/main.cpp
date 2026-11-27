@@ -35,6 +35,25 @@ static_assert(std::is_trivially_copyable_v<atelier::Optional<int>> &&
 static_assert(atelier::Optional<int>{7} == 7 && atelier::Optional<int>{} == std::nullopt &&
               atelier::Optional<int>{}.value_or(9) == 9 && atelier::Optional<int>{7}.value_or(9) == 7);
 
+template <class T>
+concept ArenaAllocatable = requires(atelier::ScratchArena& a) { a.allocate<T>(1); };
+
+template <class T, class... Args>
+concept ArenaEmplaceable =
+    requires(atelier::ScratchArena& a, Args&&... args) { a.emplace<T>(std::forward<Args>(args)...); };
+
+struct ThrowingArenaProbe {
+    int v;
+
+    ThrowingArenaProbe() noexcept(false) : v(1) {}
+
+    explicit ThrowingArenaProbe(int x) noexcept(false) : v(x) {}
+};
+
+static_assert(ArenaAllocatable<int> && !ArenaAllocatable<ThrowingArenaProbe>);
+
+static_assert(ArenaEmplaceable<int, int> && !ArenaEmplaceable<ThrowingArenaProbe, int>);
+
 constexpr bool verify_constexpr_views() {
     atelier::StringView path{"project.ui.source"};
     if (!path.strip_prefix("project.") || !path.strip_suffix(".source") || path != "ui")
@@ -163,8 +182,12 @@ void verify_utf_paths_and_arena() {
         }
         require(ints[0] == 99 && arena.reserved_bytes() == peak_reserved,
                 "Inner ScratchScope rewind clobbered outer scope or released reusable blocks.");
-        auto reused = arena.allocate_uninitialized<std::byte>(2048);
-        require(reused.size() == 2048 && arena.reserved_bytes() == peak_reserved,
+        constexpr double sample_doubles[]{1.5, -2.25, 4.75, 8.125};
+        auto reused_doubles = arena.copy<double>(Span<const double>{sample_doubles});
+        require(reused_doubles.size() == 4 && reused_doubles[2] == 4.75 && arena.reserved_bytes() == peak_reserved,
+                "Heterogeneous implicit-lifetime block reuse failed.");
+        auto reused = arena.allocate_uninitialized<std::byte>(1536);
+        require(reused.size() == 1536 && arena.reserved_bytes() == peak_reserved,
                 "Sibling scope failed to reuse retained block.");
     }
     require(arena.used_bytes() == 0 && arena.reserved_bytes() == peak_reserved,

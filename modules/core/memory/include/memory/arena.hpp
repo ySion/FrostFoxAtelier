@@ -4,6 +4,7 @@
 #include "foundation/string.hpp"
 #include "memory/fatal.hpp"
 
+#include <mimalloc.h>
 #include <algorithm>
 #include <bit>
 #include <concepts>
@@ -19,10 +20,10 @@ namespace atelier {
 
 class ScratchScope;
 
-// Linear bump allocator backed by reusable cache-line-aligned blocks from the
-// global mimalloc-routed aligned operator new/delete. Only trivially destructible
-// payloads may be allocated; ScratchScope and reset() rewind in O(blocks) without
-// freeing retained block capacity.
+// Linear bump allocator backed by reusable cache-line-aligned blocks from
+// mi_malloc_aligned / mi_free. Only trivially destructible payloads may be
+// allocated; ScratchScope and reset() rewind in O(blocks) without freeing
+// retained block capacity.
 class ScratchArena {
 public:
     static constexpr std::size_t block_alignment = 64;
@@ -77,8 +78,8 @@ public:
     }
 
     template <class T>
-        requires(std::is_trivially_destructible_v<T> && std::default_initializable<T> && !std::is_const_v<T> &&
-                 !std::is_volatile_v<T>)
+        requires(std::is_trivially_destructible_v<T> && std::is_nothrow_default_constructible_v<T> &&
+                 !std::is_const_v<T> && !std::is_volatile_v<T>)
     [[nodiscard]] Span<T> allocate(std::size_t count) noexcept {
         if (count == 0)
             return {};
@@ -98,12 +99,21 @@ public:
             return {};
         if (count > SIZE_MAX / sizeof(T))
             fatal("ScratchArena count overflow.");
-        return {static_cast<T*>(allocate_bytes(count * sizeof(T), alignof(T))), count};
+        const std::size_t bytes = count * sizeof(T);
+        void* raw = allocate_bytes(bytes, alignof(T));
+        // Reused arena blocks do not re-enter an allocator function, so explicitly
+        // start implicit-lifetime array objects per ISO C++23 [intro.object].
+#if defined(__cpp_lib_start_lifetime_as) && __cpp_lib_start_lifetime_as >= 202207L
+        return {std::start_lifetime_as_array<T>(raw, count), count};
+#else
+        auto* storage = ::new (raw) unsigned char[bytes];
+        return {std::launder(reinterpret_cast<T*>(storage)), count};
+#endif
     }
 
     template <class T, class... Args>
-        requires(std::is_trivially_destructible_v<T> && std::constructible_from<T, Args...> && !std::is_const_v<T> &&
-                 !std::is_volatile_v<T>)
+        requires(std::is_trivially_destructible_v<T> && std::is_nothrow_constructible_v<T, Args...> &&
+                 !std::is_const_v<T> && !std::is_volatile_v<T>)
     [[nodiscard]] T& emplace(Args&&... args) noexcept {
         auto* raw = static_cast<T*>(allocate_bytes(sizeof(T), alignof(T)));
         return *std::construct_at(raw, std::forward<Args>(args)...);
@@ -140,8 +150,7 @@ public:
         Block* block = first_;
         while (block) {
             Block* next = block->next;
-            const std::size_t total = sizeof(Block) + block->capacity;
-            ::operator delete(block, total, std::align_val_t{block_alignment});
+            mi_free(block);
             block = next;
         }
         first_ = nullptr;
@@ -189,7 +198,9 @@ private:
             fatal("ScratchArena block size overflow.");
         const std::size_t capacity = std::max(default_block_bytes_, bytes + slack);
         const std::size_t total = sizeof(Block) + capacity;
-        auto* raw = ::operator new(total, std::align_val_t{block_alignment});
+        void* raw = mi_malloc_aligned(total, block_alignment);
+        if (!raw)
+            fatal("ScratchArena allocation failed.");
         auto* block = std::construct_at(static_cast<Block*>(raw));
         block->capacity = capacity;
         reserved_bytes_ += capacity;

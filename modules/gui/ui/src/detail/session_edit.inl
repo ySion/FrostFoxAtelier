@@ -208,6 +208,22 @@
         return state.control.kind == ControlKind::number ? format(state.control, state.control.value)
                                                          : wide_to_utf8(state.control.text);
     }
+
+    bool display_empty(const State& state) const noexcept {
+        if (press && press->key == state.control.key && press->dragging)
+            return false;
+        if (edit && edit->key == state.control.key) {
+            if (edit->composition && !edit->composition->preedit.text.empty())
+                return false;
+            const auto& cur = edit->buffer().current().text;
+            if (!edit->composition)
+                return cur.empty();
+            const auto& c = *edit->composition;
+            return cur.size() <= (c.last - c.first);
+        }
+        return state.control.kind != ControlKind::number && state.control.text.empty();
+    }
+
     Result<detail::TextPosition> display_caret() const {
         if (!edit->composition)
             return edit->buffer().current().caret;
