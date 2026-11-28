@@ -12,7 +12,6 @@
 #include "ui_language/live_document.hpp"
 #include <array>
 #include <chrono>
-#include <optional>
 
 namespace atelier::editor {
 struct ProjectBuild;
@@ -209,7 +208,7 @@ public:
 
     Result<bool> navigate_forward();
 
-    Result<bool> go_to_definition(Optional<std::uint32_t> explicit_offset = std::nullopt);
+    Result<bool> go_to_definition(Optional<std::uint32_t> explicit_offset = {});
 
     bool update_pointer(const ui::UiFrame* frame, float x, float y, bool ctrl_held);
 

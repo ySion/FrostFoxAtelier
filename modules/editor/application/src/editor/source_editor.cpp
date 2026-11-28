@@ -701,7 +701,7 @@ bool SourceEditor::accept_selected_completion() {
 Optional<CodeSignatureHelp> SourceEditor::current_signature_help() const {
     const auto* file = active();
     if (!file)
-        return std::nullopt;
+        return {};
     return intelligence_.signature_help(*file->document, file->document->edit().current().caret.offset);
 }
 

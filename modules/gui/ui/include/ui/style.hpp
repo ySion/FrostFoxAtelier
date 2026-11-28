@@ -108,9 +108,9 @@ enum class ControlIcon {
 
 inline constexpr ControlIcon last_control_icon = ControlIcon::unlock;
 
-constexpr std::optional<ControlIcon> parse_control_icon(std::string_view name) noexcept {
+constexpr Optional<ControlIcon> parse_control_icon(StringView name) noexcept {
     using enum ControlIcon;
-    constexpr std::pair<std::string_view, ControlIcon> table[]{
+    constexpr std::pair<StringView, ControlIcon> table[]{
         {"none", none},
         {"close", close},
         {"clear", close},
@@ -216,7 +216,13 @@ constexpr std::optional<ControlIcon> parse_control_icon(std::string_view name) n
     for (const auto& [key, value] : table)
         if (key == name)
             return value;
-    return std::nullopt;
+    return {};
+}
+
+template <class T>
+    requires std::same_as<std::remove_cvref_t<T>, std::string_view>
+constexpr Optional<ControlIcon> parse_control_icon(T name) noexcept {
+    return parse_control_icon(StringView{name});
 }
 
 enum class Role { normal, panel, title, caption };

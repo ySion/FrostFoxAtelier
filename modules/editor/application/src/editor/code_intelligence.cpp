@@ -21,10 +21,10 @@
 #include <array>
 #include <charconv>
 #include <limits>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 namespace atelier::editor {
 namespace {
@@ -2503,11 +2503,11 @@ Optional<CodeSignatureHelp> CodeIntelligence::signature_help(const ui::CodeDocum
                                                              std::uint32_t caret_offset) const {
     const ui::CodeLanguage lang = document.language();
     if (lang != ui::CodeLanguage::source && lang != ui::CodeLanguage::ui_source)
-        return std::nullopt;
+        return {};
 
     const StringView text = document.text().view();
     if (caret_offset > text.size() || caret_offset == 0)
-        return std::nullopt;
+        return {};
 
     const std::uint32_t raw_limit = caret_offset > 1024 ? caret_offset - 1024 : 0;
     const std::size_t start_row = document.edit().line_at(raw_limit);
@@ -2577,7 +2577,7 @@ Optional<CodeSignatureHelp> CodeIntelligence::signature_help(const ui::CodeDocum
         }
     }
     if (stack.empty())
-        return std::nullopt;
+        return {};
 
     const std::uint32_t open_paren = stack.back().open_paren;
     const std::size_t arg_index = stack.back().arg_index;
@@ -2589,10 +2589,10 @@ Optional<CodeSignatureHelp> CodeIntelligence::signature_help(const ui::CodeDocum
     while (fn_start > 0 && is_ascii_ident_continue(text[fn_start - 1]))
         --fn_start;
     if (fn_start == fn_end)
-        return std::nullopt;
+        return {};
     const StringView callee = text.slice(fn_start, fn_end - fn_start);
     if (callee == "if" || callee == "for" || callee == "while" || callee == "parallel_for")
-        return std::nullopt;
+        return {};
 
     std::uint32_t qual_start = fn_start;
     while (qual_start > 1 && text[qual_start - 1] == '.' && is_ascii_ident_continue(text[qual_start - 2])) {
@@ -2679,7 +2679,7 @@ Optional<CodeSignatureHelp> CodeIntelligence::signature_help(const ui::CodeDocum
         }
     }
 
-    return std::nullopt;
+    return {};
 }
 
 namespace {
@@ -2700,19 +2700,19 @@ struct ExtractedSymbol {
 Optional<ExtractedSymbol> extract_symbol_at(const ui::CodeDocument& document, std::uint32_t doc_offset) {
     const StringView text = document.text().view();
     if (doc_offset >= text.size())
-        return std::nullopt;
+        return {};
     const auto& edit = document.edit();
     const std::size_t row = edit.line_at(doc_offset);
     const std::uint32_t ls = edit.line_start(row);
     const StringView line_u8 = edit.line(row);
     const std::uint32_t col = doc_offset - ls;
     if (col >= line_u8.size())
-        return std::nullopt;
+        return {};
 
     const ui::CodeLanguage lang = document.language();
     const auto is_ch = [&](char c) noexcept { return ui::is_code_ident_char(c, lang); };
     if (!is_ch(line_u8[col]))
-        return std::nullopt;
+        return {};
 
     std::uint32_t ws = col;
     while (ws > 0 && is_ch(line_u8[ws - 1]))
@@ -2736,7 +2736,7 @@ Optional<CodeDefinitionTarget> CodeIntelligence::definition(const ui::CodeDocume
                                                             std::uint32_t doc_offset) const {
     const auto sym = extract_symbol_at(document, doc_offset);
     if (!sym)
-        return std::nullopt;
+        return {};
     const ui::CodeLanguage lang = document.language();
     const StringView word = sym->word.view();
     const StringView qualified = sym->qualified.view();
@@ -2746,7 +2746,7 @@ Optional<CodeDefinitionTarget> CodeIntelligence::definition(const ui::CodeDocume
             if (tok.name == word)
                 return Optional<CodeDefinitionTarget>{CodeDefinitionTarget{impl_->active_path, tok.line, tok.column}};
         }
-        return std::nullopt;
+        return {};
     }
 
     if (lang == ui::CodeLanguage::ui_source) {
@@ -2754,7 +2754,7 @@ Optional<CodeDefinitionTarget> CodeIntelligence::definition(const ui::CodeDocume
             if (loc.name == word)
                 return Optional<CodeDefinitionTarget>{CodeDefinitionTarget{impl_->active_path, loc.line, loc.column}};
         }
-        return std::nullopt;
+        return {};
     }
 
     if (lang == ui::CodeLanguage::source && impl_->last_source_module && impl_->last_snapshot) {
@@ -2808,13 +2808,13 @@ Optional<CodeDefinitionTarget> CodeIntelligence::definition(const ui::CodeDocume
             }
         }
     }
-    return std::nullopt;
+    return {};
 }
 
 Optional<CodeHoverInfo> CodeIntelligence::hover(const ui::CodeDocument& document, std::uint32_t doc_offset) const {
     const StringView text = document.text().view();
     if (doc_offset >= text.size())
-        return std::nullopt;
+        return {};
     const auto& edit = document.edit();
     const std::size_t row = edit.line_at(doc_offset);
     const std::uint32_t ls = edit.line_start(row);
@@ -2836,7 +2836,7 @@ Optional<CodeHoverInfo> CodeIntelligence::hover(const ui::CodeDocument& document
 
     const auto sym = extract_symbol_at(document, doc_offset);
     if (!sym)
-        return std::nullopt;
+        return {};
     const ui::CodeLanguage lang = document.language();
     const StringView word = sym->word.view();
     const StringView qualified = sym->qualified.view();
@@ -2864,7 +2864,7 @@ Optional<CodeHoverInfo> CodeIntelligence::hover(const ui::CodeDocument& document
                 return Optional<CodeHoverInfo>{std::move(out)};
             }
         }
-        return std::nullopt;
+        return {};
     }
 
     if (lang == ui::CodeLanguage::ui_source) {
@@ -2893,7 +2893,7 @@ Optional<CodeHoverInfo> CodeIntelligence::hover(const ui::CodeDocument& document
                 return Optional<CodeHoverInfo>{std::move(out)};
             }
         }
-        return std::nullopt;
+        return {};
     }
 
     if (lang == ui::CodeLanguage::source) {
@@ -3063,7 +3063,7 @@ Optional<CodeHoverInfo> CodeIntelligence::hover(const ui::CodeDocument& document
         }
     }
 
-    return std::nullopt;
+    return {};
 }
 
 } // namespace atelier::editor

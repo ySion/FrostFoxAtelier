@@ -2179,7 +2179,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
             continue;
         }
         if (view.key == control::assets_tab) {
-            std::optional<ui_language::TextEditBinding> asset_rename;
+            Optional<ui_language::TextEditBinding> asset_rename;
             if (row_rename && row_rename->cell) {
                 const auto& sel_asset = assets.selected();
                 if (!sel_asset || sel_asset->path != row_rename->asset)

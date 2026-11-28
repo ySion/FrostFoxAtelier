@@ -230,33 +230,33 @@ inline bool sorted_contains(const Array<String>& vec, StringView word) noexcept 
 }
 
 inline bool is_source_keyword(StringView w) noexcept {
-    static constexpr std::string_view kws[]{"async",       "break", "class",        "const",  "continue", "else",
-                                            "enum",        "fail",  "for",          "if",     "in",       "new",
-                                            "observe",     "on",    "parallel_for", "return", "state",    "struct",
-                                            "try_acquire", "ui",    "while",        "yield"};
+    static constexpr StringView kws[]{"async",       "break", "class",        "const",  "continue", "else",
+                                      "enum",        "fail",  "for",          "if",     "in",       "new",
+                                      "observe",     "on",    "parallel_for", "return", "state",    "struct",
+                                      "try_acquire", "ui",    "while",        "yield"};
     static_assert(std::ranges::is_sorted(kws));
-    return std::binary_search(std::begin(kws), std::end(kws), w.std_view());
+    return std::binary_search(std::begin(kws), std::end(kws), w);
 }
 
 inline bool is_primitive_type(StringView w) noexcept {
-    static constexpr std::string_view types[]{
+    static constexpr StringView types[]{
         "ActionBinding", "Array",    "CodeBinding",     "EditBinding",    "Items",          "Key",         "String",
         "TableBinding",  "Text",     "TextEditBinding", "TooltipBinding", "TreeRowBinding", "bool",        "double",
         "float",         "int",      "matrix4",         "matrix4d",       "quaternion",     "quaterniond", "uint",
         "vector2",       "vector2d", "vector3",         "vector3d",       "vector4",        "vector4d",    "void",
         "weak"};
     static_assert(std::ranges::is_sorted(types));
-    return std::binary_search(std::begin(types), std::end(types), w.std_view());
+    return std::binary_search(std::begin(types), std::end(types), w);
 }
 
 inline bool is_ui_node_kind(StringView w) noexcept {
-    static constexpr std::string_view nodes[]{"Button",    "Checkbox",     "ChoiceButton", "CodeEditor", "ColorPlane",
-                                              "Column",    "Combo",        "Foldout",      "List",       "MenuItem",
-                                              "NumberRow", "Overlay",      "ParameterRow", "Popup",      "Repeat",
-                                              "Row",       "Splitter",     "Tab",          "Table",      "Text",
-                                              "TextField", "ToggleButton", "Tree",         "TreeItem",   "Viewport"};
+    static constexpr StringView nodes[]{"Button",    "Checkbox",     "ChoiceButton", "CodeEditor", "ColorPlane",
+                                        "Column",    "Combo",        "Foldout",      "List",       "MenuItem",
+                                        "NumberRow", "Overlay",      "ParameterRow", "Popup",      "Repeat",
+                                        "Row",       "Splitter",     "Tab",          "Table",      "Text",
+                                        "TextField", "ToggleButton", "Tree",         "TreeItem",   "Viewport"};
     static_assert(std::ranges::is_sorted(nodes));
-    return std::binary_search(std::begin(nodes), std::end(nodes), w.std_view());
+    return std::binary_search(std::begin(nodes), std::end(nodes), w);
 }
 
 inline void tokenize_code_line(StringView line, CodeLanguage lang, bool start_in_block_comment,
@@ -553,7 +553,7 @@ inline Optional<CodeBracketMatch> find_matching_bracket(const TextEdit& buffer, 
                                                         Span<const std::uint8_t> block_comments, std::uint32_t caret) {
     const auto& text = buffer.current().text;
     if (text.empty())
-        return std::nullopt;
+        return {};
     const auto n = static_cast<std::uint32_t>(text.size());
     std::uint32_t pos = n;
     const auto try_pick = [&](std::uint32_t cand) noexcept {
@@ -567,7 +567,7 @@ inline Optional<CodeBracketMatch> find_matching_bracket(const TextEdit& buffer, 
     else if (caret > 0 && caret <= n && try_pick(caret - 1))
         pos = caret - 1;
     if (pos == n)
-        return std::nullopt;
+        return {};
 
     const char ch = text[pos];
     const char want = matching_bracket(ch);

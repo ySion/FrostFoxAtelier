@@ -2240,9 +2240,8 @@ Result<void> verify_code_editor_intelligence() {
     source_ed.sync_intelligence(nullptr, &project, nullptr, true);
     if (!source_ed.intelligence().problems().empty()) {
         const auto& p = source_ed.intelligence().problems().front();
-        const std::string msg = std::string(p.file_label.view().std_view()) + ":" + std::to_string(p.line) + ": " +
-                                std::string(p.message.view().std_view());
-        fatal("Unexpected .source diagnostic: " + msg);
+        const String msg = String::concat("Unexpected .source diagnostic: ", p.file_label, ":", p.line, ": ", p.message);
+        fatal(msg.c_str());
     }
     require(source_ed.intelligence().active_diagnostics().empty() && source_ed.intelligence().problems().empty(),
             "Valid multi-file .source project reported unexpected diagnostics.");

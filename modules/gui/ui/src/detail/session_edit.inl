@@ -176,18 +176,18 @@
                 reply.error = Error{ErrorCode::invalid_text, edit->key};
                 return;
             }
-            std::string scratch;
+            Array<char> scratch;
             scratch.reserve(value.size());
             for (std::size_t i = 0; i < value.size(); ++i) {
                 if (value[i] == '\r') {
-                    scratch += '\n';
+                    scratch.add('\n');
                     if (i + 1 < value.size() && value[i + 1] == '\n')
                         ++i;
                 } else {
-                    scratch += value[i];
+                    scratch.add(value[i]);
                 }
             }
-            normalized = String::from_utf8_validated(StringView{scratch});
+            normalized = String::from_utf8_validated({scratch.data(), scratch.size()});
             value = normalized.view();
         }
         const bool was_active = edit->buffer().active();

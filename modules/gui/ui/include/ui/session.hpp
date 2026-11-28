@@ -687,7 +687,7 @@ struct UiFrame {
 
     const CodeGeometry* find_code(ControlKey) const noexcept;
 
-    std::optional<std::uint32_t> code_offset_at(ControlKey, float x, float y) const;
+    Optional<std::uint32_t> code_offset_at(ControlKey, float x, float y) const;
 };
 
 // expand: a tree row requests the bool expansion state; the host owns it.
@@ -1059,7 +1059,7 @@ public:
     // Zero clears focus; other targets must be visible, current accepted controls.
     // A transition finishes the previous draft. Same focus preserves its draft,
     // selection and composition; text fields bind input immediately, numbers passively.
-    Reply focus(ControlKey, std::optional<std::uint32_t> select_length = {});
+    Reply focus(ControlKey, Optional<std::uint32_t> select_length = {});
 
     Reply execute(EditCommand,
                   std::uint64_t incarnation); // External menu command, guarded by its opening target lifetime.

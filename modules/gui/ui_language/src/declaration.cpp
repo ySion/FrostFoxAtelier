@@ -511,7 +511,7 @@ private:
         }
         if (property == Property::icon && tokens.size() == 1 && tokens[0].kind == Token::Kind::string) {
             ATELIER_TRY_BIND(decoded, string_value(tokens[0]));
-            const auto icon = ui::parse_control_icon(*decoded);
+            const auto icon = ui::parse_control_icon(view_of(*decoded));
             if (!icon)
                 return reject(tokens[0].position, "Unknown UI icon name.");
             binding.mode = Binding::Mode::literal;

@@ -822,22 +822,22 @@ void verify_code_editor_syntax_and_gestures() {
     const auto* code_geom = consumer.frame->find_code(700);
     require(code_geom && !code_geom->lines.empty(), "CodeEditor did not publish CodeGeometry lines.");
     const float line0_y = code_geom->lines.front().y;
-    std::vector<std::pair<const ui::Coverage*, std::size_t>> shared_masks;
-    std::vector<std::uint32_t> distinct_colors;
+    Array<std::pair<const ui::Coverage*, std::size_t>> shared_masks;
+    Array<std::uint32_t> distinct_colors;
     for (const auto& quad : consumer.frame->drawing->draws) {
         if (quad.coverage && std::abs(quad.bounds.y - line0_y) < code_geom->line_height * 0.6f &&
             quad.bounds.x >= code_geom->body.x - 2.f) {
             auto mask_it = std::ranges::find(shared_masks, quad.coverage.get(),
                                              &std::pair<const ui::Coverage*, std::size_t>::first);
             if (mask_it == shared_masks.end())
-                shared_masks.emplace_back(quad.coverage.get(), 1u);
+                shared_masks.emplace(quad.coverage.get(), std::size_t{1});
             else
                 ++mask_it->second;
             const std::uint32_t packed = (static_cast<std::uint32_t>(quad.color.r * 255.f) << 16) |
                                          (static_cast<std::uint32_t>(quad.color.g * 255.f) << 8) |
                                          static_cast<std::uint32_t>(quad.color.b * 255.f);
             if (std::ranges::find(distinct_colors, packed) == distinct_colors.end())
-                distinct_colors.push_back(packed);
+                distinct_colors.add(packed);
         }
     }
     const bool has_sliced_line = std::ranges::any_of(shared_masks, [](const auto& kv) { return kv.second >= 3; });

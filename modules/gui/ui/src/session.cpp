@@ -604,22 +604,22 @@ const CodeGeometry* UiFrame::find_code(ControlKey key) const noexcept {
     return at == code_editors.end() ? nullptr : &*at;
 }
 
-std::optional<std::uint32_t> UiFrame::code_offset_at(ControlKey key, float x, float y) const {
+Optional<std::uint32_t> UiFrame::code_offset_at(ControlKey key, float x, float y) const {
     const auto* geometry = find_code(key);
     if (!geometry || geometry->lines.empty() || x < geometry->body.x || x >= geometry->body.x + geometry->body.width ||
         y < geometry->body.y || y >= geometry->body.y + geometry->body.height)
-        return std::nullopt;
+        return {};
     for (const auto& line : geometry->lines) {
         if (y >= line.y && y < line.y + geometry->line_height) {
             if (!line.paragraph)
-                return std::nullopt;
+                return {};
             const auto pos = line.paragraph->hit((x - line.x) / geometry->scale, (y - line.y) / geometry->scale);
             if (!pos)
-                return std::nullopt;
+                return {};
             return line.start + pos->offset;
         }
     }
-    return std::nullopt;
+    return {};
 }
 
 struct Session::Impl {
@@ -915,7 +915,7 @@ struct Session::Impl {
 
     float hover_y{};
 
-    std::optional<ClipboardRequest> table_clipboard;
+    Optional<ClipboardRequest> table_clipboard;
 
     ControlKey keyboard_pressed{};
 
@@ -2512,7 +2512,7 @@ Result<Reply> Session::commit_edit() {
     return reply;
 }
 
-Reply Session::focus(ControlKey key, std::optional<std::uint32_t> select_length) {
+Reply Session::focus(ControlKey key, Optional<std::uint32_t> select_length) {
     Reply reply;
     const auto* box = impl_->published ? impl_->published->find(key) : nullptr;
     if (key && (!impl_->active() || !box || !impl_->current(*box) || !focusable(box->kind) ||
