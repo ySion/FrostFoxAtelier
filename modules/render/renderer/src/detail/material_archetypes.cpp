@@ -19,7 +19,7 @@ assets::AtxRole classify_texture_role(bool is_normal_map, material::TextureColor
     return assets::AtxRole::linear_rgba;
 }
 
-std::string make_material_bridge_hlsl() {
+StringView make_material_bridge_hlsl() {
     return R"hlsl(
 #ifndef ATELIER_SAFE_DESC_DEFINED
 #define ATELIER_SAFE_DESC_DEFINED 1
@@ -152,17 +152,17 @@ Result<void> ProgramArchetype::submit(rhi::Device& device, bool compile_masked) 
         return {};
 
     // Pre-validate masked coverage slice BEFORE submitting base PSOs so deterministic coverage errors never spawn orphan jobs!
-    std::optional<std::string> cov_hlsl;
+    Optional<String> cov_hlsl;
     if (compile_masked && !masked_submitted) {
         auto cov = definition->program().hlsl_coverage("ArchCov");
         if (!cov) {
             masked_failure = make_error(rhi::ErrorCode::invalid_argument, std::move(cov.error().message));
             return std::unexpected(*masked_failure);
         }
-        cov_hlsl = std::string(cov->view().std_view());
+        cov_hlsl = std::move(*cov);
     }
 
-    const std::string bridge = make_material_bridge_hlsl();
+    const String bridge = String::from_utf8_validated(make_material_bridge_hlsl());
 
     if (!base_submitted) {
         auto fail_base = [&](Error err) -> Result<void> {
@@ -181,8 +181,8 @@ Result<void> ProgramArchetype::submit(rhi::Device& device, bool compile_masked) 
 
         // 1. OpenPBR Canonical Slab Shade Bin CS
         {
-            const std::string src =
-                bridge + fp->c_str() + "\n#define ARCH_STUDIO_MODE 0\n" + shaders::material_shade_bin_cs;
+            const String src = String::concat(bridge, *fp, "\n#define ARCH_STUDIO_MODE 0\n",
+                                              String::validated(StringView{shaders::material_shade_bin_cs}));
             const std::array<rhi::ShaderStageSource, 1> stages{
                 {{nri::StageBits::COMPUTE_SHADER, src.c_str(), "main", "material_shade_bin_cs"}}};
             rhi::PipelineCompileDesc desc{};
@@ -192,13 +192,13 @@ Result<void> ProgramArchetype::submit(rhi::Device& device, bool compile_masked) 
             auto job = rhi::BackendAccess::submit_pipeline(device, desc);
             if (!job)
                 return fail_base(Error{job.error(), false});
-            base_pending.push_back({Stage::shade_bin_cs, std::move(*job)});
+            base_pending.add({Stage::shade_bin_cs, std::move(*job)});
         }
 
         // 2. Studio / Cavity Bin CS
         {
-            const std::string src =
-                bridge + fp->c_str() + "\n#define ARCH_STUDIO_MODE 1\n" + shaders::material_shade_bin_cs;
+            const String src = String::concat(bridge, *fp, "\n#define ARCH_STUDIO_MODE 1\n",
+                                              String::validated(StringView{shaders::material_shade_bin_cs}));
             const std::array<rhi::ShaderStageSource, 1> stages{
                 {{nri::StageBits::COMPUTE_SHADER, src.c_str(), "main", "studio_shade_bin_cs"}}};
             rhi::PipelineCompileDesc desc{};
@@ -208,12 +208,13 @@ Result<void> ProgramArchetype::submit(rhi::Device& device, bool compile_masked) 
             auto job = rhi::BackendAccess::submit_pipeline(device, desc);
             if (!job)
                 return fail_base(Error{job.error(), false});
-            base_pending.push_back({Stage::studio_bin_cs, std::move(*job)});
+            base_pending.add({Stage::studio_bin_cs, std::move(*job)});
         }
 
         // 3. Secondary GI Hit CS (pruned normal_texture/TBN + OpenPBR §3.10 effective albedo & foliage transmission)
         {
-            const std::string src = bridge + gi->c_str() + "\n" + shaders::secondary_gi_hit_cs;
+            const String src =
+                String::concat(bridge, *gi, "\n", String::validated(StringView{shaders::secondary_gi_hit_cs}));
             const std::array<rhi::ShaderStageSource, 1> stages{
                 {{nri::StageBits::COMPUTE_SHADER, src.c_str(), "main", "secondary_gi_hit_cs"}}};
             rhi::PipelineCompileDesc desc{};
@@ -223,7 +224,7 @@ Result<void> ProgramArchetype::submit(rhi::Device& device, bool compile_masked) 
             auto job = rhi::BackendAccess::submit_pipeline(device, desc);
             if (!job)
                 return fail_base(Error{job.error(), false});
-            base_pending.push_back({Stage::gi_hit_cs, std::move(*job)});
+            base_pending.add({Stage::gi_hit_cs, std::move(*job)});
         }
         base_submitted = true;
     }
@@ -231,8 +232,10 @@ Result<void> ProgramArchetype::submit(rhi::Device& device, bool compile_masked) 
     // 4. Optional Masked VisBuffer + Masked VSM Mesh+PS PSOs (isolated from base Opaque PSOs!)
     if (compile_masked && !masked_submitted) {
         if (!pipelines[static_cast<std::size_t>(Stage::masked_vis_ms)] && !masked_job) {
-            const std::string ms_vis = bridge + "\n#define VIS_MASKED 1\n" + shaders::visbuffer_mesh;
-            const std::string ps_vis = bridge + *cov_hlsl + "\n#define VIS_MASKED 1\n" + shaders::visbuffer_masked_ps;
+            const String ms_vis =
+                String::concat(bridge, "\n#define VIS_MASKED 1\n", String::validated(StringView{shaders::visbuffer_mesh}));
+            const String ps_vis = String::concat(bridge, *cov_hlsl, "\n#define VIS_MASKED 1\n",
+                                                 String::validated(StringView{shaders::visbuffer_masked_ps}));
             const std::array<rhi::ShaderStageSource, 2> stages{{
                 {nri::StageBits::MESH_SHADER, ms_vis.c_str(), "vis_ms_main", "masked_vis_ms"},
                 {nri::StageBits::FRAGMENT_SHADER, ps_vis.c_str(), "vis_ps_main", "masked_vis_ps"},
@@ -256,8 +259,10 @@ Result<void> ProgramArchetype::submit(rhi::Device& device, bool compile_masked) 
             masked_job = std::move(*job);
         }
         if (!pipelines[static_cast<std::size_t>(Stage::masked_vsm_ms)] && !masked_vsm_job) {
-            const std::string ms_vsm = bridge + "\n#define VSM_MASKED 1\n" + shaders::vsm_mesh;
-            const std::string ps_vsm = bridge + *cov_hlsl + "\n#define VSM_MASKED 1\n" + shaders::visbuffer_masked_ps;
+            const String ms_vsm =
+                String::concat(bridge, "\n#define VSM_MASKED 1\n", String::validated(StringView{shaders::vsm_mesh}));
+            const String ps_vsm = String::concat(bridge, *cov_hlsl, "\n#define VSM_MASKED 1\n",
+                                                 String::validated(StringView{shaders::visbuffer_masked_ps}));
             const std::array<rhi::ShaderStageSource, 2> stages{{
                 {nri::StageBits::MESH_SHADER, ms_vsm.c_str(), "vsm_ms_main", "masked_vsm_ms"},
                 {nri::StageBits::FRAGMENT_SHADER, ps_vsm.c_str(), "vsm_ps_main", "masked_vsm_ps"},
@@ -290,10 +295,10 @@ Result<void> ProgramArchetype::submit(rhi::Device& device, bool compile_masked) 
 Result<Preparation> ProgramArchetype::poll(rhi::Device& device, bool use_masked) {
     if (base_failure)
         return std::unexpected(*base_failure);
-    for (auto it = base_pending.begin(); it != base_pending.end();) {
-        auto taken = rhi::BackendAccess::take_pipeline(device, it->job);
+    for (std::size_t idx = 0u; idx < base_pending.size();) {
+        auto taken = rhi::BackendAccess::take_pipeline(device, base_pending[idx].job);
         if (!taken) {
-            ++it;
+            ++idx;
             continue;
         }
         if (!*taken) {
@@ -301,8 +306,8 @@ Result<Preparation> ProgramArchetype::poll(rhi::Device& device, bool use_masked)
             base_pending.clear();
             return std::unexpected(*base_failure);
         }
-        pipelines[static_cast<std::size_t>(it->stage)] = std::move(**taken);
-        it = base_pending.erase(it);
+        pipelines[static_cast<std::size_t>(base_pending[idx].stage)] = std::move(**taken);
+        base_pending.remove_at(idx);
     }
 
     std::uint32_t total = 3u;
@@ -404,30 +409,28 @@ MaterialBatchState::~MaterialBatchState() {
 }
 
 Result<void>
-MaterialBatchState::submit(std::span<const material::ProgramSurfaceRef> input,
-                           std::map<const source::MaterialProgram*, std::weak_ptr<ProgramArchetype>>& archetype_cache,
-                           std::vector<std::weak_ptr<MaterialProgramSet>>& set_cache,
-                           std::vector<std::weak_ptr<MaskedCoverageSet>>& masked_coverage_cache) {
+MaterialBatchState::submit(Span<const material::ProgramSurfaceRef> input,
+                           Map<const source::MaterialProgram*, std::weak_ptr<ProgramArchetype>>& archetype_cache,
+                           Array<std::weak_ptr<MaterialProgramSet>>& set_cache,
+                           Array<std::weak_ptr<MaskedCoverageSet>>& masked_coverage_cache) {
     if (input.empty() || input.size() > std::numeric_limits<std::uint32_t>::max() / sizeof(GpuSurfaceRecord)) {
         return std::unexpected(make_error(rhi::ErrorCode::invalid_argument,
                                           "Material batch needs a representable nonempty Surface table"));
     }
 
-    surfaces.assign(input.begin(), input.end());
+    surfaces.assign(input);
 
-    for (auto it = archetype_cache.begin(); it != archetype_cache.end();) {
-        if (it->second.expired())
-            it = archetype_cache.erase(it);
-        else
-            ++it;
-    }
+    archetype_cache.remove_if([](const source::MaterialProgram*, const std::weak_ptr<ProgramArchetype>& w) {
+        return w.expired();
+    });
 
     struct ProgramUse {
         material::DefinitionRef definition;
 
         bool masked = false;
     };
-    std::map<const source::MaterialProgram*, ProgramUse> unique_progs;
+    Map<const source::MaterialProgram*, ProgramUse> unique_progs;
+    Array<const source::MaterialProgram*> sorted_progs;
     for (const auto& surface : surfaces) {
         if (!surface)
             return std::unexpected(
@@ -435,24 +438,28 @@ MaterialBatchState::submit(std::span<const material::ProgramSurfaceRef> input,
         if (surface->inputs().size() > 0xFFFFu)
             return std::unexpected(
                 make_error(rhi::ErrorCode::invalid_argument, "Material surface exceeds 65535 texture inputs"));
-        auto& use = unique_progs.try_emplace(&surface->program(), ProgramUse{surface->definition()}).first->second;
-        use.masked |= (surface->policy().coverage == material::Coverage::mask);
+        auto [use_ptr, inserted] = unique_progs.try_emplace(&surface->program(), ProgramUse{surface->definition()});
+        if (inserted)
+            sorted_progs.add(&surface->program());
+        use_ptr->masked |= (surface->policy().coverage == material::Coverage::mask);
     }
+    std::ranges::sort(sorted_progs, std::less<const source::MaterialProgram*>{});
 
-    std::vector<std::shared_ptr<ProgramArchetype>> archetypes;
-    std::vector<bool> masked_flags;
-    std::vector<std::uint32_t> masked_arch_indices;
-    std::vector<std::string> canonical_cov_slices;
-    std::vector<std::string> unique_numbered_cov_slices;
-    std::map<const source::MaterialProgram*, std::uint32_t> prog_to_arch;
-    std::map<const source::MaterialProgram*, std::uint32_t> prog_to_masked_bin;
-    std::map<const source::MaterialProgram*, std::uint32_t> prog_to_masked_cov;
+    Array<std::shared_ptr<ProgramArchetype>> archetypes;
+    Array<bool> masked_flags;
+    Array<std::uint32_t> masked_arch_indices;
+    Array<String> canonical_cov_slices;
+    Array<String> unique_numbered_cov_slices;
+    Map<const source::MaterialProgram*, std::uint32_t> prog_to_arch;
+    Map<const source::MaterialProgram*, std::uint32_t> prog_to_masked_bin;
+    Map<const source::MaterialProgram*, std::uint32_t> prog_to_masked_cov;
 
-    for (const auto& [prog_ptr, use] : unique_progs) {
+    for (const auto* prog_ptr : sorted_progs) {
+        const ProgramUse& use = unique_progs.at(prog_ptr);
         std::shared_ptr<ProgramArchetype> arch;
         bool insert_into_cache = false;
-        if (auto it = archetype_cache.find(prog_ptr); it != archetype_cache.end())
-            arch = it->second.lock();
+        if (const auto* cached_weak = archetype_cache.find(prog_ptr))
+            arch = cached_weak->lock();
         if (!arch || arch->base_failure) {
             arch = std::make_shared<ProgramArchetype>();
             arch->definition = use.definition;
@@ -465,20 +472,20 @@ MaterialBatchState::submit(std::span<const material::ProgramSurfaceRef> input,
         }
         ATELIER_TRY(arch->submit(*device, use.masked));
         if (insert_into_cache)
-            archetype_cache[prog_ptr] = arch;
+            archetype_cache.insert_or_assign(prog_ptr, arch);
         const auto arch_idx = static_cast<std::uint32_t>(archetypes.size());
-        prog_to_arch.emplace(prog_ptr, arch_idx);
+        prog_to_arch.try_emplace(prog_ptr, arch_idx);
         if (use.masked) {
             const auto raster_bin_idx = static_cast<std::uint32_t>(masked_arch_indices.size());
-            masked_arch_indices.push_back(arch_idx);
+            masked_arch_indices.add(arch_idx);
             auto canon = arch->definition->program().hlsl_coverage("RayCovCanon");
             if (!canon)
                 return std::unexpected(make_error(rhi::ErrorCode::invalid_argument, std::move(canon.error().message)));
-            const std::string canon_str(canon->view().std_view());
+            String canon_str = std::move(*canon);
             std::uint32_t cov_idx = 0u;
-            const auto found_cov = std::ranges::find(canonical_cov_slices, canon_str);
-            if (found_cov != canonical_cov_slices.end()) {
-                cov_idx = static_cast<std::uint32_t>(found_cov - canonical_cov_slices.begin());
+            const std::size_t found_cov = canonical_cov_slices.find(canon_str);
+            if (found_cov != Array<String>::npos) {
+                cov_idx = static_cast<std::uint32_t>(found_cov);
             } else {
                 cov_idx = static_cast<std::uint32_t>(canonical_cov_slices.size());
                 const String ray_ns = String::concat("RayCov", cov_idx);
@@ -486,53 +493,55 @@ MaterialBatchState::submit(std::span<const material::ProgramSurfaceRef> input,
                 if (!numbered)
                     return std::unexpected(
                         make_error(rhi::ErrorCode::invalid_argument, std::move(numbered.error().message)));
-                canonical_cov_slices.push_back(canon_str);
-                unique_numbered_cov_slices.push_back(std::string(numbered->view().std_view()));
+                canonical_cov_slices.add(std::move(canon_str));
+                unique_numbered_cov_slices.add(std::move(*numbered));
             }
-            prog_to_masked_bin.emplace(prog_ptr, raster_bin_idx);
-            prog_to_masked_cov.emplace(prog_ptr, cov_idx);
+            prog_to_masked_bin.try_emplace(prog_ptr, raster_bin_idx);
+            prog_to_masked_cov.try_emplace(prog_ptr, cov_idx);
         }
-        archetypes.push_back(std::move(arch));
-        masked_flags.push_back(use.masked);
+        archetypes.add(std::move(arch));
+        masked_flags.add(use.masked);
     }
 
     // Resolve or compile the independent MaskedCoverageSet (0 recompiles when only opaque archetypes change!).
     std::shared_ptr<MaskedCoverageSet> masked_cov_set;
     if (!canonical_cov_slices.empty()) {
-        for (auto it = masked_coverage_cache.begin(); it != masked_coverage_cache.end();) {
-            auto existing = it->lock();
+        for (std::size_t ci = 0u; ci < masked_coverage_cache.size();) {
+            auto existing = masked_coverage_cache[ci].lock();
             if (!existing) {
-                it = masked_coverage_cache.erase(it);
+                masked_coverage_cache.remove_at(ci);
                 continue;
             }
             if (!existing->failure && existing->canonical_coverage_slices == canonical_cov_slices)
                 masked_cov_set = existing;
-            ++it;
+            ++ci;
         }
         if (!masked_cov_set) {
             masked_cov_set = std::make_shared<MaskedCoverageSet>();
             masked_cov_set->canonical_coverage_slices = std::move(canonical_cov_slices);
 
-            std::string ray_cov = make_material_bridge_hlsl() + "\n#define RAY_HAS_MASKED 1\n";
+            String ray_cov = String::concat(String::validated(make_material_bridge_hlsl()), "\n#define RAY_HAS_MASKED 1\n");
             for (const auto& slice_src : unique_numbered_cov_slices)
-                ray_cov += slice_src + "\n";
+                ray_cov = String::concat(ray_cov, slice_src, "\n");
 
-            ray_cov +=
+            ray_cov = String::concat(
+                ray_cov,
                 "float eval_masked_ray_coverage(uint masked_bin, uint input_base, uint param_base, float2 uv, float3 pos_w, float3 norm_w, float3 geom_w, float4 tan_w) {\n"
                 "    ByteAddressBuffer material_parameters = ResourceDescriptorHeap[atelier_safe_desc(g_material_params_srv)];\n"
-                "    switch (masked_bin) {\n";
+                "    switch (masked_bin) {\n");
             for (std::size_t m = 0; m < unique_numbered_cov_slices.size(); ++m) {
-                const std::string ns = "RayCov" + std::to_string(m);
-                ray_cov += "    case " + std::to_string(m) + ": {\n        " + ns +
-                           "::ms_Context c;\n"
-                           "        c.ms_uv = uv; c.ms_position_world = pos_w; c.ms_normal_world = norm_w;\n"
-                           "        c.ms_geometric_normal_world = geom_w; c.ms_tangent_world = tan_w;\n"
-                           "        return " +
-                           ns + "::ms_coverage(input_base, c, " + ns +
-                           "::ms_load_parameters(material_parameters, param_base));\n    }\n";
+                const String ns = String::concat("RayCov", m);
+                ray_cov = String::concat(
+                    ray_cov, "    case ", m, ": {\n        ", ns,
+                    "::ms_Context c;\n"
+                    "        c.ms_uv = uv; c.ms_position_world = pos_w; c.ms_normal_world = norm_w;\n"
+                    "        c.ms_geometric_normal_world = geom_w; c.ms_tangent_world = tan_w;\n"
+                    "        return ",
+                    ns, "::ms_coverage(input_base, c, ", ns,
+                    "::ms_load_parameters(material_parameters, param_base));\n    }\n");
             }
-            ray_cov += "    }\n    return 1.0;\n}\n";
-            ray_cov += shaders::shadow_ray_query_cs;
+            ray_cov = String::concat(ray_cov, "    }\n    return 1.0;\n}\n",
+                                     String::validated(StringView{shaders::shadow_ray_query_cs}));
 
             const std::array<rhi::ShaderStageSource, 1> stages{
                 {{nri::StageBits::COMPUTE_SHADER, ray_cov.c_str(), "main", "shadow_ray_masked_cs"}}};
@@ -544,22 +553,22 @@ MaterialBatchState::submit(std::span<const material::ProgramSurfaceRef> input,
             if (!job)
                 return std::unexpected(Error{job.error(), false});
             masked_cov_set->job = std::move(*job);
-            masked_coverage_cache.push_back(masked_cov_set);
+            masked_coverage_cache.add(masked_cov_set);
         }
     }
 
     // Reuse an identical MaterialProgramSet if still alive.
-    for (auto it = set_cache.begin(); it != set_cache.end();) {
-        auto existing = it->lock();
+    for (std::size_t ci = 0u; ci < set_cache.size();) {
+        auto existing = set_cache[ci].lock();
         if (!existing) {
-            it = set_cache.erase(it);
+            set_cache.remove_at(ci);
             continue;
         }
         if (!existing->failure && existing->masked_flags == masked_flags && existing->archetypes == archetypes &&
             existing->masked_coverage == masked_cov_set) {
             program_set = existing;
         }
-        ++it;
+        ++ci;
     }
 
     if (!program_set) {
@@ -568,10 +577,10 @@ MaterialBatchState::submit(std::span<const material::ProgramSurfaceRef> input,
         program_set->masked_flags = std::move(masked_flags);
         program_set->masked_archetype_indices = std::move(masked_arch_indices);
         program_set->masked_coverage = std::move(masked_cov_set);
-        set_cache.push_back(program_set);
+        set_cache.add(program_set);
     }
 
-    std::map<std::pair<const material::Image*, assets::AtxRole>, std::uint32_t> img_map;
+    Map<std::pair<const material::Image*, assets::AtxRole>, std::uint32_t> img_map;
     for (const auto& surface : surfaces) {
         const auto& policy = surface->policy();
         if (parameters.size() + surface->parameters().size() + 3u > std::numeric_limits<std::uint32_t>::max()) {
@@ -598,14 +607,14 @@ MaterialBatchState::submit(std::span<const material::ProgramSurfaceRef> input,
                 std::ranges::none_of(surface->inputs(), [](const auto& b) { return static_cast<bool>(b.image); });
             if (no_bound_images && masked_cov_set &&
                 rec.masked_cov_index < masked_cov_set->canonical_coverage_slices.size()) {
-                const std::string& cov_src = masked_cov_set->canonical_coverage_slices[rec.masked_cov_index];
-                if (cov_src.find("ms_base_color") != std::string::npos &&
-                    cov_src.find("ms_alpha_cutoff") != std::string::npos &&
-                    cov_src.find("ms_position_world") == std::string::npos &&
-                    cov_src.find("ms_normal_world") == std::string::npos) {
+                const StringView cov_src = masked_cov_set->canonical_coverage_slices[rec.masked_cov_index].view();
+                if (cov_src.find("ms_base_color") != StringView::npos &&
+                    cov_src.find("ms_alpha_cutoff") != StringView::npos &&
+                    cov_src.find("ms_position_world") == StringView::npos &&
+                    cov_src.find("ms_normal_world") == StringView::npos) {
                     const auto param_bytes = surface->parameters();
-                    std::optional<float> base_alpha;
-                    std::optional<float> alpha_cutoff;
+                    Optional<float> base_alpha;
+                    Optional<float> alpha_cutoff;
                     for (const auto& mp : surface->program().parameters()) {
                         if (mp.key == "base_color" && mp.components == 4u && mp.offset + 16u <= param_bytes.size()) {
                             float w = 1.0f;
@@ -623,9 +632,9 @@ MaterialBatchState::submit(std::span<const material::ProgramSurfaceRef> input,
                 }
             }
         }
-        records.push_back(rec);
+        records.add(rec);
 
-        parameters.insert(parameters.end(), surface->parameters().begin(), surface->parameters().end());
+        parameters.append(surface->parameters());
         parameters.resize((parameters.size() + 3u) & ~std::size_t{3u});
 
         const auto prog_tex = surface->program().textures();
@@ -647,24 +656,23 @@ MaterialBatchState::submit(std::span<const material::ProgramSurfaceRef> input,
             in_rec.empty_value = {binding.empty_value.x, binding.empty_value.y, binding.empty_value.z,
                                   binding.empty_value.w};
             if (binding.image) {
-                const auto [at, added] =
-                    img_map.try_emplace({binding.image.get(), role}, static_cast<std::uint32_t>(image_requests.size()));
+                const auto [at_ptr, added] = img_map.try_emplace(
+                    std::pair{binding.image.get(), role}, static_cast<std::uint32_t>(image_requests.size()));
                 if (added)
-                    image_requests.push_back({binding.image, role});
-                in_rec.texture_srv = at->second;
+                    image_requests.add({binding.image, role});
+                in_rec.texture_srv = *at_ptr;
             }
-            inputs.push_back(in_rec);
+            inputs.add(in_rec);
         }
     }
     if (parameters.empty())
         parameters.resize(4u);
     if (inputs.empty())
-        inputs.emplace_back();
+        inputs.emplace();
     return {};
 }
 
-Result<void> MaterialBatchState::stage_upload(std::span<const ResolvedMaterialImage> resolved_images,
-                                              UploadBatch& batch) {
+Result<void> MaterialBatchState::stage_upload(Span<const ResolvedMaterialImage> resolved_images, UploadBatch& batch) {
     for (auto& in_rec : inputs) {
         if (in_rec.texture_srv != 0xFFFFFFFFu) {
             const auto& res = resolved_images[in_rec.texture_srv];

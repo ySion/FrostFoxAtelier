@@ -193,7 +193,7 @@ public:
         return edge_masks_.empty() ? std::uint8_t{7} : edge_masks_[triangle];
     }
 
-    [[nodiscard]] std::span<const std::uint8_t> edge_masks() const noexcept { return edge_masks_; }
+    [[nodiscard]] Span<const std::uint8_t> edge_masks() const noexcept { return edge_masks_; }
 
     [[nodiscard]] bool has_edge_masks() const noexcept { return !edge_masks_.empty(); }
 

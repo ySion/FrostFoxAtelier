@@ -44,7 +44,7 @@ struct FloatBoxMip {
 
     std::uint32_t height{};
 
-    std::vector<float> rgb;
+    Array<float> rgb;
 };
 
 math::Vector3 sample_equirect_bilinear(const FloatBoxMip& mip, const math::Vector3& dir) noexcept {
@@ -82,7 +82,7 @@ math::Vector3 sample_equirect_bilinear(const FloatBoxMip& mip, const math::Vecto
     return r0 * (1.0f - wy) + r1 * wy;
 }
 
-math::Vector3 sample_box_trilinear(std::span<const FloatBoxMip> pyramid, const math::Vector3& dir,
+math::Vector3 sample_box_trilinear(Span<const FloatBoxMip> pyramid, const math::Vector3& dir,
                                    float lod) noexcept {
     const float clamped = std::clamp(lod, 0.0f, static_cast<float>(pyramid.size() - 1u));
     const auto l0 = static_cast<std::size_t>(std::floor(clamped));
@@ -115,8 +115,8 @@ SkyMap::SkyMap(std::uint32_t width, std::uint32_t height, Span<const float> rgb)
     constexpr double pi = std::numbers::pi;
 
     // 1. Exact solid-angle mean, 3-band Ramamoorthi SH irradiance (E(n)/pi), and 256x128 importance CDF.
-    std::vector<double> col_sin(width);
-    std::vector<double> col_cos(width);
+    Array<double> col_sin(width);
+    Array<double> col_cos(width);
     for (std::uint32_t x = 0; x < width; ++x) {
         const double phi = 2.0 * pi * ((double(x) + 0.5) / double(width) - 0.5);
         col_sin[x] = std::sin(phi);
@@ -125,7 +125,7 @@ SkyMap::SkyMap(std::uint32_t width, std::uint32_t height, Span<const float> rgb)
 
     std::array<math::Vector3d, 9> sh_accum{};
     double total_solid_angle = 0.0;
-    std::vector<double> cdf_grid(std::size_t(cdf_width) * cdf_height, 0.0);
+    Array<double> cdf_grid(std::size_t(cdf_width) * cdf_height, 0.0);
 
     for (std::uint32_t y = 0; y < height; ++y) {
         const double lat_center = pi * (0.5 - (double(y) + 0.5) / double(height));
@@ -243,7 +243,7 @@ SkyMap::SkyMap(std::uint32_t width, std::uint32_t height, Span<const float> rgb)
     for (std::uint32_t d = std::max(width_, height_); d > 1u; d >>= 1u)
         ++mip_count;
 
-    std::vector<FloatBoxMip> box_pyramid(mip_count);
+    Array<FloatBoxMip> box_pyramid(mip_count);
     box_pyramid[0].width = width_;
     box_pyramid[0].height = height_;
     box_pyramid[0].rgb.resize(stored.size());

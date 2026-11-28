@@ -1,5 +1,6 @@
 #pragma once
 
+#include "foundation/map.hpp"
 #include "geometry_pool.hpp"
 #include "gpu_resources.hpp"
 #include "material_archetypes.hpp"
@@ -8,8 +9,6 @@
 #include <array>
 #include <cstdint>
 #include <functional>
-#include <unordered_map>
-#include <vector>
 
 namespace atelier::renderer::detail {
 
@@ -87,9 +86,9 @@ struct PersistentRenderScene {
         bool in_tlas_far_cull = false;
     };
 
-    std::unordered_map<std::uint64_t, TrackedObject> tracked_objects;
+    Map<std::uint64_t, TrackedObject> tracked_objects;
 
-    std::vector<VsmInstanceMeta> vsm_instances;
+    Array<VsmInstanceMeta> vsm_instances;
 
     std::uint64_t scene_tick = 0u;
 
@@ -115,19 +114,19 @@ struct PersistentRenderScene {
 
     OwnedBuffer gpu_material_slot_map;
 
-    std::vector<GpuInstanceRecord> cached_gpu_instances;
+    Array<GpuInstanceRecord> cached_gpu_instances;
 
-    std::vector<std::uint32_t> cached_slot_map;
+    Array<std::uint32_t> cached_slot_map;
 
-    std::vector<GpuInstanceRecord> staged_gpu_instances;
+    Array<GpuInstanceRecord> staged_gpu_instances;
 
-    std::vector<std::uint32_t> staged_slot_map;
+    Array<std::uint32_t> staged_slot_map;
 
     HostSlotRing<std::byte> delta_upload_slots;
 
     nri::Buffer* pending_delta_src = nullptr;
 
-    std::vector<PendingCopySpan> pending_delta_copies;
+    Array<PendingCopySpan> pending_delta_copies;
 
     bool gpu_instances_ever_written = false;
 
@@ -182,7 +181,7 @@ public:
                                                  std::uint64_t sequence);
 
     [[nodiscard]] Result<void> update_scene(rhi::Device& device, PersistentRenderScene& scene, GeometryPool& geo_pool,
-                                            const Frame& frame, std::span<const GpuSurfaceRecord> surface_records,
+                                            const Frame& frame, Span<const GpuSurfaceRecord> surface_records,
                                             std::uint32_t masked_bin_count, std::size_t slot_index,
                                             bool build_ray_scene, bool vsm_active, std::uint64_t current_sequence,
                                             const std::function<bool()>* stop_requested, bool& out_cancelled,
@@ -198,7 +197,7 @@ public:
     void clear(rhi::Device& device) noexcept;
 
 private:
-    std::vector<std::unique_ptr<PersistentRenderScene>> scenes_;
+    Array<std::unique_ptr<PersistentRenderScene>> scenes_;
 };
 
 } // namespace atelier::renderer::detail

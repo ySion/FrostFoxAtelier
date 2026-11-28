@@ -1,5 +1,7 @@
 #pragma once
 
+#include "foundation/array.hpp"
+#include "foundation/span.hpp"
 #include "material/image.hpp"
 #include "math/vector.hpp"
 #include "rendering/sky_map.hpp"
@@ -8,8 +10,6 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
-#include <span>
-#include <vector>
 
 namespace atelier::assets {
 
@@ -57,12 +57,12 @@ struct AtxTexture {
 
     std::uint32_t height{};
 
-    std::vector<AtxMipSlice> mips;
+    Array<AtxMipSlice> mips;
 
     // Average normal length ||N_avg|| per mip for Toksvig roughness compensation (1.0 when non-normal).
-    std::vector<float> toksvig_mip_lengths;
+    Array<float> toksvig_mip_lengths;
 
-    std::vector<std::uint8_t> payload; // All mips tightly packed at 512B-aligned offsets with 256B-aligned row pitches.
+    Array<std::uint8_t> payload; // All mips tightly packed at 512B-aligned offsets with 256B-aligned row pitches.
 };
 
 using AtxTextureRef = std::shared_ptr<const AtxTexture>;
@@ -78,9 +78,9 @@ using AtxTextureRef = std::shared_ptr<const AtxTexture>;
 [[nodiscard]] AtxTextureRef cook_atx_sky_map(const rendering::SkyMap& sky);
 
 // Serializes / deserializes the self-contained binary .atx container ("ATEX" v4).
-[[nodiscard]] std::vector<std::uint8_t> encode_atx(const AtxTexture& tex);
+[[nodiscard]] Array<std::uint8_t> encode_atx(const AtxTexture& tex);
 
-[[nodiscard]] Result<AtxTextureRef> decode_atx(std::span<const std::uint8_t> bytes);
+[[nodiscard]] Result<AtxTextureRef> decode_atx(Span<const std::uint8_t> bytes);
 
 // Disk cache helpers: load Cache/Textures/<digest>.atx if valid, otherwise cook and atomically write it.
 [[nodiscard]] AtxTextureRef load_or_cook_atx_image(const material::Image& image, AtxRole role,

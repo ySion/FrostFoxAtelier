@@ -29,8 +29,8 @@ Result<void> LightingLutSet::ensure(rhi::Device& device) {
 
     // 1. 64x64 GGX LTC Matrix & Amplitude LUTs (exact fit to separable Smith GGX + Schlick)
     constexpr std::uint32_t ltc_n = ltc_lut::size;
-    std::vector<float> mat_data(ltc_n * ltc_n * 4u);
-    std::vector<float> amp_data(ltc_n * ltc_n * 2u);
+    Array<float> mat_data(ltc_n * ltc_n * 4u);
+    Array<float> amp_data(ltc_n * ltc_n * 2u);
     for (std::uint32_t i = 0u; i < ltc_n * ltc_n; ++i) {
         mat_data[i * 4u + 0u] = ltc_lut::table[i * 6u + 0u];
         mat_data[i * 4u + 1u] = ltc_lut::table[i * 6u + 1u];
@@ -46,7 +46,7 @@ Result<void> LightingLutSet::ensure(rhi::Device& device) {
 
     // 2. 32x32 Charlie Sheen Directional Albedo LUT (Estevez & Kulla 2017)
     constexpr std::uint32_t cn = 32u;
-    std::vector<std::uint16_t> charlie_half(cn * cn);
+    Array<std::uint16_t> charlie_half(cn * cn);
     for (std::uint32_t y = 0u; y < cn; ++y) {
         const double nv = std::max(1e-3, (double(y) + 0.5) / double(cn));
         const double sin_v = std::sqrt(std::max(0.0, 1.0 - nv * nv));
@@ -92,7 +92,7 @@ Result<void> LightingLutSet::ensure(rhi::Device& device) {
     constexpr double beta_mie_ext = 4.40e-3;
     constexpr double beta_ozone[3] = {0.650e-3, 1.881e-3, 0.085e-3};
 
-    std::vector<std::uint16_t> trans_half(tw * th * 4u);
+    Array<std::uint16_t> trans_half(tw * th * 4u);
     for (std::uint32_t y = 0u; y < th; ++y) {
         const double v = (double(y) + 0.5) / double(th);
         const double h_km = v * v * (r_top - r_bottom);
@@ -127,7 +127,7 @@ Result<void> LightingLutSet::ensure(rhi::Device& device) {
                                                                    trans_half.data(), tw * 8u, "atmos_transmittance"));
 
     constexpr std::uint32_t mw = 32u;
-    std::vector<std::uint16_t> ms_half(mw * mw * 4u);
+    Array<std::uint16_t> ms_half(mw * mw * 4u);
     for (std::uint32_t y = 0u; y < mw; ++y) {
         const float alt_f = float(y) / float(mw - 1u);
         const float density = std::exp(-alt_f * 6.0f);

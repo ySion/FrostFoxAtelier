@@ -149,12 +149,12 @@ PersistentRenderScene& RenderSceneTable::acquire(rhi::Device& device, std::uint6
     created->scene_identity = scene_identity;
     created->last_used_sequence = sequence;
     PersistentRenderScene& ref = *created;
-    scenes_.push_back(std::move(created));
+    scenes_.add(std::move(created));
     return ref;
 }
 
 Result<void> RenderSceneTable::update_scene(rhi::Device& device, PersistentRenderScene& scene, GeometryPool& geo_pool,
-                                            const Frame& frame, std::span<const GpuSurfaceRecord> surface_records,
+                                            const Frame& frame, Span<const GpuSurfaceRecord> surface_records,
                                             std::uint32_t masked_bin_count, std::size_t slot_index,
                                             bool build_ray_scene, bool vsm_active, std::uint64_t current_sequence,
                                             const std::function<bool()>* stop_requested, bool& out_cancelled,
@@ -205,22 +205,22 @@ Result<void> RenderSceneTable::update_scene(rhi::Device& device, PersistentRende
                 has_local_shadow_light = true;
         }
     }
-    std::vector<GpuInstanceRecord> gpu_instances(count);
+    Array<GpuInstanceRecord> gpu_instances(count);
     scene.vsm_instances.assign(count, {});
-    std::vector<std::uint32_t> selected_words((count + 31u) / 32u, 0u);
-    std::vector<std::uint32_t> material_slot_map;
+    Array<std::uint32_t> selected_words((count + 31u) / 32u, 0u);
+    Array<std::uint32_t> material_slot_map;
     material_slot_map.reserve(count * 2u);
-    std::vector<nri::TopLevelInstance> tlas_instances;
+    Array<nri::TopLevelInstance> tlas_instances;
     if (build_ray_scene)
         tlas_instances.reserve(count);
 
-    std::vector<std::uint64_t> masked_bin_totals(std::max<std::uint32_t>(1u, masked_bin_count), 0u);
+    Array<std::uint64_t> masked_bin_totals(std::max<std::uint32_t>(1u, masked_bin_count), 0u);
     std::uint64_t opaque_meshlet_total = 0u;
     std::uint64_t selected_meshlet_total = 0u;
     std::uint64_t visible_chunk_total = 0u;
     std::size_t seen_unique_keys = 0u;
-    std::vector<std::uint64_t> non_opaque_words;
-    std::vector<std::uint64_t> discarded_words;
+    Array<std::uint64_t> non_opaque_words;
+    Array<std::uint64_t> discarded_words;
 
     std::uint64_t tlas_hash = fnv_mix(0xcbf29ce484222325ull, geo_pool.layout_epoch());
 
@@ -261,7 +261,7 @@ Result<void> RenderSceneTable::update_scene(rhi::Device& device, PersistentRende
         bool any_discarded_slot = false;
         for (std::size_t s = 0; s < slot_count; ++s) {
             const std::uint32_t surf_idx = (*m.material_slots)[s];
-            material_slot_map.push_back(surf_idx);
+            material_slot_map.add(surf_idx);
             if (surf_idx < surface_records.size()) {
                 const std::uint32_t sflags = surface_records[surf_idx].flags;
                 if ((sflags & 8u) != 0u) {
@@ -304,8 +304,8 @@ Result<void> RenderSceneTable::update_scene(rhi::Device& device, PersistentRende
         bool is_dynamic_shadow = (m.stable_key == 0u);
         PersistentRenderScene::TrackedObject* tracked_ptr = nullptr;
         if (m.stable_key != 0u && !frame.camera_cut) {
-            auto [it, inserted] = scene.tracked_objects.try_emplace(m.stable_key);
-            auto& tr = it->second;
+            auto [tr_ptr, inserted] = scene.tracked_objects.try_emplace(m.stable_key);
+            auto& tr = *tr_ptr;
             const bool seen_prev_tick = !inserted && (tr.last_seen_tick + 1u == scene.scene_tick);
             const bool duplicate_in_frame = !inserted && (tr.last_seen_tick == scene.scene_tick);
             if (!duplicate_in_frame) {
@@ -335,8 +335,8 @@ Result<void> RenderSceneTable::update_scene(rhi::Device& device, PersistentRende
                 tr.last_seen_tick = scene.scene_tick;
             }
         } else if (m.stable_key != 0u && frame.camera_cut) {
-            auto [it, inserted] = scene.tracked_objects.try_emplace(m.stable_key);
-            auto& tr = it->second;
+            auto [tr_ptr, inserted] = scene.tracked_objects.try_emplace(m.stable_key);
+            auto& tr = *tr_ptr;
             const bool duplicate_in_frame = !inserted && (tr.last_seen_tick == scene.scene_tick);
             if (!duplicate_in_frame) {
                 ++seen_unique_keys;
@@ -428,7 +428,7 @@ Result<void> RenderSceneTable::update_scene(rhi::Device& device, PersistentRende
                 inst_flags |= nri::TopLevelInstanceBits::FORCE_OPAQUE;
             tli.flags = inst_flags;
             tli.accelerationStructureHandle = blas_pair->first;
-            tlas_instances.push_back(tli);
+            tlas_instances.add(tli);
 
             tlas_hash = fnv_mix_bytes(tlas_hash, &tli, sizeof(tli));
             tlas_hash = fnv_mix(tlas_hash, (std::uint64_t(part_base) << 32u) | mat_offset);
@@ -456,12 +456,10 @@ Result<void> RenderSceneTable::update_scene(rhi::Device& device, PersistentRende
     }
 
     if (seen_unique_keys < scene.tracked_objects.size()) {
-        for (auto it = scene.tracked_objects.begin(); it != scene.tracked_objects.end();) {
-            if (it->second.last_seen_tick != scene.scene_tick)
-                it = scene.tracked_objects.erase(it);
-            else
-                ++it;
-        }
+        scene.tracked_objects.remove_if(
+            [&](std::uint64_t, const PersistentRenderScene::TrackedObject& tr) {
+                return tr.last_seen_tick != scene.scene_tick;
+            });
     }
 
     std::uint64_t max_masked_bin = 0u;
@@ -476,7 +474,7 @@ Result<void> RenderSceneTable::update_scene(rhi::Device& device, PersistentRende
     scene.total_visible_chunks = static_cast<std::uint32_t>(std::min<std::uint64_t>(visible_chunk_total, 0x3FFFFFu));
 
     if (material_slot_map.empty())
-        material_slot_map.push_back(0u);
+        material_slot_map.add(0u);
 
     ATELIER_TRY_BIND(sel_w, scene.selected_mask_slots.write(device, slot_index, selected_words));
     scene.selected_mask_srv = sel_w->second;
@@ -506,7 +504,7 @@ Result<void> RenderSceneTable::update_scene(rhi::Device& device, PersistentRende
     scene.pending_instances_copy = false;
     scene.pending_slot_map_copy = false;
 
-    std::vector<std::byte> delta_bytes;
+    Array<std::byte> delta_bytes;
     {
         std::size_t idx = 0u;
         while (idx < gpu_instances.size()) {
@@ -531,7 +529,7 @@ Result<void> RenderSceneTable::update_scene(rhi::Device& device, PersistentRende
             const std::uint64_t src_off = align_up_bytes(delta_bytes.size(), 16u);
             delta_bytes.resize(static_cast<std::size_t>(src_off + byte_len));
             std::memcpy(delta_bytes.data() + src_off, &gpu_instances[run_start], static_cast<std::size_t>(byte_len));
-            scene.pending_delta_copies.push_back({
+            scene.pending_delta_copies.add({
                 .dst = scene.gpu_instance_buffer.buffer,
                 .dst_offset = run_start * sizeof(GpuInstanceRecord),
                 .src_offset = src_off,
@@ -563,7 +561,7 @@ Result<void> RenderSceneTable::update_scene(rhi::Device& device, PersistentRende
             delta_bytes.resize(static_cast<std::size_t>(src_off + byte_len));
             std::memcpy(delta_bytes.data() + src_off, &material_slot_map[run_start],
                         static_cast<std::size_t>(byte_len));
-            scene.pending_delta_copies.push_back({
+            scene.pending_delta_copies.add({
                 .dst = scene.gpu_material_slot_map.buffer,
                 .dst_offset = run_start * sizeof(std::uint32_t),
                 .src_offset = src_off,

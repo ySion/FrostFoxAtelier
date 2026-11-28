@@ -923,9 +923,9 @@ private:
 
     mutable std::uint64_t layout_revision_{};
 
-    mutable std::vector<world::CapabilityMember> mesh_members_;
+    mutable Array<world::CapabilityMember> mesh_members_;
 
-    mutable std::vector<world::CapabilityMember> generator_members_;
+    mutable Array<world::CapabilityMember> generator_members_;
 };
 
 }

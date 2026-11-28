@@ -24,7 +24,7 @@
 
 - `submit_pipeline` 在 owner 线程校验描述并深拷贝源码与状态，随后投递至最多 `min(8, 硬件线程数)` 个后台工作线程（各自持有独立 DXC 实例）。工作线程启动失败按宿主资源耗尽直接 `atelier::fatal`。
 - `Validation::gpu` 启用时，工作线程在不提交的独立命令列表上录制一次 `SetPipelineState` 以在后台完成 GBV 着色器补丁预热，避免阻塞 owner 线程首次录制。
-- `take_pipeline` 仅在 owner 线程非阻塞查询：未完成返回 `std::nullopt`，完成后恰好一次返回 `Result<Pipeline>`。丢弃 `PipelineJob` 即取消排队作业；`Device::close` 会取消排队项并等待正在执行的单步编译结束。
+- `take_pipeline` 仅在 owner 线程非阻塞查询：未完成返回空 `Optional`，完成后恰好一次返回 `Result<Pipeline>`。丢弃 `PipelineJob` 即取消排队作业；`Device::close` 会取消排队项并等待正在执行的单步编译结束。
 - `DeviceOptions::shader_cache` 为多进程可共享的持久 DXIL 缓存目录（空路径表示禁用）：键为覆盖缓存版本、DXC 版本与提交号、编译参数及完整源码的 SHA-256；条目带魔数与 SHA-256 校验，损坏或截断条目自动按未命中重编并以临时文件原子替换；单进程首次写入时若目录超过 512 MiB 则按修改时间淘汰至 256 MiB 以内。
 
 ## Render Dependency Graph（`atelier_rdg`）

@@ -111,12 +111,12 @@ void spot_sky_tonemap_and_pick_cases(Fixture& f) {
     f.lights[0].intensity = 3.0f;
     f.edited();
     const float vp_aspect = f.frame.scene_viewport.width / f.frame.scene_viewport.height;
-    f.frame.camera = *([&] {
+    f.frame.camera = [&] {
         render::Camera c;
         c.view = *atelier::math::try_look_at_lh(Vec3{0, 1.5f, 0}, Vec3{0, 3.5f, 6.f}, Vec3{0, 1, 0});
         c.projection = {{1.4f / vp_aspect, 0, 0, 0, 0, 1.4f, 0, 0, 0, 0, -.1f / 39.9f, 1, 0, 0, 4 / 39.9f, 0}};
-        return std::optional{c};
-    }());
+        return c;
+    }();
     f.frame.camera_cut = true;
     const auto sky_cap = f.capture("physical-atmosphere-sky", 2);
     const unsigned sky_cx = static_cast<unsigned>(f.frame.scene_viewport.x + 0.5f * f.frame.scene_viewport.width);
@@ -180,7 +180,7 @@ void spot_sky_tonemap_and_pick_cases(Fixture& f) {
 
     const auto box_hits = take(f.renderer.pick_box(std::min(px_left, px_right) - 4u, std::min(py_left, py_right) - 4u,
                                                    std::max(px_left, px_right) + 4u, std::max(py_left, py_right) + 4u));
-    check(box_hits == std::vector<std::uint32_t>{0u, 1u}, "GPU pick_box returns sorted visible instance indices");
+    check(box_hits == atelier::Array<std::uint32_t>{0u, 1u}, "GPU pick_box returns sorted visible instance indices");
 
     std::puts("Renderer spot VSM, physical sky, AgX/PBR-Neutral tonemap & GPU pick: PASS");
 }

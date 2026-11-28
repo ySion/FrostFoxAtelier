@@ -92,9 +92,9 @@ struct ViewportView {
 
     bool show_locators{true};
 
-    std::function<std::optional<GpuPickSample>(std::uint32_t, std::uint32_t)> gpu_pick_pixel;
+    std::function<Optional<GpuPickSample>(std::uint32_t, std::uint32_t)> gpu_pick_pixel;
 
-    std::function<std::vector<std::uint32_t>(std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t)> gpu_pick_box;
+    std::function<Array<std::uint32_t>(std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t)> gpu_pick_box;
 
     // Builds the camera only. The producer must attach the exact drawn group.
     static ViewportView make(const Camera&, ui::Rect bounds, float dpi_scale);

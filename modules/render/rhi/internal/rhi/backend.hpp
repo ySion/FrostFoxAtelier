@@ -1,5 +1,8 @@
 #pragma once
 
+#include "foundation/array.hpp"
+#include "foundation/optional.hpp"
+#include "foundation/span.hpp"
 #include "rhi/rhi.hpp"
 
 #include <Windows.h>
@@ -20,9 +23,6 @@
 #include <atomic>
 #include <cstdint>
 #include <mutex>
-#include <span>
-#include <string>
-#include <vector>
 
 namespace atelier::rhi {
 
@@ -112,7 +112,7 @@ struct PipelineCompileDesc {
 
     const char* shader_model = "6_6";
 
-    std::span<const ShaderStageSource> stages{};
+    Span<const ShaderStageSource> stages{};
 
     GraphicsPipelineStateDesc graphics{};
 };
@@ -184,7 +184,7 @@ private:
 
     std::mutex mutex_;
 
-    std::vector<std::uint32_t> free_indices_;
+    Array<std::uint32_t> free_indices_;
 
     std::uint32_t next_index_ = 0;
 };
@@ -219,8 +219,8 @@ public:
 
     [[nodiscard]] Result<FencePoint> completed_point() const;
 
-    [[nodiscard]] Result<std::uint64_t> submit(QueueKind kind, std::span<nri::CommandBuffer* const> command_buffers,
-                                               std::span<const std::pair<QueueKind, std::uint64_t>> waits = {});
+    [[nodiscard]] Result<std::uint64_t> submit(QueueKind kind, Span<nri::CommandBuffer* const> command_buffers,
+                                               Span<const std::pair<QueueKind, std::uint64_t>> waits = {});
 
     [[nodiscard]] Result<void> wait(QueueKind kind, std::uint64_t value, std::uint32_t timeout_ms) const;
 
@@ -301,7 +301,7 @@ public:
     [[nodiscard]] std::size_t pending_count() const noexcept { return entries_.size(); }
 
 private:
-    std::vector<Entry> entries_;
+    Array<Entry> entries_;
 };
 
 } // namespace detail
@@ -336,7 +336,7 @@ struct BackendAccess {
 
     [[nodiscard]] static Result<PipelineJob> submit_pipeline(Device& device, const PipelineCompileDesc& desc);
 
-    [[nodiscard]] static std::optional<Result<Pipeline>> take_pipeline(Device& device, PipelineJob& job);
+    [[nodiscard]] static Optional<Result<Pipeline>> take_pipeline(Device& device, PipelineJob& job);
 
     [[nodiscard]] static nri::Pipeline* nri_pipeline(const Pipeline& pipeline) noexcept;
 

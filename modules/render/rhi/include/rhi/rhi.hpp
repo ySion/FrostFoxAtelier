@@ -8,9 +8,6 @@
 #include <expected>
 #include <filesystem>
 #include <memory>
-#include <optional>
-#include <string>
-#include <string_view>
 #include <type_traits>
 
 struct HWND__;
@@ -59,12 +56,10 @@ struct Error {
     Error(ErrorCode error_code, std::int32_t native = 0, Utf8Text text = {})
         : code(error_code), native_result(native), message(std::move(text).into_string()) {}
 
-    template <class T>
-        requires(std::same_as<std::remove_cvref_t<T>, std::string> ||
-                 std::same_as<std::remove_cvref_t<T>, std::string_view>)
-    Error(ErrorCode error_code, std::int32_t native, T&& text)
+    template <std::same_as<StringView> SV>
+    Error(ErrorCode error_code, std::int32_t native, SV text)
         : code(error_code), native_result(native),
-          message(String::from_utf8(StringView{std::string_view(text)}).value_or("RHI error"_s)) {}
+          message(String::from_utf8(text).value_or("RHI error"_s)) {}
 
     template <std::same_as<const char*> P>
     Error(ErrorCode error_code, std::int32_t native, P text)
@@ -91,7 +86,7 @@ struct DeviceOptions {
 };
 
 struct DeviceInfo {
-    std::string adapter_name;
+    String adapter_name;
 
     std::uint64_t dedicated_video_memory = 0;
 

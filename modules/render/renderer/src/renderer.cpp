@@ -6,7 +6,13 @@
 #include "detail/material_archetypes.hpp"
 #include "detail/render_scene.hpp"
 #include "detail/vsm_shadow_cache.hpp"
+#include "foundation/array.hpp"
+#include "foundation/hash.hpp"
+#include "foundation/map.hpp"
+#include "foundation/optional.hpp"
 #include "foundation/result.hpp"
+#include "foundation/span.hpp"
+#include "foundation/string.hpp"
 #include "logging/native.hpp"
 #include "math/math.hpp"
 #include "memory/fatal.hpp"
@@ -25,18 +31,12 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
-#include <map>
 #include <mutex>
 #include <numbers>
-#include <optional>
-#include <string>
-#include <string_view>
 #include <thread>
 #include <type_traits>
-#include <unordered_map>
 #include <utility>
 #include <variant>
-#include <vector>
 
 namespace atelier::renderer {
 
@@ -61,13 +61,13 @@ using detail::OwnedTexture;
 using detail::ReadbackSlotRing;
 
 struct FrameCancelled {
-    std::string_view phase;
+    StringView phase;
 };
 
 template <class T>
 using CancellableResult = std::expected<T, std::variant<Error, FrameCancelled>>;
 
-CancellableResult<void> check_stop(const std::function<bool()>* requested, std::string_view phase) {
+CancellableResult<void> check_stop(const std::function<bool()>* requested, StringView phase) {
     if (requested && (*requested)())
         return std::unexpected(FrameCancelled{phase});
     return {};
@@ -796,9 +796,10 @@ struct UiTextureKey {
 };
 
 struct UiTextureHash {
+    using is_avalanching = void;
+
     std::size_t operator()(const UiTextureKey& k) const noexcept {
-        return std::hash<std::uint64_t>{}(k.identity) ^ (std::hash<std::uint64_t>{}(k.revision) << 1u) ^
-               (std::hash<bool>{}(k.color) << 2u);
+        return hash_fields(k.identity, k.revision, k.color);
     }
 };
 
@@ -818,9 +819,7 @@ struct SharedUiTexture {
 struct SharedUiTextureHub {
     std::mutex mutex;
 
-    std::unordered_map<const rhi::Device*,
-                       std::unordered_map<UiTextureKey, std::weak_ptr<SharedUiTexture>, UiTextureHash>>
-        by_device;
+    Map<const rhi::Device*, Map<UiTextureKey, std::weak_ptr<SharedUiTexture>, UiTextureHash>> by_device;
 };
 
 SharedUiTextureHub& ui_texture_hub() {
@@ -981,7 +980,7 @@ struct GridCamera {
     std::array<float, 16> inverse{};
 };
 
-std::optional<GridCamera> prepare_grid_camera(const Frame& frame) {
+Optional<GridCamera> prepare_grid_camera(const Frame& frame) {
     if ((!frame.view.reference_grid && !frame.view.origin_axes) || frame.scene_viewport.width == 0.f ||
         frame.scene_viewport.height == 0.f)
         return {};
@@ -996,7 +995,7 @@ std::optional<GridCamera> prepare_grid_camera(const Frame& frame) {
     return GridCamera{vp.elements, inv.elements};
 }
 
-std::optional<std::array<float, 16>> prepare_cavity_projection(const Frame& frame) {
+Optional<std::array<float, 16>> prepare_cavity_projection(const Frame& frame) {
     const auto& c = frame.view.cavity;
     if (!c.enabled || (c.ridge == 0.f && c.valley == 0.f) || frame.view.shading == Shading::scene_lit ||
         frame.view.wireframe == Wireframe::only || frame.meshes.empty() || frame.scene_viewport.width == 0.f ||
@@ -1102,13 +1101,13 @@ struct Renderer::State {
         rhi::PipelineJob job;
     };
 
-    std::vector<PendingLitPso> lit_pending;
+    Array<PendingLitPso> lit_pending;
 
     std::array<rhi::Pipeline, static_cast<std::size_t>(LitStage::count)> lit_pipelines{};
 
     bool lit_submitted = false;
 
-    std::optional<Error> lit_prep_failure;
+    Optional<Error> lit_prep_failure;
 
     // Subsystems:
     detail::GeometryPool geometry_pool;
@@ -1119,15 +1118,15 @@ struct Renderer::State {
 
     std::size_t live_material_batches = 0u;
 
-    std::map<const source::MaterialProgram*, std::weak_ptr<detail::ProgramArchetype>> archetype_cache;
+    Map<const source::MaterialProgram*, std::weak_ptr<detail::ProgramArchetype>> archetype_cache;
 
-    std::vector<std::weak_ptr<detail::MaterialProgramSet>> program_set_cache;
+    Array<std::weak_ptr<detail::MaterialProgramSet>> program_set_cache;
 
-    std::vector<std::weak_ptr<detail::MaskedCoverageSet>> masked_coverage_cache;
+    Array<std::weak_ptr<detail::MaskedCoverageSet>> masked_coverage_cache;
 
     std::shared_ptr<detail::MaterialProgramSet> active_program_set;
 
-    std::map<std::pair<const material::Image*, assets::AtxRole>, std::shared_ptr<detail::MaterialImageResource>>
+    Map<std::pair<const material::Image*, assets::AtxRole>, std::shared_ptr<detail::MaterialImageResource>>
         material_images;
 
     std::size_t pending_material_uploads = 0u;
@@ -1141,7 +1140,7 @@ struct Renderer::State {
         float scale = 1.0f;
     };
 
-    std::optional<CachedSkyMap> cached_sky_map;
+    Optional<CachedSkyMap> cached_sky_map;
 
     // Persistent Viewport & GPU Picking Targets:
     OwnedTexture matcap;
@@ -1289,7 +1288,7 @@ struct Renderer::State {
         }
     };
 
-    std::vector<std::unique_ptr<LitContextState>> lit_contexts;
+    Array<std::unique_ptr<LitContextState>> lit_contexts;
 
     bool any_lit_rendered = false;
 
@@ -1331,17 +1330,17 @@ struct Renderer::State {
         bool used = false;
     };
 
-    std::unordered_map<UiTextureKey, CachedUiImage, UiTextureHash> ui_images;
+    Map<UiTextureKey, CachedUiImage, UiTextureHash> ui_images;
 
-    std::vector<UiInstance> ui_instances;
+    Array<UiInstance> ui_instances;
 
     std::size_t overlay_instances = 0u;
 
-    std::vector<std::pair<std::uint32_t, const ui::DrawQuad*>> ui_textured;
+    Array<std::pair<std::uint32_t, const ui::DrawQuad*>> ui_textured;
 
     FrameStats stats{};
 
-    std::optional<Error> failure;
+    Optional<Error> failure;
 
     Microsoft::WRL::ComPtr<ID3D12InfoQueue> debug;
 
@@ -1387,15 +1386,17 @@ struct Renderer::State {
         if (!debug)
             return {};
         const UINT64 count = debug->GetNumStoredMessagesAllowedByRetrievalFilter();
-        std::optional<std::string> first_error;
+        Optional<String> first_error;
         for (UINT64 i = 0; i < count; ++i) {
             SIZE_T size = 0;
             if (FAILED(debug->GetMessage(i, nullptr, &size)))
                 continue;
-            std::vector<std::byte> storage(size);
+            Array<std::byte> storage(size);
             auto* message = reinterpret_cast<D3D12_MESSAGE*>(storage.data());
             if (SUCCEEDED(debug->GetMessage(i, message, &size)) && message->Severity <= D3D12_MESSAGE_SEVERITY_ERROR) {
-                first_error.emplace(message->pDescription ? message->pDescription : "D3D12 debug layer error");
+                first_error = String::from_utf8(
+                                  StringView{message->pDescription ? message->pDescription : "D3D12 debug layer error"})
+                                  .value_or(String::from_utf8_validated("D3D12 debug layer error"));
                 break;
             }
         }
@@ -1538,7 +1539,7 @@ struct Renderer::State {
                     lit_pending.clear();
                     return std::unexpected(*lit_prep_failure);
                 }
-                lit_pending.push_back({specs[i].first, std::move(*job)});
+                lit_pending.add({specs[i].first, std::move(*job)});
             }
             {
                 const std::array<rhi::ShaderStageSource, 1> ms_stages{{
@@ -1561,15 +1562,15 @@ struct Renderer::State {
                     lit_pending.clear();
                     return std::unexpected(*lit_prep_failure);
                 }
-                lit_pending.push_back({LitStage::vsm_opaque_ms, std::move(*mjob)});
+                lit_pending.add({LitStage::vsm_opaque_ms, std::move(*mjob)});
             }
             lit_submitted = true;
         }
 
-        for (auto it = lit_pending.begin(); it != lit_pending.end();) {
-            auto taken = rhi::BackendAccess::take_pipeline(*device, it->job);
+        for (std::size_t idx = 0u; idx < lit_pending.size();) {
+            auto taken = rhi::BackendAccess::take_pipeline(*device, lit_pending[idx].job);
             if (!taken) {
-                ++it;
+                ++idx;
                 continue;
             }
             if (!*taken) {
@@ -1577,8 +1578,8 @@ struct Renderer::State {
                 lit_pending.clear();
                 return std::unexpected(*lit_prep_failure);
             }
-            lit_pipelines[static_cast<std::size_t>(it->stage)] = std::move(**taken);
-            it = lit_pending.erase(it);
+            lit_pipelines[static_cast<std::size_t>(lit_pending[idx].stage)] = std::move(**taken);
+            lit_pending.remove_at(idx);
         }
         const std::uint32_t done = total - static_cast<std::uint32_t>(lit_pending.size());
         return Preparation{.done = done, .total = total, .ready = lit_pending.empty()};
@@ -1603,7 +1604,7 @@ struct Renderer::State {
         if (matcap.texture)
             return {};
         constexpr unsigned side = 256u;
-        std::vector<std::uint8_t> pixels(side * side * 4u);
+        Array<std::uint8_t> pixels(side * side * 4u);
         for (unsigned y = 0; y < side; ++y) {
             for (unsigned x = 0; x < side; ++x) {
                 float nx = 2.f * (float(x) + .5f) / side - 1.f;
@@ -1684,7 +1685,7 @@ struct Renderer::State {
         created->scene_identity = scene_identity;
         created->last_used_sequence = seq;
         LitContextState& ref = *created;
-        lit_contexts.push_back(std::move(created));
+        lit_contexts.add(std::move(created));
         return ref;
     }
 
@@ -1904,11 +1905,11 @@ struct Renderer::State {
 
     Result<std::shared_ptr<detail::MaterialImageResource>>
     resolve_material_image(material::ImageRef img, assets::AtxRole role, detail::UploadBatch& upload_batch,
-                           std::vector<std::pair<const material::Image*, assets::AtxRole>>& newly_staged,
+                           Array<std::pair<const material::Image*, assets::AtxRole>>& newly_staged,
                            assets::AtxTextureRef precooked = {}) {
         const auto key = std::pair{img.get(), role};
-        if (const auto found = material_images.find(key); found != material_images.end())
-            return found->second;
+        if (const auto* found = material_images.find(key))
+            return *found;
 
         auto cooked = std::move(precooked);
         if (!cooked) {
@@ -1927,8 +1928,8 @@ struct Renderer::State {
             res->toksvig_slope = assets::compute_atx_toksvig_slope(*cooked);
 
         ATELIER_TRY_ASSIGN(res->gpu, upload_batch.stage_atx_texture(std::move(cooked), "material_atx"));
-        material_images.emplace(key, res);
-        newly_staged.push_back(key);
+        material_images.try_emplace(key, res);
+        newly_staged.add(key);
         return res;
     }
 
@@ -1937,21 +1938,23 @@ struct Renderer::State {
         constexpr bool is_color = std::is_same_v<Pixels, ui::ColorImage>;
         constexpr unsigned channels = is_color ? 4u : 1u;
         const UiTextureKey key{img_owner->identity, img_owner->revision, is_color};
-        auto [it, inserted] = ui_images.try_emplace(key);
-        auto& entry = it->second;
+        auto [entry_ptr, inserted] = ui_images.try_emplace(key);
+        auto& entry = *entry_ptr;
         if (inserted) {
+            const rhi::Device* dev_key = device.get();
             auto& hub = ui_texture_hub();
             {
                 std::scoped_lock lock(hub.mutex);
-                auto& dev_map = hub.by_device[device.get()];
-                if (const auto hit = dev_map.find(key); hit != dev_map.end())
-                    entry.shared = hit->second.lock();
+                if (auto* dev_map = hub.by_device.find(dev_key)) {
+                    if (const auto* hit = dev_map->find(key))
+                        entry.shared = hit->lock();
+                }
             }
             if (!entry.shared) {
                 auto uploaded = upload_ui_rgba_texture(img_owner->pixels.data(), img_owner->width, img_owner->height,
                                                        img_owner->row_pitch, channels, is_color, "ui_image");
                 if (!uploaded) {
-                    ui_images.erase(it);
+                    ui_images.remove(key);
                     Error e = std::move(uploaded).error();
                     e.terminal = true;
                     return std::unexpected(std::move(e));
@@ -1961,12 +1964,12 @@ struct Renderer::State {
                 created->owner = img_owner;
                 created->gpu = std::move(*uploaded);
                 std::scoped_lock lock(hub.mutex);
-                auto& dev_map = hub.by_device[device.get()];
-                auto& weak_slot = dev_map[key];
-                if (auto raced = weak_slot.lock()) {
+                auto [dev_map, _] = hub.by_device.try_emplace(dev_key);
+                auto [weak_slot, __] = dev_map->try_emplace(key);
+                if (auto raced = weak_slot->lock()) {
                     entry.shared = std::move(raced);
                 } else {
-                    weak_slot = created;
+                    *weak_slot = created;
                     entry.shared = std::move(created);
                 }
             }
@@ -2010,7 +2013,7 @@ struct Renderer::State {
                         std::min(shape.width, std::min(shape.points[2] * .5f, shape.points[3] * .5f));
                 }
                 if (overlaps_clip(instance.bounds, clip))
-                    ui_instances.push_back(instance);
+                    ui_instances.add(instance);
             }
             overlay_instances = ui_instances.size();
         }
@@ -2034,8 +2037,8 @@ struct Renderer::State {
                                  : item.image                                        ? UiShading::image
                                                                                      : UiShading::solid;
             if (shading == UiShading::coverage || shading == UiShading::image)
-                ui_textured.emplace_back(static_cast<std::uint32_t>(ui_instances.size()), &item);
-            ui_instances.push_back(
+                ui_textured.emplace(static_cast<std::uint32_t>(ui_instances.size()), &item);
+            ui_instances.add(
                 {item.bounds, item.uv, item.color, item.border_color,
                  capsule ? ui::CornerRadii{item.capsule_width * .5f, 0.f, 0.f, 0.f}
                  : proc  ? item.radius
@@ -2063,7 +2066,7 @@ struct Renderer::State {
                      lc.probe_atlas[i].byte_size + lc.probe_mask[i].byte_size + lc.wrc_slots[i].capacity +
                      lc.froxel_history[i].byte_size;
         }
-        for (const auto& [k, img] : material_images) {
+        for (auto [k, img] : material_images) {
             (void)k;
             total += img->gpu.byte_size;
         }
@@ -2155,12 +2158,14 @@ struct Renderer::State {
         debug.Reset();
 
         {
+            const rhi::Device* dev_key = device.get();
             auto& hub = ui_texture_hub();
             std::scoped_lock lock(hub.mutex);
-            if (auto hub_it = hub.by_device.find(device.get()); hub_it != hub.by_device.end()) {
-                std::erase_if(hub_it->second, [](const auto& kv) { return kv.second.expired(); });
-                if (hub_it->second.empty() || device.use_count() == 1)
-                    hub.by_device.erase(hub_it);
+            if (auto* dev_map = hub.by_device.find(dev_key)) {
+                dev_map->remove_if(
+                    [](const UiTextureKey&, const std::weak_ptr<SharedUiTexture>& w) { return w.expired(); });
+                if (dev_map->empty() || device.use_count() == 1)
+                    hub.by_device.remove(dev_key);
             }
         }
         if (device.use_count() == 1) {
@@ -2292,8 +2297,8 @@ Result<MaterialBatch> Renderer::prepare_materials(Span<const material::ProgramSu
     MaterialBatch batch;
     batch.state_ =
         std::make_unique<detail::MaterialBatchState>(state_.get(), state_->device, state_->live_material_batches);
-    ATELIER_TRY(batch.state_->submit({surfaces.data(), surfaces.size()}, state_->archetype_cache,
-                                     state_->program_set_cache, state_->masked_coverage_cache));
+    ATELIER_TRY(batch.state_->submit(surfaces, state_->archetype_cache, state_->program_set_cache,
+                                     state_->masked_coverage_cache));
     return batch;
 }
 
@@ -2314,14 +2319,14 @@ Result<Preparation> Renderer::preparation(MaterialBatch& batch) {
         return prep;
     }
     if (prep->ready && !candidate.ready) {
-        std::vector<std::pair<const material::Image*, assets::AtxRole>> newly_staged;
+        Array<std::pair<const material::Image*, assets::AtxRole>> newly_staged;
         bool upload_ok = false;
         struct RollbackGuard {
             State* st;
 
             detail::MaterialBatchState* cand;
 
-            std::vector<std::pair<const material::Image*, assets::AtxRole>>* keys;
+            Array<std::pair<const material::Image*, assets::AtxRole>>* keys;
 
             bool* ok;
 
@@ -2334,7 +2339,7 @@ Result<Preparation> Renderer::preparation(MaterialBatch& batch) {
                         cand->input_buffer.retire(*cand->device);
                     }
                     for (const auto& k : *keys)
-                        st->material_images.erase(k);
+                        st->material_images.remove(k);
                 }
             }
         } rollback{state_.get(), &candidate, &newly_staged, &upload_ok};
@@ -2348,15 +2353,15 @@ Result<Preparation> Renderer::preparation(MaterialBatch& batch) {
                 assets::AtxTextureRef cooked;
             };
 
-            std::vector<AtxPrepJob> uncached_jobs;
-            std::vector<std::size_t> req_to_job(candidate.image_requests.size(), SIZE_MAX);
+            Array<AtxPrepJob> uncached_jobs;
+            Array<std::size_t> req_to_job(candidate.image_requests.size(), SIZE_MAX);
             uncached_jobs.reserve(candidate.image_requests.size());
             for (std::size_t i = 0; i < candidate.image_requests.size(); ++i) {
                 const auto& req = candidate.image_requests[i];
                 if (!req.image)
                     continue;
                 const auto key = std::pair{req.image.get(), req.role};
-                if (state_->material_images.find(key) != state_->material_images.end())
+                if (state_->material_images.contains(key))
                     continue;
                 bool already_queued = false;
                 for (const auto& existing : uncached_jobs) {
@@ -2367,7 +2372,7 @@ Result<Preparation> Renderer::preparation(MaterialBatch& batch) {
                 }
                 if (!already_queued) {
                     req_to_job[i] = uncached_jobs.size();
-                    uncached_jobs.push_back(AtxPrepJob{.image = req.image, .role = req.role, .cooked = {}});
+                    uncached_jobs.add(AtxPrepJob{.image = req.image, .role = req.role, .cooked = {}});
                 }
             }
 
@@ -2397,11 +2402,11 @@ Result<Preparation> Renderer::preparation(MaterialBatch& batch) {
                                 job_failed.store(true, std::memory_order_relaxed);
                         }
                     };
-                    std::vector<std::jthread> workers;
+                    Array<std::jthread> workers;
                     workers.reserve(worker_count - 1u);
                     [&]() noexcept {
                         for (std::size_t t = 1u; t < worker_count; ++t)
-                            workers.emplace_back(cook_worker);
+                            workers.emplace(cook_worker);
                     }();
                     cook_worker();
                 } else {
@@ -2419,7 +2424,7 @@ Result<Preparation> Renderer::preparation(MaterialBatch& batch) {
             }
 
             detail::UploadBatch shared_batch(*state_->device, false);
-            std::vector<detail::ResolvedMaterialImage> resolved;
+            Array<detail::ResolvedMaterialImage> resolved;
             resolved.reserve(candidate.image_requests.size());
             candidate.image_owners.reserve(candidate.image_requests.size());
             for (std::size_t i = 0; i < candidate.image_requests.size(); ++i) {
@@ -2436,20 +2441,20 @@ Result<Preparation> Renderer::preparation(MaterialBatch& batch) {
                     role_flags |= 0x20000u;
                 if (req.role == assets::AtxRole::normal_bc5)
                     role_flags |= 0x40000u;
-                resolved.push_back({(*img_res)->gpu.srv_bindless, role_flags, (*img_res)->toksvig_slope});
-                candidate.image_owners.push_back(std::move(*img_res));
+                resolved.add({(*img_res)->gpu.srv_bindless, role_flags, (*img_res)->toksvig_slope});
+                candidate.image_owners.add(std::move(*img_res));
             }
             ATELIER_TRY(candidate.stage_upload(resolved, shared_batch));
             ATELIER_TRY(shared_batch.execute());
 
-            std::vector<const material::Image*> to_evict;
+            Array<const material::Image*> to_evict;
             to_evict.reserve(candidate.image_requests.size());
             for (const auto& req : candidate.image_requests) {
                 if (req.image && req.image->has_resident_pixels())
-                    to_evict.push_back(req.image.get());
+                    to_evict.add(req.image.get());
             }
             std::ranges::sort(to_evict);
-            to_evict.erase(std::unique(to_evict.begin(), to_evict.end()), to_evict.end());
+            to_evict.deduplicate();
             if (to_evict.size() > 1u) {
                 std::atomic<std::size_t> next_evict{0u};
                 const auto hw_threads = std::max<std::size_t>(1u, std::thread::hardware_concurrency());
@@ -2462,11 +2467,11 @@ Result<Preparation> Renderer::preparation(MaterialBatch& batch) {
                         to_evict[idx]->evict_cold_pixels();
                     }
                 };
-                std::vector<std::jthread> workers;
+                Array<std::jthread> workers;
                 workers.reserve(worker_count - 1u);
                 [&]() noexcept {
                     for (std::size_t t = 1u; t < worker_count; ++t)
-                        workers.emplace_back(evict_worker);
+                        workers.emplace(evict_worker);
                 }();
                 evict_worker();
             } else if (to_evict.size() == 1u) {
@@ -2513,7 +2518,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
 
     bool encoding = false;
     auto attempt = [&]() -> CancellableResult<FrameResult> {
-        std::optional<timing::Scope> stage{std::in_place, phases::prepare};
+        Optional<timing::Scope> stage{std::in_place, phases::prepare};
         ATELIER_TRY(check_stop(frame.stop_requested, "prepare"));
 
         if (frame.materials) {
@@ -2685,17 +2690,12 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
         }
 
         // Sweep unreferenced MaterialImages:
-        for (auto it = s.material_images.begin(); it != s.material_images.end();) {
-            if (it->second.use_count() > 1)
-                ++it;
-            else
-                it = s.material_images.erase(it);
-        }
+        s.material_images.remove_if([](const auto&, const auto& img) { return img.use_count() <= 1; });
         s.stats.cached_material_images = s.material_images.size();
         s.stats.material_upload_count = std::exchange(s.pending_material_uploads, 0u);
 
         // Resolve UI textures & upload UI instance slot buffer:
-        for (auto& [k, img] : s.ui_images) {
+        for (auto [k, img] : s.ui_images) {
             (void)k;
             img.used = false;
         }
@@ -2714,13 +2714,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
                 s.stats.overlay_shapes = s.overlay_instances;
             }
         }
-        for (auto it = s.ui_images.begin(); it != s.ui_images.end();) {
-            if (it->second.used) {
-                ++it;
-            } else {
-                it = s.ui_images.erase(it);
-            }
-        }
+        s.ui_images.remove_if([](const UiTextureKey&, const State::CachedUiImage& img) { return !img.used; });
 
         std::uint32_t grid_cb_srv = rhi::bindless_invalid_index;
         if (grid_cam) {
@@ -2731,7 +2725,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
             gc.grid_spacing = frame.view.grid_spacing;
             gc.grid_plane = static_cast<std::uint32_t>(frame.view.grid_plane);
             gc.camera_far_depth = frame.camera.far_depth;
-            ATELIER_TRY_BIND(written_grid, s.grid_cb_slots.write(*s.device, slot_idx, std::span{&gc, 1u}));
+            ATELIER_TRY_BIND(written_grid, s.grid_cb_slots.write(*s.device, slot_idx, Span{&gc, 1u}));
             grid_cb_srv = written_grid->second;
         }
 
@@ -2742,7 +2736,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
             cc.viewport = {frame.scene_viewport.x, frame.scene_viewport.y, frame.scene_viewport.width,
                            frame.scene_viewport.height};
             cc.controls = {frame.view.cavity.ridge, frame.view.cavity.valley, frame.view.cavity.radius, 0.f};
-            ATELIER_TRY_BIND(written_cavity, s.cavity_cb_slots.write(*s.device, slot_idx, std::span{&cc, 1u}));
+            ATELIER_TRY_BIND(written_cavity, s.cavity_cb_slots.write(*s.device, slot_idx, Span{&cc, 1u}));
             cavity_cb_srv = written_cavity->second;
         }
 
@@ -2844,7 +2838,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
                 use_temporal_jitter = (frame.view.lit.antialiasing == Antialiasing::taa);
 
                 if (!frame.lights.empty()) {
-                    std::vector<GpuLightRecord> gpu_lights;
+                    Array<GpuLightRecord> gpu_lights;
                     gpu_lights.reserve(frame.lights.size());
                     std::uint32_t shadow_cnt = 0u;
                     float best_sun_lum = 0.0f;
@@ -2905,7 +2899,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
                         return gl;
                     };
 
-                    std::vector<std::uint64_t> gpu_light_keys;
+                    Array<std::uint64_t> gpu_light_keys;
                     gpu_light_keys.reserve(frame.lights.size());
                     auto make_light_key = [](const Light& l, std::size_t orig_idx) noexcept -> std::uint64_t {
                         return (l.stable_key != 0u) ? l.stable_key
@@ -2926,8 +2920,8 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
                                 primary_sun_idx = static_cast<std::uint32_t>(gpu_lights.size());
                             }
                         }
-                        gpu_lights.push_back(pack_gpu_light(l));
-                        gpu_light_keys.push_back(make_light_key(l, orig_i));
+                        gpu_lights.add(pack_gpu_light(l));
+                        gpu_light_keys.add(make_light_key(l, orig_i));
                     }
                     uploaded_dir_count = static_cast<std::uint32_t>(gpu_lights.size());
                     for (std::size_t orig_i = 0u; orig_i < frame.lights.size(); ++orig_i) {
@@ -2936,8 +2930,8 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
                             continue;
                         if (l.casts_shadow)
                             ++shadow_cnt;
-                        gpu_lights.push_back(pack_gpu_light(l));
-                        gpu_light_keys.push_back(make_light_key(l, orig_i));
+                        gpu_lights.add(pack_gpu_light(l));
+                        gpu_light_keys.add(make_light_key(l, orig_i));
                     }
 
                     if (!mat_batch->program_set->masked_archetype_indices.empty()) {
@@ -3207,7 +3201,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
                 fcb.scene_tile16_offset_packed = (sc_tx0 & 0xFFFFu) | ((sc_ty0 & 0xFFFFu) << 16u);
             }
 
-            ATELIER_TRY_BIND(written_fcb, s.frame_cb_slots.write(*s.device, slot_idx, std::span{&fcb, 1u}));
+            ATELIER_TRY_BIND(written_fcb, s.frame_cb_slots.write(*s.device, slot_idx, Span{&fcb, 1u}));
             frame_cb_srv = written_fcb->second;
 
             if (is_scene_lit) {
@@ -6447,7 +6441,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
                 graph, {.frame_id = frame.ui_frame.id,
                         .collect_timestamps = is_scene_lit,
                         .trace = frame.command_trace,
-                        .trace_scope = frame.command_trace ? frame.trace_scope : std::string_view{}});
+                        .trace_scope = frame.command_trace ? frame.trace_scope : StringView{}});
             const auto submit_dur = timing::Clock::now() - submit_start;
             if (!exec_res)
                 return std::unexpected(Error{exec_res.error(), true});
@@ -6732,7 +6726,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began).count();
         static_cast<void>(ATELIER_LOG(logging::Severity::info, "renderer", "renderer.frame_cancelled",
                                       "Frame cancelled: frame_id={} phase={} elapsed_ms={}", frame.ui_frame.id,
-                                      StringView{cx->phase}, elapsed));
+                                      cx->phase, elapsed));
         return FrameResult{
             .status = FrameStatus::cancelled, .accepted_extent = {}, .next_extent = extent, .stats = s.stats};
     }
@@ -6744,20 +6738,20 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
     return std::unexpected(std::move(e));
 }
 
-Result<std::optional<PickPixelSample>> Renderer::pick_pixel(std::uint32_t x, std::uint32_t y) {
+Result<Optional<PickPixelSample>> Renderer::pick_pixel(std::uint32_t x, std::uint32_t y) {
     if (!state_)
         return std::unexpected(make_error(rhi::ErrorCode::closed, "Renderer is closed"));
     ATELIER_TRY(state_->check());
     auto& s = *state_;
     if (!s.has_pick_target || !s.pick_id_tex.texture || !s.scene_depth.texture || x >= s.pick_id_tex.width ||
         y >= s.pick_id_tex.height) {
-        return std::nullopt;
+        return {};
     }
     const int ix = static_cast<int>(x);
     const int iy = static_cast<int>(y);
     if (ix < s.pick_scissor.left || ix >= s.pick_scissor.right || iy < s.pick_scissor.top ||
         iy >= s.pick_scissor.bottom) {
-        return std::nullopt;
+        return {};
     }
 
     auto& timeline = rhi::BackendAccess::timeline(*s.device);
@@ -6822,7 +6816,7 @@ Result<std::optional<PickPixelSample>> Renderer::pick_pixel(std::uint32_t x, std
 
     ATELIER_TRY(
         check_nri(core.EndCommandBuffer(*cmd), rhi::ErrorCode::execution_failed, "Pick EndCommandBuffer failed", true));
-    auto sub = timeline.submit(rhi::QueueKind::graphics, std::span{&cmd, 1u});
+    auto sub = timeline.submit(rhi::QueueKind::graphics, Span{&cmd, 1u});
     if (!sub)
         return std::unexpected(Error{sub.error(), true});
     rhi::BackendAccess::reclaimer(*s.device).retire({
@@ -6844,7 +6838,7 @@ Result<std::optional<PickPixelSample>> Renderer::pick_pixel(std::uint32_t x, std
     core.UnmapBuffer(*s.pick_readback.buffer);
 
     if (id_pair[0] == 0u)
-        return std::nullopt;
+        return {};
     return PickPixelSample{
         .instance_index = id_pair[0] - 1u,
         .global_triangle_id = id_pair[1],
@@ -6852,13 +6846,13 @@ Result<std::optional<PickPixelSample>> Renderer::pick_pixel(std::uint32_t x, std
     };
 }
 
-Result<std::vector<std::uint32_t>> Renderer::pick_box(std::uint32_t x0, std::uint32_t y0, std::uint32_t x1,
-                                                      std::uint32_t y1) {
+Result<Array<std::uint32_t>> Renderer::pick_box(std::uint32_t x0, std::uint32_t y0, std::uint32_t x1,
+                                                std::uint32_t y1) {
     if (!state_)
         return std::unexpected(make_error(rhi::ErrorCode::closed, "Renderer is closed"));
     ATELIER_TRY(state_->check());
     auto& s = *state_;
-    std::vector<std::uint32_t> hits;
+    Array<std::uint32_t> hits;
     if (!s.has_pick_target || !s.pick_id_tex.texture || s.pick_scissor.right <= s.pick_scissor.left ||
         s.pick_scissor.bottom <= s.pick_scissor.top) {
         return hits;
@@ -6941,7 +6935,7 @@ Result<std::vector<std::uint32_t>> Renderer::pick_box(std::uint32_t x0, std::uin
 
     ATELIER_TRY(check_nri(core.EndCommandBuffer(*cmd), rhi::ErrorCode::execution_failed,
                           "Pick box EndCommandBuffer failed", true));
-    auto sub = timeline.submit(rhi::QueueKind::graphics, std::span{&cmd, 1u});
+    auto sub = timeline.submit(rhi::QueueKind::graphics, Span{&cmd, 1u});
     if (!sub)
         return std::unexpected(Error{sub.error(), true});
     rhi::BackendAccess::reclaimer(*s.device).retire({
@@ -6957,7 +6951,7 @@ Result<std::vector<std::uint32_t>> Renderer::pick_box(std::uint32_t x0, std::uin
     if (!mapped)
         return std::unexpected(make_error(rhi::ErrorCode::out_of_memory, "Pick box MapBuffer failed", true));
 
-    std::vector<std::uint64_t> seen_words;
+    Array<std::uint64_t> seen_words;
     for (std::uint32_t ry = 0u; ry < rh; ++ry) {
         const auto* row = reinterpret_cast<const std::uint32_t*>(mapped + std::size_t(ry) * row_pitch);
         for (std::uint32_t rx = 0u; rx < rw; ++rx) {
@@ -6971,7 +6965,7 @@ Result<std::vector<std::uint32_t>> Renderer::pick_box(std::uint32_t x0, std::uin
             const std::uint64_t bit = 1ull << (inst_idx & 63u);
             if ((seen_words[word_idx] & bit) == 0ull) {
                 seen_words[word_idx] |= bit;
-                hits.push_back(inst_idx);
+                hits.add(inst_idx);
             }
         }
     }

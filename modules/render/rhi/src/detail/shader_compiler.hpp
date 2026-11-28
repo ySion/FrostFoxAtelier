@@ -17,7 +17,7 @@ namespace atelier::rhi::detail {
 struct ShaderSource {
     std::wstring name;
 
-    std::string text;
+    String text;
 
     std::wstring profile;
 
@@ -43,7 +43,7 @@ private:
 
     Microsoft::WRL::ComPtr<IDxcIncludeHandler> includes_;
 
-    std::string identity_;
+    String identity_;
 
     std::filesystem::path cache_;
 };

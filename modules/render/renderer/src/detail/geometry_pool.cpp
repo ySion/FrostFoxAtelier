@@ -43,16 +43,18 @@ GpuMeshDescriptor GeometryPool::make_gpu_descriptor(const GpuGeometryEntry& e) n
 }
 
 void GeometryPool::begin_frame() noexcept {
-    for (auto& [k, e] : entries_) {
+    for (auto [k, ep] : entries_) {
         (void)k;
-        e.used_this_frame = false;
+        ep->used_this_frame = false;
     }
 }
 
 Result<GpuGeometryEntry*> GeometryPool::resolve(rhi::Device& device, const geometry::MeshRef& mesh,
                                                 std::uint64_t current_sequence) {
-    auto [it, inserted] = entries_.try_emplace(mesh.get());
-    GpuGeometryEntry& entry = it->second;
+    auto [slot_ptr, inserted] = entries_.try_emplace(mesh.get());
+    if (!*slot_ptr)
+        *slot_ptr = std::make_unique<GpuGeometryEntry>();
+    GpuGeometryEntry& entry = **slot_ptr;
     const bool same_owner = !inserted && !entry.weak_source.owner_before(mesh) && !mesh.owner_before(entry.weak_source);
     if (!inserted && same_owner && entry.positions.buffer) {
         entry.used_this_frame = true;
@@ -74,7 +76,7 @@ Result<GpuGeometryEntry*> GeometryPool::resolve(rhi::Device& device, const geome
     auto cleanup_on_fail = [&]() noexcept {
         entry.retire_all(device);
         if (!replacing_slot)
-            entries_.erase(it);
+            entries_.remove(mesh.get());
     };
 
     UploadBatch batch(device, false);
@@ -161,7 +163,7 @@ Result<GpuGeometryEntry*> GeometryPool::resolve(rhi::Device& device, const geome
     sum.lod0_part_meshlets.assign(l0.part_count, 0u);
     for (std::uint32_t li = 0u; li < c.lod_count; ++li) {
         const geometry::MeshLodLevel& lv = c.lods[li];
-        std::vector<std::uint32_t> lv_counts(lv.part_count, 0u);
+        Array<std::uint32_t> lv_counts(lv.part_count, 0u);
         std::uint32_t cur_part = 0u;
         for (std::uint32_t m = 0u; m < lv.meshlet_count; ++m) {
             const std::uint32_t tri_base = c.meshlets[lv.first_meshlet + m].global_tri_base;
@@ -190,7 +192,7 @@ Result<GpuGeometryEntry*> GeometryPool::resolve(rhi::Device& device, const geome
         mesh_descriptors_[existing_pool_idx] = make_gpu_descriptor(entry);
     } else {
         entry.mesh_pool_index = static_cast<std::uint32_t>(mesh_descriptors_.size());
-        mesh_descriptors_.push_back(make_gpu_descriptor(entry));
+        mesh_descriptors_.add(make_gpu_descriptor(entry));
     }
 
     entry.used_this_frame = true;
@@ -200,19 +202,19 @@ Result<GpuGeometryEntry*> GeometryPool::resolve(rhi::Device& device, const geome
 
 Result<OwnedAccelerationStructure>
 GeometryPool::build_blas_for_lod(rhi::Device& device, const GpuGeometryEntry& entry, std::uint32_t lod_idx,
-                                 std::span<const std::uint64_t> non_opaque_slot_words,
-                                 std::span<const std::uint64_t> discarded_slot_words, bool force_all_opaque,
+                                 Span<const std::uint64_t> non_opaque_slot_words,
+                                 Span<const std::uint64_t> discarded_slot_words, bool force_all_opaque,
                                  std::uint32_t& out_part_base) {
     const CookedMeshSummary& s = entry.summary;
     const geometry::MeshLodLevel& level = s.lods[lod_idx];
     const std::size_t prev_part_count = part_tri_bases_.size();
     out_part_base = static_cast<std::uint32_t>(prev_part_count);
 
-    std::vector<nri::BottomLevelGeometryDesc> geoms;
+    Array<nri::BottomLevelGeometryDesc> geoms;
     geoms.reserve(std::max<std::uint32_t>(1u, level.part_count));
     for (std::uint32_t p = 0u; p < level.part_count; ++p) {
         const geometry::PartRange& pr = s.lod_parts[level.first_part + p];
-        part_tri_bases_.push_back(pr.global_tri_base);
+        part_tri_bases_.add(pr.global_tri_base);
 
         const std::size_t word_idx = pr.material_slot / 64u;
         const std::uint64_t bit = 1ull << (pr.material_slot % 64u);
@@ -233,7 +235,7 @@ GeometryPool::build_blas_for_lod(rhi::Device& device, const GpuGeometryEntry& en
         gd.triangles.indexOffset = std::uint64_t(pr.global_tri_base) * 3u * sizeof(std::uint32_t);
         gd.triangles.indexNum = is_discarded ? 0u : (pr.triangle_count * 3u);
         gd.triangles.indexType = nri::IndexType::UINT32;
-        geoms.push_back(gd);
+        geoms.add(gd);
     }
 
     const auto& core = rhi::BackendAccess::core(device);
@@ -262,7 +264,7 @@ GeometryPool::build_blas_for_lod(rhi::Device& device, const GpuGeometryEntry& en
 
         bool* open;
 
-        std::vector<std::uint32_t>* parts;
+        Array<std::uint32_t>* parts;
 
         std::size_t prev_parts;
 
@@ -337,7 +339,7 @@ GeometryPool::build_blas_for_lod(rhi::Device& device, const GpuGeometryEntry& en
     cmd_open = false;
 
     auto& timeline = rhi::BackendAccess::timeline(device);
-    auto sub = timeline.submit(rhi::QueueKind::graphics, std::span{&cmd, 1u});
+    auto sub = timeline.submit(rhi::QueueKind::graphics, Span{&cmd, 1u});
     if (!sub)
         return std::unexpected(Error{sub.error(), true});
 
@@ -352,7 +354,7 @@ GeometryPool::build_blas_for_lod(rhi::Device& device, const GpuGeometryEntry& en
     const rhi::QueueKind comp_q = timeline.resolve_kind(rhi::QueueKind::compute);
     if (comp_q != rhi::QueueKind::graphics) {
         const std::pair<rhi::QueueKind, std::uint64_t> blas_sig{rhi::QueueKind::graphics, *sub};
-        auto comp_wait = timeline.submit(comp_q, {}, std::span{&blas_sig, 1u});
+        auto comp_wait = timeline.submit(comp_q, {}, Span{&blas_sig, 1u});
         if (!comp_wait)
             return std::unexpected(Error{comp_wait.error(), true});
     }
@@ -365,8 +367,8 @@ GeometryPool::build_blas_for_lod(rhi::Device& device, const GpuGeometryEntry& en
 
 Result<std::pair<std::uint64_t, std::uint32_t>>
 GeometryPool::ensure_blas(rhi::Device& device, GpuGeometryEntry& entry,
-                          std::span<const std::uint64_t> non_opaque_slot_words,
-                          std::span<const std::uint64_t> discarded_slot_words, bool want_proxy) {
+                          Span<const std::uint64_t> non_opaque_slot_words,
+                          Span<const std::uint64_t> discarded_slot_words, bool want_proxy) {
     if (want_proxy && entry.summary.lod_count >= 3u) {
         if (!entry.proxy_blas.as) {
             const std::uint32_t proxy_lod = std::min<std::uint32_t>(2u, entry.summary.lod_count - 1u);
@@ -384,21 +386,21 @@ GeometryPool::ensure_blas(rhi::Device& device, GpuGeometryEntry& entry,
     }
 
     GpuGeometryEntry::BlasVariant nv{};
-    nv.non_opaque_slot_words.assign(non_opaque_slot_words.begin(), non_opaque_slot_words.end());
-    nv.discarded_slot_words.assign(discarded_slot_words.begin(), discarded_slot_words.end());
+    nv.non_opaque_slot_words.assign(non_opaque_slot_words);
+    nv.discarded_slot_words.assign(discarded_slot_words);
     ATELIER_TRY_ASSIGN(nv.blas, build_blas_for_lod(device, entry, 0u, non_opaque_slot_words, discarded_slot_words,
                                                    false, nv.part_table_base));
     entry.logical_bytes += nv.blas.byte_size;
     const auto res = std::pair{nv.blas.handle, nv.part_table_base};
-    entry.lod0_blas_variants.push_back(std::move(nv));
+    entry.lod0_blas_variants.add(std::move(nv));
     return res;
 }
 
 Result<void> GeometryPool::commit_frame(rhi::Device& device, std::size_t slot_index) {
     if (mesh_descriptors_.empty())
-        mesh_descriptors_.emplace_back();
+        mesh_descriptors_.emplace();
     if (part_tri_bases_.empty())
-        part_tri_bases_.push_back(0u);
+        part_tri_bases_.add(0u);
 
     ATELIER_TRY_BIND(mt, mesh_table_slots_.write(device, slot_index, mesh_descriptors_));
     mesh_table_srv_ = mt->second;
@@ -409,49 +411,47 @@ Result<void> GeometryPool::commit_frame(rhi::Device& device, std::size_t slot_in
 }
 
 void GeometryPool::sweep_unused(rhi::Device& device, std::uint64_t current_sequence) noexcept {
-    bool removed = false;
-    for (auto it = entries_.begin(); it != entries_.end();) {
-        auto& e = it->second;
-        const bool keep_warm = !e.weak_source.expired() && (current_sequence <= e.last_used_sequence + 64u);
-        if (e.used_this_frame || keep_warm) {
-            ++it;
-            continue;
-        }
-        total_logical_bytes_ -= std::min(total_logical_bytes_, e.logical_bytes);
-        e.retire_all(device);
-        it = entries_.erase(it);
-        removed = true;
-    }
-    if (removed) {
+    const std::size_t removed =
+        entries_.remove_if([&](const geometry::Mesh*, const std::unique_ptr<GpuGeometryEntry>& ep) {
+            auto& e = *ep;
+            const bool keep_warm = !e.weak_source.expired() && (current_sequence <= e.last_used_sequence + 64u);
+            if (e.used_this_frame || keep_warm)
+                return false;
+            total_logical_bytes_ -= std::min(total_logical_bytes_, e.logical_bytes);
+            e.retire_all(device);
+            return true;
+        });
+    if (removed > 0u) {
         ++layout_epoch_;
         mesh_descriptors_.clear();
         part_tri_bases_.clear();
-        for (auto& [k, e] : entries_) {
+        for (auto [k, ep] : entries_) {
             (void)k;
+            auto& e = *ep;
             e.mesh_pool_index = static_cast<std::uint32_t>(mesh_descriptors_.size());
-            mesh_descriptors_.push_back(make_gpu_descriptor(e));
+            mesh_descriptors_.add(make_gpu_descriptor(e));
 
             const geometry::MeshLodLevel& l0 = e.summary.lods[0];
             for (auto& bv : e.lod0_blas_variants) {
                 bv.part_table_base = static_cast<std::uint32_t>(part_tri_bases_.size());
                 for (std::uint32_t p = 0u; p < l0.part_count; ++p)
-                    part_tri_bases_.push_back(e.summary.lod_parts[l0.first_part + p].global_tri_base);
+                    part_tri_bases_.add(e.summary.lod_parts[l0.first_part + p].global_tri_base);
             }
             if (e.proxy_blas.as) {
                 const std::uint32_t proxy_lod = std::min<std::uint32_t>(2u, e.summary.lod_count - 1u);
                 const geometry::MeshLodLevel& lp = e.summary.lods[proxy_lod];
                 e.proxy_part_table_base = static_cast<std::uint32_t>(part_tri_bases_.size());
                 for (std::uint32_t p = 0u; p < lp.part_count; ++p)
-                    part_tri_bases_.push_back(e.summary.lod_parts[lp.first_part + p].global_tri_base);
+                    part_tri_bases_.add(e.summary.lod_parts[lp.first_part + p].global_tri_base);
             }
         }
     }
 }
 
 void GeometryPool::clear(rhi::Device& device) noexcept {
-    for (auto& [k, e] : entries_) {
+    for (auto [k, ep] : entries_) {
         (void)k;
-        e.retire_all(device);
+        ep->retire_all(device);
     }
     entries_.clear();
     mesh_descriptors_.clear();

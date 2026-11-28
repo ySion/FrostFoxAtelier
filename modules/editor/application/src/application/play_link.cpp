@@ -175,7 +175,7 @@ void PlayLink::forward(Span<const editor::LiveChange> ops) {
     for (const auto& op : ops) {
         Array<char> encoded;
         Array<std::byte> mesh_bytes;
-        std::string png_bytes;
+        Array<std::byte> png_bytes;
         StringView text = op.text.view();
         Span<const std::byte> content;
         std::filesystem::path file;
@@ -233,7 +233,7 @@ void PlayLink::forward(Span<const editor::LiveChange> ops) {
             }
             encoded = std::move(*written);
             text = StringView{encoded.data(), encoded.size()};
-            content = as_bytes(StringView{png_bytes});
+            content = png_bytes.view();
         } else if (op.mesh) {
             const auto parsed = [&]() -> json::Result<json::Document> {
                 ATELIER_TRY_BIND(mesh, assets::json_format::parse(text));

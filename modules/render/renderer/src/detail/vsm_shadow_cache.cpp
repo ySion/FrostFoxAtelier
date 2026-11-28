@@ -204,8 +204,8 @@ void VsmShadowCache::commit_submitted(std::uint64_t scene_identity, std::uint64_
 Result<VsmFramePlan> VsmShadowCache::prepare_frame(rhi::Device& device, std::size_t slot_index, std::uint64_t sequence,
                                                    const Frame& frame, PersistentRenderScene& scene,
                                                    std::uint64_t masked_material_hash,
-                                                   std::span<GpuLightRecord> gpu_lights,
-                                                   std::span<const std::uint64_t> gpu_light_keys,
+                                                   Span<GpuLightRecord> gpu_lights,
+                                                   Span<const std::uint64_t> gpu_light_keys,
                                                    std::uint32_t dir_light_count, std::uint32_t primary_sun_idx) {
     VsmFramePlan plan{};
     pending_commit_ = false;
@@ -447,9 +447,9 @@ Result<VsmFramePlan> VsmShadowCache::prepare_frame(rhi::Device& device, std::siz
 
         std::array<float, 16> page_vp{};
 
-        std::vector<std::uint32_t> static_insts;
+        Array<std::uint32_t> static_insts;
 
-        std::vector<std::uint32_t> dynamic_insts;
+        Array<std::uint32_t> dynamic_insts;
 
         std::uint64_t static_sig_sum = 0u;
 
@@ -460,7 +460,7 @@ Result<VsmFramePlan> VsmShadowCache::prepare_frame(rhi::Device& device, std::siz
         bool has_dynamic_masked = false;
     };
 
-    std::vector<VirtualPageWork> vpages(vsm_page_table_size);
+    Array<VirtualPageWork> vpages(vsm_page_table_size);
 
     if (has_sun_vsm) {
         for (std::uint32_t c = 0u; c < vsm_cascade_count; ++c) {
@@ -548,10 +548,10 @@ Result<VsmFramePlan> VsmShadowCache::prepare_frame(rhi::Device& device, std::siz
                         const std::uint32_t vx = static_cast<std::uint32_t>(ix) & 15u;
                         auto& w = vpages[cv.virtual_page_base + vy * 16u + vx];
                         if (meta.is_dynamic_shadow) {
-                            w.dynamic_insts.push_back(i);
+                            w.dynamic_insts.add(i);
                             w.has_dynamic_masked |= meta.has_masked_slot;
                         } else {
-                            w.static_insts.push_back(i);
+                            w.static_insts.add(i);
                             w.has_static_masked |= meta.has_masked_slot;
                             w.static_sig_sum += splitmix64(meta.static_signature);
                             w.static_sig_xor ^= splitmix64(meta.static_signature ^ 0xd6e8feb86659fd93ull);
@@ -611,10 +611,10 @@ Result<VsmFramePlan> VsmShadowCache::prepare_frame(rhi::Device& device, std::siz
                 for (std::uint32_t vx = px0; vx <= px1; ++vx) {
                     auto& w = vpages[lv.virtual_page_base + vy * 2u + vx];
                     if (meta.is_dynamic_shadow) {
-                        w.dynamic_insts.push_back(i);
+                        w.dynamic_insts.add(i);
                         w.has_dynamic_masked |= meta.has_masked_slot;
                     } else {
-                        w.static_insts.push_back(i);
+                        w.static_insts.add(i);
                         w.has_static_masked |= meta.has_masked_slot;
                         w.static_sig_sum += splitmix64(meta.static_signature);
                         w.static_sig_xor ^= splitmix64(meta.static_signature ^ 0xd6e8feb86659fd93ull);
@@ -628,10 +628,10 @@ Result<VsmFramePlan> VsmShadowCache::prepare_frame(rhi::Device& device, std::siz
     std::array<std::uint32_t, vsm_page_table_size> gpu_page_table{};
     gpu_page_table.fill(vsm_page_unmapped);
 
-    std::vector<GpuVsmPageJob> static_jobs;
-    std::vector<GpuVsmPageInstancePair> static_pairs;
-    std::vector<GpuVsmPageJob> dynamic_jobs;
-    std::vector<GpuVsmPageInstancePair> dynamic_pairs;
+    Array<GpuVsmPageJob> static_jobs;
+    Array<GpuVsmPageInstancePair> static_pairs;
+    Array<GpuVsmPageJob> dynamic_jobs;
+    Array<GpuVsmPageInstancePair> dynamic_pairs;
     std::uint64_t static_opaque_mls = 0u;
     std::uint64_t static_masked_mls = 0u;
     std::uint64_t dynamic_opaque_mls = 0u;
@@ -715,11 +715,11 @@ Result<VsmFramePlan> VsmShadowCache::prepare_frame(rhi::Device& device, std::siz
                     job.page_view_proj = w.page_vp;
                     job.phys_page = static_phys;
                     job.flags = w.ortho_pancake ? vsm_job_ortho_pancake : 0u;
-                    static_jobs.push_back(job);
+                    static_jobs.add(job);
                     if (!plan.clear_all_static)
-                        plan.static_clear_rects.push_back(page_to_rect(static_phys));
+                        plan.static_clear_rects.add(page_to_rect(static_phys));
                     for (std::uint32_t inst_id : w.static_insts) {
-                        static_pairs.push_back({job_idx, inst_id});
+                        static_pairs.add({job_idx, inst_id});
                         const auto& im = scene.vsm_instances[inst_id];
                         if (im.has_masked_slot)
                             static_masked_mls += im.lod0_meshlets;
@@ -759,18 +759,18 @@ Result<VsmFramePlan> VsmShadowCache::prepare_frame(rhi::Device& device, std::siz
                 const std::uint32_t dyn_phys = next_dynamic_phys++;
                 ++plan.resident_atlas_cells;
                 if (static_phys < vsm_static_page_capacity) {
-                    plan.cow_copies.push_back({static_phys, dyn_phys});
+                    plan.cow_copies.add({static_phys, dyn_phys});
                 } else {
-                    plan.dynamic_clear_rects.push_back(page_to_rect(dyn_phys));
+                    plan.dynamic_clear_rects.add(page_to_rect(dyn_phys));
                 }
                 const auto job_idx = static_cast<std::uint32_t>(dynamic_jobs.size());
                 GpuVsmPageJob job{};
                 job.page_view_proj = w.page_vp;
                 job.phys_page = dyn_phys;
                 job.flags = w.ortho_pancake ? vsm_job_ortho_pancake : 0u;
-                dynamic_jobs.push_back(job);
+                dynamic_jobs.add(job);
                 for (std::uint32_t inst_id : w.dynamic_insts) {
-                    dynamic_pairs.push_back({job_idx, inst_id});
+                    dynamic_pairs.add({job_idx, inst_id});
                     const auto& im = scene.vsm_instances[inst_id];
                     if (im.has_masked_slot)
                         dynamic_masked_mls += im.lod0_meshlets;
@@ -795,7 +795,7 @@ Result<VsmFramePlan> VsmShadowCache::prepare_frame(rhi::Device& device, std::siz
     plan.page_table_srv = pt_w->second;
 
     ATELIER_TRY_BIND(vw_w,
-                     views_ring_.write(device, slot_index, std::span<const GpuVsmLightView>{views.data(), used_views}));
+                     views_ring_.write(device, slot_index, Span<const GpuVsmLightView>{views.data(), used_views}));
     plan.views_srv = vw_w->second;
 
     if (!static_jobs.empty() && !static_pairs.empty()) {

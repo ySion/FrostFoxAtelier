@@ -7,7 +7,6 @@
 #include <filesystem>
 #include <memory>
 #include <type_traits>
-#include <vector>
 
 namespace atelier::geometry {
 
@@ -96,21 +95,21 @@ struct MeshLodLevel {
 
 // Immutable 5-stream GPU-ready Meshlet + discrete LOD (G1) representation of a Mesh.
 struct CookedMeshlets {
-    std::vector<PackedPosition> positions;
+    Array<PackedPosition> positions;
 
-    std::vector<PackedVertexAttributes> attributes;
+    Array<PackedVertexAttributes> attributes;
 
-    std::vector<GpuMeshlet> meshlets;
+    Array<GpuMeshlet> meshlets;
 
-    std::vector<std::uint32_t> meshlet_vertices;
+    Array<std::uint32_t> meshlet_vertices;
 
-    std::vector<std::uint8_t> meshlet_triangles; // 4B-padded per meshlet
+    Array<std::uint8_t> meshlet_triangles; // 4B-padded per meshlet
 
-    std::vector<std::uint32_t> blas_indices; // 3 * total_triangles, exact global_tri_base order
+    Array<std::uint32_t> blas_indices; // 3 * total_triangles, exact global_tri_base order
 
-    std::vector<std::uint32_t> face_meta; // 1 * total_triangles, exact global_tri_base order
+    Array<std::uint32_t> face_meta; // 1 * total_triangles, exact global_tri_base order
 
-    std::vector<PartRange> lod_parts; // Partitioned per (lod, non-empty material-slot bucket)
+    Array<PartRange> lod_parts; // Partitioned per (lod, non-empty material-slot bucket)
 
     std::array<MeshLodLevel, max_mesh_lods> lods{};
 

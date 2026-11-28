@@ -124,17 +124,17 @@ bool is_winding_flipped(const Vertex& v0, const Vertex& v1, const Vertex& v2) no
 // 1. Orients each triangle's half-edges consistently with its authored outward normal (`winding_flipped`).
 // 2. Partitions welded vertices into connected components (shells) so an open leaf card never invalidates a closed trunk.
 // 3. Verifies exact opposite half-edge pairing AND strictly positive enclosed 3D volume (rejecting zero-volume back-to-back cards).
-std::vector<std::uint8_t> compute_pos_shell_closed(std::span<const PackedPosition> unique_pos,
-                                                   std::span<const Vertex> unique_verts,
-                                                   std::span<const unsigned int> pos_remap,
-                                                   std::span<const unsigned int> lod0_indices) {
+Array<std::uint8_t> compute_pos_shell_closed(Span<const PackedPosition> unique_pos,
+                                             Span<const Vertex> unique_verts,
+                                             Span<const unsigned int> pos_remap,
+                                             Span<const unsigned int> lod0_indices) {
     const std::size_t unique_count = unique_pos.size();
     const std::size_t tri_count = lod0_indices.size() / 3u;
-    std::vector<std::uint8_t> pos_closed(unique_count, 0u);
+    Array<std::uint8_t> pos_closed(unique_count, 0u);
     if (unique_count == 0u || tri_count < 4u)
         return pos_closed;
 
-    std::vector<std::uint32_t> dsu(unique_count);
+    Array<std::uint32_t> dsu(unique_count);
     std::iota(dsu.begin(), dsu.end(), 0u);
     auto find_root = [&](std::uint32_t x) noexcept {
         std::uint32_t r = x;
@@ -162,7 +162,7 @@ std::vector<std::uint8_t> compute_pos_shell_closed(std::span<const PackedPositio
         std::uint32_t p2;
     };
 
-    std::vector<OrientedTri> tris;
+    Array<OrientedTri> tris;
     tris.reserve(tri_count);
     for (std::size_t t = 0; t < tri_count; ++t) {
         const unsigned int u0 = lod0_indices[t * 3u + 0u];
@@ -177,7 +177,7 @@ std::vector<std::uint8_t> compute_pos_shell_closed(std::span<const PackedPositio
             std::swap(p1, p2);
         unite(p0, p1);
         unite(p1, p2);
-        tris.push_back({p0, p1, p2});
+        tris.add({p0, p1, p2});
     }
     if (tris.size() < 4u)
         return pos_closed;
@@ -204,11 +204,11 @@ std::vector<std::uint8_t> compute_pos_shell_closed(std::span<const PackedPositio
         bool valid_manifold = true;
     };
 
-    std::vector<ShellEdge> fwd;
-    std::vector<ShellEdge> rev;
+    Array<ShellEdge> fwd;
+    Array<ShellEdge> rev;
     fwd.reserve(tris.size() * 3u);
     rev.reserve(tris.size() * 3u);
-    std::vector<ShellStats> stats(unique_count);
+    Array<ShellStats> stats(unique_count);
 
     for (const OrientedTri& tr : tris) {
         const std::uint32_t comp = find_root(tr.p0);
@@ -239,12 +239,12 @@ std::vector<std::uint8_t> compute_pos_shell_closed(std::span<const PackedPositio
         const double cz = double(c.z) - origin.z;
         st.six_vol += ax * (by * cz - bz * cy) + ay * (bz * cx - bx * cz) + az * (bx * cy - by * cx);
 
-        fwd.push_back({comp, tr.p0, tr.p1});
-        fwd.push_back({comp, tr.p1, tr.p2});
-        fwd.push_back({comp, tr.p2, tr.p0});
-        rev.push_back({comp, tr.p1, tr.p0});
-        rev.push_back({comp, tr.p2, tr.p1});
-        rev.push_back({comp, tr.p0, tr.p2});
+        fwd.add({comp, tr.p0, tr.p1});
+        fwd.add({comp, tr.p1, tr.p2});
+        fwd.add({comp, tr.p2, tr.p0});
+        rev.add({comp, tr.p1, tr.p0});
+        rev.add({comp, tr.p2, tr.p1});
+        rev.add({comp, tr.p0, tr.p2});
     }
 
     std::ranges::sort(fwd);
@@ -306,15 +306,15 @@ struct TriKey {
 };
 
 struct BucketLodOutput {
-    std::vector<GpuMeshlet> meshlets;
+    Array<GpuMeshlet> meshlets;
 
-    std::vector<std::uint32_t> meshlet_vertices;
+    Array<std::uint32_t> meshlet_vertices;
 
-    std::vector<std::uint8_t> meshlet_triangles;
+    Array<std::uint8_t> meshlet_triangles;
 
-    std::vector<std::uint32_t> blas_indices;
+    Array<std::uint32_t> blas_indices;
 
-    std::vector<std::uint32_t> face_meta;
+    Array<std::uint32_t> face_meta;
 
     std::size_t simplified_idx_count{};
 
@@ -322,22 +322,22 @@ struct BucketLodOutput {
 };
 
 BucketLodOutput
-build_bucket_meshlets(std::span<const Vertex> unique_verts, std::span<const unsigned int> pos_remap,
-                      std::span<const std::uint8_t> pos_closed, std::span<const PackedPosition> local_pos,
-                      std::span<const std::uint32_t> local_to_global, std::span<const unsigned int> local_indices,
-                      std::span<const TriKey> sorted_edge_lut, std::uint32_t material_slot, std::uint32_t lod_level) {
+build_bucket_meshlets(Span<const Vertex> unique_verts, Span<const unsigned int> pos_remap,
+                      Span<const std::uint8_t> pos_closed, Span<const PackedPosition> local_pos,
+                      Span<const std::uint32_t> local_to_global, Span<const unsigned int> local_indices,
+                      Span<const TriKey> sorted_edge_lut, std::uint32_t material_slot, std::uint32_t lod_level) {
     BucketLodOutput out;
     if (local_indices.empty() || local_pos.empty())
         return out;
 
-    std::vector<unsigned int> opt_indices(local_indices.size());
+    Array<unsigned int> opt_indices(local_indices.size());
     meshopt_optimizeVertexCache(opt_indices.data(), local_indices.data(), local_indices.size(), local_pos.size());
 
     const std::size_t max_m =
         meshopt_buildMeshletsBound(opt_indices.size(), meshlet_max_vertices, meshlet_max_triangles);
-    std::vector<meshopt_Meshlet> raw_meshlets(max_m);
-    std::vector<unsigned int> ml_verts(opt_indices.size());
-    std::vector<unsigned char> ml_tris(opt_indices.size() + max_m * 3u);
+    Array<meshopt_Meshlet> raw_meshlets(max_m);
+    Array<unsigned int> ml_verts(opt_indices.size());
+    Array<unsigned char> ml_tris(opt_indices.size() + max_m * 3u);
 
     const std::size_t m_count = meshopt_buildMeshlets(
         raw_meshlets.data(), ml_verts.data(), ml_tris.data(), opt_indices.data(), opt_indices.size(), &local_pos[0].x,
@@ -367,15 +367,15 @@ build_bucket_meshlets(std::span<const Vertex> unique_verts, std::span<const unsi
             v_slice[v] = local_to_global[v_slice[v]];
 
         const auto v_off = static_cast<std::uint32_t>(out.meshlet_vertices.size());
-        out.meshlet_vertices.insert(out.meshlet_vertices.end(), v_slice, v_slice + src.vertex_count);
+        out.meshlet_vertices.append(Span<const std::uint32_t>{v_slice, src.vertex_count});
 
         while ((out.meshlet_triangles.size() & 3u) != 0u)
-            out.meshlet_triangles.push_back(0u);
+            out.meshlet_triangles.add(0u);
         const auto t_off = static_cast<std::uint32_t>(out.meshlet_triangles.size());
         const std::size_t tri_bytes = std::size_t(src.triangle_count) * 3u;
-        out.meshlet_triangles.insert(out.meshlet_triangles.end(), t_slice, t_slice + tri_bytes);
+        out.meshlet_triangles.append(Span<const std::uint8_t>{t_slice, tri_bytes});
         while ((out.meshlet_triangles.size() & 3u) != 0u)
-            out.meshlet_triangles.push_back(0u);
+            out.meshlet_triangles.add(0u);
 
         const auto local_tri_base = static_cast<std::uint32_t>(out.face_meta.size());
         std::array<std::array<float, 3>, meshlet_max_triangles> tri_normals{};
@@ -386,9 +386,9 @@ build_bucket_meshlets(std::span<const Vertex> unique_verts, std::span<const unsi
             const std::uint32_t gi0 = v_slice[t_slice[lt * 3u + 0u]];
             const std::uint32_t gi1 = v_slice[t_slice[lt * 3u + 1u]];
             const std::uint32_t gi2 = v_slice[t_slice[lt * 3u + 2u]];
-            out.blas_indices.push_back(gi0);
-            out.blas_indices.push_back(gi1);
-            out.blas_indices.push_back(gi2);
+            out.blas_indices.add(gi0);
+            out.blas_indices.add(gi1);
+            out.blas_indices.add(gi2);
 
             std::uint8_t mask = 7u;
             if (!sorted_edge_lut.empty()) {
@@ -402,7 +402,7 @@ build_bucket_meshlets(std::span<const Vertex> unique_verts, std::span<const unsi
             const Vertex& v2 = unique_verts[gi2];
             const bool winding_flipped = is_winding_flipped(v0, v1, v2);
             const bool closed = (lod_level == 0u) && !pos_closed.empty() && (pos_closed[pos_remap[gi0]] != 0u);
-            out.face_meta.push_back(pack_face_meta(material_slot, mask, closed, winding_flipped));
+            out.face_meta.add(pack_face_meta(material_slot, mask, closed, winding_flipped));
 
             // Exact `winding_flipped`-consistent local outward triangle normal matching `reconstruct_geom_normal`:
             const double e1x = double(v1.position[0]) - v0.position[0];
@@ -489,7 +489,7 @@ build_bucket_meshlets(std::span<const Vertex> unique_verts, std::span<const unsi
         dst.center[1] = bounds.center[1];
         dst.center[2] = bounds.center[2];
         dst.radius = bounds.radius;
-        out.meshlets.push_back(dst);
+        out.meshlets.add(dst);
     }
 
     return out;
@@ -501,55 +501,48 @@ void append_bucket_output(CookedMeshlets& cooked, BucketLodOutput& bo, std::uint
 
     const auto v_base = static_cast<std::uint32_t>(cooked.meshlet_vertices.size());
     while ((cooked.meshlet_triangles.size() & 3u) != 0u)
-        cooked.meshlet_triangles.push_back(0u);
+        cooked.meshlet_triangles.add(0u);
     const auto t_base = static_cast<std::uint32_t>(cooked.meshlet_triangles.size());
     const auto tri_base = static_cast<std::uint32_t>(cooked.face_meta.size());
 
-    cooked.meshlet_vertices.insert(cooked.meshlet_vertices.end(), bo.meshlet_vertices.begin(),
-                                   bo.meshlet_vertices.end());
-    cooked.meshlet_triangles.insert(cooked.meshlet_triangles.end(), bo.meshlet_triangles.begin(),
-                                    bo.meshlet_triangles.end());
-    cooked.blas_indices.insert(cooked.blas_indices.end(), bo.blas_indices.begin(), bo.blas_indices.end());
-    cooked.face_meta.insert(cooked.face_meta.end(), bo.face_meta.begin(), bo.face_meta.end());
+    cooked.meshlet_vertices.append(bo.meshlet_vertices.view());
+    cooked.meshlet_triangles.append(bo.meshlet_triangles.view());
+    cooked.blas_indices.append(bo.blas_indices.view());
+    cooked.face_meta.append(bo.face_meta.view());
 
     cooked.meshlets.reserve(cooked.meshlets.size() + bo.meshlets.size());
     for (GpuMeshlet m : bo.meshlets) {
         m.vertex_offset += v_base;
         m.triangle_offset += t_base;
         m.global_tri_base += tri_base;
-        cooked.meshlets.push_back(m);
+        cooked.meshlets.add(m);
     }
 
-    cooked.lod_parts.push_back(PartRange{
+    cooked.lod_parts.add(PartRange{
         .material_slot = material_slot,
         .global_tri_base = tri_base,
         .triangle_count = static_cast<std::uint32_t>(bo.face_meta.size()),
     });
 
-    bo.meshlets.clear();
-    bo.meshlets.shrink_to_fit();
-    bo.meshlet_vertices.clear();
-    bo.meshlet_vertices.shrink_to_fit();
-    bo.meshlet_triangles.clear();
-    bo.meshlet_triangles.shrink_to_fit();
-    bo.blas_indices.clear();
-    bo.blas_indices.shrink_to_fit();
-    bo.face_meta.clear();
-    bo.face_meta.shrink_to_fit();
+    bo.meshlets.release();
+    bo.meshlet_vertices.release();
+    bo.meshlet_triangles.release();
+    bo.blas_indices.release();
+    bo.face_meta.release();
 }
 
 CookedMeshletsRef build_cooked_meshlets(const Mesh& mesh) {
     ensure_meshopt_allocator();
 
-    const std::span<const Vertex> raw_verts = mesh.vertices();
-    const std::span<const MeshPart> parts = mesh.parts();
-    const std::span<const std::uint8_t> raw_edge_masks = mesh.edge_masks();
+    const Span<const Vertex> raw_verts = mesh.vertices();
+    const Span<const MeshPart> parts = mesh.parts();
+    const Span<const std::uint8_t> raw_edge_masks = mesh.edge_masks();
     const std::size_t raw_count = raw_verts.size();
 
     auto cooked = std::make_shared<CookedMeshlets>();
 
     // Exact bitwise vertex deduplication preserving authored split normals/tangents/UVs (after canonicalizing -0.0f).
-    std::vector<Vertex> clean_raw(raw_count);
+    Array<Vertex> clean_raw(raw_count);
     for (std::size_t i = 0; i < raw_count; ++i) {
         Vertex v = raw_verts[i];
         v.position[0] = canonical_coord(v.position[0]);
@@ -558,18 +551,16 @@ CookedMeshletsRef build_cooked_meshlets(const Mesh& mesh) {
         clean_raw[i] = v;
     }
 
-    std::vector<unsigned int> remap(raw_count);
+    Array<unsigned int> remap(raw_count);
     const std::size_t unique_count =
         meshopt_generateVertexRemap(remap.data(), nullptr, raw_count, clean_raw.data(), raw_count, sizeof(Vertex));
 
-    std::vector<Vertex> unique_verts(unique_count);
-    std::vector<unsigned int> lod0_indices(raw_count);
+    Array<Vertex> unique_verts(unique_count);
+    Array<unsigned int> lod0_indices(raw_count);
     meshopt_remapVertexBuffer(unique_verts.data(), clean_raw.data(), raw_count, sizeof(Vertex), remap.data());
     meshopt_remapIndexBuffer(lod0_indices.data(), nullptr, raw_count, remap.data());
-    clean_raw.clear();
-    clean_raw.shrink_to_fit();
-    remap.clear();
-    remap.shrink_to_fit();
+    clean_raw.release();
+    remap.release();
 
     cooked->positions.resize(unique_count);
     cooked->attributes.resize(unique_count);
@@ -589,14 +580,14 @@ CookedMeshletsRef build_cooked_meshlets(const Mesh& mesh) {
     struct MaterialBucket {
         std::uint32_t material_slot{};
 
-        std::vector<unsigned int> lod0_indices;
+        Array<unsigned int> lod0_indices;
 
-        std::vector<std::uint8_t> lod0_edge_masks;
+        Array<std::uint8_t> lod0_edge_masks;
     };
 
-    std::vector<MaterialBucket> buckets;
+    Array<MaterialBucket> buckets;
     buckets.reserve(std::min(parts.size(), mesh.materials().size()));
-    std::vector<std::uint32_t> slot_to_bucket(mesh.materials().size(), UINT32_MAX);
+    Array<std::uint32_t> slot_to_bucket(mesh.materials().size(), UINT32_MAX);
     for (const MeshPart& part : parts) {
         if (part.vertex_count == 0u)
             continue;
@@ -604,37 +595,33 @@ CookedMeshletsRef build_cooked_meshlets(const Mesh& mesh) {
         if (b == UINT32_MAX) {
             b = static_cast<std::uint32_t>(buckets.size());
             slot_to_bucket[part.material] = b;
-            buckets.push_back(
+            buckets.add(
                 MaterialBucket{.material_slot = part.material, .lod0_indices = {}, .lod0_edge_masks = {}});
         }
         auto& dst = buckets[b];
-        dst.lod0_indices.insert(dst.lod0_indices.end(), lod0_indices.data() + part.first_vertex,
-                                lod0_indices.data() + part.first_vertex + part.vertex_count);
+        dst.lod0_indices.append(Span<const unsigned int>{lod0_indices.data() + part.first_vertex, part.vertex_count});
         if (!raw_edge_masks.empty()) {
             const std::size_t first_tri = part.first_vertex / 3u;
             const std::size_t tri_cnt = part.vertex_count / 3u;
-            dst.lod0_edge_masks.insert(dst.lod0_edge_masks.end(), raw_edge_masks.data() + first_tri,
-                                       raw_edge_masks.data() + first_tri + tri_cnt);
+            dst.lod0_edge_masks.append(raw_edge_masks.slice(first_tri, tri_cnt));
         }
     }
 
     // Single position-only remap shared by per-shell closed-manifold detection AND inter-material seam locking!
-    std::vector<unsigned int> pos_remap(unique_count);
+    Array<unsigned int> pos_remap(unique_count);
     const std::size_t unique_pos_count = meshopt_generateVertexRemap(
         pos_remap.data(), nullptr, unique_count, cooked->positions.data(), unique_count, sizeof(PackedPosition));
-    std::vector<PackedPosition> welded_pos(unique_pos_count);
+    Array<PackedPosition> welded_pos(unique_pos_count);
     meshopt_remapVertexBuffer(welded_pos.data(), cooked->positions.data(), unique_count, sizeof(PackedPosition),
                               pos_remap.data());
 
-    const std::vector<std::uint8_t> pos_closed =
+    const Array<std::uint8_t> pos_closed =
         compute_pos_shell_closed(welded_pos, unique_verts, pos_remap, lod0_indices);
-    welded_pos.clear();
-    welded_pos.shrink_to_fit();
-    lod0_indices.clear();
-    lod0_indices.shrink_to_fit();
+    welded_pos.release();
+    lod0_indices.release();
 
-    std::vector<std::uint32_t> pos_owner_bucket(unique_pos_count, UINT32_MAX);
-    std::vector<std::uint8_t> pos_boundary(unique_pos_count, 0u);
+    Array<std::uint32_t> pos_owner_bucket(unique_pos_count, UINT32_MAX);
+    Array<std::uint8_t> pos_boundary(unique_pos_count, 0u);
     for (std::size_t b = 0; b < buckets.size(); ++b) {
         const auto b_id = static_cast<std::uint32_t>(b);
         for (const unsigned int u_idx : buckets[b].lod0_indices) {
@@ -645,8 +632,7 @@ CookedMeshletsRef build_cooked_meshlets(const Mesh& mesh) {
                 pos_boundary[p_rep] = 1u;
         }
     }
-    pos_owner_bucket.clear();
-    pos_owner_bucket.shrink_to_fit();
+    pos_owner_bucket.release();
 
     const std::size_t total_lod0_tris = raw_count / 3u;
     const bool build_lods = (total_lod0_tris > meshlet_max_triangles);
@@ -657,7 +643,7 @@ CookedMeshletsRef build_cooked_meshlets(const Mesh& mesh) {
         std::array<BucketLodOutput, max_mesh_lods> lods;
     };
 
-    std::vector<BucketAllLods> bucket_results(buckets.size());
+    Array<BucketAllLods> bucket_results(buckets.size());
 
     auto cook_bucket = [&](std::size_t b) {
         const MaterialBucket& bucket = buckets[b];
@@ -670,13 +656,13 @@ CookedMeshletsRef build_cooked_meshlets(const Mesh& mesh) {
         const std::size_t max_local_v = std::min(unique_count, idx_count);
         const std::size_t hash_cap = std::bit_ceil(std::max<std::size_t>(16u, max_local_v * 2u));
         const std::size_t hash_mask = hash_cap - 1u;
-        std::vector<std::uint32_t> ht_keys(hash_cap, UINT32_MAX);
-        std::vector<std::uint32_t> ht_vals(hash_cap, 0u);
+        Array<std::uint32_t> ht_keys(hash_cap, UINT32_MAX);
+        Array<std::uint32_t> ht_vals(hash_cap, 0u);
 
-        std::vector<std::uint32_t> local_to_global;
-        std::vector<PackedPosition> local_pos;
-        std::vector<unsigned char> local_lock;
-        std::vector<unsigned int> local_lod0(idx_count);
+        Array<std::uint32_t> local_to_global;
+        Array<PackedPosition> local_pos;
+        Array<unsigned char> local_lock;
+        Array<unsigned int> local_lod0(idx_count);
         local_to_global.reserve(max_local_v);
         local_pos.reserve(max_local_v);
         if (build_lods)
@@ -696,28 +682,26 @@ CookedMeshletsRef build_cooked_meshlets(const Mesh& mesh) {
                     li = static_cast<std::uint32_t>(local_to_global.size());
                     ht_keys[slot] = gi;
                     ht_vals[slot] = li;
-                    local_to_global.push_back(gi);
-                    local_pos.push_back(cooked->positions[gi]);
+                    local_to_global.add(gi);
+                    local_pos.add(cooked->positions[gi]);
                     if (build_lods)
-                        local_lock.push_back(pos_boundary[pos_remap[gi]]);
+                        local_lock.add(pos_boundary[pos_remap[gi]]);
                     break;
                 }
                 slot = (slot + 1u) & hash_mask;
             }
             local_lod0[k] = li;
         }
-        ht_keys.clear();
-        ht_keys.shrink_to_fit();
-        ht_vals.clear();
-        ht_vals.shrink_to_fit();
+        ht_keys.release();
+        ht_vals.release();
 
-        std::vector<TriKey> edge_lut;
+        Array<TriKey> edge_lut;
         if (!bucket.lod0_edge_masks.empty()) {
             const std::size_t src_tris = idx_count / 3u;
             edge_lut.reserve(src_tris);
             for (std::size_t t = 0; t < src_tris; ++t) {
-                edge_lut.push_back({bucket.lod0_indices[t * 3u + 0u], bucket.lod0_indices[t * 3u + 1u],
-                                    bucket.lod0_indices[t * 3u + 2u], bucket.lod0_edge_masks[t]});
+                edge_lut.add({bucket.lod0_indices[t * 3u + 0u], bucket.lod0_indices[t * 3u + 1u],
+                              bucket.lod0_indices[t * 3u + 2u], bucket.lod0_edge_masks[t]});
             }
             std::ranges::sort(edge_lut);
         }
@@ -725,14 +709,13 @@ CookedMeshletsRef build_cooked_meshlets(const Mesh& mesh) {
         res.lods[0] = build_bucket_meshlets(unique_verts, pos_remap, pos_closed, local_pos, local_to_global, local_lod0,
                                             edge_lut, bucket.material_slot, 0u);
         res.lods[0].simplified_idx_count = idx_count;
-        edge_lut.clear();
-        edge_lut.shrink_to_fit();
+        edge_lut.release();
 
         if (!build_lods)
             return;
 
         const std::size_t local_v_count = local_to_global.size();
-        std::vector<float> local_attr(local_v_count * 9u);
+        Array<float> local_attr(local_v_count * 9u);
         for (std::size_t i = 0; i < local_v_count; ++i) {
             const Vertex& v = unique_verts[local_to_global[i]];
             local_attr[i * 9u + 0u] = v.normal[0];
@@ -751,7 +734,7 @@ CookedMeshletsRef build_cooked_meshlets(const Mesh& mesh) {
         constexpr std::array<float, 3> target_errors = {0.015f, 0.05f, 0.15f};
         const float local_scale = meshopt_simplifyScale(&local_pos[0].x, local_v_count, sizeof(PackedPosition));
 
-        std::vector<unsigned int> simplified;
+        Array<unsigned int> simplified;
         for (std::uint32_t lod = 1u; lod < max_mesh_lods; ++lod) {
             if (idx_count <= 36u) {
                 res.lods[lod] = build_bucket_meshlets(unique_verts, pos_remap, {}, local_pos, local_to_global,
@@ -795,11 +778,11 @@ CookedMeshletsRef build_cooked_meshlets(const Mesh& mesh) {
                 cook_bucket(b);
             }
         };
-        std::vector<std::jthread> workers;
+        Array<std::jthread> workers;
         workers.reserve(worker_count - 1u);
         [&]() noexcept {
             for (std::size_t t = 1u; t < worker_count; ++t)
-                workers.emplace_back(worker_fn);
+                workers.emplace(worker_fn);
         }();
         worker_fn();
     } else {
@@ -807,15 +790,11 @@ CookedMeshletsRef build_cooked_meshlets(const Mesh& mesh) {
             cook_bucket(b);
     }
 
-    unique_verts.clear();
-    unique_verts.shrink_to_fit();
-    pos_remap.clear();
-    pos_remap.shrink_to_fit();
+    unique_verts.release();
+    pos_remap.release();
     for (auto& bucket : buckets) {
-        bucket.lod0_indices.clear();
-        bucket.lod0_indices.shrink_to_fit();
-        bucket.lod0_edge_masks.clear();
-        bucket.lod0_edge_masks.shrink_to_fit();
+        bucket.lod0_indices.release();
+        bucket.lod0_edge_masks.release();
     }
 
     cooked->blas_indices.reserve(total_lod0_tris * 5u + 16u);
@@ -878,11 +857,11 @@ CookedMeshletsRef build_cooked_meshlets(const Mesh& mesh) {
         }
     }
 
-    cooked->meshlet_triangles.insert(cooked->meshlet_triangles.end(), 4u, 0u);
+    cooked->meshlet_triangles.append(4u, 0u);
     return cooked;
 }
 
-std::string compute_mesh_cache_digest(const Mesh& mesh) noexcept {
+String compute_mesh_cache_digest(const Mesh& mesh) noexcept {
     foundation::Sha256 sha;
     const std::uint32_t header_words[4] = {
         amsh_version,
@@ -901,19 +880,18 @@ std::string compute_mesh_cache_digest(const Mesh& mesh) noexcept {
     const auto mask_count = static_cast<std::uint64_t>(masks.size());
     sha.add(atelier::as_bytes(Span{&mask_count, 1u}));
     if (!masks.empty())
-        sha.add(atelier::as_bytes(Span{masks.data(), masks.size()}));
+        sha.add(atelier::as_bytes(masks));
 
     const auto parts = mesh.parts();
     const auto part_count = static_cast<std::uint64_t>(parts.size());
     sha.add(atelier::as_bytes(Span{&part_count, 1u}));
     sha.add(atelier::as_bytes(parts));
 
-    const String fin = sha.finish();
-    return std::string(fin.view().std_view());
+    return sha.finish();
 }
 
 template <class T>
-bool read_vec(std::ifstream& in, std::vector<T>& dst, std::uint64_t count) {
+bool read_vec(std::ifstream& in, Array<T>& dst, std::uint64_t count) {
     dst.resize(static_cast<std::size_t>(count));
     if (count == 0u)
         return true;
@@ -922,7 +900,7 @@ bool read_vec(std::ifstream& in, std::vector<T>& dst, std::uint64_t count) {
 }
 
 template <class T>
-bool write_vec(std::ofstream& out, const std::vector<T>& src) {
+bool write_vec(std::ofstream& out, const Array<T>& src) {
     if (src.empty())
         return true;
     const auto bytes = static_cast<std::streamsize>(src.size() * sizeof(T));
@@ -1067,8 +1045,9 @@ void write_amsh_atomic(const std::filesystem::path& cache_dir, const std::filesy
 
 CookedMeshletsRef load_or_cook_raw(const Mesh& mesh, const std::filesystem::path& cache_dir) {
     if (!cache_dir.empty()) {
-        const std::string digest = compute_mesh_cache_digest(mesh);
-        const std::filesystem::path file = cache_dir / (digest + "-v" + std::to_string(amsh_version) + ".amsh");
+        const String digest = compute_mesh_cache_digest(mesh);
+        const String fname = String::concat(digest, "-v", amsh_version, ".amsh");
+        const std::filesystem::path file = cache_dir / fname.c_str();
         if (auto cached = try_read_amsh(file))
             return cached;
         auto cooked = build_cooked_meshlets(mesh);

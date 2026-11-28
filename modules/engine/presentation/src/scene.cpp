@@ -489,8 +489,8 @@ Result<void> Scene::update_meshes(std::uint64_t serial, const detail::Presented*
     mesh_tracker_.dirty.clear();
     generator_tracker_.dirty.clear();
     // The bucket keeps its components and order until World::revision advances.
-    const auto same_capability_members = [](std::span<const world::CapabilityMember> a,
-                                            std::span<const world::CapabilityMember> b) noexcept {
+    const auto same_capability_members = [](Span<const world::CapabilityMember> a,
+                                            Span<const world::CapabilityMember> b) noexcept {
         if (a.size() != b.size())
             return false;
         for (std::size_t i = 0; i < a.size(); ++i)
@@ -498,16 +498,15 @@ Result<void> Scene::update_meshes(std::uint64_t serial, const detail::Presented*
                 return false;
         return true;
     };
-    const auto mark_reparented_chains = [&](detail::BucketTracker& tracker, std::span<const ObjectId> prev_chains,
-                                            std::span<const std::uint32_t> prev_starts) {
+    const auto mark_reparented_chains = [&](detail::BucketTracker& tracker, Span<const ObjectId> prev_chains,
+                                            Span<const std::uint32_t> prev_starts) {
         for (std::size_t slot = 0; slot + 1 < tracker.chain_starts.size() && slot + 1 < prev_starts.size(); ++slot) {
             const auto p0 = prev_starts[slot];
             const auto p1 = prev_starts[slot + 1];
             const auto n0 = tracker.chain_starts[slot];
             const auto n1 = tracker.chain_starts[slot + 1];
             if ((p1 - p0) != (n1 - n0) ||
-                !std::ranges::equal(prev_chains.subspan(p0, p1 - p0),
-                                    std::span<const ObjectId>{tracker.chains}.subspan(n0, n1 - n0))) {
+                !std::ranges::equal(prev_chains.slice(p0, p1 - p0), tracker.chains.slice(n0, n1 - n0))) {
                 tracker.mark(static_cast<std::uint32_t>(slot), serial, false);
             }
         }
@@ -517,8 +516,8 @@ Result<void> Scene::update_meshes(std::uint64_t serial, const detail::Presented*
         same_capability_members(*generators, generator_members_);
     if (!same_renderable_buckets) {
         layout_revision_ = world_->revision();
-        mesh_members_.assign(meshes->begin(), meshes->end());
-        generator_members_.assign(generators->begin(), generators->end());
+        mesh_members_.assign(*meshes);
+        generator_members_.assign(*generators);
         mesh_slots_.assign(count, {});
         mesh_tracker_.reset(count);
         generator_slots_.assign(gen_count, {});

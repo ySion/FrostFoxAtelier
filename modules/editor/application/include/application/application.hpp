@@ -171,7 +171,7 @@ private:
 
     editor::Camera camera_;
 
-    std::optional<editor::Camera> saved_world_camera_;
+    Optional<editor::Camera> saved_world_camera_;
 
     editor::ViewportTool viewport_tool_;
 
@@ -287,7 +287,7 @@ private:
         }
     };
 
-    std::optional<PlayIdleSnapshot> play_idle_snapshot_;
+    Optional<PlayIdleSnapshot> play_idle_snapshot_;
 
     bool menu_dirty_{};
 

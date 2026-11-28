@@ -1,17 +1,15 @@
 #pragma once
 
 #include "assets/atx_texture.hpp"
+#include "foundation/map.hpp"
+#include "foundation/optional.hpp"
+#include "foundation/string.hpp"
 #include "gpu_resources.hpp"
 
 #include <array>
 #include <filesystem>
-#include <map>
 #include <memory>
-#include <optional>
-#include <span>
-#include <string>
 #include <thread>
-#include <vector>
 
 namespace atelier::renderer::detail {
 
@@ -107,15 +105,15 @@ struct ProgramArchetype {
         rhi::PipelineJob job;
     };
 
-    std::vector<Pending> base_pending;
+    Array<Pending> base_pending;
 
-    std::optional<Error> base_failure;
+    Optional<Error> base_failure;
 
     rhi::PipelineJob masked_job;
 
     rhi::PipelineJob masked_vsm_job;
 
-    std::optional<Error> masked_failure;
+    Optional<Error> masked_failure;
 
     std::array<rhi::Pipeline, static_cast<std::size_t>(Stage::count)> pipelines{};
 
@@ -127,28 +125,28 @@ struct ProgramArchetype {
 // Independently cached Masked RayQuery PSO keyed strictly by deduplicated canonical coverage slices!
 // Adding or editing opaque materials never recompiles `shadow_ray_masked_cs`.
 struct MaskedCoverageSet {
-    std::vector<std::string> canonical_coverage_slices;
+    Array<String> canonical_coverage_slices;
 
     rhi::PipelineJob job;
 
     rhi::Pipeline pso;
 
-    std::optional<Error> failure;
+    Optional<Error> failure;
 
     [[nodiscard]] Result<Preparation> poll(rhi::Device& device);
 };
 
 // Lightweight set of `ProgramArchetype`s referenced by a `MaterialBatch` + shared `MaskedCoverageSet`.
 struct MaterialProgramSet {
-    std::vector<std::shared_ptr<ProgramArchetype>> archetypes;
+    Array<std::shared_ptr<ProgramArchetype>> archetypes;
 
-    std::vector<bool> masked_flags;
+    Array<bool> masked_flags;
 
-    std::vector<std::uint32_t> masked_archetype_indices;
+    Array<std::uint32_t> masked_archetype_indices;
 
     std::shared_ptr<MaskedCoverageSet> masked_coverage;
 
-    std::optional<Error> failure;
+    Optional<Error> failure;
 
     [[nodiscard]] const rhi::Pipeline& ray_shadow_masked_pso() const noexcept {
         static const rhi::Pipeline empty{};
@@ -167,13 +165,13 @@ struct MaterialBatchState {
 
     std::size_t& live_batches;
 
-    std::vector<material::ProgramSurfaceRef> surfaces;
+    Array<material::ProgramSurfaceRef> surfaces;
 
-    std::vector<GpuSurfaceRecord> records;
+    Array<GpuSurfaceRecord> records;
 
-    std::vector<std::byte> parameters;
+    Array<std::byte> parameters;
 
-    std::vector<GpuTextureInputRecord> inputs;
+    Array<GpuTextureInputRecord> inputs;
 
     struct ImageRequest {
         material::ImageRef image;
@@ -181,9 +179,9 @@ struct MaterialBatchState {
         assets::AtxRole role = assets::AtxRole::linear_rgba;
     };
 
-    std::vector<ImageRequest> image_requests;
+    Array<ImageRequest> image_requests;
 
-    std::vector<std::shared_ptr<MaterialImageResource>> image_owners;
+    Array<std::shared_ptr<MaterialImageResource>> image_owners;
 
     std::shared_ptr<MaterialProgramSet> program_set;
 
@@ -195,7 +193,7 @@ struct MaterialBatchState {
 
     bool ready = false;
 
-    std::optional<Error> failure;
+    Optional<Error> failure;
 
     MaterialBatchState(const void* renderer_tag, std::shared_ptr<rhi::Device> dev, std::size_t& count) noexcept
         : owner_renderer(renderer_tag), device(std::move(dev)), live_batches(count) {
@@ -205,12 +203,12 @@ struct MaterialBatchState {
     ~MaterialBatchState();
 
     [[nodiscard]] Result<void>
-    submit(std::span<const material::ProgramSurfaceRef> input,
-           std::map<const source::MaterialProgram*, std::weak_ptr<ProgramArchetype>>& archetype_cache,
-           std::vector<std::weak_ptr<MaterialProgramSet>>& set_cache,
-           std::vector<std::weak_ptr<MaskedCoverageSet>>& masked_coverage_cache);
+    submit(Span<const material::ProgramSurfaceRef> input,
+           Map<const source::MaterialProgram*, std::weak_ptr<ProgramArchetype>>& archetype_cache,
+           Array<std::weak_ptr<MaterialProgramSet>>& set_cache,
+           Array<std::weak_ptr<MaskedCoverageSet>>& masked_coverage_cache);
 
-    [[nodiscard]] Result<void> stage_upload(std::span<const ResolvedMaterialImage> resolved_images, UploadBatch& batch);
+    [[nodiscard]] Result<void> stage_upload(Span<const ResolvedMaterialImage> resolved_images, UploadBatch& batch);
 };
 
 } // namespace atelier::renderer::detail

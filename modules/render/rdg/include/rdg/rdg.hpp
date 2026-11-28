@@ -1,16 +1,15 @@
 #pragma once
 
+#include "foundation/array.hpp"
 #include "rhi/rhi.hpp"
 
 #include <array>
 #include <cstdint>
-#include <string>
-#include <vector>
 
 namespace atelier::rdg {
 
 struct PassTimingSample {
-    std::string name;
+    String name;
 
     rhi::QueueKind queue = rhi::QueueKind::graphics;
 
@@ -22,7 +21,7 @@ struct PassTimingSample {
 };
 
 struct PipelineStatsSample {
-    std::string pass_name;
+    String pass_name;
 
     std::uint64_t input_vertices = 0;
 
@@ -53,9 +52,9 @@ struct FrameGpuProfile {
     // Interval-union GPU time across Graphics, Async Compute, and Copy queues.
     double union_gpu_ms = 0.0;
 
-    std::vector<PassTimingSample> passes;
+    Array<PassTimingSample> passes;
 
-    std::vector<PipelineStatsSample> pipeline_stats;
+    Array<PipelineStatsSample> pipeline_stats;
 };
 
 struct TransientStats {
@@ -73,7 +72,7 @@ struct TransientStats {
 struct TraceResource {
     std::uint32_t index = 0;
 
-    std::string name;
+    String name;
 
     bool is_texture = true;
 
@@ -115,19 +114,19 @@ struct TraceAccess {
 struct TracePass {
     std::uint32_t ordinal = 0;
 
-    std::string name;
+    String name;
 
-    std::string scope;
+    String scope;
 
     rhi::QueueKind queue = rhi::QueueKind::graphics;
 
     bool culled = false;
 
-    std::string cull_reason;
+    String cull_reason;
 
     bool in_requested_scope = true;
 
-    std::vector<TraceAccess> accesses;
+    Array<TraceAccess> accesses;
 };
 
 struct TraceEdge {
@@ -145,7 +144,7 @@ struct TraceEdge {
 struct TraceSnapshot {
     std::uint64_t recording_sequence = 0;
 
-    std::string requested_scope;
+    String requested_scope;
 
     bool entered = false;
 
@@ -157,11 +156,11 @@ struct TraceSnapshot {
 
     std::uint64_t unaliased_transient_bytes = 0;
 
-    std::vector<TraceResource> resources;
+    Array<TraceResource> resources;
 
-    std::vector<TracePass> passes;
+    Array<TracePass> passes;
 
-    std::vector<TraceEdge> edges;
+    Array<TraceEdge> edges;
 };
 
 } // namespace atelier::rdg

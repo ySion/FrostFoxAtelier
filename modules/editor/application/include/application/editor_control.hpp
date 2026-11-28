@@ -42,7 +42,7 @@ public:
     // Borrow after wants_capture()'s checkpoint, until this render returns.
     rdg::TraceSnapshot* command_trace() const;
 
-    std::string_view trace_scope() const;
+    StringView trace_scope() const;
 
     // Completes the requested-view attempt before fallback/not_ready rewriting.
     // A terminal host outcome (including fallback failure) preserves its file

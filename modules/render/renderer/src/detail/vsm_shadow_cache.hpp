@@ -5,8 +5,6 @@
 
 #include <array>
 #include <cstdint>
-#include <span>
-#include <vector>
 
 namespace atelier::renderer::detail {
 
@@ -156,11 +154,11 @@ struct VsmFramePlan {
 
     bool clear_all_static = false;
 
-    std::vector<nri::Rect> static_clear_rects;
+    Array<nri::Rect> static_clear_rects;
 
-    std::vector<nri::Rect> dynamic_clear_rects;
+    Array<nri::Rect> dynamic_clear_rects;
 
-    std::vector<VsmCopyRegion> cow_copies;
+    Array<VsmCopyRegion> cow_copies;
 
     std::uint32_t mapped_faces = 0u;
 
@@ -183,8 +181,8 @@ public:
                                                      std::uint64_t sequence, const Frame& frame,
                                                      PersistentRenderScene& scene,
                                                      std::uint64_t masked_material_hash,
-                                                     std::span<GpuLightRecord> gpu_lights,
-                                                     std::span<const std::uint64_t> gpu_light_keys,
+                                                     Span<GpuLightRecord> gpu_lights,
+                                                     Span<const std::uint64_t> gpu_light_keys,
                                                      std::uint32_t dir_light_count, std::uint32_t primary_sun_idx);
 
     void commit_submitted(std::uint64_t scene_identity, std::uint64_t masked_material_hash) noexcept;

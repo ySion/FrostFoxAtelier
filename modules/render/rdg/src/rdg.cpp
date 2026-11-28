@@ -149,7 +149,7 @@ namespace {
 LinearArena::LinearArena(std::size_t initial_capacity) {
     const std::size_t cap = std::max<std::size_t>(initial_capacity, 4096u);
     auto* mem = static_cast<std::byte*>(::operator new(cap, std::align_val_t{64}));
-    blocks_.push_back(Block{mem, cap, 0u});
+    blocks_.add(Block{mem, cap, 0u});
 }
 
 LinearArena::~LinearArena() {
@@ -204,7 +204,7 @@ void LinearArena::reset() noexcept {
                 ::operator delete(block.data, std::align_val_t{64});
         }
         blocks_.clear();
-        blocks_.push_back(Block{mem, merged, 0u});
+        blocks_.add(Block{mem, merged, 0u});
     } else if (!blocks_.empty()) {
         blocks_[0].offset = 0u;
     }
@@ -232,18 +232,18 @@ void* LinearArena::allocate_bytes(std::size_t size, std::size_t alignment) {
     const std::size_t doubled = (prev_cap <= (~std::size_t{0}) / 2u) ? (prev_cap * 2u) : (~std::size_t{0} & ~63u);
     const std::size_t grown = std::max(doubled, align_up_size(size + 64u, 4096u));
     auto* mem = static_cast<std::byte*>(::operator new(grown, std::align_val_t{64}));
-    blocks_.push_back(Block{mem, grown, size});
+    blocks_.add(Block{mem, grown, size});
     current_block_ = blocks_.size() - 1u;
     return mem;
 }
 
-std::string_view LinearArena::copy_string(std::string_view text) {
+StringView LinearArena::copy_string(StringView text) {
     if (text.empty())
         return {};
     auto* dst = allocate<char>(text.size() + 1u);
     std::memcpy(dst, text.data(), text.size());
     dst[text.size()] = '\0';
-    return std::string_view{dst, text.size()};
+    return StringView{dst, text.size()};
 }
 
 // ============================================================================
@@ -257,7 +257,7 @@ struct MipTrackingState {
 };
 
 struct Graph::TextureNode {
-    std::string_view name{};
+    StringView name{};
 
     TextureDesc desc{};
 
@@ -307,7 +307,7 @@ struct Graph::TextureNode {
 };
 
 struct Graph::BufferNode {
-    std::string_view name{};
+    StringView name{};
 
     BufferDesc desc{};
 
@@ -389,9 +389,9 @@ struct Graph::DepthTargetBinding {
 };
 
 struct Graph::PassNode {
-    std::string_view name{};
+    StringView name{};
 
-    std::string_view scope{};
+    StringView scope{};
 
     rhi::QueueKind requested_queue = rhi::QueueKind::graphics;
 
@@ -405,7 +405,7 @@ struct Graph::PassNode {
 
     bool culled = false;
 
-    std::string_view cull_reason{};
+    StringView cull_reason{};
 
     PassAccess* first_access = nullptr;
 
@@ -430,7 +430,7 @@ Graph::Graph(LinearArena& arena) noexcept : arena_(arena) {
     passes_.reserve(64u);
 }
 
-TextureHandle Graph::create_texture(std::string_view name, const TextureDesc& desc) {
+TextureHandle Graph::create_texture(StringView name, const TextureDesc& desc) {
     auto* node = arena_.construct<TextureNode>();
     node->name = arena_.copy_string(name);
     node->desc = desc;
@@ -439,11 +439,11 @@ TextureHandle Graph::create_texture(std::string_view name, const TextureDesc& de
     node->initial_state = {nri::AccessBits::NONE, nri::Layout::UNDEFINED, nri::StageBits::NONE};
     node->current_state = node->initial_state;
     const auto index = static_cast<std::uint32_t>(textures_.size());
-    textures_.push_back(node);
+    textures_.add(node);
     return TextureHandle{index};
 }
 
-BufferHandle Graph::create_buffer(std::string_view name, const BufferDesc& desc) {
+BufferHandle Graph::create_buffer(StringView name, const BufferDesc& desc) {
     auto* node = arena_.construct<BufferNode>();
     node->name = arena_.copy_string(name);
     node->desc = desc;
@@ -451,11 +451,11 @@ BufferHandle Graph::create_buffer(std::string_view name, const BufferDesc& desc)
     node->initial_state = {nri::AccessBits::NONE, nri::StageBits::NONE};
     node->current_state = node->initial_state;
     const auto index = static_cast<std::uint32_t>(buffers_.size());
-    buffers_.push_back(node);
+    buffers_.add(node);
     return BufferHandle{index};
 }
 
-TextureHandle Graph::import_texture(std::string_view name, nri::Texture* texture, TextureState initial_state,
+TextureHandle Graph::import_texture(StringView name, nri::Texture* texture, TextureState initial_state,
                                     TextureState final_state, ImportedTextureViews views,
                                     TextureState* out_committed_state) {
     if (!texture)
@@ -471,11 +471,11 @@ TextureHandle Graph::import_texture(std::string_view name, nri::Texture* texture
     node->out_committed_state = out_committed_state;
     node->views = views;
     const auto index = static_cast<std::uint32_t>(textures_.size());
-    textures_.push_back(node);
+    textures_.add(node);
     return TextureHandle{index};
 }
 
-BufferHandle Graph::import_buffer(std::string_view name, nri::Buffer* buffer, BufferState initial_state,
+BufferHandle Graph::import_buffer(StringView name, nri::Buffer* buffer, BufferState initial_state,
                                   BufferState final_state, ImportedBufferViews views,
                                   BufferState* out_committed_state) {
     if (!buffer)
@@ -491,7 +491,7 @@ BufferHandle Graph::import_buffer(std::string_view name, nri::Buffer* buffer, Bu
     node->out_committed_state = out_committed_state;
     node->views = views;
     const auto index = static_cast<std::uint32_t>(buffers_.size());
-    buffers_.push_back(node);
+    buffers_.add(node);
     return BufferHandle{index};
 }
 
@@ -511,7 +511,7 @@ void Graph::export_buffer(BufferHandle handle, BufferState final_state) {
     node.final_state = final_state;
 }
 
-std::uint32_t Graph::begin_pass(std::string_view name, rhi::QueueKind queue, void* callable, PassThunk thunk) {
+std::uint32_t Graph::begin_pass(StringView name, rhi::QueueKind queue, void* callable, PassThunk thunk) {
     auto* pass = arena_.construct<PassNode>();
     pass->name = arena_.copy_string(name);
     pass->requested_queue = queue;
@@ -519,7 +519,7 @@ std::uint32_t Graph::begin_pass(std::string_view name, rhi::QueueKind queue, voi
     pass->callable = callable;
     pass->thunk = thunk;
     const auto index = static_cast<std::uint32_t>(passes_.size());
-    passes_.push_back(pass);
+    passes_.add(pass);
     return index;
 }
 
@@ -676,7 +676,7 @@ void PassBuilder::copy_dest_buffer(BufferHandle handle) {
     write_buffer(handle, nri::AccessBits::COPY_DESTINATION, nri::StageBits::COPY);
 }
 
-void PassBuilder::set_scope(std::string_view scope) noexcept {
+void PassBuilder::set_scope(StringView scope) noexcept {
     graph_.passes_[pass_index_]->scope = graph_.arena_.copy_string(scope);
 }
 
@@ -864,13 +864,13 @@ struct CachedPlacedObject {
 
     std::uint32_t uav_bindless = rhi::bindless_invalid_index;
 
-    std::vector<nri::Descriptor*> mip_srvs;
+    Array<nri::Descriptor*> mip_srvs;
 
-    std::vector<std::uint32_t> mip_srv_bindless;
+    Array<std::uint32_t> mip_srv_bindless;
 
-    std::vector<nri::Descriptor*> mip_uavs;
+    Array<nri::Descriptor*> mip_uavs;
 
-    std::vector<std::uint32_t> mip_uav_bindless;
+    Array<std::uint32_t> mip_uav_bindless;
 
     std::uint64_t last_used_sequence = 0u;
 };
@@ -885,7 +885,7 @@ struct CommandSlice {
     struct QueueCmdPool {
         nri::CommandAllocator* allocator = nullptr;
 
-        std::vector<nri::CommandBuffer*> buffers;
+        Array<nri::CommandBuffer*> buffers;
 
         std::uint32_t used = 0u;
     };
@@ -901,7 +901,7 @@ struct CommandSlice {
     bool has_pipeline_stats = false;
 
     struct PendingTimestamp {
-        std::string name;
+        String name;
 
         rhi::QueueKind queue = rhi::QueueKind::graphics;
 
@@ -909,14 +909,14 @@ struct CommandSlice {
     };
 
     struct PendingPipeStat {
-        std::string name;
+        String name;
 
         std::uint32_t stat_index = 0u;
     };
 
-    std::vector<PendingTimestamp> pending_timestamps;
+    Array<PendingTimestamp> pending_timestamps;
 
-    std::vector<PendingPipeStat> pending_stats;
+    Array<PendingPipeStat> pending_stats;
 
     std::array<rhi::ClockCalibration, 3> calibrations{};
 };
@@ -924,9 +924,9 @@ struct CommandSlice {
 struct ExecutorState {
     rhi::Device* device = nullptr;
 
-    std::vector<TransientHeap> heaps;
+    Array<TransientHeap> heaps;
 
-    std::vector<CachedPlacedObject> placed_cache;
+    Array<CachedPlacedObject> placed_cache;
 
     std::uint64_t sequence = 0u;
 
@@ -1236,7 +1236,7 @@ void harvest_completed_slice(detail::ExecutorState& state, detail::CommandSlice&
                 return shifted > 0.0 ? static_cast<std::uint64_t>(shifted) : 0u;
             };
 
-            std::vector<std::pair<std::uint64_t, std::uint64_t>> intervals;
+            Array<std::pair<std::uint64_t, std::uint64_t>> intervals;
             intervals.reserve(slice.pending_timestamps.size());
 
             for (std::size_t i = 0u; i < slice.pending_timestamps.size(); ++i) {
@@ -1250,9 +1250,9 @@ void harvest_completed_slice(detail::ExecutorState& state, detail::CommandSlice&
                     ms = (static_cast<double>(t1 - t0) * 1000.0) / static_cast<double>(freq);
                 const std::uint64_t ns0 = to_unified_ns(item.queue, t0);
                 const std::uint64_t ns1 = std::max(ns0, to_unified_ns(item.queue, t1));
-                profile.passes.push_back(PassTimingSample{std::move(item.name), item.queue, ms, ns0, ns1});
+                profile.passes.add(PassTimingSample{std::move(item.name), item.queue, ms, ns0, ns1});
                 if (ns1 > ns0)
-                    intervals.emplace_back(ns0, ns1);
+                    intervals.emplace(ns0, ns1);
             }
             core.UnmapBuffer(*state.timestamp_readback);
 
@@ -1300,7 +1300,7 @@ void harvest_completed_slice(detail::ExecutorState& state, detail::CommandSlice&
                 out.task_invocations = stat.taskShaderInvocationNum;
                 out.mesh_invocations = stat.meshShaderInvocationNum;
                 out.mesh_primitives = stat.meshShaderPrimitiveNum;
-                profile.pipeline_stats.push_back(std::move(out));
+                profile.pipeline_stats.add(std::move(out));
             }
             core.UnmapBuffer(*state.stats_readback);
         }
@@ -1493,7 +1493,7 @@ acquire_command_buffer(detail::ExecutorState& state, detail::CommandSlice& slice
         nri::CommandBuffer* cb = nullptr;
         ATELIER_TRY(check_nri(core.CreateCommandBuffer(*pool.allocator, cb), rhi::ErrorCode::creation_failed,
                               "RDG CreateCommandBuffer failed"));
-        pool.buffers.push_back(cb);
+        pool.buffers.add(cb);
     }
     nri::CommandBuffer* cb = pool.buffers[pool.used++];
     ATELIER_TRY(check_nri(core.BeginCommandBuffer(*cb, nullptr), rhi::ErrorCode::execution_failed,
@@ -1633,7 +1633,7 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
     if (options.trace) {
         *options.trace = TraceSnapshot{};
         options.trace->recording_sequence = current_seq;
-        options.trace->requested_scope = std::string(options.trace_scope);
+        options.trace->requested_scope = String::from_utf8(options.trace_scope).value_or(""_s);
         options.trace->entered = true;
     }
 
@@ -1722,18 +1722,18 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
         return {m0, std::max<std::uint16_t>(static_cast<std::uint16_t>(m0 + 1u), m1)};
     };
 
-    std::vector<std::uint32_t> tex_hazard_bases(graph.textures_.size(), 0u);
+    Array<std::uint32_t> tex_hazard_bases(graph.textures_.size(), 0u);
     std::uint32_t total_tex_mips = 0u;
     for (std::size_t ti = 0u; ti < graph.textures_.size(); ++ti) {
         tex_hazard_bases[ti] = total_tex_mips;
         total_tex_mips += graph.textures_[ti]->resolved_mip_count;
     }
-    std::vector<HazardTracker> tex_mip_hazards(total_tex_mips);
-    std::vector<HazardTracker> buf_hazards(graph.buffers_.size());
-    std::vector<TraceEdge> dag_edges;
+    Array<HazardTracker> tex_mip_hazards(total_tex_mips);
+    Array<HazardTracker> buf_hazards(graph.buffers_.size());
+    Array<TraceEdge> dag_edges;
 
     // Cross-queue dependency matrix: pass_waits[p][q] = latest pass index on queue q that pass p depends on.
-    std::vector<std::array<std::uint32_t, 3>> pass_waits(
+    Array<std::array<std::uint32_t, 3>> pass_waits(
         graph.passes_.size(), {invalid_handle_index, invalid_handle_index, invalid_handle_index});
 
     auto record_dep = [&](std::uint32_t pred, std::uint32_t dst_p, std::uint32_t res_id) {
@@ -1742,7 +1742,7 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
         const rhi::QueueKind src_q = graph.passes_[pred]->resolved_queue;
         const rhi::QueueKind dst_q = graph.passes_[dst_p]->resolved_queue;
         const bool cross = (src_q != dst_q);
-        dag_edges.push_back(TraceEdge{pred, dst_p, res_id, cross});
+        dag_edges.add(TraceEdge{pred, dst_p, res_id, cross});
         if (cross) {
             auto& slot = pass_waits[dst_p][static_cast<std::size_t>(src_q)];
             slot = (slot == invalid_handle_index) ? pred : std::max(slot, pred);
@@ -1837,7 +1837,7 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
     // Compute transitive happens-before relation across queues for safe transient memory aliasing.
     const std::size_t pass_count = graph.passes_.size();
     const std::size_t word_count = (pass_count + 63u) / 64u;
-    std::vector<std::uint64_t> ancestors(pass_count * word_count, 0u);
+    Array<std::uint64_t> ancestors(pass_count * word_count, 0u);
     std::array<std::uint32_t, 3> prev_on_queue{invalid_handle_index, invalid_handle_index, invalid_handle_index};
     for (std::uint32_t p = 0u; p < static_cast<std::uint32_t>(pass_count); ++p) {
         if (graph.passes_[p]->culled)
@@ -1887,7 +1887,7 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
         nri::BufferDesc nri_buf{};
     };
 
-    std::vector<PlacedLease> leases;
+    Array<PlacedLease> leases;
     leases.reserve(graph.textures_.size() + graph.buffers_.size());
     std::uint64_t unaliased_sum = 0u;
 
@@ -1906,7 +1906,7 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
         lease.size = lease.mem_desc.size;
         tex.byte_size = lease.size;
         unaliased_sum += lease.size;
-        leases.push_back(lease);
+        leases.add(lease);
     }
 
     for (std::uint32_t i = 0u; i < static_cast<std::uint32_t>(graph.buffers_.size()); ++i) {
@@ -1924,7 +1924,7 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
         lease.size = lease.mem_desc.size;
         buf.byte_size = lease.size;
         unaliased_sum += lease.size;
-        leases.push_back(lease);
+        leases.add(lease);
     }
 
     // Sort descending by size so large GBuffer/HDR targets anchor stable base offsets across frames.
@@ -1935,9 +1935,9 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
     });
 
     const std::uint64_t granularity = std::max<std::uint64_t>(1u, dev_desc.memory.bufferTextureGranularity);
-    std::vector<std::uint64_t> heap_watermarks(state.heaps.size(), 0u);
-    std::vector<std::uint8_t> heap_used_queues(state.heaps.size(), 0u);
-    std::vector<bool> heap_needs_msaa(state.heaps.size(), false);
+    Array<std::uint64_t> heap_watermarks(state.heaps.size(), 0u);
+    Array<std::uint8_t> heap_used_queues(state.heaps.size(), 0u);
+    Array<bool> heap_needs_msaa(state.heaps.size(), false);
 
     auto find_or_add_heap = [&](nri::MemoryType mem_type, bool dedicated, bool is_msaa,
                                 std::uint64_t min_size) -> std::uint32_t {
@@ -1967,14 +1967,14 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
         heap.memory_type = mem_type;
         heap.dedicated = dedicated;
         heap.allow_msaa = is_msaa;
-        state.heaps.push_back(heap);
-        heap_watermarks.push_back(0u);
-        heap_used_queues.push_back(0u);
-        heap_needs_msaa.push_back(is_msaa);
+        state.heaps.add(heap);
+        heap_watermarks.add(0u);
+        heap_used_queues.add(0u);
+        heap_needs_msaa.add(is_msaa);
         return static_cast<std::uint32_t>(state.heaps.size() - 1u);
     };
 
-    std::vector<std::pair<std::uint64_t, std::uint64_t>> blocked_ranges;
+    Array<std::pair<std::uint64_t, std::uint64_t>> blocked_ranges;
     blocked_ranges.reserve(leases.size());
 
     for (std::size_t i = 0u; i < leases.size(); ++i) {
@@ -2014,7 +2014,7 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
             const std::uint64_t pad = (placed.is_texture != cur.is_texture) ? granularity : 1u;
             const std::uint64_t p_begin = align_down_u64(placed.offset, pad);
             const std::uint64_t p_end = align_up_u64(placed.offset + placed.size, pad);
-            blocked_ranges.emplace_back(p_begin, p_end);
+            blocked_ranges.emplace(p_begin, p_end);
         }
         std::sort(blocked_ranges.begin(), blocked_ranges.end());
 
@@ -2038,12 +2038,12 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
         detail::TransientHeap& heap = state.heaps[h];
         if (needed == 0u) {
             if (heap.memory && current_seq > heap.last_used_sequence + 180u) {
-                for (auto it = state.placed_cache.begin(); it != state.placed_cache.end();) {
-                    if (it->heap_index == h) {
-                        state.retire_placed(*it, retire_point);
-                        it = state.placed_cache.erase(it);
+                for (std::size_t ci = 0u; ci < state.placed_cache.size();) {
+                    if (state.placed_cache[ci].heap_index == h) {
+                        state.retire_placed(state.placed_cache[ci], retire_point);
+                        state.placed_cache.remove_at(ci);
                     } else {
-                        ++it;
+                        ++ci;
                     }
                 }
                 reclaimer.retire({.fence = retire_point, .memory = heap.memory});
@@ -2062,12 +2062,12 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
             continue;
 
         // Retire cached placed objects bound to the old smaller heap allocation.
-        for (auto it = state.placed_cache.begin(); it != state.placed_cache.end();) {
-            if (it->heap_index == h) {
-                state.retire_placed(*it, retire_point);
-                it = state.placed_cache.erase(it);
+        for (std::size_t ci = 0u; ci < state.placed_cache.size();) {
+            if (state.placed_cache[ci].heap_index == h) {
+                state.retire_placed(state.placed_cache[ci], retire_point);
+                state.placed_cache.remove_at(ci);
             } else {
-                ++it;
+                ++ci;
             }
         }
         if (heap.memory) {
@@ -2243,7 +2243,7 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
                                           rhi::ErrorCode::creation_failed, "RDG CreateTextureView DSV RO failed"));
                 }
                 created_ok = true;
-                state.placed_cache.push_back(created);
+                state.placed_cache.add(std::move(created));
                 cached = &state.placed_cache.back();
             }
             // Synchronize against any prior-frame or intra-frame heap occupancy even when this CachedPlacedObject itself is brand new!
@@ -2334,7 +2334,7 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
                     ATELIER_TRY_ASSIGN(created.uav_bindless, bindless.allocate_resource(created.uav));
                 }
                 created_ok = true;
-                state.placed_cache.push_back(created);
+                state.placed_cache.add(std::move(created));
                 cached = &state.placed_cache.back();
             }
             cached->last_used_sequence = current_seq;
@@ -2346,18 +2346,18 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
     }
 
     // Trim placed cache entries unused for > 180 executions to prevent unbounded growth across resizes.
-    for (auto it = state.placed_cache.begin(); it != state.placed_cache.end();) {
-        if (current_seq > it->last_used_sequence + 180u) {
-            state.retire_placed(*it, retire_point);
-            it = state.placed_cache.erase(it);
+    for (std::size_t ci = 0u; ci < state.placed_cache.size();) {
+        if (current_seq > state.placed_cache[ci].last_used_sequence + 180u) {
+            state.retire_placed(state.placed_cache[ci], retire_point);
+            state.placed_cache.remove_at(ci);
         } else {
-            ++it;
+            ++ci;
         }
     }
 
     // Build per-pass intra-frame & cross-frame aliasing GlobalBarriers (strictly queue-native and non-NO_ACCESS!).
-    std::vector<nri::GlobalBarrierDesc> pass_alias_globals(graph.passes_.size());
-    std::vector<bool> pass_has_alias_global(graph.passes_.size(), false);
+    Array<nri::GlobalBarrierDesc> pass_alias_globals(graph.passes_.size());
+    Array<bool> pass_has_alias_global(graph.passes_.size(), false);
     for (std::size_t i = 0u; i < leases.size(); ++i) {
         const PlacedLease& dst = leases[i];
         const rhi::QueueKind pass_q = graph.passes_[dst.first_pass]->resolved_queue;
@@ -2437,7 +2437,7 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
         }
     } open_cmds_guard{&core, &open_cmds};
 
-    std::vector<std::uint64_t> pass_signal_fence(graph.passes_.size(), 0u);
+    Array<std::uint64_t> pass_signal_fence(graph.passes_.size(), 0u);
     std::array<std::uint32_t, 3> next_unsignaled_pass{0u, 0u, 0u};
     auto satisfied_waits = state.satisfied_waits;
 
@@ -2494,7 +2494,7 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
     std::uint8_t frame_submitted_queues = 0u;
     auto flush_queue =
         [&](rhi::QueueKind q, std::uint32_t up_to_pass,
-            std::span<const std::pair<rhi::QueueKind, std::uint64_t>> waits = {}) -> rhi::Result<std::uint64_t> {
+            Span<const std::pair<rhi::QueueKind, std::uint64_t>> waits = {}) -> rhi::Result<std::uint64_t> {
         const auto q_idx = static_cast<std::size_t>(q);
         nri::CommandBuffer* cb = open_cmds[q_idx];
         if (!cb)
@@ -2527,9 +2527,9 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
         return open_cmds[q_idx];
     };
 
-    std::vector<nri::GlobalBarrierDesc> globals;
-    std::vector<nri::BufferBarrierDesc> buf_barriers;
-    std::vector<nri::TextureBarrierDesc> tex_barriers;
+    Array<nri::GlobalBarrierDesc> globals;
+    Array<nri::BufferBarrierDesc> buf_barriers;
+    Array<nri::TextureBarrierDesc> tex_barriers;
     globals.reserve(4u);
     buf_barriers.reserve(32u);
     tex_barriers.reserve(32u);
@@ -2638,7 +2638,7 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
                         src_waits[src_wait_count++] = {static_cast<rhi::QueueKind>(oq), hw};
                 }
                 std::uint64_t sig = 0u;
-                ATELIER_TRY_ASSIGN(sig, flush_queue(src_q, p, std::span{src_waits.data(), src_wait_count}));
+                ATELIER_TRY_ASSIGN(sig, flush_queue(src_q, p, Span{src_waits.data(), src_wait_count}));
                 if (pre_transition_recorded[q])
                     required_val = std::max(required_val, sig);
             }
@@ -2663,7 +2663,7 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
         tex_barriers.clear();
 
         if (pass_has_alias_global[p])
-            globals.push_back(pass_alias_globals[p]);
+            globals.add(pass_alias_globals[p]);
 
         for (auto* acc = pass.first_access; acc != nullptr; acc = acc->next) {
             if (acc->is_texture) {
@@ -2710,7 +2710,7 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
                         tb.mipNum = full_mips ? nri::REMAINING : static_cast<nri::Dim_t>(run_end - m);
                         tb.layerNum = nri::REMAINING;
                         tb.planes = planes;
-                        tex_barriers.push_back(tb);
+                        tex_barriers.add(tb);
                     }
                     for (std::uint16_t k = m; k < run_end; ++k)
                         tex.mip_states[k] = MipTrackingState{{a_acc, desired_layout, a_stg}, dst_q};
@@ -2733,7 +2733,7 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
                     bb.buffer = buf.runtime_buffer;
                     bb.before = {b_acc, b_stg};
                     bb.after = {a_acc, a_stg};
-                    buf_barriers.push_back(bb);
+                    buf_barriers.add(bb);
                 }
                 buf.current_state = {a_acc, a_stg};
                 buf.current_queue = dst_q;
@@ -2796,16 +2796,17 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
         }
 
         if (time_this_pass) {
-            slice.pending_timestamps.push_back(
-                detail::CommandSlice::PendingTimestamp{std::string(pass.name), dst_q, q_begin});
+            slice.pending_timestamps.add(detail::CommandSlice::PendingTimestamp{
+                String::from_utf8(pass.name).value_or("rdg_pass"_s), dst_q, q_begin});
         }
         if (stat_this_pass) {
-            slice.pending_stats.push_back(detail::CommandSlice::PendingPipeStat{std::string(pass.name), stat_slot});
+            slice.pending_stats.add(detail::CommandSlice::PendingPipeStat{
+                String::from_utf8(pass.name).value_or("rdg_pass"_s), stat_slot});
         }
 
         // If we had pending cross-queue waits for this batch, submit immediately with those waits so subsequent passes see them satisfied.
         if (wait_count > 0u) {
-            ATELIER_TRY(flush_queue(dst_q, p + 1u, std::span{waits.data(), wait_count}));
+            ATELIER_TRY(flush_queue(dst_q, p + 1u, Span{waits.data(), wait_count}));
         }
     }
 
@@ -2887,7 +2888,7 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
                     tb.mipNum = full_mips ? nri::REMAINING : static_cast<nri::Dim_t>(run_end - m);
                     tb.layerNum = nri::REMAINING;
                     tb.planes = planes;
-                    tex_barriers.push_back(tb);
+                    tex_barriers.add(tb);
                 }
             }
             for (std::uint16_t k = m; k < run_end; ++k)
@@ -2933,7 +2934,7 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
             bb.buffer = buf->runtime_buffer;
             bb.before = {b_acc, b_stg};
             bb.after = {a_acc, a_stg};
-            buf_barriers.push_back(bb);
+            buf_barriers.add(bb);
         }
         buf->current_state = {a_acc, a_stg};
         buf->current_queue = rhi::QueueKind::graphics;
@@ -2990,7 +2991,7 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
                 slice.has_pipeline_stats = true;
             }
             ATELIER_TRY(
-                flush_queue(rhi::QueueKind::graphics, all_passes_end, std::span{final_waits.data(), final_wait_count}));
+                flush_queue(rhi::QueueKind::graphics, all_passes_end, Span{final_waits.data(), final_wait_count}));
         }
     }
 
@@ -3036,7 +3037,7 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
             const auto& tex = *graph.textures_[i];
             TraceResource tr{};
             tr.index = i;
-            tr.name = std::string(tex.name);
+            tr.name = String::from_utf8(tex.name).value_or(""_s);
             tr.is_texture = true;
             tr.imported = tex.imported;
             if (tex.imported && tex.runtime_texture) {
@@ -3056,7 +3057,7 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
             tr.byte_size = tex.byte_size;
             tr.first_pass = tex.first_pass;
             tr.last_pass = tex.last_pass;
-            snap.resources.push_back(std::move(tr));
+            snap.resources.add(std::move(tr));
         }
 
         const auto tex_count = static_cast<std::uint32_t>(graph.textures_.size());
@@ -3064,7 +3065,7 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
             const auto& buf = *graph.buffers_[i];
             TraceResource tr{};
             tr.index = tex_count + i;
-            tr.name = std::string(buf.name);
+            tr.name = String::from_utf8(buf.name).value_or(""_s);
             tr.is_texture = false;
             tr.imported = buf.imported;
             const std::uint64_t sz =
@@ -3075,7 +3076,7 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
             tr.byte_size = buf.byte_size > 0u ? buf.byte_size : sz;
             tr.first_pass = buf.first_pass;
             tr.last_pass = buf.last_pass;
-            snap.resources.push_back(std::move(tr));
+            snap.resources.add(std::move(tr));
         }
 
         snap.passes.reserve(graph.passes_.size());
@@ -3083,11 +3084,11 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
             const auto& pass = *graph.passes_[p];
             TracePass tp{};
             tp.ordinal = p;
-            tp.name = std::string(pass.name);
-            tp.scope = std::string(pass.scope);
+            tp.name = String::from_utf8(pass.name).value_or(""_s);
+            tp.scope = String::from_utf8(pass.scope).value_or(""_s);
             tp.queue = pass.resolved_queue;
             tp.culled = pass.culled;
-            tp.cull_reason = std::string(pass.cull_reason);
+            tp.cull_reason = String::from_utf8(pass.cull_reason).value_or(""_s);
             tp.in_requested_scope = options.trace_scope.empty() || (pass.scope == options.trace_scope);
             for (auto* acc = pass.first_access; acc != nullptr; acc = acc->next) {
                 TraceAccess ta{};
@@ -3103,9 +3104,9 @@ rhi::Result<rhi::FencePoint> Executor::execute(Graph& graph, const ExecuteOption
                     const auto& views = graph.buffers_[acc->index]->views;
                     ta.bindless_index = acc->is_write ? views.uav_bindless : views.srv_bindless;
                 }
-                tp.accesses.push_back(ta);
+                tp.accesses.add(ta);
             }
-            snap.passes.push_back(std::move(tp));
+            snap.passes.add(std::move(tp));
         }
         snap.edges = std::move(dag_edges);
         snap.closed = true;

@@ -1,6 +1,7 @@
 #include "rhi/backend.hpp"
 #include "detail/shader_compiler.hpp"
 #include "foundation/result.hpp"
+#include "foundation/ring_deque.hpp"
 #include "memory/fatal.hpp"
 #include "platform/utf.hpp"
 
@@ -13,9 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <deque>
 #include <mutex>
-#include <string_view>
 #include <thread>
 #include <utility>
 
@@ -56,7 +55,7 @@ void NRI_CALL nri_message_callback(nri::Message type, const char* file, std::uin
                      line, message ? message : "");
 }
 
-Error map_nri_error(nri::Result res, std::string_view context) {
+Error map_nri_error(nri::Result res, StringView context) {
     ErrorCode code = ErrorCode::execution_failed;
     switch (res) {
     case nri::Result::INVALID_ARGUMENT:
@@ -75,17 +74,17 @@ Error map_nri_error(nri::Result res, std::string_view context) {
         code = ErrorCode::execution_failed;
         break;
     }
-    return {code, static_cast<std::int32_t>(res), std::string(context)};
+    return {code, static_cast<std::int32_t>(res), context};
 }
 
 bool valid_shader_model(const char* value) {
     if (!value)
         return false;
-    const std::string_view model(value);
+    const StringView model(value);
     if (model.size() < 3 || model.size() > 11)
         return false;
     const auto sep = model.find('_');
-    if (sep == std::string_view::npos || sep == 0 || sep + 1 == model.size())
+    if (sep == StringView::npos || sep == 0 || sep + 1 == model.size())
         return false;
     for (std::size_t i = 0; i < model.size(); ++i)
         if (i != sep && (model[i] < '0' || model[i] > '9'))
@@ -311,7 +310,7 @@ Result<std::uint32_t> BindlessHeap::allocate_resource(nri::Descriptor* descripto
         std::lock_guard lock(mutex_);
         if (!free_indices_.empty()) {
             index = free_indices_.back();
-            free_indices_.pop_back();
+            free_indices_.pop();
         } else {
             if (next_index_ >= bindless_resource_capacity)
                 return std::unexpected(
@@ -332,7 +331,7 @@ void BindlessHeap::free_resource(std::uint32_t index) noexcept {
     if (index == 0 || index == bindless_invalid_index)
         return;
     std::lock_guard lock(mutex_);
-    free_indices_.push_back(index);
+    free_indices_.add(index);
 }
 
 void BindlessHeap::bind(nri::CommandBuffer& cmd, const nri::CoreInterface& core,
@@ -500,10 +499,10 @@ Result<FencePoint> QueueTimeline::completed_point() const {
     return out;
 }
 
-Result<std::uint64_t> QueueTimeline::submit(QueueKind kind, std::span<nri::CommandBuffer* const> command_buffers,
-                                            std::span<const std::pair<QueueKind, std::uint64_t>> waits) {
+Result<std::uint64_t> QueueTimeline::submit(QueueKind kind, Span<nri::CommandBuffer* const> command_buffers,
+                                            Span<const std::pair<QueueKind, std::uint64_t>> waits) {
     auto& lane = lanes_[static_cast<std::size_t>(resolve_kind(kind))];
-    std::vector<nri::FenceSubmitDesc> wait_descs;
+    Array<nri::FenceSubmitDesc> wait_descs;
     wait_descs.reserve(waits.size());
     for (const auto& [wait_kind, wait_val] : waits) {
         if (wait_val == 0)
@@ -515,7 +514,7 @@ Result<std::uint64_t> QueueTimeline::submit(QueueKind kind, std::span<nri::Comma
         fd.fence = lanes_[static_cast<std::size_t>(resolved)].nri_fence;
         fd.value = wait_val;
         fd.stages = nri::StageBits::ALL;
-        wait_descs.push_back(fd);
+        wait_descs.add(fd);
     }
 
     const std::uint64_t sig_val = lane.last_signaled + 1u;
@@ -613,7 +612,7 @@ ClockCalibration QueueTimeline::calibration(QueueKind kind) const noexcept {
 // ============================================================================
 
 void DeferredReclaimer::retire(Entry entry) {
-    entries_.push_back(entry);
+    entries_.add(entry);
 }
 
 Result<void> DeferredReclaimer::reclaim(const QueueTimeline& timeline, BindlessHeap& bindless,
@@ -686,9 +685,9 @@ void DeferredReclaimer::force_release_all(BindlessHeap& bindless, const nri::Cor
 struct PreparationJob {
     PipelineKind kind{};
 
-    std::string debug_name;
+    String debug_name;
 
-    std::vector<std::pair<nri::StageBits, ShaderSource>> stages;
+    Array<std::pair<nri::StageBits, ShaderSource>> stages;
 
     GraphicsPipelineStateDesc graphics{};
 
@@ -698,7 +697,7 @@ struct PreparationJob {
 
     enum class Phase { queued, running, done, cancelled } phase{Phase::queued};
 
-    std::optional<Error> error;
+    Optional<Error> error;
 };
 
 class Preparer {
@@ -731,9 +730,9 @@ public:
         std::lock_guard lock(mutex_);
         drain_cancelled_locked();
         for (auto count = std::clamp(std::thread::hardware_concurrency(), 1u, 8u); threads_.size() < count;)
-            threads_.emplace_back([this] { work(); });
-        live_.push_back(job);
-        queue_.push_back(std::move(job));
+            threads_.emplace([this] { work(); });
+        live_.add(job);
+        queue_.emplace_back(std::move(job));
         wake_.notify_one();
     }
 
@@ -750,13 +749,13 @@ public:
         drain_cancelled_locked();
         if (job.phase == PreparationJob::Phase::queued || job.phase == PreparationJob::Phase::running)
             return false;
-        std::erase_if(live_, [&](const auto& item) { return item.get() == &job; });
+        live_.remove_if([&](const auto& item) { return item.get() == &job; });
         return true;
     }
 
     void cancel(PreparationJob& job) noexcept {
         std::lock_guard lock(mutex_);
-        std::erase_if(live_, [&](const auto& item) { return item.get() == &job; });
+        live_.remove_if([&](const auto& item) { return item.get() == &job; });
         if (job.phase == PreparationJob::Phase::running)
             job.cancel = true;
         else
@@ -788,7 +787,7 @@ public:
 
 private:
     struct Worker {
-        std::optional<ShaderCompiler> compiler;
+        Optional<ShaderCompiler> compiler;
 
         ComPtr<ID3D12CommandAllocator> allocator;
 
@@ -811,7 +810,7 @@ private:
         if (job.phase == PreparationJob::Phase::running)
             return;
         if (job.created_pipeline) {
-            cancelled_pipelines_.push_back(std::exchange(job.created_pipeline, nullptr));
+            cancelled_pipelines_.add(std::exchange(job.created_pipeline, nullptr));
         }
         job.phase = PreparationJob::Phase::cancelled;
     }
@@ -858,9 +857,9 @@ private:
             worker.compiler.emplace(std::move(*compiler));
         }
 
-        std::vector<CompiledShader> blobs;
-        std::vector<nri::ShaderDesc> shader_descs;
-        std::vector<std::string> entries;
+        Array<CompiledShader> blobs;
+        Array<nri::ShaderDesc> shader_descs;
+        Array<String> entries;
         blobs.reserve(job.stages.size());
         shader_descs.reserve(job.stages.size());
         entries.reserve(job.stages.size());
@@ -874,14 +873,14 @@ private:
                 return;
             }
             auto utf8_entry = platform::utf16_to_utf8(source.entry);
-            entries.push_back(utf8_entry ? std::string(utf8_entry->view().std_view()) : std::string("main"));
+            entries.add(utf8_entry ? std::move(*utf8_entry) : "main"_s);
             nri::ShaderDesc sd{};
             sd.stage = stage;
             sd.bytecode = compiled->bytecode->GetBufferPointer();
             sd.size = compiled->bytecode->GetBufferSize();
             sd.entryPointName = entries.back().c_str();
-            shader_descs.push_back(sd);
-            blobs.push_back(std::move(*compiled));
+            shader_descs.add(sd);
+            blobs.add(std::move(*compiled));
         }
         if (job.cancel)
             return;
@@ -937,7 +936,8 @@ private:
         }
 
         if (res != nri::Result::SUCCESS || !job.created_pipeline) {
-            job.error = map_nri_error(res, "NRI pipeline state creation failed for `" + job.debug_name + "'");
+            const String msg = String::concat("NRI pipeline state creation failed for `", job.debug_name, "'");
+            job.error = map_nri_error(res, msg.view());
             if (job.error->code != ErrorCode::device_lost && job.error->code != ErrorCode::out_of_memory &&
                 job.error->code != ErrorCode::unsupported) {
                 job.error->code = ErrorCode::shader_failed;
@@ -991,13 +991,13 @@ private:
 
     std::condition_variable wake_;
 
-    std::deque<std::shared_ptr<PreparationJob>> queue_;
+    RingDeque<std::shared_ptr<PreparationJob>> queue_;
 
-    std::vector<std::shared_ptr<PreparationJob>> live_;
+    Array<std::shared_ptr<PreparationJob>> live_;
 
-    std::vector<nri::Pipeline*> cancelled_pipelines_;
+    Array<nri::Pipeline*> cancelled_pipelines_;
 
-    std::vector<std::thread> threads_;
+    Array<std::thread> threads_;
 
     bool stopped_{};
 
@@ -1509,7 +1509,7 @@ Result<Device> Device::open(const DeviceOptions& options) {
     if (res != nri::Result::SUCCESS || adapter_count == 0)
         return std::unexpected(
             Error{ErrorCode::unsupported, static_cast<std::int32_t>(res), "No D3D12 hardware adapters enumerated"});
-    std::vector<nri::AdapterDesc> adapters(adapter_count);
+    Array<nri::AdapterDesc> adapters(adapter_count);
     res = nriEnumerateAdapters(adapters.data(), adapter_count, nri::GraphicsAPI::D3D12);
     if (res != nri::Result::SUCCESS)
         return std::unexpected(map_nri_error(res, "nriEnumerateAdapters failed"));
@@ -1578,14 +1578,14 @@ Result<Device> Device::open(const DeviceOptions& options) {
             ErrorCode::unsupported, 0,
             "No hardware GPU supports D3D12 Ultimate (Mesh Shader, DXR 1.1, SV_Barycentrics, Enhanced Barriers, SM 6.6)"});
 
-    std::vector<nri::QueueFamilyDesc> queue_families;
-    queue_families.push_back({nullptr, 1, nri::QueueType::GRAPHICS});
+    Array<nri::QueueFamilyDesc> queue_families;
+    queue_families.add({nullptr, 1, nri::QueueType::GRAPHICS});
     const bool want_compute = chosen->queueNum[static_cast<std::size_t>(nri::QueueType::COMPUTE)] > 0;
     const bool want_copy = chosen->queueNum[static_cast<std::size_t>(nri::QueueType::COPY)] > 0;
     if (want_compute)
-        queue_families.push_back({nullptr, 1, nri::QueueType::COMPUTE});
+        queue_families.add({nullptr, 1, nri::QueueType::COMPUTE});
     if (want_copy)
-        queue_families.push_back({nullptr, 1, nri::QueueType::COPY});
+        queue_families.add({nullptr, 1, nri::QueueType::COPY});
 
     const bool has_live_device = detail::g_live_d3d12_devices.load() > 0u;
     if (has_live_device && effective_val != detail::g_active_validation.load()) {
@@ -1680,7 +1680,7 @@ Result<Device> Device::open(const DeviceOptions& options) {
                                            want_compute, want_copy));
     ATELIER_TRY(state->bindless.initialize(*state->device, state->core, state->descriptor_heap));
 
-    state->info.adapter_name = chosen->name;
+    state->info.adapter_name = String::from_utf8(StringView{chosen->name}).value_or("D3D12 Adapter"_s);
     state->info.dedicated_video_memory = chosen->videoMemorySize;
     state->info.frames_in_flight = 3;
     state->info.debug_layer = effective_val != Validation::disabled;
@@ -1741,7 +1741,8 @@ Result<std::shared_ptr<detail::PreparationJob>> make_job(const PipelineCompileDe
         return std::unexpected(Error{ErrorCode::invalid_argument, 0, "Invalid UTF-8 shader_model"});
     auto job = std::make_shared<detail::PreparationJob>();
     job->kind = desc.kind;
-    job->debug_name = desc.debug_name ? desc.debug_name : "pipeline";
+    job->debug_name =
+        desc.debug_name ? String::from_utf8(StringView{desc.debug_name}).value_or("pipeline"_s) : "pipeline"_s;
     job->graphics = desc.graphics;
     job->stages.reserve(desc.stages.size());
     for (const auto& s : desc.stages) {
@@ -1749,13 +1750,13 @@ Result<std::shared_ptr<detail::PreparationJob>> make_job(const PipelineCompileDe
         if (!prefix || !s.source || !s.entry_point)
             return std::unexpected(
                 Error{ErrorCode::invalid_argument, 0, "Invalid ShaderStageSource in PipelineCompileDesc"});
-        const auto wname = platform::utf8_to_utf16(
-            s.name ? StringView{s.name} : StringView{std::string_view{job->debug_name}});
+        const auto wname = platform::utf8_to_utf16(s.name ? StringView{s.name} : job->debug_name.view());
         const auto wentry = platform::utf8_to_utf16(StringView{s.entry_point});
-        if (!wname || !wentry)
-            return std::unexpected(Error{ErrorCode::invalid_argument, 0, "Invalid UTF-8 shader stage name or entry"});
-        job->stages.push_back(
-            {s.stage, detail::ShaderSource{*wname, std::string(s.source), std::wstring(prefix) + *wmodel, *wentry}});
+        auto src_text = String::from_utf8(StringView{s.source});
+        if (!wname || !wentry || !src_text)
+            return std::unexpected(Error{ErrorCode::invalid_argument, 0, "Invalid UTF-8 shader stage name, entry or source"});
+        job->stages.add(
+            {s.stage, detail::ShaderSource{*wname, std::move(*src_text), std::wstring(prefix) + *wmodel, *wentry}});
     }
     return job;
 }
@@ -1834,7 +1835,7 @@ Result<PipelineJob> BackendAccess::submit_pipeline(Device& device, const Pipelin
     return handle;
 }
 
-std::optional<Result<Pipeline>> BackendAccess::take_pipeline(Device& device, PipelineJob& job) {
+Optional<Result<Pipeline>> BackendAccess::take_pipeline(Device& device, PipelineJob& job) {
     if (!job.job_ || !job.preparer_)
         return std::unexpected(Error{ErrorCode::invalid_argument, 0, "PipelineJob is empty"});
     if (!device.state_ || device.state_->closed) {
@@ -1849,7 +1850,7 @@ std::optional<Result<Pipeline>> BackendAccess::take_pipeline(Device& device, Pip
         return std::unexpected(adm.error());
     }
     if (!job.preparer_->finished(*job.job_))
-        return std::nullopt;
+        return {};
     auto done = std::move(job.job_);
     job.preparer_.reset();
     if (done->phase == detail::PreparationJob::Phase::cancelled)

@@ -3272,16 +3272,16 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
         viewport_view.scene = scene->picking;
     if (viewport_view.scene) {
         viewport_view.gpu_pick_pixel = [renderer = &renderer_](std::uint32_t px,
-                                                               std::uint32_t py) -> std::optional<editor::GpuPickSample> {
+                                                               std::uint32_t py) -> Optional<editor::GpuPickSample> {
             auto picked = renderer->pick_pixel(px, py);
             if (!picked || !*picked)
-                return std::nullopt;
+                return {};
             return editor::GpuPickSample{(*picked)->instance_index, (*picked)->global_triangle_id, (*picked)->depth};
         };
         viewport_view.gpu_pick_box = [renderer = &renderer_](std::uint32_t x0, std::uint32_t y0, std::uint32_t x1,
-                                                             std::uint32_t y1) -> std::vector<std::uint32_t> {
+                                                             std::uint32_t y1) -> Array<std::uint32_t> {
             auto picked = renderer->pick_box(x0, y0, x1, y1);
-            return picked ? std::move(*picked) : std::vector<std::uint32_t>{};
+            return picked ? std::move(*picked) : Array<std::uint32_t>{};
         };
     }
     overlay_.clear();
@@ -3357,7 +3357,7 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
                                  lighting_focus()};
     render_frame.materials = sop_draw ? sop_draw->materials.get() : scene ? scene->materials.get() : nullptr;
     render_frame.command_trace = control_ ? control_->command_trace() : nullptr;
-    render_frame.trace_scope = control_ ? control_->trace_scope() : std::string_view{};
+    render_frame.trace_scope = control_ ? control_->trace_scope() : StringView{};
     Optional<renderer::Result<renderer::FrameResult>> traced_result;
     if (render_frame.command_trace)
         traced_result.emplace();

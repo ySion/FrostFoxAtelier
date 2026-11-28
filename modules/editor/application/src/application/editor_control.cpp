@@ -2392,7 +2392,7 @@ struct EditorControl::Impl {
             timeout = *n;
         }
         auto trace = std::make_unique<rdg::TraceSnapshot>();
-        trace->requested_scope = std::string(chosen_scope.std_view());
+        trace->requested_scope = String::from_utf8_validated(chosen_scope);
         ATELIER_TRY_BIND(created, new_job(id, peer));
         auto& job = **created;
         job.kind = "render.trace";
@@ -3707,11 +3707,11 @@ rdg::TraceSnapshot* EditorControl::command_trace() const {
     return job && job->tracing ? job->trace.get() : nullptr;
 }
 
-std::string_view EditorControl::trace_scope() const {
+StringView EditorControl::trace_scope() const {
     const auto* job = impl_->active();
     if (!job || !job->tracing || !job->trace || job->trace->requested_scope == "full")
         return {};
-    return job->trace->requested_scope;
+    return job->trace->requested_scope.view();
 }
 
 void EditorControl::traced(const renderer::Frame& frame, const renderer::Result<renderer::FrameResult>& result,

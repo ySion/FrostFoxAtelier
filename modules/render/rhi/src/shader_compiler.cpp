@@ -1,4 +1,6 @@
 #include "detail/shader_compiler.hpp"
+#include "foundation/inline_array.hpp"
+#include "foundation/optional.hpp"
 #include "foundation/sha256.hpp"
 #include "platform/utf.hpp"
 
@@ -12,9 +14,6 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
-#include <optional>
-#include <span>
-#include <string_view>
 #include <utility>
 
 namespace atelier::rhi::detail {
@@ -66,20 +65,25 @@ Digest hex_to_digest(StringView hex) noexcept {
     return out;
 }
 
-template <class Char>
-void hash_text(foundation::Sha256& hash, std::basic_string_view<Char> text) noexcept {
+void hash_text(foundation::Sha256& hash, StringView text) noexcept {
     const std::uint64_t size = text.size();
-    hash.add(as_bytes(Span{&size, 1u}));
-    hash.add(as_bytes(Span{text.data(), text.size()}));
+    hash.add(atelier::as_bytes(Span{&size, 1u}));
+    hash.add(atelier::as_bytes(text));
 }
 
-Digest checksum(std::string_view bytecode) noexcept {
-    const String hex = foundation::sha256(atelier::as_bytes(Span{bytecode.data(), bytecode.size()}));
+void hash_text(foundation::Sha256& hash, std::wstring_view text) noexcept {
+    const std::uint64_t size = text.size();
+    hash.add(atelier::as_bytes(Span{&size, 1u}));
+    hash.add(atelier::as_bytes(Span{text.data(), text.size()}));
+}
+
+Digest checksum(Span<const std::byte> bytecode) noexcept {
+    const String hex = foundation::sha256(bytecode);
     return hex_to_digest(hex.view());
 }
 
-std::string_view bytes(IDxcBlob& blob) noexcept {
-    return {static_cast<const char*>(blob.GetBufferPointer()), blob.GetBufferSize()};
+Span<const std::byte> bytes(IDxcBlob& blob) noexcept {
+    return {static_cast<const std::byte*>(blob.GetBufferPointer()), blob.GetBufferSize()};
 }
 
 class IncludeProbe final : public IDxcIncludeHandler {
@@ -147,33 +151,34 @@ void trim(const std::filesystem::path& directory) {
     }
 }
 
-std::optional<CompiledShader> load(IDxcUtils& utils, const std::filesystem::path& file) {
+Optional<CompiledShader> load(IDxcUtils& utils, const std::filesystem::path& file) {
     std::ifstream in(file, std::ios::binary | std::ios::ate);
     if (!in)
-        return std::nullopt;
+        return {};
     const auto end_pos = in.tellg();
     if (end_pos <= 0)
-        return std::nullopt;
+        return {};
     const auto size = static_cast<std::uint64_t>(end_pos);
     CacheHeader header{};
     if (size < sizeof header || !in.seekg(0).read(reinterpret_cast<char*>(&header), sizeof header) ||
         header.magic != cache_magic || header.format != cache_format || !header.bytecode_size ||
         header.bytecode_size > max_cached_bytecode_bytes || header.bytecode_size != size - sizeof header)
-        return std::nullopt;
-    std::string payload(static_cast<std::size_t>(header.bytecode_size), '\0');
-    if (!in.read(payload.data(), static_cast<std::streamsize>(payload.size())))
-        return std::nullopt;
-    if (checksum(payload) != header.checksum)
-        return std::nullopt;
+        return {};
+    Array<std::byte> payload;
+    payload.resize_uninitialized(static_cast<std::size_t>(header.bytecode_size));
+    if (!in.read(reinterpret_cast<char*>(payload.data()), static_cast<std::streamsize>(payload.size())))
+        return {};
+    if (checksum(payload.view()) != header.checksum)
+        return {};
     ComPtr<IDxcBlobEncoding> blob;
     if (FAILED(utils.CreateBlob(payload.data(), static_cast<UINT32>(payload.size()), DXC_CP_ACP, &blob)))
-        return std::nullopt;
+        return {};
     CompiledShader cached;
     cached.bytecode = std::move(blob);
     return cached;
 }
 
-void store(const std::filesystem::path& directory, const std::filesystem::path& file, std::string_view bytecode) {
+void store(const std::filesystem::path& directory, const std::filesystem::path& file, Span<const std::byte> bytecode) {
     if (bytecode.empty() || bytecode.size() > max_cached_bytecode_bytes)
         return;
     static std::atomic<bool> first_trim_done{false};
@@ -192,7 +197,7 @@ void store(const std::filesystem::path& directory, const std::filesystem::path& 
     {
         std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
         out.write(reinterpret_cast<const char*>(&header), sizeof header);
-        out.write(bytecode.data(), static_cast<std::streamsize>(bytecode.size()));
+        out.write(reinterpret_cast<const char*>(bytecode.data()), static_cast<std::streamsize>(bytecode.size()));
         if (!out.good()) {
             out.close();
             std::filesystem::remove(temporary, error);
@@ -225,8 +230,7 @@ Result<ShaderCompiler> ShaderCompiler::open(std::filesystem::path cache) {
     if (SUCCEEDED(compiler.compiler_.As(&version)) && SUCCEEDED(version->GetVersion(&major, &minor)) &&
         SUCCEEDED(version.As(&commit)) && SUCCEEDED(commit->GetCommitInfo(&commits, &hash)) && hash) {
         if (const auto valid_hash = String::from_utf8(hash)) {
-            const String id = String::concat(major, ".", minor, ".", commits, ".", *valid_hash);
-            compiler.identity_ = std::string(id.view().std_view());
+            compiler.identity_ = String::concat(major, ".", minor, ".", commits, ".", *valid_hash);
         }
     }
     CoTaskMemFree(hash);
@@ -236,21 +240,21 @@ Result<ShaderCompiler> ShaderCompiler::open(std::filesystem::path cache) {
 }
 
 Result<CompiledShader> ShaderCompiler::compile(const ShaderSource& source) {
-    std::vector<LPCWSTR> arguments{source.name.c_str(), L"-enable-16bit-types"};
+    InlineArray<LPCWSTR, 16> arguments{source.name.c_str(), L"-enable-16bit-types"};
     for (LPCWSTR argument : {L"-I", L".", L"-T", source.profile.c_str(), L"-HV 2021", L"-Wno-parameter-usage",
                              L"-fdiagnostics-format=msvc", DXC_ARG_OPTIMIZATION_LEVEL3, DXC_ARG_RESOURCES_MAY_ALIAS,
                              L"-E", source.entry.c_str()})
-        arguments.push_back(argument);
+        arguments.add(argument);
 
     std::filesystem::path entry;
     if (!cache_.empty()) {
         foundation::Sha256 key;
-        key.add(as_bytes(Span{&cache_format, 1u}));
-        hash_text(key, std::string_view(identity_));
+        key.add(atelier::as_bytes(Span{&cache_format, 1u}));
+        hash_text(key, identity_.view());
         // Skip arguments[0] (diagnostic source name) so identical stages shared across PSOs hit the disk cache.
         for (std::size_t i = 1u; i < arguments.size(); ++i)
             hash_text(key, std::wstring_view(arguments[i]));
-        hash_text(key, std::string_view(source.text));
+        hash_text(key, source.text.view());
         entry = cache_ / String::concat(key.finish(), ".bin").c_str();
         if (auto cached = load(*utils_.Get(), entry))
             return std::move(*cached);
@@ -262,7 +266,7 @@ Result<CompiledShader> ShaderCompiler::compile(const ShaderSource& source) {
     const auto entry_point = platform::utf16_to_utf8(source.entry);
     if (!entry_point)
         return std::unexpected(Error{ErrorCode::shader_failed, E_INVALIDARG, "shader entry point is not valid UTF-16"});
-    const DxcBuffer buffer{source.text.data(), source.text.size(), DXC_CP_UTF8};
+    const DxcBuffer buffer{source.text.c_str(), source.text.size(), DXC_CP_UTF8};
     IncludeProbe probe(*includes_.Get());
     ComPtr<IDxcResult> result;
     const HRESULT compile_hr = compiler_->Compile(&buffer, arguments.data(), static_cast<UINT32>(arguments.size()),

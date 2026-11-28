@@ -13,10 +13,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
-#include <span>
-#include <string>
 #include <utility>
-#include <vector>
 
 namespace atelier::renderer::detail {
 
@@ -24,12 +21,14 @@ inline Error make_error(rhi::ErrorCode code, Utf8Text message, bool terminal = f
     return Error{rhi::Error{code, native, std::move(message)}, terminal};
 }
 
-template <class T>
-    requires(std::same_as<std::remove_cvref_t<T>, std::string> ||
-             std::same_as<std::remove_cvref_t<T>, std::string_view> ||
-             std::same_as<std::remove_cvref_t<T>, const char*>)
-inline Error make_error(rhi::ErrorCode code, T&& message, bool terminal = false, std::int32_t native = 0) {
-    return Error{rhi::Error{code, native, std::forward<T>(message)}, terminal};
+template <std::same_as<StringView> SV>
+inline Error make_error(rhi::ErrorCode code, SV message, bool terminal = false, std::int32_t native = 0) {
+    return Error{rhi::Error{code, native, message}, terminal};
+}
+
+template <std::same_as<const char*> P>
+inline Error make_error(rhi::ErrorCode code, P message, bool terminal = false, std::int32_t native = 0) {
+    return Error{rhi::Error{code, native, message}, terminal};
 }
 
 inline Result<void> check_nri(nri::Result res, rhi::ErrorCode code, const char* message, bool terminal = false) {
@@ -212,13 +211,13 @@ struct OwnedTexture {
 
     std::uint32_t uav_bindless = rhi::bindless_invalid_index;
 
-    std::vector<nri::Descriptor*> mip_srvs;
+    Array<nri::Descriptor*> mip_srvs;
 
-    std::vector<std::uint32_t> mip_srv_bindless;
+    Array<std::uint32_t> mip_srv_bindless;
 
-    std::vector<nri::Descriptor*> mip_uavs;
+    Array<nri::Descriptor*> mip_uavs;
 
-    std::vector<std::uint32_t> mip_uav_bindless;
+    Array<std::uint32_t> mip_uav_bindless;
 
     std::uint32_t width = 0u;
 
@@ -329,7 +328,7 @@ public:
     static constexpr std::size_t slot_count = 4u;
 
     Result<std::pair<nri::Buffer*, std::uint32_t>> write(rhi::Device& device, std::size_t slot_index,
-                                                         std::span<const T> items, bool byte_address = false,
+                                                         Span<const T> items, bool byte_address = false,
                                                          nri::BufferUsageBits extra_usage = nri::BufferUsageBits::NONE,
                                                          bool create_srv = true) {
         if (items.empty())
@@ -562,7 +561,7 @@ public:
         out.state = {after_access, after_stages};
 
         staging_bytes_ = align_up_bytes(staging_bytes_, 256u);
-        buf_jobs_.push_back(BufferJob{
+        buf_jobs_.add(BufferJob{
             .dst = out.buffer,
             .src_data = static_cast<const std::uint8_t*>(data),
             .src_bytes = byte_size,
@@ -601,7 +600,7 @@ public:
             .row_bytes = row_bytes,
             .num_rows = blocks_y,
         };
-        return stage_texture_mips(fmt, width, height, std::span{&mip, 1u}, debug_name);
+        return stage_texture_mips(fmt, width, height, Span{&mip, 1u}, debug_name);
     }
 
     Result<OwnedTexture> stage_atx_texture(assets::AtxTextureRef atx_ref, const char* debug_name) {
@@ -628,7 +627,7 @@ public:
                                               "AtxTexture mip chain or BC block alignment invalid", terminal_));
         }
 
-        std::vector<MipSource> mips;
+        Array<MipSource> mips;
         mips.reserve(atx.mips.size());
         for (std::uint32_t m = 0u; m < static_cast<std::uint32_t>(atx.mips.size()); ++m) {
             const assets::AtxMipSlice& s = atx.mips[m];
@@ -646,7 +645,7 @@ public:
             if (min_span > avail)
                 return std::unexpected(make_error(rhi::ErrorCode::invalid_argument,
                                                   "AtxTexture mip slice exceeds payload bounds", terminal_));
-            mips.push_back(MipSource{
+            mips.add(MipSource{
                 .data = atx.payload.data() + s.byte_offset,
                 .src_row_pitch = s.row_pitch,
                 .row_bytes = row_bytes,
@@ -740,7 +739,7 @@ public:
                               "UploadBatch BeginCommandBuffer failed", terminal_));
         cmd_open = true;
 
-        std::vector<nri::TextureBarrierDesc> pre_tex;
+        Array<nri::TextureBarrierDesc> pre_tex;
         pre_tex.reserve(tex_jobs_.size());
         for (const TextureJob& tj : tex_jobs_) {
             nri::TextureBarrierDesc tb{};
@@ -750,7 +749,7 @@ public:
             tb.mipNum = nri::REMAINING;
             tb.layerNum = 1u;
             tb.planes = nri::PlaneBits::COLOR;
-            pre_tex.push_back(tb);
+            pre_tex.add(tb);
         }
         if (!pre_tex.empty()) {
             nri::BarrierDesc bd{};
@@ -778,7 +777,7 @@ public:
             }
         }
 
-        std::vector<nri::BufferBarrierDesc> post_buf;
+        Array<nri::BufferBarrierDesc> post_buf;
         if (submit_q == rhi::QueueKind::graphics) {
             post_buf.reserve(buf_jobs_.size());
             for (const BufferJob& bj : buf_jobs_) {
@@ -786,10 +785,10 @@ public:
                 bb.buffer = bj.dst;
                 bb.before = {nri::AccessBits::COPY_DESTINATION, nri::StageBits::COPY};
                 bb.after = {bj.after_access, bj.after_stages};
-                post_buf.push_back(bb);
+                post_buf.add(bb);
             }
         }
-        std::vector<nri::TextureBarrierDesc> post_tex;
+        Array<nri::TextureBarrierDesc> post_tex;
         post_tex.reserve(tex_jobs_.size());
         for (const TextureJob& tj : tex_jobs_) {
             nri::TextureBarrierDesc tb{};
@@ -799,7 +798,7 @@ public:
             tb.mipNum = nri::REMAINING;
             tb.layerNum = 1u;
             tb.planes = nri::PlaneBits::COLOR;
-            post_tex.push_back(tb);
+            post_tex.add(tb);
         }
         if (!post_buf.empty() || !post_tex.empty()) {
             nri::BarrierDesc bd{};
@@ -814,7 +813,7 @@ public:
                               "UploadBatch EndCommandBuffer failed", terminal_));
         cmd_open = false;
 
-        auto sub = timeline.submit(submit_q, std::span{&cmd, 1u});
+        auto sub = timeline.submit(submit_q, Span{&cmd, 1u});
         if (!sub)
             return std::unexpected(Error{sub.error(), terminal_});
 
@@ -830,13 +829,13 @@ public:
         // Enqueue GPU-side cross-queue fence waits onto Graphics and Async Compute so subsequent passes see uploaded data without stalling CPU!
         const std::pair<rhi::QueueKind, std::uint64_t> upload_signal{submit_q, *sub};
         if (submit_q != rhi::QueueKind::graphics) {
-            auto gfx_wait = timeline.submit(rhi::QueueKind::graphics, {}, std::span{&upload_signal, 1u});
+            auto gfx_wait = timeline.submit(rhi::QueueKind::graphics, {}, Span{&upload_signal, 1u});
             if (!gfx_wait)
                 return std::unexpected(Error{gfx_wait.error(), terminal_});
         }
         const rhi::QueueKind comp_q = timeline.resolve_kind(rhi::QueueKind::compute);
         if (comp_q != rhi::QueueKind::graphics && comp_q != submit_q) {
-            auto comp_wait = timeline.submit(comp_q, {}, std::span{&upload_signal, 1u});
+            auto comp_wait = timeline.submit(comp_q, {}, Span{&upload_signal, 1u});
             if (!comp_wait)
                 return std::unexpected(Error{comp_wait.error(), terminal_});
         }
@@ -895,11 +894,11 @@ private:
 
         assets::AtxTextureRef pinned_atx;
 
-        std::vector<StagedMip> mips;
+        Array<StagedMip> mips;
     };
 
     Result<OwnedTexture> stage_texture_mips(nri::Format fmt, std::uint32_t width, std::uint32_t height,
-                                            std::span<const MipSource> mips, const char* debug_name,
+                                            Span<const MipSource> mips, const char* debug_name,
                                             assets::AtxTextureRef pinned_owner = {}) {
         OwnedTexture out{};
         out.width = width;
@@ -968,7 +967,7 @@ private:
                                                   "Texture mip slice exceeds 4 GiB staging limit", terminal_));
             }
             const auto dst_slice = static_cast<std::uint32_t>(dst_slice64);
-            job.mips.push_back(StagedMip{
+            job.mips.add(StagedMip{
                 .src_data = m.data,
                 .src_row_pitch = m.src_row_pitch,
                 .row_bytes = m.row_bytes,
@@ -978,7 +977,7 @@ private:
             });
             staging_bytes_ += dst_slice;
         }
-        tex_jobs_.push_back(std::move(job));
+        tex_jobs_.add(std::move(job));
 
         ok = true;
         return out;
@@ -994,9 +993,9 @@ private:
 
     bool terminal_ = false;
 
-    std::vector<BufferJob> buf_jobs_;
+    Array<BufferJob> buf_jobs_;
 
-    std::vector<TextureJob> tex_jobs_;
+    Array<TextureJob> tex_jobs_;
 };
 
 inline Result<OwnedBuffer> upload_immutable_buffer(rhi::Device& device, const void* data, std::uint64_t byte_size,

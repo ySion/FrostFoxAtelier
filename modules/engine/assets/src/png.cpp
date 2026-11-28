@@ -52,7 +52,7 @@ Result<void> write_png(std::uint32_t width, std::uint32_t height, Span<const std
     return {};
 }
 
-Result<std::string> encode_png_bytes(std::uint32_t width, std::uint32_t height, std::span<const std::uint8_t> rgba) {
+Result<Array<std::byte>> encode_png_bytes(std::uint32_t width, std::uint32_t height, Span<const std::uint8_t> rgba) {
     const auto pixels = std::uint64_t{width} * height;
     if (!pixels || pixels > UINT_MAX / 4 || rgba.size() != pixels * 4)
         return std::unexpected(Error{ErrorCode::argument_mismatch, "Invalid RGBA image extent or payload."});
@@ -91,7 +91,7 @@ Result<std::string> encode_png_bytes(std::uint32_t width, std::uint32_t height, 
     ATELIER_TRY(check(frame->SetPixelFormat(&format)));
     if (format != GUID_WICPixelFormat32bppBGRA)
         return std::unexpected(Error{ErrorCode::invalid_storage, "PNG codec changed BGRA format"});
-    std::vector<std::uint8_t> bgra(rgba.begin(), rgba.end());
+    Array<std::uint8_t> bgra(rgba);
     for (std::size_t pixel = 0; pixel < bgra.size(); pixel += 4)
         std::swap(bgra[pixel], bgra[pixel + 2]);
     ATELIER_TRY(check(frame->WritePixels(height, width * 4, static_cast<UINT>(bgra.size()), bgra.data())));
@@ -102,7 +102,8 @@ Result<std::string> encode_png_bytes(std::uint32_t width, std::uint32_t height, 
     ATELIER_TRY(check(mem_stream->Stat(&stat, STATFLAG_NONAME)));
     if (stat.cbSize.QuadPart == 0 || stat.cbSize.QuadPart > (256ull << 20))
         return std::unexpected(Error{ErrorCode::invalid_storage, "Encoded PNG stream size out of bounds."});
-    std::string out(static_cast<std::size_t>(stat.cbSize.QuadPart), '\0');
+    Array<std::byte> out;
+    out.resize_uninitialized(static_cast<std::size_t>(stat.cbSize.QuadPart));
     LARGE_INTEGER zero{};
     ATELIER_TRY(check(mem_stream->Seek(zero, STREAM_SEEK_SET, nullptr)));
     ULONG read_bytes = 0;

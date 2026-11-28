@@ -5,8 +5,6 @@
 
 #include <cstddef>
 #include <cstdio>
-#include <string_view>
-#include <vector>
 
 namespace rhi_acceptance {
 
@@ -27,7 +25,7 @@ inline void check_nri(nri::Result result) {
 inline bool expected_gpu_validation() {
     char mode[8]{};
     const auto length = GetEnvironmentVariableA("ATELIER_GPU_VALIDATION", mode, sizeof(mode));
-    return std::string_view(mode, length < sizeof(mode) ? length : 0) != "debug";
+    return atelier::StringView(mode, length < sizeof(mode) ? length : 0) != "debug";
 }
 
 inline ComPtr<ID3D12InfoQueue> debug_queue(ID3D12Device& device) {
@@ -43,7 +41,7 @@ inline void check_debug(ID3D12InfoQueue* queue) {
     for (UINT64 i = 0; i < queue->GetNumStoredMessagesAllowedByRetrievalFilter(); ++i) {
         SIZE_T size = 0;
         check_hr(queue->GetMessage(i, nullptr, &size));
-        std::vector<std::byte> storage(size);
+        atelier::Array<std::byte> storage(size);
         auto* message = reinterpret_cast<D3D12_MESSAGE*>(storage.data());
         check_hr(queue->GetMessage(i, message, &size));
         if (message->Severity <= D3D12_MESSAGE_SEVERITY_WARNING) {

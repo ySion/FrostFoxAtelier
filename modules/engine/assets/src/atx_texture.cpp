@@ -201,37 +201,35 @@ void encode_bc6h_uf16_block(std::uint8_t out_block[16], const std::uint16_t bloc
 }
 
 template <class T>
-void append_pod(std::vector<std::uint8_t>& buf, const T& value) {
+void append_pod(Array<std::uint8_t>& buf, const T& value) {
     static_assert(std::is_trivially_copyable_v<T>);
     const auto* p = reinterpret_cast<const std::uint8_t*>(&value);
-    buf.insert(buf.end(), p, p + sizeof(T));
+    buf.append(Span<const std::uint8_t>{p, sizeof(T)});
 }
 
 template <class T>
-bool read_pod(std::span<const std::uint8_t>& cur, T& out) noexcept {
+bool read_pod(Span<const std::uint8_t>& cur, T& out) noexcept {
     static_assert(std::is_trivially_copyable_v<T>);
     if (cur.size() < sizeof(T))
         return false;
     std::memcpy(&out, cur.data(), sizeof(T));
-    cur = cur.subspan(sizeof(T));
+    cur = cur.slice(sizeof(T));
     return true;
 }
 
-std::string compute_image_cache_digest(const material::Image& image, AtxRole role) {
+String compute_image_cache_digest(const material::Image& image, AtxRole role) {
     const std::uint32_t header[4] = {atx_version, image.width(), image.height(), static_cast<std::uint32_t>(role)};
     const String h_dig = foundation::sha256(atelier::as_bytes(Span{header}));
     const String combined = String::concat(h_dig, String::validated(image.rgba_sha256()));
-    const String res = foundation::sha256(atelier::as_bytes(combined.view()));
-    return std::string(res.view().std_view());
+    return foundation::sha256(atelier::as_bytes(combined.view()));
 }
 
-std::string compute_sky_cache_digest(const rendering::SkyMap& sky) {
+String compute_sky_cache_digest(const rendering::SkyMap& sky) {
     const std::uint32_t header[4] = {atx_version, sky.width(), sky.height(),
                                      static_cast<std::uint32_t>(AtxRole::hdr_sky_bc6h)};
     const String h_dig = foundation::sha256(atelier::as_bytes(Span{header}));
     const String combined = String::concat(h_dig, String::validated(sky.content_sha256()));
-    const String res = foundation::sha256(atelier::as_bytes(combined.view()));
-    return std::string(res.view().std_view());
+    return foundation::sha256(atelier::as_bytes(combined.view()));
 }
 
 void write_cache_file_atomic(const std::filesystem::path& cache_dir, const std::filesystem::path& file,
@@ -265,7 +263,8 @@ AtxTextureRef try_read_cache_file(const std::filesystem::path& file, std::uint32
     const auto sz = in.tellg();
     if (sz <= 0)
         return nullptr;
-    std::vector<std::uint8_t> raw(static_cast<std::size_t>(sz));
+    Array<std::uint8_t> raw;
+    raw.resize_uninitialized(static_cast<std::size_t>(sz));
     in.seekg(0);
     if (!in.read(reinterpret_cast<char*>(raw.data()), sz))
         return nullptr;
@@ -305,12 +304,12 @@ AtxTextureRef cook_atx_image(const material::Image& image, AtxRole role) {
     const auto pinned_mip0 = image.acquire_pixels();
     if (!pinned_mip0 || pinned_mip0->size() != image.byte_size())
         return nullptr;
-    const std::span<const std::uint8_t> mip0_pixels{*pinned_mip0};
+    const Span<const std::uint8_t> mip0_pixels{*pinned_mip0};
 
-    std::vector<std::vector<std::uint8_t>> upper_mips(mip_count > 1u ? (mip_count - 1u) : 0u);
+    Array<Array<std::uint8_t>> upper_mips(mip_count > 1u ? (mip_count - 1u) : 0u);
     out->toksvig_mip_lengths.assign(mip_count, 1.0f);
 
-    std::vector<math::Vector3> prev_normals;
+    Array<math::Vector3> prev_normals;
     if (role == AtxRole::normal_bc5 && mip_count > 1u) {
         prev_normals.resize(std::size_t(out->width) * out->height);
         for (std::size_t i = 0; i < prev_normals.size(); ++i) {
@@ -331,7 +330,7 @@ AtxTextureRef cook_atx_image(const material::Image& image, AtxRole role) {
         dst.resize(std::size_t(mw) * mh * 4u);
 
         if (role == AtxRole::normal_bc5) {
-            std::vector<math::Vector3> cur_normals(std::size_t(mw) * mh);
+            Array<math::Vector3> cur_normals(std::size_t(mw) * mh);
             double sum_len = 0.0;
             for (std::uint32_t y = 0u; y < mh; ++y) {
                 for (std::uint32_t x = 0u; x < mw; ++x) {
@@ -360,8 +359,7 @@ AtxTextureRef cook_atx_image(const material::Image& image, AtxRole role) {
             out->toksvig_mip_lengths[m] = static_cast<float>(sum_len / double(std::size_t(mw) * mh));
             prev_normals = std::move(cur_normals);
         } else {
-            const std::span<const std::uint8_t> prev =
-                (m == 1u) ? mip0_pixels : std::span<const std::uint8_t>{upper_mips[m - 2u]};
+            const Span<const std::uint8_t> prev = (m == 1u) ? mip0_pixels : upper_mips[m - 2u].view();
             const bool is_srgb = (role == AtxRole::color_srgb || role == AtxRole::color_opaque_bc1);
             const bool alpha_weight_rgb = is_srgb && image.has_alpha();
             for (std::uint32_t y = 0u; y < mh; ++y) {
@@ -434,8 +432,7 @@ AtxTextureRef cook_atx_image(const material::Image& image, AtxRole role) {
 
     for (std::uint32_t m = 0u; m < mip_count; ++m) {
         const AtxMipSlice& mip = out->mips[m];
-        const std::span<const std::uint8_t> src =
-            (m == 0u) ? mip0_pixels : std::span<const std::uint8_t>{upper_mips[m - 1u]};
+        const Span<const std::uint8_t> src = (m == 0u) ? mip0_pixels : upper_mips[m - 1u].view();
         std::uint8_t* mip_dst = out->payload.data() + mip.byte_offset;
 
         if (!bcn) {
@@ -551,8 +548,8 @@ AtxTextureRef cook_atx_sky_map(const rendering::SkyMap& sky) {
     return out;
 }
 
-std::vector<std::uint8_t> encode_atx(const AtxTexture& tex) {
-    std::vector<std::uint8_t> out;
+Array<std::uint8_t> encode_atx(const AtxTexture& tex) {
+    Array<std::uint8_t> out;
     out.reserve(512u + tex.payload.size());
     append_pod(out, atx_magic);
     append_pod(out, atx_version);
@@ -574,13 +571,13 @@ std::vector<std::uint8_t> encode_atx(const AtxTexture& tex) {
         append_pod(out, v);
     }
     while ((out.size() & 511u) != 0u)
-        out.push_back(0u);
-    out.insert(out.end(), tex.payload.begin(), tex.payload.end());
+        out.add(0u);
+    out.append(tex.payload.view());
     return out;
 }
 
-Result<AtxTextureRef> decode_atx(std::span<const std::uint8_t> bytes) {
-    std::span<const std::uint8_t> cur = bytes;
+Result<AtxTextureRef> decode_atx(Span<const std::uint8_t> bytes) {
+    Span<const std::uint8_t> cur = bytes;
     std::uint32_t magic{};
     std::uint32_t ver{};
     std::uint32_t fmt_u{};
@@ -647,17 +644,17 @@ Result<AtxTextureRef> decode_atx(std::span<const std::uint8_t> bytes) {
         }
     }
 
-    tex->payload.assign(bytes.data() + aligned_off, bytes.data() + aligned_off + payload_size);
+    tex->payload.assign(bytes.slice(aligned_off, static_cast<std::size_t>(payload_size)));
     return tex;
 }
 
 AtxTextureRef load_or_cook_atx_image(const material::Image& image, AtxRole role,
                                      const std::filesystem::path& cache_dir) {
     if (!cache_dir.empty()) {
-        const std::string digest = compute_image_cache_digest(image, role);
-        const std::filesystem::path file =
-            cache_dir / (digest + "-v" + std::to_string(atx_version) + "-" + std::to_string(image.width()) + "x" +
-                         std::to_string(image.height()) + "-r" + std::to_string(static_cast<unsigned>(role)) + ".atx");
+        const String digest = compute_image_cache_digest(image, role);
+        const String fname = String::concat(digest, "-v", atx_version, "-", image.width(), "x", image.height(), "-r",
+                                            static_cast<unsigned>(role), ".atx");
+        const std::filesystem::path file = cache_dir / fname.c_str();
         if (auto cached = try_read_cache_file(file, image.width(), image.height(), role))
             return cached;
         auto cooked = cook_atx_image(image, role);
@@ -669,10 +666,10 @@ AtxTextureRef load_or_cook_atx_image(const material::Image& image, AtxRole role,
 
 AtxTextureRef load_or_cook_atx_sky_map(const rendering::SkyMap& sky, const std::filesystem::path& cache_dir) {
     if (!cache_dir.empty()) {
-        const std::string digest = compute_sky_cache_digest(sky);
-        const std::filesystem::path file =
-            cache_dir / (digest + "-v" + std::to_string(atx_version) + "-" + std::to_string(sky.width()) + "x" +
-                         std::to_string(sky.height()) + "-sky.atx");
+        const String digest = compute_sky_cache_digest(sky);
+        const String fname =
+            String::concat(digest, "-v", atx_version, "-", sky.width(), "x", sky.height(), "-sky.atx");
+        const std::filesystem::path file = cache_dir / fname.c_str();
         if (auto cached = try_read_cache_file(file, sky.width(), sky.height(), AtxRole::hdr_sky_bc6h))
             return cached;
         auto cooked = cook_atx_sky_map(sky);

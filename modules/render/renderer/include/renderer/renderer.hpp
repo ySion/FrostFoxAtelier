@@ -1,6 +1,7 @@
 #pragma once
 
 #include "foundation/array.hpp"
+#include "foundation/optional.hpp"
 #include "foundation/span.hpp"
 #include "math/math.hpp"
 #include "rdg/rdg.hpp"
@@ -14,9 +15,6 @@
 #include <array>
 #include <functional>
 #include <memory>
-#include <optional>
-#include <span>
-#include <vector>
 
 namespace atelier::renderer {
 
@@ -213,7 +211,7 @@ struct Frame {
     // only through render(), never reused for fallback/retry or GPU readback.
     rdg::TraceSnapshot* command_trace{};
 
-    std::string_view trace_scope{"full"};
+    StringView trace_scope{"full"};
 };
 
 enum class FrameStatus { accepted, skipped, not_ready, cancelled };
@@ -383,10 +381,10 @@ public:
     [[nodiscard]] Result<FrameResult> render(const Frame& frame, Capture* capture = nullptr);
 
     // GPU VisBuffer picking on the latest accepted 3D viewport image:
-    [[nodiscard]] Result<std::optional<PickPixelSample>> pick_pixel(std::uint32_t x, std::uint32_t y);
+    [[nodiscard]] Result<Optional<PickPixelSample>> pick_pixel(std::uint32_t x, std::uint32_t y);
 
-    [[nodiscard]] Result<std::vector<std::uint32_t>> pick_box(std::uint32_t x0, std::uint32_t y0, std::uint32_t x1,
-                                                              std::uint32_t y1);
+    [[nodiscard]] Result<Array<std::uint32_t>> pick_box(std::uint32_t x0, std::uint32_t y0, std::uint32_t x1,
+                                                        std::uint32_t y1);
 
     void release_transients(Dormancy level = Dormancy::transients) noexcept;
 

@@ -1,6 +1,9 @@
 #pragma once
 
+#include "foundation/array.hpp"
 #include "foundation/function_ref.hpp"
+#include "foundation/span.hpp"
+#include "foundation/string.hpp"
 #include "memory/fatal.hpp"
 #include "rdg/rdg.hpp"
 #include "rhi/backend.hpp"
@@ -9,11 +12,8 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
-#include <span>
-#include <string_view>
 #include <type_traits>
 #include <utility>
-#include <vector>
 
 namespace atelier::rdg {
 
@@ -104,9 +104,9 @@ struct ImportedTextureViews {
 
     std::uint32_t uav_bindless = rhi::bindless_invalid_index;
 
-    std::span<const std::uint32_t> mip_srv_bindless{};
+    Span<const std::uint32_t> mip_srv_bindless{};
 
-    std::span<const std::uint32_t> mip_uav_bindless{};
+    Span<const std::uint32_t> mip_uav_bindless{};
 };
 
 struct ImportedBufferViews {
@@ -157,7 +157,7 @@ public:
         return object;
     }
 
-    [[nodiscard]] std::string_view copy_string(std::string_view text);
+    [[nodiscard]] StringView copy_string(StringView text);
 
 private:
     struct Block {
@@ -178,7 +178,7 @@ private:
 
     void run_destructors() noexcept;
 
-    std::vector<Block> blocks_;
+    Array<Block> blocks_;
 
     std::size_t current_block_ = 0;
 
@@ -219,7 +219,7 @@ public:
 
     void mark_side_effect() noexcept { side_effect_ = true; }
 
-    void set_scope(std::string_view scope) noexcept;
+    void set_scope(StringView scope) noexcept;
 
 private:
     friend class Graph;
@@ -310,7 +310,7 @@ struct ExecuteOptions {
 
     TraceSnapshot* trace = nullptr;
 
-    std::string_view trace_scope{};
+    StringView trace_scope{};
 };
 
 // Frame-local RDG builder allocated from LinearArena.
@@ -324,15 +324,15 @@ public:
 
     [[nodiscard]] LinearArena& arena() noexcept { return arena_; }
 
-    [[nodiscard]] TextureHandle create_texture(std::string_view name, const TextureDesc& desc);
+    [[nodiscard]] TextureHandle create_texture(StringView name, const TextureDesc& desc);
 
-    [[nodiscard]] BufferHandle create_buffer(std::string_view name, const BufferDesc& desc);
+    [[nodiscard]] BufferHandle create_buffer(StringView name, const BufferDesc& desc);
 
-    [[nodiscard]] TextureHandle import_texture(std::string_view name, nri::Texture* texture, TextureState initial_state,
+    [[nodiscard]] TextureHandle import_texture(StringView name, nri::Texture* texture, TextureState initial_state,
                                                TextureState final_state = {}, ImportedTextureViews views = {},
                                                TextureState* out_committed_state = nullptr);
 
-    [[nodiscard]] BufferHandle import_buffer(std::string_view name, nri::Buffer* buffer, BufferState initial_state,
+    [[nodiscard]] BufferHandle import_buffer(StringView name, nri::Buffer* buffer, BufferState initial_state,
                                              BufferState final_state = {}, ImportedBufferViews views = {},
                                              BufferState* out_committed_state = nullptr);
 
@@ -341,7 +341,7 @@ public:
     void export_buffer(BufferHandle handle, BufferState final_state);
 
     template <class SetupFn, class ExecuteFn>
-    void add_pass(std::string_view name, rhi::QueueKind queue, SetupFn&& setup, ExecuteFn&& execute) {
+    void add_pass(StringView name, rhi::QueueKind queue, SetupFn&& setup, ExecuteFn&& execute) {
         using StoredFn = std::decay_t<ExecuteFn>;
         auto* stored = arena_.construct<StoredFn>(std::forward<ExecuteFn>(execute));
         const auto thunk = [](void* callable, const PassContext& ctx) -> rhi::Result<void> {
@@ -362,7 +362,7 @@ private:
 
     using PassThunk = rhi::Result<void> (*)(void*, const PassContext&);
 
-    std::uint32_t begin_pass(std::string_view name, rhi::QueueKind queue, void* callable, PassThunk thunk);
+    std::uint32_t begin_pass(StringView name, rhi::QueueKind queue, void* callable, PassThunk thunk);
 
     void finish_pass(std::uint32_t pass_index, bool side_effect);
 
@@ -380,11 +380,11 @@ private:
 
     LinearArena& arena_;
 
-    std::vector<TextureNode*> textures_;
+    Array<TextureNode*> textures_;
 
-    std::vector<BufferNode*> buffers_;
+    Array<BufferNode*> buffers_;
 
-    std::vector<PassNode*> passes_;
+    Array<PassNode*> passes_;
 };
 
 // Persistent per-view or per-renderer RDG executor owning the cross-frame Placed Resource

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "foundation/map.hpp"
 #include "geometry/meshlet.hpp"
 #include "gpu_resources.hpp"
 
@@ -7,8 +8,6 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
-#include <unordered_map>
-#include <vector>
 
 namespace atelier::renderer::detail {
 
@@ -25,9 +24,9 @@ struct CookedMeshSummary {
 
     std::array<geometry::MeshLodLevel, geometry::max_mesh_lods> lods{};
 
-    std::vector<geometry::PartRange> lod_parts;
+    Array<geometry::PartRange> lod_parts;
 
-    std::vector<std::uint32_t> lod0_part_meshlets;
+    Array<std::uint32_t> lod0_part_meshlets;
 };
 
 // Per-mesh GPU entry in the 5-stream GeometryPool (shared by Mesh Shader VisBuffer and DXR 1.1 RayQuery).
@@ -53,16 +52,16 @@ struct GpuGeometryEntry {
 
     // Multi-part LOD0 BLAS variants keyed by arbitrary-length bitsets of non-opaque and fully-discarded material slots.
     struct BlasVariant {
-        std::vector<std::uint64_t> non_opaque_slot_words;
+        Array<std::uint64_t> non_opaque_slot_words;
 
-        std::vector<std::uint64_t> discarded_slot_words;
+        Array<std::uint64_t> discarded_slot_words;
 
         OwnedAccelerationStructure blas;
 
         std::uint32_t part_table_base = 0u;
     };
 
-    std::vector<BlasVariant> lod0_blas_variants;
+    Array<BlasVariant> lod0_blas_variants;
 
     // Optional Zone 2 (>26m) G1 LOD2 purely OPAQUE proxy BLAS for small opaque clutter / trunks.
     OwnedAccelerationStructure proxy_blas;
@@ -123,8 +122,8 @@ public:
                                                     std::uint64_t current_sequence);
 
     [[nodiscard]] Result<std::pair<std::uint64_t, std::uint32_t>>
-    ensure_blas(rhi::Device& device, GpuGeometryEntry& entry, std::span<const std::uint64_t> non_opaque_slot_words,
-                std::span<const std::uint64_t> discarded_slot_words, bool want_proxy);
+    ensure_blas(rhi::Device& device, GpuGeometryEntry& entry, Span<const std::uint64_t> non_opaque_slot_words,
+                Span<const std::uint64_t> discarded_slot_words, bool want_proxy);
 
     [[nodiscard]] Result<void> commit_frame(rhi::Device& device, std::size_t slot_index);
 
@@ -145,17 +144,17 @@ private:
 
     Result<OwnedAccelerationStructure> build_blas_for_lod(rhi::Device& device, const GpuGeometryEntry& entry,
                                                           std::uint32_t lod_idx,
-                                                          std::span<const std::uint64_t> non_opaque_slot_words,
-                                                          std::span<const std::uint64_t> discarded_slot_words,
+                                                          Span<const std::uint64_t> non_opaque_slot_words,
+                                                          Span<const std::uint64_t> discarded_slot_words,
                                                           bool force_all_opaque, std::uint32_t& out_part_base);
 
-    std::unordered_map<const geometry::Mesh*, GpuGeometryEntry> entries_;
+    Map<const geometry::Mesh*, std::unique_ptr<GpuGeometryEntry>> entries_;
 
     std::filesystem::path cache_dir_;
 
-    std::vector<GpuMeshDescriptor> mesh_descriptors_;
+    Array<GpuMeshDescriptor> mesh_descriptors_;
 
-    std::vector<std::uint32_t> part_tri_bases_;
+    Array<std::uint32_t> part_tri_bases_;
 
     HostSlotRing<GpuMeshDescriptor> mesh_table_slots_;
 
