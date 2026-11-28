@@ -1,8 +1,8 @@
 # 引擎原生声明式 UI
 
-编辑器现有界面的装配统一到 [editor.ui.source](../../../assets/editor.ui.source)：EditorShell、菜单栏、工具架、状态栏、停靠页签与分隔条、Scene View、Parameters、Scene Tree、Entity Structure、Network、Geometry Spreadsheet、Asset Browser、Controls、Code、Project Output，以及独立窗口内的 PopupMenu。宿主提供业务数据、稳定身份和动作；Source/JIT 产出同一套原生 Control，沿现有 SS、Session、布局与绘制链执行。区域职责与未实施的交互见[区域与手势边界](#区域与手势边界)。
+编辑器现有界面的装配统一到 [editor.ui.source](../../../assets/editor.ui.source)：EditorShell、菜单栏、紧凑单行工具架、状态栏、停靠页签与分隔条、Scene View、Parameters、Scene Outliner、Network、Geometry Spreadsheet、Asset Browser、Controls、Code、Project Output、二维 ColorEditor，以及独立窗口内的 PopupMenu。宿主提供业务数据、稳定身份和动作；Source/JIT 产出同一套原生 Control，沿现有 SS、Session、布局与绘制链执行。区域职责与未实施的交互见[区域与手势边界](#区域与手势边界)。
 
-Parameters 在对象标题下按需展开过滤器，连续展示检查目标的 Position/Rotation/Scale 数值行和 `Items<PropertyGroup>`，不内建 Transform／Components 页签。`PropertyRow` 根据实际字段种类使用 NumberRow、Checkbox 或枚举 Combo；规范数学元组由 NumberRow 组合。资源选择使用 `ResourceParameters` 和 `Items<ResourceProperty>` 展示只读元数据，各行 key 来自同一宿主分配器。EntityStructure 用同一 Tree/Repeat 递归展示 Entity 与组件归属，并提供组成及 Add/Remove Transform 命令；SceneTree 递归展示 Entity 组合层级。ViewportTools 在路径栏末尾提供显示菜单，ViewportMode 在视口左侧组成紧凑的选择组和枢轴菜单。所有视图沿同一原生控件和命令链工作。
+Parameters 在对象标题下按需展开 `SearchBox` 过滤器，连续展示检查目标的 Position/Rotation/Scale 数值行和 `Items<PropertyGroup>`，不内建 Transform／Components 页签。`PropertyRow` 根据实际字段种类使用 NumberRow、右列对齐 Checkbox、单行 TextField 或枚举 Combo；规范数学元组由 NumberRow 组合。资源选择使用 `ResourceParameters` 和 `Items<ResourceProperty>` 的只读可复制 `TextField`（`read_only: true`）展示元数据，各行 key 来自同一宿主分配器。`SceneOutliner` 用同一 Tree/Repeat 递归展示 Entity 组合层级、内联组件列表、右侧能力微徽标（`badges`）与尾端启用开关（`trailing_icon`），并在面板头部集成组件折叠开关、Add Component 菜单与移除命令；重命名使用锚定到目标树行或表格单元格的 `InlineRenameField`。ViewportTools 在路径栏末尾提供显示菜单，ViewportMode 在视口左侧组成紧凑的选择组和枢轴菜单。所有视图沿同一原生控件和命令链工作。
 
 
 本文是当前实现的用法与契约说明。Qt/QML、Unity UI Toolkit 与 Flutter 的官方资料比对见[更新机制研究](../../research/ui-dsl-update-comparison-20261005.md)。
@@ -33,8 +33,9 @@ Scene Tree 的行选择/重命名/组合换父、Parameters 的实例编辑及�
 
 1. **顶栏、菜单栏与面板工具栏默认采用“空气态”（Air-State / Ghost Chrome）**：
    - 面板的路径栏尾端开关、二级动作栏（如 `SceneViewport` 的 `View / Select / Add / Object`、`NetworkPanel` 的 `Add / Edit / View / Layout` 与快捷图标组、`GeometrySpreadsheet` 翻页与跟随开关）、左右工具轨（Tool Rail / Display Bar）与浮窗标题栏工具，常态下必须透明无框、无凸起渐变（`background: transparent; background-image: none; border-width: 0dip;`），避免密集小方框造成视觉拥挤。
-   - 交互反馈仅在触发时浮现：`:hover` 使用轻量平底（`#484848`～`#4b4b4b`）并提亮图标/文字；下拉菜单展开态（`:selected` / `:pressed`）使用 `token(menu-active)`（`#b36600`），且同一横栏内的相邻菜单在展开后支持悬停平滑切换；持久布尔开关激活态（`:selected`）使用灰蓝实底（`#5d7289`）；`:disabled` 必须保持透明底面并仅降低图标/文字明度，绝不能回退为实体灰按钮框。
-   - 统一复用 [editor.ss](../../../assets/editor.ss) 中的空气态类：扁平文字菜单用 `viewport-header-menu`，纯图标工具/开关用 `ghost-tool` / `display-toggle` / `parameter-tool`，轻量文字动作（如缩放百分比复位、`+ Scratch Graph`）用 `ghost-button`，图标下拉用 `icon-menu`；组间优先用留白或 `1 DIP` 细竖线（`viewport-option-divider`）分隔，仅需表达紧密互斥组（如着色四连组）时才使用共边 `viewport-segment`。禁止在 C++ 中散写硬编码工具栏按钮背景或边框色。
+   - 交互与状态语义严格分离：**文字按钮（`Button` / `ghost-button`）专用于单次命令触发**，禁止将持久布尔状态做成常亮文字按钮；面板/工具栏中的持久状态项（如钉住目标 `pin`、资产防误改锁 `lock/unlock`、独显 `isolate`、网格吸附、搜索栏展开、内联组件显示）一律采用**语义矢量图标指示器**（`ghost-tool` / `display-toggle` / `parameter-tool`，默认空气态透明，仅在锁定/激活时点亮平底深钢蓝指示槽 `token(indicator-socket)` 与高亮图标，不使用凸起按钮渐变）或表单 `Checkbox`。
+   - **Switch Tab 互斥切换组分层规范**：严禁与停靠面板文件夹卡签（`.dock-tab-group`）堆叠同类方框，也避免消费级圆润胶囊；工具栏与行内互斥组（如 `GeometrySpreadsheet` 属性域、顶栏 `Create | View`、`Parameters` 的 `Object | Category`、`Color | Channels`）使用 `1.5–2 DIP` 微倒角工业深色凹槽 `.segmented-switch` 搭配冷岩灰微凸滑块 `button.segmented-item`；紧贴 Dock 栏下方的整行二级页面栏（如 `World`、`Controls`）使用平整去框的 `.subtab-bar` 搭配底部 `2 DIP` 钢蓝指示横条 `button.subtab-item`。
+   - 统一复用 [editor.ss](../../../assets/editor.ss) 中的工具栏类：扁平文字菜单用 `viewport-header-menu`（展开态使用 `token(menu-active)` `#b36600`），纯图标工具与状态指示器用 `ghost-tool` / `display-toggle` / `parameter-tool`，单次触发的紧凑文字命令（如 `Reset`、`Locate`、`+ Scratch Graph`、`100%`）用 `ghost-button`，过滤条件选择槽（如日志 `Level`）用凹陷槽 `filter-selector`，图标下拉用 `icon-menu`。禁止在 C++ 中散写硬编码工具栏按钮背景或边框色。
 2. **属性与表单区保留实体控件框（Framed Field / Action Chrome）**：
    - 凹陷输入槽（`token(field)`）与带细边的渐变按钮/下拉（`token(button-face)`、`pane-path`）专用于 `Parameters`、路径选择槽与表单提交动作，让“可编辑数据槽”与“面板导航/工具铬层”一眼可辨。
 3. **画布悬浮层与双语提示、悬浮焦点约定**：
@@ -65,7 +66,7 @@ Dev 和 Release 开发工作树的构建均优先读取 `assets/editor.ui.source
 - 同名、同类型 state 及兼容声明节点保留身份；正在编辑的字段继续使用原 Session 草稿。删除、禁用或业务对象换绑仍按原输入合同结算旧交互。
 - 去抖后的热更编译在后台执行，结果就绪后在 UI 安全点复核磁盘文件与 Runtime 类型目录并同步发布，详见[后台编译与发布](#后台编译与发布)。
 
-该流程针对 `.ui.source`。SS 文件、C++、多文件 imports、语言服务与调试器尚未接入保存更新。
+该流程同时覆盖 `.ui.source` 与工作树中的 [assets/editor.ss](../../../assets/editor.ss)：样式表同样按 100 ms 轮询、200 ms 去抖检查磁盘变更并解析替换主窗口与弹出菜单的根样式表；SS 语法或状态规则校验失败时保留已接受样式，并在状态栏输出行列诊断。C++、多文件 imports、语言服务与调试器尚未接入保存更新。
 
 文件监测依赖修改时间和大小；读取后再按完整内容去重，在途后台编译就绪时再做一次字节复核以拦截同时间戳覆盖。保持时间戳和大小不变且落在最终复核之后的外部写入不在当前检测保证内。200 ms 去抖不是热更总耗时上限。
 
@@ -123,7 +124,7 @@ ui Inspector(in TextEditBinding query, in bool visible) {
 | `bool` / `double` | 有限标量，表达式由既有 Source 编译器检查 |
 | `Text` | 拥有式文字快照，用于 text、classes 或 filter |
 | `EditBinding` | 既有类型化数值字段、分组重置与事务路由 |
-| `TextEditBinding` | 稳定编辑 key、权威文字和 enabled；走共享单行编辑器 |
+| `TextEditBinding` | 稳定编辑 key、权威文字、enabled/invalid/read_only 及宿主内联重命名锚点（`transient`、`rename_anchor`、`rename_cell`）；走共享单行编辑器 |
 | `ActionBinding` | 非零宿主动作 target 和 enabled；控件实例 key 独立，业务执行仍走现有命令入口 |
 | `TableBinding` | 共享不可变 TableData、当前行/列和 enabled；表格几何、输入及可见绘制复用原生 Table |
 | `TooltipBinding` | 可为空的共享不可变 Tooltip，包含 title、identity、description；只拥有文字，不保留对象或借用元数据 |
@@ -173,7 +174,8 @@ Repeat 按宿主稳定项 key 匹配实例，排序保留状态，移除后再�
 | `Popup` / `MenuItem` | 独立菜单根和菜单项；支持普通命令、checkbox、radio、子菜单分支 |
 | `Foldout` | 可激活的折叠标题叶；不接受子节点，展开内容由另一个 Column 的 collapsed 表达 |
 | `NumberRow` | 共享参数行；必填 EditBinding，0 个字段不产生控件，非空时接受 1–4 个数值字段 |
-| `TextField` | 共享单行编辑器；必填 TextEditBinding，实际控件 key 必须非零且在完整快照内唯一 |
+| `TextField` | 共享单行编辑器；必填 TextEditBinding，节点支持 `read_only`（可选中复制、禁改禁 IME）与 `placeholder` 占位提示；内联重命名锚点由宿主 `TextEditBinding` 提供 |
+| `ColorPlane` | 原生二维拾色平面与纵向色相光谱条；支持 `hue`、`value`、`brightness` 与 `vertical`，输出归一化 `DragPoint` 或色相度数走 `edit_begin/preview/commit/cancel` |
 | `Tree` | 共享树容器；实际输出的直接子控件必须为 TreeItem，可通过组件或 Repeat 产生树行 |
 | `TreeItem` | 树行叶；位置、深度和展开值由宿主的 `row` 输入给出，不通过嵌套 TreeItem 花括号表达 |
 | `Repeat` | 类型化动态子作用域；items 必填，必须直接引用 Items 输入；自身不额外生成容器 |
@@ -237,8 +239,10 @@ ui Tool(in Text title, in ActionBinding command) {
 | `gap` | 数值表达式；容器 | 流式布局子项间距 |
 | `padding_left/top/right/bottom` | 数值表达式；容器布局 | 所属容器的内容缩进；不同于 SS 的文字/绘制内距 |
 | `align_center` | bool；Row、Column、Tree | 设置流式布局的交叉轴对齐；Row 中可用于文字与编辑框垂直对齐 |
-| `icon` | 非负整数；例如 TreeItem | 使用当前 `ui::ControlIcon` 编号，不支持图标文件路径或 DSL 枚举名称 |
-| `row` | 直接 `TreeRowBinding` 输入；TreeItem | 宿主展平后的行：行号、深度、是否分支、展开值、是否主行和连接线。主行变为主行时滚动显露一次 |
+| `icon` | 字符串字面量（如 `"search"`、`"material"`、`"eye_off"`）或非负整数；支持图标的控件 | 字符串字面量在降低阶段解析为 `ui::ControlIcon`，动态图标继续由宿主传入数值绑定 |
+| `read_only`、`placeholder` | bool / Text；TextField | 只读字段保留文本刷选、Ctrl+A/C 与右键 Copy Value，屏蔽修改与 IME（可由节点属性或 `TextEditBinding.read_only` 开启）；空文本显示 `placeholder` |
+| `hue`、`value`、`brightness`、`vertical` | 数值 / bool；ColorPlane | 控制 SV 方块色相（0–360°）、饱和度（0–1）与明度（0–1）准星坐标，或切换纵向全色相光谱条模式 |
+| `row` | 直接 `TreeRowBinding` 输入；TreeItem | 宿主展平后的行：行号、深度、是否分支、展开值、是否主行、连接线、右侧微徽标与尾端交互图标。主行变为主行时滚动显露一次 |
 | `rows` | 非负整数，不超过 `ui::maximum_tree_rows`；Tree | 宿主展平后的总行数，决定滚动范围；描述的 TreeItem 行号必须小于它 |
 | `edit` | EditBinding / TextEditBinding | 分别用于 NumberRow / TextField；必填 |
 | `mounted` | bool；组件调用或 Repeat，缺省 true | false 在成功提交后移除子作用域；重新挂载建立新生命周期 |

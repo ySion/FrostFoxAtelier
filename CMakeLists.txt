@@ -75,6 +75,7 @@ add_library(atelier_foundation STATIC
     modules/core/foundation/src/sha256.cpp
     modules/core/foundation/src/tasks.cpp
     modules/core/platform/src/utf.cpp
+    modules/core/platform/src/windows_path.cpp
     modules/core/platform/src/error.cpp)
 target_include_directories(atelier_foundation PUBLIC modules/core/platform/include)
 target_compile_features(atelier_foundation PUBLIC cxx_std_23)

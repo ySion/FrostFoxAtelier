@@ -74,8 +74,7 @@ Workspace::Workspace()
            {{control::scene_tab, control::scene_content, L"Scene View", {240, 160}},
             {control::parameters_tab, 50, L"Parameters", {220, 260}},
             {control::workbench, 300, L"Controls", {220, 280}},
-            {control::entities_tab, 21, L"Scene Tree", {180, 140}},
-            {control::structure_tab, control::structure_content, L"Entity Structure", {200, 140}},
+            {control::entities_tab, 21, L"Scene Outliner", {200, 140}},
             {control::assets_tab, control::assets_content, L"Asset Browser", {240, 140}},
             {source_control::tab, source_control::content, L"Code", {300, 180}},
             {control::output_tab, control::output_content, L"Project Output", {240, 120}},
@@ -102,10 +101,9 @@ Result<void> Workspace::initialize() {
 }
 
 namespace {
-constexpr std::array<std::pair<RegionKind, ui::ControlKey>, 11> region_tabs{
+constexpr std::array<std::pair<RegionKind, ui::ControlKey>, 10> region_tabs{
     {{RegionKind::viewport, control::scene_tab},
      {RegionKind::scene_tree, control::entities_tab},
-     {RegionKind::structure, control::structure_tab},
      {RegionKind::parameters, control::parameters_tab},
      {RegionKind::assets, control::assets_tab},
      {RegionKind::code, source_control::tab},
@@ -368,7 +366,6 @@ Result<void> Workspace::reset_layout() {
     static constexpr ui::DockPlacement placements[]{{world_control::tab, control::parameters_tab, tabs},
                                                     {control::scene_tab, control::parameters_tab, left, .62f},
                                                     {control::entities_tab, control::parameters_tab, bottom, .7f},
-                                                    {control::structure_tab, control::entities_tab, tabs},
                                                     {network_control::tab, control::entities_tab, tabs},
                                                     {control::assets_tab, control::scene_tab, bottom, .73f},
                                                     {source_control::tab, control::scene_tab, tabs},
@@ -402,13 +399,12 @@ void Workspace::reset_document(bool preserve_view) {
     binding_cursor_ = 0;
     pending_live_.reset();
     scene_tree_ = {};
-    structure_tree_ = {};
     navigation_ = {ObjectId{}};
     navigation_cursor_ = 0;
     if (!preserve_view) {
         query.clear();
         tree_query.clear();
-        structure_query.clear();
+        outliner_show_components = false;
         parameter_search_visible = false;
         inspecting_asset = false;
         inspecting_network = false;
@@ -529,7 +525,6 @@ Result<void> Workspace::commit_ui_controls() {
     ui_document_->commit_controls();
     if (pending_live_) {
         scene_tree_.commit(*pending_live_);
-        structure_tree_.commit(*pending_live_);
         // Retire absent objects only among unused bindings. This frame can introduce
         // material keys before the next membership scan needs to enumerate material slots.
         const auto unused = bindings_.begin() + static_cast<std::ptrdiff_t>(binding_cursor_);
@@ -647,12 +642,13 @@ Result<void> Workspace::select_tree(Session& session, OperatorHost& host, ui::Co
     if (key == control::tree_world)
         return select_object(session, host, {});
     const auto* target = binding(key);
-    if (target && target->kind == Binding::Kind::object && (modifiers.shift || modifiers.control)) {
+    if (target && target->kind == Binding::Kind::object && session.world().contains(target->object) &&
+        (modifiers.shift || modifiers.control)) {
         Array<ObjectId> selected;
         if (modifiers.control)
             selected.assign(session.selected_entities());
         if (modifiers.shift) {
-            // The range runs over the rows the Scene Tree shows, described or scrolled away.
+            // The range runs over the Entity rows the Scene Outliner shows, described or scrolled away.
             const auto row_of = [&](ObjectId entity) {
                 return std::ranges::find_if(scene_tree_.rows,
                                             [&](const auto& row) { return scene_tree_.objects[row.node] == entity; });
@@ -662,7 +658,8 @@ Result<void> Workspace::select_tree(Session& session, OperatorHost& host, ui::Co
             if (first != scene_tree_.rows.end() && last != scene_tree_.rows.end()) {
                 for (auto at = std::min(first, last); at <= std::max(first, last); ++at)
                     if (const auto entity = scene_tree_.objects[at->node];
-                        entity != ObjectId{} && std::ranges::find(selected, entity) == selected.end())
+                        entity != ObjectId{} && session.world().contains(entity) &&
+                        std::ranges::find(selected, entity) == selected.end())
                         selected.add(entity);
             } else
                 selected.add(target->object);
@@ -679,56 +676,16 @@ Result<void> Workspace::select_tree(Session& session, OperatorHost& host, ui::Co
                             {.selection = SelectionContext{active, active, std::move(selected)}, .region = {}}});
         return result ? Result<void>{} : std::unexpected(result.error());
     }
-    return target && (target->kind == Binding::Kind::object || target->kind == Binding::Kind::structure)
-               ? select_object(session, host, target->object)
-               : Result<void>{};
+    return target && target->kind == Binding::Kind::object ? select_object(session, host, target->object)
+                                                           : Result<void>{};
 }
 
-Result<void> Workspace::build_structure_tree(const Session& session, ObjectId entity, TreeBuild& tree) const {
-    // The Entity, then each Entity's Components before its children, in preorder.
-    tree.nodes.clear();
-    tree.objects.clear();
-    if (entity == ObjectId{})
-        return {};
-    auto& runtime = session.world().runtime();
-    struct Pending {
-        ObjectId entity;
-
-        std::uint32_t parent;
-    };
-    Array<Pending> pending{{entity, ui::no_tree_node}};
-    while (!pending.empty()) {
-        const auto entry = pending.back();
-        pending.pop();
-        const auto node = static_cast<std::uint32_t>(tree.nodes.size());
-        tree.nodes.add({entry.parent, structure_tree_.expanded(entry.entity, true), {}});
-        tree.objects.add(entry.entity);
-        ATELIER_TRY_BIND(components, world::components(runtime, entry.entity));
-        for (const auto& component : *components) {
-            tree.nodes.add({node, false, {}});
-            tree.objects.add(component.id());
-        }
-        ATELIER_TRY_BIND(children, world::children(runtime, entry.entity));
-        for (auto child = children->rbegin(); child != children->rend(); ++child)
-            pending.add({child->id(), node});
-    }
-    return {};
-}
-
-Result<void> Workspace::set_tree_expanded(const Session& session, EntityTree tree, Span<const ObjectId> objects,
-                                          bool expanded) {
-    auto& view = tree == EntityTree::scene_tree ? scene_tree_ : structure_tree_;
-    TreeBuild structure;
-    if (tree == EntityTree::structure) {
-        const auto entity = session.selection().entity;
-        ATELIER_TRY(build_structure_tree(session, session.world().contains(entity) ? entity : ObjectId{}, structure));
-    }
+Result<void> Workspace::set_tree_expanded(const Session& session, Span<const ObjectId> objects, bool expanded) {
     for (const auto object : objects)
-        if (tree == EntityTree::scene_tree ? object != ObjectId{} && !session.world().contains(object)
-                                           : structure.node(object) == ui::no_tree_node)
+        if (object != ObjectId{} && !session.world().contains(object))
             return std::unexpected(Error{ErrorCode::invalid_member, "The identity is not a row of this tree."});
     for (const auto object : objects)
-        view.requests.insert_or_assign(object, expanded);
+        scene_tree_.requests.insert_or_assign(object, expanded);
     return {};
 }
 
@@ -744,7 +701,7 @@ Result<bool> Workspace::reveal_in_tree(const Session& session, ObjectId entity) 
             break;
         ancestors.add(*parent);
     }
-    ATELIER_TRY(set_tree_expanded(session, EntityTree::scene_tree, ancestors, true));
+    ATELIER_TRY(set_tree_expanded(session, ancestors, true));
     return tree_query.empty() || std::ranges::any_of(scene_tree_.rows, [&](const auto& row) {
                return scene_tree_.objects[row.node] == entity;
            });
@@ -982,9 +939,19 @@ Optional<Workspace::TreeDrop> Workspace::tree_drop(const Session& session, const
         const auto* target = binding(box.key);
         if (!target || target->kind != Binding::Kind::object || !target->path.empty())
             return {};
-        // An Entity cannot become a child of itself or of its own descendant.
         auto& runtime = session.world().runtime();
-        for (auto ancestor = target->object; ancestor != ObjectId{};) {
+        ObjectId target_entity = target->object;
+        ui::ControlKey drop_key = box.key;
+        if (!session.world().contains(target_entity)) {
+            const auto comp = world::inspect_component(runtime, target_entity);
+            if (!comp || !comp->valid)
+                return {};
+            target_entity = comp->owner;
+            if (const auto ent_key = object_control(target_entity))
+                drop_key = ent_key;
+        }
+        // An Entity cannot become a child of itself or of its own descendant.
+        for (auto ancestor = target_entity; ancestor != ObjectId{};) {
             if (ancestor == dragged)
                 return {};
             const auto parent = world::parent_entity(runtime, ancestor);
@@ -992,7 +959,7 @@ Optional<Workspace::TreeDrop> Workspace::tree_drop(const Session& session, const
                 return {};
             ancestor = *parent;
         }
-        return TreeDrop{target->object, box.key};
+        return TreeDrop{target_entity, drop_key};
     }
     // Empty space below the rows is World, as in Houdini's tree view.
     return TreeDrop{{}, control::tree_world};
@@ -1221,35 +1188,84 @@ struct EntityRowAppearance {
     bool mesh;
 
     bool retained;
+
+    std::array<ui::ControlIcon, 4> badges{};
 };
+
+Result<ui::ControlIcon> component_row_icon(const Session& session, ObjectId part_id) {
+    auto& runtime = session.world().runtime();
+    if (session.has_retained(part_id)) {
+        ATELIER_TRY_BIND(saved, session.retained(part_id));
+        if (!saved->type.empty())
+            return ui::ControlIcon::component;
+    }
+    ATELIER_TRY_BIND(part_type, runtime.type_of(part_id));
+    const auto& types = session.presentation_types();
+    ATELIER_TRY_BIND(is_mesh, runtime.is_a(*part_type, types.static_mesh_component));
+    if (*is_mesh)
+        return ui::ControlIcon::mesh;
+    ATELIER_TRY_BIND(is_gen, runtime.is_a(*part_type, types.procedural_generator_component));
+    if (*is_gen)
+        return ui::ControlIcon::procgraph;
+    ATELIER_TRY_BIND(is_light, runtime.is_a(*part_type, types.light_component));
+    if (*is_light) {
+        ATELIER_TRY_BIND(light, presentation::read_light(runtime, part_id));
+        return light_icon(light->kind);
+    }
+    ATELIER_TRY_BIND(is_cam, runtime.is_a(*part_type, types.camera_component));
+    if (*is_cam)
+        return ui::ControlIcon::camera;
+    ATELIER_TRY_BIND(is_env, runtime.is_a(*part_type, types.environment_component));
+    if (*is_env)
+        return ui::ControlIcon::world;
+    const auto& phys = session.physics_types();
+    for (const TypeId pt : {phys.character_component, phys.ragdoll_component, phys.ragdoll_part_component,
+                            phys.distance_constraint_component, phys.force_component, phys.kinematic_motion_component,
+                            phys.scene_query_component}) {
+        if (pt == TypeId{})
+            continue;
+        ATELIER_TRY_BIND(is_phys, runtime.is_a(*part_type, pt));
+        if (*is_phys)
+            return ui::ControlIcon::physics;
+    }
+    return ui::ControlIcon::component;
+}
 
 Result<EntityRowAppearance> entity_row_appearance(const Session& session, ObjectId entity, TypeId type) {
     auto& runtime = session.world().runtime();
     const auto& types = session.presentation_types();
     ATELIER_TRY_BIND(mesh, runtime.is_a(type, types.static_mesh_entity));
+    ATELIER_TRY_BIND(generator_ent, runtime.is_a(type, types.procedural_generator_entity));
     ATELIER_TRY_BIND(parts, world::components(runtime, entity));
     const bool retained = session.has_retained(entity) || std::ranges::any_of(*parts, [&](const auto& part) {
                               return session.has_retained(part.id());
                           });
-    EntityRowAppearance row{ui::ControlIcon::mesh, *mesh, retained};
+    EntityRowAppearance row{ui::ControlIcon::object, *mesh, retained, {}};
+    std::size_t badge_count{};
+    const auto push_badge = [&](ui::ControlIcon badge) {
+        if (badge == ui::ControlIcon::none || badge == ui::ControlIcon::component || badge_count >= row.badges.size())
+            return;
+        for (std::size_t i = 0; i < badge_count; ++i)
+            if (row.badges[i] == badge)
+                return;
+        row.badges[badge_count++] = badge;
+    };
     if (*mesh)
-        return row;
-    ATELIER_TRY_BIND(generator, runtime.is_a(type, types.procedural_generator_entity));
-    if (*generator)
-        return row;
+        row.icon = ui::ControlIcon::mesh;
+    else if (*generator_ent)
+        row.icon = ui::ControlIcon::procgraph;
     for (const auto& part : *parts) {
-        ATELIER_TRY_BIND(part_type, runtime.type_of(part.id()));
-        ATELIER_TRY_BIND(is_light, runtime.is_a(*part_type, types.light_component));
-        if (*is_light) {
-            ATELIER_TRY_BIND(light, presentation::read_light(runtime, part.id()));
-            row.icon = light_icon(light->kind);
-            return row;
-        }
-        ATELIER_TRY_BIND(is_generator, runtime.is_a(*part_type, types.procedural_generator_component));
-        if (*is_generator)
-            return row;
+        ATELIER_TRY_BIND(part_icon, component_row_icon(session, part.id()));
+        if (row.icon == ui::ControlIcon::object && part_icon != ui::ControlIcon::component)
+            row.icon = *part_icon;
+        push_badge(*part_icon);
+        if (const auto body = physics::read_settings(runtime, part.id()); body && body->enabled)
+            push_badge(ui::ControlIcon::physics);
     }
-    row.icon = ui::ControlIcon::object;
+    // Keep trailing badges focused on secondary/additional capabilities when there is only a single primary capability.
+    if (badge_count == 1 && row.badges[0] == row.icon) {
+        row.badges[0] = ui::ControlIcon::none;
+    }
     return row;
 }
 
@@ -1483,7 +1499,6 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                                        const ui::ControlBox* command_focus, bool& retry) {
     pending_live_.reset();
     scene_tree_.begin(dock.visible(control::entities_tab));
-    structure_tree_.begin(dock.visible(control::structure_tab));
     sync_world(session);
     if (!command_focus && frame && ui)
         command_focus = frame->find(ui->focused_control());
@@ -1690,7 +1705,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                           : kind == "rectangle"            ? ui::ControlIcon::area_light
                           : kind == "directional"          ? ui::ControlIcon::sun_light
                           : kind == "mesh"                 ? ui::ControlIcon::mesh
-                          : kind == "procedural_generator" ? ui::ControlIcon::mesh
+                          : kind == "procedural_generator" ? ui::ControlIcon::procgraph
                           : kind == "entity"               ? ui::ControlIcon::object
                                                            : ui::ControlIcon::axes;
         auto& items = definition.group == MenuGroup::create ? create_tools : view_tools;
@@ -1731,16 +1746,18 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
         chrome_height += at->layout.height.value;
     }
     const auto placement = dock.presentation(20, {size.width, std::max(0.f, size.height - chrome_height)});
+    const auto focused_tab = dock.focused_tab();
     auto panes = std::make_shared<Array<ui_language::Item>>();
     for (const auto& pane : placement.panes) {
+        const bool pane_focused = pane.active && pane.active->key == focused_tab;
         auto tabs = std::make_shared<Array<ui_language::Item>>();
         for (const auto& tab : pane.tabs) {
             std::wstring style = L"dock-tab";
             for (const auto& name : tab.view->classes)
                 style += L" " + platform::utf8_to_utf16_validated(name);
+            std::wstring group_style = tab.view->key == focused_tab ? L"dock-tab-group focused-tab" : L"dock-tab-group";
             tabs->add({tab.wrapper,
-                       {tab.view->title, tab.view == pane.active, std::move(style), tab.view->key,
-                        double(ui::ControlIcon::close)},
+                       {tab.view->title, tab.view == pane.active, std::move(style), std::move(group_style), tab.view->key},
                        {{"title", tab.view->key}, {"close", tab.close}}});
         }
         auto slots = std::make_shared<Array<ui_language::Item>>();
@@ -1760,9 +1777,8 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                            ui_language::ItemList{std::move(tabs)},
                            ui_language::ItemList{std::move(slots)},
                            pane.active != nullptr,
+                           std::wstring(pane_focused ? L"dock-tabs focused-pane" : L"dock-tabs"),
                            double(pane.maximized ? ui::ControlIcon::restore : ui::ControlIcon::maximize),
-                           double(ui::ControlIcon::plus),
-                           double(ui::ControlIcon::down),
                            double(pane.divider.x),
                            double(pane.divider.y),
                            double(pane.divider.width),
@@ -2095,7 +2111,9 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                                                                 {"snapping", control::viewport_snapping},
                                                                 {"display_bar", control::display_bar},
                                                                 {"basis", control::viewport_orientation}}};
-            static_cast<void>(ui_document_->append("SceneViewport", control::scene_content, keys, inputs, result));
+            if (auto staged = ui_document_->append("SceneViewport", control::scene_content, keys, inputs, result);
+                !staged)
+                return composition_failed(std::move(staged).error());
             if (sop_show_info && shown_geom && (in_sop || gen_comp != ObjectId{})) {
                 const bool pts_auto = !sop_show_points.has_value() && application::is_pure_point_cloud(*shown_geom);
                 ui::Control hud;
@@ -2132,16 +2150,16 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
             continue;
         }
         if (view.key == source_control::tab) {
-            if (auto staged = source_editor.append(result, view.content, *ui_document_, action, project,
-                                                   project_build.get(), project_running);
+            if (auto staged =
+                    source_editor.append(result, view.content, *ui_document_, action, project, project_build.get(),
+                                         project_running, &session.world().runtime(), frame);
                 !staged)
                 return composition_failed(std::move(staged).error());
             continue;
         }
         if (view.key == control::output_tab) {
-            auto appended = output.append(result, view.content, *ui_document_, pane.bounds.height - 22);
-            if (!appended)
-                return std::unexpected(application::ui_error(appended.error()));
+            if (auto appended = output.append(result, view.content, *ui_document_, pane.bounds.height - 22); !appended)
+                return composition_failed(std::move(appended).error());
             continue;
         }
         if (view.key == control::workbench) {
@@ -2161,10 +2179,20 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
             continue;
         }
         if (view.key == control::assets_tab) {
-            ATELIER_TRY(assets
-                            .append(result, view.content, project,
-                                    operators.find("scene.add")->poll(context).has_value(), frame, *ui_document_)
-                            .transform_error(tree_error));
+            std::optional<ui_language::TextEditBinding> asset_rename;
+            if (row_rename && row_rename->cell) {
+                const auto& sel_asset = assets.selected();
+                if (!sel_asset || sel_asset->path != row_rename->asset)
+                    row_rename.reset();
+                else
+                    asset_rename.emplace(control::inline_rename, row_rename->text, true, row_rename->invalid, true,
+                                         browser_control::results, row_rename->cell);
+            }
+            if (auto appended =
+                    assets.append(result, view.content, project, operators.find("scene.add")->poll(context).has_value(),
+                                  frame, *ui_document_, asset_rename ? &*asset_rename : nullptr);
+                !appended)
+                return composition_failed(std::move(appended).error());
             continue;
         }
         if (view.key == spreadsheet_control::tab) {
@@ -2205,15 +2233,23 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                 }
             } else if (const ObjectId gen_comp = active_procedural_generator(session).value_or(ObjectId{});
                        gen_comp != ObjectId{}) {
-                if (!session.world().running())
-                    static_cast<void>(session.sync_procedural_generators(project));
-                if (const auto src = presentation::read_procedural_source(runtime, gen_comp);
-                    src && src->output && src->output->geometry) {
-                    geom = src->output->geometry.get();
-                    generation = src->output->generation;
-                    target_label = std::wstring(session.name(selected)) + L" [Generator]";
-                } else if (src && !src->source.empty()) {
-                    target_label = platform::utf8_to_utf16_validated(src->source) + L" (no output)";
+                const auto comp_st = world::inspect_component(runtime, gen_comp);
+                const auto ent_st = comp_st ? world::inspect_entity(runtime, comp_st->owner)
+                                            : atelier::Result<world::EntityStatus>{std::unexpected(comp_st.error())};
+                const bool gen_active = comp_st && ent_st && comp_st->enabled && ent_st->effective_enabled;
+                if (!gen_active) {
+                    target_label = std::wstring(session.name(selected)) + L" [Generator disabled]";
+                } else {
+                    if (!session.world().running())
+                        static_cast<void>(session.sync_procedural_generators(project));
+                    if (const auto src = presentation::read_procedural_source(runtime, gen_comp);
+                        src && src->output && src->output->geometry) {
+                        geom = src->output->geometry.get();
+                        generation = src->output->generation;
+                        target_label = std::wstring(session.name(selected)) + L" [Generator]";
+                    } else if (src && !src->source.empty()) {
+                        target_label = platform::utf8_to_utf16_validated(src->source) + L" (no output)";
+                    }
                 }
             }
             spreadsheet.append(result, view.content, *ui_document_, geom, generation, target_label, error_text);
@@ -2337,7 +2373,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
             const std::wstring graph_title = network_path_title(session, project, net_graph);
             const std::wstring zoom_text = std::format(L"{}%", static_cast<int>(std::lround(network.zoom() * 100.f)));
             const bool is_scratch = has_graph && session.is_scratch_graph(net_graph);
-            const std::wstring lock_text = is_scratch ? L"Scratch" : net_locked ? L"Locked" : L"Unlocked";
+            const double lock_icon = double(net_locked ? ui::ControlIcon::lock : ui::ControlIcon::unlock);
             const auto& ts = network.tab_search();
             ATELIER_TRY_BIND(select_action, net_action({"graph.select", seed_args.finish()}));
             const std::array<ui_language::InputValue, 56> inputs{
@@ -2348,7 +2384,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                 double(ui::ControlIcon::back),
                 double(ui::ControlIcon::forward),
                 net_locked,
-                lock_text,
+                lock_icon,
                 ui_language::ActionBinding{
                     network_control::lock_toggle, has_graph && !is_scratch && !session.world().running(),
                     property_help_.get(
@@ -2492,6 +2528,22 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
             }
             continue;
         }
+        const auto short_type = [](StringView name) {
+            if (const auto dot = name.rfind('.'); dot != StringView::npos)
+                name = name.slice(dot + 1);
+            return platform::utf8_to_utf16_validated(name);
+        };
+        // Placeholders show the saved type they stand in for.
+        const auto object_title = [&](ObjectId object) -> atelier::Result<std::wstring> {
+            if (session.has_retained(object)) {
+                ATELIER_TRY_BIND(saved, session.retained(object));
+                if (!saved->type.empty())
+                    return short_type(StringView{saved->type}) + L" (missing type)";
+            }
+            ATELIER_TRY_BIND(type, runtime.type_of(object));
+            ATELIER_TRY_BIND(info, runtime.describe(*type));
+            return short_type(StringView{(*info)->name});
+        };
         if (view.key == control::entities_tab) {
             // Every member is flattened each frame; only rows near the viewport are described.
             auto& tree = scene_tree_.candidate;
@@ -2499,21 +2551,46 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
             tree.objects.clear();
             tree.nodes.add({ui::no_tree_node, scene_tree_.expanded(ObjectId{}, true), L"World"});
             tree.objects.add({});
-            Array<std::uint32_t> path{0}; // Members are in composition preorder.
+            Array<std::uint32_t> path{0u}; // Members are in composition preorder.
+            Array<std::wstring> filter_titles;
+            Array<std::pair<std::uint32_t, std::uint32_t>> deferred_filter_nodes;
+            if (!tree_query.empty() && outliner_show_components) {
+                filter_titles.reserve(members.size() * 2 + 1);
+                deferred_filter_nodes.reserve(members.size() * 2 + 1);
+            }
             for (const auto& member : members) {
                 ATELIER_TRY_BIND(parent, world::parent_entity(runtime, member.id()));
                 while (path.size() > 1 && tree.objects[path.back()] != *parent)
                     path.pop();
-                path.add(static_cast<std::uint32_t>(tree.nodes.size()));
+                const auto entity_node = static_cast<std::uint32_t>(tree.nodes.size());
+                path.add(entity_node);
                 tree.nodes.add({path[path.size() - 2], scene_tree_.expanded(member.id(), false),
                                 tree_query.empty() ? std::wstring_view{} : session.name(member.id())});
                 tree.objects.add(member.id());
+                if (outliner_show_components) {
+                    ATELIER_TRY_BIND(parts, world::components(runtime, member.id()));
+                    for (const auto& part : *parts) {
+                        const auto comp_node = static_cast<std::uint32_t>(tree.nodes.size());
+                        if (!tree_query.empty()) {
+                            ATELIER_TRY_BIND(title, object_title(part.id()));
+                            const auto title_idx = static_cast<std::uint32_t>(filter_titles.size());
+                            filter_titles.emplace(std::move(*title));
+                            deferred_filter_nodes.emplace(comp_node, title_idx);
+                        }
+                        tree.nodes.add({entity_node, false, {}});
+                        tree.objects.add(part.id());
+                    }
+                }
             }
+            for (const auto& [node_idx, title_idx] : deferred_filter_nodes)
+                tree.nodes[node_idx].text = filter_titles[title_idx];
             const auto* focused = ui ? binding(ui->focused_control()) : nullptr;
-            const std::array pinned{selected,
-                                    focused && focused->kind == Binding::Kind::object ? focused->object : selected,
+            const ObjectId primary_target = outliner_show_components && inspected != ObjectId{} ? inspected : selected;
+            const std::array pinned{primary_target, selected,
+                                    focused && focused->kind == Binding::Kind::object ? focused->object
+                                                                                      : primary_target,
                                     row_rename && row_rename->object != ObjectId{} ? row_rename->object : selected};
-            ATELIER_TRY_BIND(window, scene_tree_.window(selected, tree_query,
+            ATELIER_TRY_BIND(window, scene_tree_.window(primary_target, tree_query,
                                                         ui ? ui->tree_viewport(control::entity_tree)
                                                            : ui::TreeViewport{0, size.height, 12},
                                                         pinned));
@@ -2529,140 +2606,96 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
             for (const auto entity : session.selected_entities())
                 selected_entities.add(entity);
             ui_language::TreeRowBinding world_row;
+            ui::ControlKey rename_anchor_key{};
             for (const auto index : *window) {
                 const auto& row = tree.rows[index];
-                const auto entity = tree.objects[row.node];
-                const ui_language::TreeRowBinding position{index,        row.depth,          row.branch,
-                                                           row.expanded, entity == selected, row.lines};
+                const auto object = tree.objects[row.node];
+                ui_language::TreeRowBinding position{
+                    index, row.depth, row.branch, row.expanded, object == primary_target, row.lines};
                 if (!row.node) {
                     world_row = position;
                     continue;
                 }
-                ATELIER_TRY_BIND(state, world::inspect_entity(runtime, entity));
-                ATELIER_TRY_BIND(bound_entity, bind(entity));
-                const auto entity_key = *bound_entity;
-                ATELIER_TRY_BIND(appearance, entity_row_appearance(session, entity, state->type));
-                rows->add({entity_key,
-                           {std::wstring(session.name(entity)),
-                            state->state == world::EntityState::attached_inactive ||
-                                state->state == world::EntityState::active,
-                            selected_entities.contains(entity), static_cast<double>(appearance->icon), position,
-                            std::wstring(appearance->mesh ? L"mesh-entity" : L"entity") +
-                                (appearance->retained ? L" retained" : L"") +
-                                (tree_drop_row == entity_key ? L" drop-target" : L""),
-                            state->can_edit, entity_key}});
+                if (session.world().contains(object)) {
+                    ATELIER_TRY_BIND(state, world::inspect_entity(runtime, object));
+                    ATELIER_TRY_BIND(bound_entity, bind(object));
+                    const auto entity_key = *bound_entity;
+                    if (row_rename && row_rename->object == object)
+                        rename_anchor_key = entity_key;
+                    ATELIER_TRY_BIND(appearance, entity_row_appearance(session, object, state->type));
+                    position.badges = appearance->badges;
+                    position.trailing_icon = state->effective_enabled ? ui::ControlIcon::eye : ui::ControlIcon::eye_off;
+                    position.trailing_dimmed = !state->effective_enabled;
+                    const bool row_selected = outliner_show_components && inspected != selected
+                                                  ? inspected == object
+                                                  : selected_entities.contains(object);
+                    rows->add({entity_key,
+                               {std::wstring(session.name(object)),
+                                state->state == world::EntityState::attached_inactive ||
+                                    state->state == world::EntityState::active,
+                                row_selected, static_cast<double>(appearance->icon), position,
+                                std::wstring(appearance->mesh ? L"mesh-entity" : L"entity") +
+                                    (!state->effective_enabled ? L" inactive" : L"") +
+                                    (appearance->retained ? L" retained" : L"") +
+                                    (tree_drop_row == entity_key ? L" drop-target" : L""),
+                                state->can_edit, entity_key}});
+                } else {
+                    const ObjectId owner_ent = tree.objects[tree.nodes[row.node].parent];
+                    ATELIER_TRY_BIND(ent_state, world::inspect_entity(runtime, owner_ent));
+                    ATELIER_TRY_BIND(comp_state, world::inspect_component(runtime, object));
+                    ATELIER_TRY_BIND(bound_comp, bind(object));
+                    ATELIER_TRY_BIND(title, object_title(object));
+                    ATELIER_TRY_BIND(comp_icon, component_row_icon(session, object));
+                    const bool comp_enabled = comp_state->enabled && ent_state->effective_enabled;
+                    position.trailing_icon = comp_enabled ? ui::ControlIcon::eye : ui::ControlIcon::eye_off;
+                    position.trailing_dimmed = !comp_enabled;
+                    rows->add({*bound_comp,
+                               {std::move(*title), ent_state->can_edit, inspected == object,
+                                static_cast<double>(*comp_icon), position,
+                                std::wstring(L"component") + (!comp_enabled ? L" inactive" : L"") +
+                                    (session.has_retained(object) ? L" retained" : L""),
+                                false, *bound_comp}});
+                }
             }
-            const std::array<ui_language::InputValue, 12> inputs{
+            if (row_rename && row_rename->object != ObjectId{} &&
+                std::ranges::none_of(tree.rows,
+                                     [&](const auto& shown) { return tree.objects[shown.node] == row_rename->object; }))
+                row_rename.reset();
+            ATELIER_TRY_BIND(
+                remove_object,
+                action({"scene.delete", json::Document{json::Document::literal<R"({"target":"object"})">()}}));
+            const bool entity_renaming = row_rename && row_rename->object != ObjectId{} && rename_anchor_key != 0;
+            const std::array<ui_language::InputValue, 17> inputs{
                 ui_language::ItemList{std::move(rows)},
                 static_cast<double>(tree.rows.size()),
                 ui_language::TextEditBinding{control::tree_filter, tree_query},
                 selected == ObjectId{},
                 world_row,
-                static_cast<double>(ui::ControlIcon::world),
                 ui_language::ActionBinding{control::entity_back, can_navigate(-1)},
                 ui_language::ActionBinding{control::entity_forward, can_navigate(1)},
-                double(ui::ControlIcon::back),
-                double(ui::ControlIcon::forward),
-                double(ui::ControlIcon::world),
-                std::wstring(tree_drop_row == control::tree_world ? L"drop-target" : L"")};
-            const std::array<ui_language::KeyBinding, 6> keys{{{"tree", control::entity_tree},
+                std::wstring(tree_drop_row == control::tree_world ? L"drop-target" : L""),
+                outliner_show_components,
+                ui_language::ActionBinding{control::outliner_components_toggle, true},
+                selected != ObjectId{} && entity_status.can_edit && !session.world().running(),
+                control::add_component,
+                std::move(*remove_object),
+                entity_renaming,
+                ui_language::TextEditBinding{control::inline_rename,
+                                             entity_renaming ? row_rename->text : std::wstring{}, true,
+                                             entity_renaming && row_rename->invalid, true, rename_anchor_key, 0},
+                tree_query.empty(),
+                ui_language::ActionBinding{control::tree_filter_clear, !tree_query.empty()}};
+            const std::array<ui_language::KeyBinding, 7> keys{{{"tree", control::entity_tree},
                                                                {"world", control::tree_world},
-                                                               {"path.bar", 24},
-                                                               {"path.path", control::entity_path},
-                                                               {"path.back", control::entity_back},
-                                                               {"path.forward", control::entity_forward}}};
-            auto staged = ui_document_->append("SceneTree", 21, keys, inputs, result);
+                                                               {"header", 24},
+                                                               {"path", control::entity_path},
+                                                               {"back", control::entity_back},
+                                                               {"forward", control::entity_forward},
+                                                               {"add", control::add_component}}};
+            auto staged = ui_document_->append("SceneOutliner", 21, keys, inputs, result);
             if (!staged)
                 return composition_failed(std::move(staged).error());
             scene_tree_.pending = *staged;
-            continue;
-        }
-        const auto short_type = [](StringView name) {
-            if (const auto dot = name.rfind('.'); dot != StringView::npos)
-                name = name.slice(dot + 1);
-            return platform::utf8_to_utf16_validated(name);
-        };
-        // Placeholders show the saved type they stand in for.
-        const auto object_title = [&](ObjectId object) -> atelier::Result<std::wstring> {
-            if (session.has_retained(object)) {
-                ATELIER_TRY_BIND(saved, session.retained(object));
-                if (!saved->type.empty())
-                    return short_type(saved->type) + L" (missing type)";
-            }
-            ATELIER_TRY_BIND(type, runtime.type_of(object));
-            ATELIER_TRY_BIND(info, runtime.describe(*type));
-            return short_type((*info)->name);
-        };
-        if (view.key == control::structure_tab) {
-            auto& tree = structure_tree_.candidate;
-            ATELIER_TRY(build_structure_tree(session, selected, tree));
-            Array<std::wstring> texts;
-            if (!structure_query.empty()) {
-                texts.reserve(tree.objects.size());
-                for (const auto object : tree.objects) {
-                    if (session.world().contains(object))
-                        texts.emplace(session.name(object));
-                    else {
-                        ATELIER_TRY_BIND(title, object_title(object));
-                        texts.add(std::move(*title));
-                    }
-                }
-                for (std::size_t i = 0; i < tree.nodes.size(); ++i)
-                    tree.nodes[i].text = texts[i];
-            }
-            const auto* focused = ui ? binding(ui->focused_control()) : nullptr;
-            const std::array pinned{inspected,
-                                    focused && focused->kind == Binding::Kind::structure ? focused->object : inspected};
-            ATELIER_TRY_BIND(window, structure_tree_.window(inspected, structure_query,
-                                                            ui ? ui->tree_viewport(control::structure_tree)
-                                                               : ui::TreeViewport{0, size.height, 12},
-                                                            pinned));
-            auto rows = std::make_shared<Array<ui_language::Item>>();
-            rows->reserve(window->size());
-            for (const auto index : *window) {
-                const auto& row = tree.rows[index];
-                const auto object = tree.objects[row.node];
-                const ui_language::TreeRowBinding position{index,        row.depth,           row.branch,
-                                                           row.expanded, object == inspected, row.lines};
-                ATELIER_TRY_BIND(key, bind(object, {}, Binding::Kind::structure));
-                if (session.world().contains(object)) {
-                    ATELIER_TRY_BIND(state, world::inspect_entity(runtime, object));
-                    ATELIER_TRY_BIND(appearance, entity_row_appearance(session, object, state->type));
-                    rows->add({*key,
-                               {std::wstring(session.name(object)), state->can_edit, inspected == object,
-                                double(appearance->icon), position,
-                                std::wstring(session.has_retained(object) ? L"entity retained" : L"entity"), false,
-                                ui::ControlKey{}}});
-                } else {
-                    // A Component row's parent is its Entity.
-                    ATELIER_TRY_BIND(state, world::inspect_entity(runtime, tree.objects[tree.nodes[row.node].parent]));
-                    ATELIER_TRY_BIND(title, object_title(object));
-                    rows->add(
-                        {*key,
-                         {std::move(*title), state->can_edit, inspected == object, double(ui::ControlIcon::component),
-                          position, std::wstring(session.has_retained(object) ? L"component retained" : L"component"),
-                          false, ui::ControlKey{}}});
-                }
-            }
-            ATELIER_TRY_BIND(
-                remove_object,
-                action({"scene.delete", json::Document{json::Document::literal<R"({"target":"object"})">()}}));
-            const std::array<ui_language::InputValue, 9> inputs{
-                selected == ObjectId{} ? std::wstring(L"Entity Structure") : std::wstring(session.name(selected)),
-                ui_language::ItemList{std::move(rows)},
-                static_cast<double>(tree.rows.size()),
-                ui_language::TextEditBinding{control::structure_filter, structure_query},
-                selected != ObjectId{},
-                selected != ObjectId{} && entity_status.can_edit,
-                control::add_component,
-                std::move(*remove_object),
-                double(ui::ControlIcon::close)};
-            const std::array<ui_language::KeyBinding, 2> keys{
-                {{"tree", control::structure_tree}, {"add", control::add_component}}};
-            auto staged = ui_document_->append("EntityStructure", view.content, keys, inputs, result);
-            if (!staged)
-                return composition_failed(std::move(staged).error());
-            structure_tree_.pending = *staged;
             continue;
         }
         if (inspecting_asset && material_object == ObjectId{}) {
@@ -2672,10 +2705,16 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                 auto& key = resource_properties_[index];
                 if (!key)
                     ATELIER_TRY_ASSIGN(key, allocate_binding_key());
-                entries->add({key, {std::move(name), std::move(value)}});
+                auto& val_key = resource_property_values_[index];
+                if (!val_key)
+                    ATELIER_TRY_ASSIGN(val_key, allocate_binding_key());
+                ui_language::TextEditBinding val_edit{val_key, single_line_field_text(value)};
+                val_edit.read_only = true;
+                entries->add({key, {std::move(name), std::move(val_edit)}});
                 return {};
             };
             std::wstring kind = L"Resource";
+            auto res_icon = ui::ControlIcon::folder;
             if (asset) {
                 kind = asset->kind == assets::AssetKind::mesh               ? L"Mesh"
                        : asset->kind == assets::AssetKind::scene            ? L"Scene"
@@ -2683,8 +2722,18 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                        : asset->kind == assets::AssetKind::folder           ? L"Folder"
                        : asset->kind == assets::AssetKind::material         ? L"Material"
                        : asset->kind == assets::AssetKind::texture          ? L"Texture"
+                       : asset->kind == assets::AssetKind::sky              ? L"Sky"
                        : asset->kind == assets::AssetKind::procedural_graph ? L"Procedural Graph"
                                                                             : L"File";
+                res_icon = asset->kind == assets::AssetKind::mesh               ? ui::ControlIcon::mesh
+                           : asset->kind == assets::AssetKind::scene            ? ui::ControlIcon::scene
+                           : asset->kind == assets::AssetKind::source           ? ui::ControlIcon::source_file
+                           : asset->kind == assets::AssetKind::material         ? ui::ControlIcon::material
+                           : asset->kind == assets::AssetKind::texture          ? ui::ControlIcon::texture
+                           : asset->kind == assets::AssetKind::sky              ? ui::ControlIcon::sky_light
+                           : asset->kind == assets::AssetKind::procedural_graph ? ui::ControlIcon::procgraph
+                           : asset->kind == assets::AssetKind::folder           ? ui::ControlIcon::folder
+                                                                                : ui::ControlIcon::object;
                 ATELIER_TRY(add(0, L"Type", kind));
                 ATELIER_TRY(add(1, L"Resource", platform::utf8_to_utf16_validated(asset->key)));
                 ATELIER_TRY(add(2, L"Location", asset->path.empty() ? L"Engine" : asset->path.generic_wstring()));
@@ -2694,12 +2743,14 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     ATELIER_TRY(add(4, L"Triangles", std::to_wstring(mesh->mesh->vertices().size() / 3)));
                 }
             }
+            ui_language::TextEditBinding res_name{
+                control::resource_header_name,
+                asset ? single_line_field_text(asset->name) : std::wstring(L"No resource selected"), asset.has_value()};
+            res_name.read_only = true;
             const std::array<ui_language::InputValue, 4> inputs{
-                kind, asset ? asset->name : std::wstring(L"No resource selected"),
-                double(asset && asset->kind == assets::AssetKind::mesh ? ui::ControlIcon::mesh
-                                                                       : ui::ControlIcon::folder),
-                ui_language::ItemList{std::move(entries)}};
-            static_cast<void>(ui_document_->append("ResourceParameters", view.content, {}, inputs, result));
+                kind, std::move(res_name), static_cast<double>(res_icon), ui_language::ItemList{std::move(entries)}};
+            if (auto staged = ui_document_->append("ResourceParameters", view.content, {}, inputs, result); !staged)
+                return composition_failed(std::move(staged).error());
             continue;
         }
         const bool in_graph = !active_graph.empty() && session.has_graph(active_graph);
@@ -2909,8 +2960,11 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     row.enabled = editable;
                     row.change = {tkey, false};
                     row.target = tkey;
-                    row.text_edit = {tkey, platform::utf8_to_utf16_validated(pv.properties.front().string_value),
-                                     editable};
+                    bool sanitized_str = false;
+                    auto str_val = single_line_field_text(
+                        platform::utf8_to_utf16_validated(pv.properties.front().string_value), &sanitized_str);
+                    row.text_edit = {tkey, std::move(str_val), editable};
+                    row.text_edit.read_only = sanitized_str;
                     row.help = property_help_.get(row_key, row.title,
                                                   L"Digital Asset Parameter · " +
                                                       platform::utf8_to_utf16_validated(pv.name) + L" : String",
@@ -3295,7 +3349,11 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     }
                     row.change = {*text_key, false};
                     row.target = *text_key;
-                    row.text_edit = {*text_key, platform::utf8_to_utf16_validated(property.string_value), editable};
+                    bool sanitized_prop = false;
+                    auto prop_val = single_line_field_text(platform::utf8_to_utf16_validated(property.string_value),
+                                                           &sanitized_prop);
+                    row.text_edit = {*text_key, std::move(prop_val), editable};
+                    row.text_edit.read_only = sanitized_prop;
                     row.help = property_help_.get(row.key, row.title,
                                                   platform::utf8_to_utf16_validated(type_desc->name) + L"." +
                                                       platform::utf8_to_utf16_validated(property.name) + L" : String",
@@ -3458,16 +3516,24 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     ui::ControlKey key{};
                     ATELIER_TRY_ASSIGN(key, bind_graph_param(net_graph, *param_node_name, category,
                                                              Binding::Kind::property_group, 0, object));
-                    groups->add(
-                        {key,
-                         {platform::utf8_to_utf16_validated(category), 0., ui_language::ItemList{std::move(rows)}}});
+                    groups->add({key,
+                                 {platform::utf8_to_utf16_validated(category), double(ui::ControlIcon::sliders),
+                                  ui_language::ItemList{std::move(rows)}}});
                 }
             if (!component_properties->empty()) {
                 ATELIER_TRY_BIND(group_key, property_key({}, Binding::Kind::property_group));
+                auto grp_icon = ui::ControlIcon::component;
+                if (is_sop_node)
+                    grp_icon = ui::ControlIcon::procgraph;
+                else if (object == selected) {
+                    if (const auto app = entity_row_appearance(session, object, type))
+                        grp_icon = app->icon;
+                    else
+                        grp_icon = ui::ControlIcon::object;
+                } else if (const auto ci = component_row_icon(session, object))
+                    grp_icon = *ci;
                 groups->add(
-                    {*group_key,
-                     {*title, double(object == selected ? ui::ControlIcon::object : ui::ControlIcon::component),
-                      ui_language::ItemList{std::move(component_properties)}}});
+                    {*group_key, {*title, double(grp_icon), ui_language::ItemList{std::move(component_properties)}}});
             }
             const auto append_promoted_diagnostic = [&](StringView graph_key, StringView node_name,
                                                         ObjectId generator_component, StringView group_title,
@@ -3682,7 +3748,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
             }
             ATELIER_TRY_BIND(group_key, key({}, Binding::Kind::property_group));
             groups->add(
-                {*group_key, {title, double(ui::ControlIcon::component), ui_language::ItemList{std::move(rows)}}});
+                {*group_key, {title, double(ui::ControlIcon::material), ui_language::ItemList{std::move(rows)}}});
             return {};
         };
         if (material_object != ObjectId{}) {
@@ -3690,15 +3756,19 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
             std::wstring name = platform::utf8_to_utf16_validated(material_inspection);
             if (const auto* entry = project ? project->entry(material_inspection) : nullptr)
                 name = entry->path.stem().wstring();
-            const std::array<ui_language::InputValue, 7> inputs{
-                name,
+            ui_language::TextEditBinding mat_name{control::material_header_name, single_line_field_text(name)};
+            mat_name.read_only = true;
+            const std::array<ui_language::InputValue, 8> inputs{
+                std::move(mat_name),
                 session.material_dirty(material_inspection),
                 ui_language::ItemList{std::move(groups)},
                 parameter_search_visible,
                 ui_language::TextEditBinding{control::parameter_search, query},
-                ui_language::ActionBinding{control::parameter_search_toggle},
-                double(ui::ControlIcon::search)};
-            static_cast<void>(ui_document_->append("MaterialParameters", view.content, {}, inputs, result));
+                query.empty(),
+                ui_language::ActionBinding{control::parameter_search_clear, !query.empty()},
+                ui_language::ActionBinding{control::parameter_search_toggle}};
+            if (auto staged = ui_document_->append("MaterialParameters", view.content, {}, inputs, result); !staged)
+                return composition_failed(std::move(staged).error());
             continue;
         }
         const auto append_object = [&](ObjectId object) -> atelier::Result<void> {
@@ -3753,8 +3823,9 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                 auto& key = *category_keys_.try_emplace(category, 0).value;
                 if (!key)
                     ATELIER_TRY_ASSIGN(key, allocate_binding_key());
-                groups->add(
-                    {key, {platform::utf8_to_utf16_validated(category), 0., ui_language::ItemList{std::move(rows)}}});
+                groups->add({key,
+                             {platform::utf8_to_utf16_validated(category), double(ui::ControlIcon::sliders),
+                              ui_language::ItemList{std::move(rows)}}});
             }
         constexpr std::array aliases{L"transform entity position 变换 位置 x", L"transform entity position 变换 位置 y",
                                      L"transform entity position 变换 位置 z"};
@@ -3837,7 +3908,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
         if (param_object != ObjectId{}) {
             ATELIER_TRY_BIND(id, runtime.type_of(param_object));
             ATELIER_TRY_BIND(type, runtime.describe(*id));
-            type_help = property_help_.get(52, short_type((*type)->name),
+            type_help = property_help_.get(52, short_type(StringView{(*type)->name}),
                                            platform::utf8_to_utf16_validated((*type)->name), (*type)->description);
         }
         const std::wstring param_graph_title =
@@ -3862,13 +3933,16 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
         ui::ControlKey name_key{77};
         if (entity_selected || param_node_name)
             ATELIER_TRY_ASSIGN(name_key, bind(param_object, {}, Binding::Kind::name));
+        bool sanitized_header = false;
+        auto safe_header_name = single_line_field_text(header_name, &sanitized_header);
+        ui_language::TextEditBinding header_name_edit{name_key, std::move(safe_header_name),
+                                                      param_object != ObjectId{}};
+        header_name_edit.read_only = (param_object != ObjectId{} && !can_rename_header) || sanitized_header;
         const std::array<ui_language::InputValue, 30> inputs{
             std::move(param_title),
-            ui_language::TextEditBinding{name_key, header_name, can_rename_header},
+            std::move(header_name_edit),
             ui_language::ActionBinding{control::parameter_back, can_navigate(-1)},
             ui_language::ActionBinding{control::parameter_forward, can_navigate(1)},
-            double(ui::ControlIcon::back),
-            double(ui::ControlIcon::forward),
             double(ui::ControlIcon::world),
             param_object != ObjectId{},
             ui_language::ItemList{std::move(groups)},
@@ -3877,7 +3951,6 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
             ui_language::TextEditBinding{control::parameter_search, query},
             empty,
             double(header_icon),
-            double(ui::ControlIcon::search),
             parameter_search_visible && param_object != ObjectId{},
             ui_language::ActionBinding{control::parameter_search_toggle, param_object != ObjectId{}},
             std::move(rotation_edit),
@@ -3892,7 +3965,10 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
             transform_descriptions[1],
             transform_descriptions[2],
             std::move(type_help),
-            param_graph_title};
+            param_graph_title,
+            std::wstring(can_rename_header ? L"object-name" : L"object-name readonly-inline"),
+            query.empty(),
+            ui_language::ActionBinding{control::parameter_search_clear, !query.empty()}};
         const std::array<ui_language::KeyBinding, 14> keys{{{"components", control::group_components},
                                                             {"categories", control::group_categories},
                                                             {"path.bar", 75},
@@ -3907,14 +3983,16 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                                                             {"position.section", control::position_fold},
                                                             {"position.contents", 58},
                                                             {"position.position", 70, 72, 73}}};
-        static_cast<void>(ui_document_->append("Parameters", view.content, keys, inputs, result));
+        if (auto staged = ui_document_->append("Parameters", view.content, keys, inputs, result); !staged)
+            return composition_failed(std::move(staged).error());
     }
     const auto preview = placement.preview.value_or(ui::Rect{});
     const std::array<ui_language::InputValue, 5> preview_inputs{placement.preview.has_value(), double(preview.x),
                                                                 double(preview.y), double(preview.width),
                                                                 double(preview.height)};
     const std::array<ui_language::KeyBinding, 1> preview_keys{{{"preview", placement.preview_key}}};
-    static_cast<void>(ui_document_->append("DockPreview", 0, preview_keys, preview_inputs, result));
+    if (auto staged = ui_document_->append("DockPreview", 0, preview_keys, preview_inputs, result); !staged)
+        return composition_failed(std::move(staged).error());
     Array<ui::MenuItem> next_menu_items;
     Array<ComponentType> component_choices;
     Array<MaterialChoice> material_choices;
@@ -4147,49 +4225,69 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
             } else if (const auto* row = binding(source->key); row && row->kind == Binding::Kind::object &&
                                                                row->path.empty() &&
                                                                source->kind == ui::ControlKind::tree_item) {
-                const auto owner_entity = row->object;
-                const std::initializer_list<OperatorCall> items_calls{
-                    {"scene.rename"},
-                    {"scene.duplicate"},
-                    {"scene.delete", json::Document::literal<R"({"target":"entities"})">()},
-                    {"scene.parent_set", json::Document::literal<R"({"parent":null})">()},
-                    {"view.frame_selected"}};
-                ATELIER_TRY_ASSIGN(items, calls(items_calls));
-                for (auto& item : items)
-                    item.separator_before = false;
-                items[3].separator_before = items[4].separator_before = true;
-                items[0].icon = ui::ControlIcon::rename;
-                items[1].icon = ui::ControlIcon::duplicate;
-                items[2].icon = ui::ControlIcon::trash;
-                items[3].icon = ui::ControlIcon::unparent;
-                ATELIER_TRY_BIND(parts, world::components(runtime, owner_entity));
-                for (const auto& part : *parts) {
-                    if (const auto proc = presentation::read_procedural_source(runtime, part.id())) {
-                        const bool can_edit = !session.world().running();
-                        if (!proc->source.empty()) {
-                            json::Builder open_args;
-                            static_cast<void>(open_args.set(open_args.root(), "asset", proc->source));
-                            ATELIER_TRY_BIND(open_key, bind_operator({"graph.open", open_args.finish()}));
-                            items.add({*open_key, L"Edit Procedural Graph", can_edit, false, {}, L"", true});
-                        }
-                        bool has_instances = false;
-                        if (proc->output)
-                            for (const auto& col : proc->output->publication.collections)
-                                if (col.transforms && !col.transforms->empty())
-                                    has_instances = true;
-                        const ContextOverride target{.selection =
-                                                         SelectionContext{owner_entity, part.id(), {owner_entity}},
-                                                     .region = RegionKind::scene_tree};
-                        ATELIER_TRY_BIND(bake_key, bind_operator({"procedural.bake", {}, target}));
-                        items.add({*bake_key,
-                                   L"Bake to Entities",
-                                   can_edit && has_instances,
-                                   false,
-                                   {},
-                                   L"",
-                                   proc->source.empty()});
-                        break;
+                const auto append_proc_actions = [&](ObjectId owner_entity, ObjectId comp_id) -> atelier::Result<bool> {
+                    const auto proc = presentation::read_procedural_source(runtime, comp_id);
+                    if (!proc)
+                        return false;
+                    const bool can_edit = !session.world().running();
+                    if (!proc->source.empty()) {
+                        json::Builder open_args;
+                        static_cast<void>(open_args.set(open_args.root(), "asset", proc->source));
+                        ATELIER_TRY_BIND(open_key, bind_operator({"graph.open", open_args.finish()}));
+                        items.add({*open_key, L"Edit Procedural Graph", can_edit, false, {}, L"", true});
                     }
+                    bool has_instances = false;
+                    if (proc->output)
+                        for (const auto& col : proc->output->publication.collections)
+                            if (col.transforms && !col.transforms->empty())
+                                has_instances = true;
+                    const ContextOverride target{.selection = SelectionContext{owner_entity, comp_id, {owner_entity}},
+                                                 .region = RegionKind::scene_tree};
+                    ATELIER_TRY_BIND(bake_key, bind_operator({"procedural.bake", {}, target}));
+                    items.add({*bake_key,
+                               L"Bake to Entities",
+                               can_edit && has_instances,
+                               false,
+                               {},
+                               L"",
+                               proc->source.empty()});
+                    return true;
+                };
+                if (session.world().contains(row->object)) {
+                    const auto owner_entity = row->object;
+                    const std::initializer_list<OperatorCall> items_calls{
+                        {"scene.rename"},
+                        {"scene.duplicate"},
+                        {"scene.delete", json::Document::literal<R"({"target":"entities"})">()},
+                        {"scene.parent_set", json::Document::literal<R"({"parent":null})">()},
+                        {"view.frame_selected"}};
+                    ATELIER_TRY_ASSIGN(items, calls(items_calls));
+                    for (auto& item : items)
+                        item.separator_before = false;
+                    items[3].separator_before = items[4].separator_before = true;
+                    items[0].icon = ui::ControlIcon::rename;
+                    items[1].icon = ui::ControlIcon::duplicate;
+                    items[2].icon = ui::ControlIcon::trash;
+                    items[3].icon = ui::ControlIcon::unparent;
+                    ATELIER_TRY_BIND(parts, world::components(runtime, owner_entity));
+                    for (const auto& part : *parts) {
+                        ATELIER_TRY_BIND(added_proc, append_proc_actions(owner_entity, part.id()));
+                        if (*added_proc)
+                            break;
+                    }
+                } else {
+                    ATELIER_TRY_BIND(comp_state, world::inspect_component(runtime, row->object));
+                    const std::initializer_list<OperatorCall> comp_calls{
+                        {"scene.delete", json::Document::literal<R"({"target":"object"})">()}};
+                    ATELIER_TRY_ASSIGN(items, calls(comp_calls));
+                    items[0].text = L"Remove Component";
+                    items[0].icon = ui::ControlIcon::trash;
+                    items[0].separator_before = false;
+                    if (session.has_retained(row->object)) {
+                        ATELIER_TRY(append_operator(items, {"scene.discard_saved_data"}));
+                        items.back().separator_before = true;
+                    }
+                    ATELIER_TRY(append_proc_actions(comp_state->owner, row->object));
                 }
             } else if (const auto* group = menu_group(source->key)) {
                 if (group->id == MenuGroup::view) {
@@ -5033,6 +5131,8 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                 }
             } else if (source->key == source_control::files) {
                 items = source_editor.menu_items();
+            } else if (source->key == source_control::outline) {
+                items = source_editor.outline_menu_items();
             } else if (source->key == control::add_component) {
                 ATELIER_TRY(append_operator(
                     items, {transform ? Utf8Text{"scene.transform_remove"} : Utf8Text{"scene.transform_add"}}));
@@ -5147,8 +5247,9 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                 if (source->kind == ControlKind::number || source->kind == ControlKind::text_edit) {
                     items.add({control::menu_copy, L"Copy Value", true, false,
                                ui::EditCommand{ui::EditCommandKind::copy, source->key}});
-                    items.add({control::menu_paste, L"Paste Value", true, false,
-                               ui::EditCommand{ui::EditCommandKind::paste, source->key}});
+                    if (!source->read_only)
+                        items.add({control::menu_paste, L"Paste Value", true, false,
+                                   ui::EditCommand{ui::EditCommandKind::paste, source->key}});
                 }
                 const auto* ctx_ptr = source->context_group ? binding(source->context_group) : nullptr;
                 if (!ctx_ptr || ctx_ptr->kind != Binding::Kind::graph_param_context) {
@@ -5439,53 +5540,15 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
     }
     if (row_rename && row_rename->object != ObjectId{} && !live.contains(row_rename->object))
         row_rename.reset();
-    if (row_rename && frame) {
-        // Drawn over the accepted row geometry. A row not presented yet keeps the rename
-        // pending (its host keeps it described); a table cell that left the frame ends it.
-        const auto* table = row_rename->cell ? frame->find_table(browser_control::results) : nullptr;
-        const ui::TableCellGeometry* cell =
-            table ? std::ranges::find(table->cells, row_rename->cell, &ui::TableCellGeometry::cell) : nullptr;
-        const auto row_key = row_rename->cell ? ui::ControlKey{} : object_control(row_rename->object);
-        const auto* row = row_key ? frame->find(row_key) : nullptr;
-        const auto geometry =
-            row ? std::ranges::find(frame->tree_rows, row_key, &ui::TreeRowGeometry::key) : frame->tree_rows.end();
-        if (row_rename->cell && (!table || cell == table->cells.end()))
-            row_rename.reset();
-        else if (row_rename->cell) {
-            // Name cell: the icon leads by one row height; the field starts where the name text does.
-            const auto dpi = frame->drawing->dpi_scale;
-            const auto& bounds = cell->bounds;
-            const auto icon = bounds.height / dpi;
-            const std::array<ui_language::InputValue, 5> inputs{
-                ui_language::TextEditBinding{control::inline_rename, row_rename->text}, double(bounds.x / dpi + icon),
-                double(bounds.y / dpi), double(std::max(48.f, bounds.width / dpi - icon - 2)),
-                double(bounds.height / dpi)};
-            static_cast<void>(ui_document_->append("InlineRename", 0, {}, inputs, result));
-        } else if (row && (row->bounds.height <= 0 || geometry == frame->tree_rows.end()))
-            row_rename.reset();
-        else if (row) {
-            const auto dpi = frame->drawing->dpi_scale;
-            // Text origin as Session lays it out: depth indents plus the row icon's leading space.
-            const auto* tree = frame->find(row->parent);
-            const auto step = tree && tree->style ? tree->style->tree_indent : 17.f;
-            const auto indent = row->style ? row->style->padding.left + float(geometry->depth + 1) * step +
-                                                 row->style->indicator_size + 6 - 3
-                                           : 24.f;
-            const auto padding = float(row->bounds.x) / dpi + indent;
-            const std::array<ui_language::InputValue, 5> inputs{
-                ui_language::TextEditBinding{control::inline_rename, row_rename->text}, double(padding),
-                double(row->bounds.y / dpi), double(std::max(48.f, row->bounds.width / dpi - indent - 2)),
-                double(row->bounds.height / dpi)};
-            static_cast<void>(ui_document_->append("InlineRename", 0, {}, inputs, result));
-        } else if (!scene_tree_.pending || std::ranges::none_of(scene_tree_.candidate.rows, [&](const auto& shown) {
-                       return scene_tree_.candidate.objects[shown.node] == row_rename->object;
-                   }))
-            row_rename.reset();
-    }
     if (color_edit && !pie_menu()) {
         // One popup per session; the colour editor is projected last, after every owner.
         const auto& edit = *color_edit;
         const auto hsv = rgb_to_hsv(edit.value);
+        const double hue = std::clamp(edit.hue, 0.0, 360.0);
+        const double sat = std::clamp(edit.saturation, 0.0, 1.0);
+        const double val = std::clamp(hsv[2], 0.0, edit.maximum);
+        const double hdr_ceiling = std::max(1.0, edit.hdr_scale);
+        const double val_norm = std::clamp(val / hdr_ceiling, 0.0, 1.0);
         const auto field = [](ui::ControlKey key, const wchar_t* label, double value, double maximum, double step,
                               ui::VectorAxis axis) {
             ui::NumberField result{key, label, value, value, 0, maximum, step, step * .1, axis};
@@ -5508,25 +5571,36 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
             control::color_group + 1,
             true,
             false,
-            {field(control::color_hsv, L"H", hsv[0], 360, 1, ui::VectorAxis::none),
-             field(control::color_hsv + 1, L"S", hsv[1], 1, .005, ui::VectorAxis::none),
-             field(control::color_hsv + 2, L"V", hsv[2], edit.maximum, .005, ui::VectorAxis::none)}};
+            {field(control::color_hsv, L"H", hue, 360, 1, ui::VectorAxis::none),
+             field(control::color_hsv + 1, L"S", sat, 1, .005, ui::VectorAxis::none),
+             field(control::color_hsv + 2, L"V", val, edit.maximum, .005, ui::VectorAxis::none)}};
+        const double slider_max = std::min(edit.maximum, std::max(1.0, hdr_ceiling * (edit.maximum > 1.0 ? 2.0 : 1.0)));
+        ui::NumberField intensity_field{control::color_intensity, L"", val, val, 0.0, edit.maximum, .01, .001};
+        if (slider_max > 0.0)
+            intensity_field.slider = ui::SliderRange{control::color_intensity_slider, 0.0, slider_max};
+        ui_language::EditBinding intensity_edit{control::color_intensity_group, true, false, {intensity_field}};
         const auto clamp01 = [](double v) { return std::clamp(v, 0.0, 1.0); };
-        const std::array<ui_language::InputValue, 13> inputs{
-            double(std::clamp(edit.x, 0.f, std::max(0.f, size.width - 420.f))),
-            double(std::clamp(edit.y, 0.f, std::max(0.f, size.height - 200.f))),
+        const std::array<ui_language::InputValue, 17> inputs{
+            double(std::clamp(edit.x, 0.f, std::max(0.f, size.width - 416.f))),
+            double(std::clamp(edit.y, 0.f, std::max(0.f, size.height - 320.f))),
             clamp01(edit.value[0]),
             clamp01(edit.value[1]),
             clamp01(edit.value[2]),
             clamp01(edit.original[0]),
             clamp01(edit.original[1]),
             clamp01(edit.original[2]),
+            hue,
+            std::clamp(hsv[1], 0.0, 1.0),
+            val_norm,
             std::move(rgb),
             std::move(hsv_edit),
+            std::move(intensity_edit),
             ui_language::TextEditBinding{control::color_hex, edit.hex},
             ui_language::ActionBinding{control::color_revert, true},
             ui_language::ActionBinding{control::color_done, true}};
-        const std::array<ui_language::KeyBinding, 1> keys{{{"editor", control::color_editor}}};
+        const std::array<ui_language::KeyBinding, 3> keys{{{"editor", control::color_editor},
+                                                           {"sv_plane", control::color_sv_plane},
+                                                           {"hue_bar", control::color_hue_bar}}};
         color_edit->composition_failed = !ui_document_->append("ColorEditor", 0, keys, inputs, result);
     }
     if (ui_document_->candidate_failed()) {
@@ -5625,7 +5699,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                      "在透视视图（Perspective）、正交六视图（Top/Front/Right 等）及主场景相机之间切换。");
             break;
         case control::add_component:
-            set_help(ctrl, L"Add Component", L"Entity Structure", "向当前选中的实体挂载空间变换或业务功能组件。");
+            set_help(ctrl, L"Add Component", L"Scene Outliner", "向当前选中的实体挂载空间变换或业务功能组件。");
             break;
         case control::parameter_search_toggle:
             set_help(ctrl, L"Filter Parameters", parameter_search_visible ? L"Currently: Open" : L"Currently: Closed",
@@ -5698,9 +5772,10 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                      "查看 CopyToPoints 生成的网格实例资产引用与局部变换平移分量。");
             break;
         case spreadsheet_control::follow_toggle:
-            set_help(ctrl, L"Follow Selected Node",
-                     spreadsheet.follow_selected() ? L"Currently: Follow Selection" : L"Currently: Pin Display Node",
-                     "开启后电子表格实时检视画布中当前选中的节点输出；关闭后始终锁定检视 Display Flag 节点输出。");
+            set_help(
+                ctrl, L"Pin to Display Node",
+                spreadsheet.follow_selected() ? L"Currently: Follow Selection" : L"Currently: Pinned to Display Node",
+                "锁定电子表格目标：默认未锁定时实时跟随画布中选中的节点；点击钉住后始终锁定检视 Display Flag 节点输出。");
             break;
         case spreadsheet_control::page_prev:
             set_help(ctrl, L"Previous 512 Rows", L"Geometry Spreadsheet", "翻到电子表格的上一页（每页 512 行）。");
@@ -5753,7 +5828,43 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
     return {};
 }
 
+std::wstring Workspace::single_line_field_text(std::wstring_view raw, bool* sanitized_out) {
+    std::wstring out;
+    out.reserve(std::min<std::size_t>(raw.size(), 4096));
+    bool changed = false;
+    for (std::size_t i = 0; i < raw.size() && out.size() < 4096; ++i) {
+        const wchar_t c = raw[i];
+        if (c == L'\r' && i + 1 < raw.size() && raw[i + 1] == L'\n') {
+            out.push_back(L' ');
+            changed = true;
+            ++i;
+        } else if (c < 32 || c == 127 || c == 0x2028 || c == 0x2029) {
+            out.push_back(L' ');
+            changed = true;
+        } else if (c >= 0xd800 && c <= 0xdbff) {
+            if (i + 1 < raw.size() && raw[i + 1] >= 0xdc00 && raw[i + 1] <= 0xdfff && out.size() + 2 <= 4096) {
+                out.push_back(c);
+                out.push_back(raw[++i]);
+            } else {
+                changed = true;
+            }
+        } else if (c >= 0xdc00 && c <= 0xdfff) {
+            changed = true;
+        } else {
+            out.push_back(c);
+        }
+    }
+    if (raw.size() > 4096)
+        changed = true;
+    if (sanitized_out)
+        *sanitized_out = changed;
+    return out;
+}
+
 std::array<double, 3> rgb_to_hsv(std::array<double, 3> c) noexcept {
+    c[0] = std::max(0.0, c[0]);
+    c[1] = std::max(0.0, c[1]);
+    c[2] = std::max(0.0, c[2]);
     const auto high = std::max(c[0], std::max(c[1], c[2]));
     const auto low = std::min(c[0], std::min(c[1], c[2]));
     const auto span = high - low;

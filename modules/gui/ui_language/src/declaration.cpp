@@ -1,4 +1,5 @@
 #include "ui_language/declaration.hpp"
+#include "ui/style.hpp"
 #include "language/lexer.hpp"
 #include "foundation/optional.hpp"
 #include "foundation/result.hpp"
@@ -59,13 +60,15 @@ bool is_numeric_property(Property property) {
            property == Property::padding_bottom || property == Property::content_width ||
            property == Property::content_height || property == Property::min_width ||
            property == Property::shrink_width || (property >= Property::row_height && property <= Property::item_gap) ||
-           (property >= Property::offset_x && property <= Property::step);
+           (property >= Property::offset_x && property <= Property::step) || property == Property::hue ||
+           property == Property::brightness;
 }
 
 bool is_text_property(Property property) {
     return property == Property::text || property == Property::classes || property == Property::view ||
            property == Property::empty_text || property == Property::menu_behavior ||
-           property == Property::tooltip_title || property == Property::tooltip_identity;
+           property == Property::tooltip_title || property == Property::tooltip_identity ||
+           property == Property::placeholder;
 }
 
 Optional<bool> try_bool_literal(Span<const Token> tokens) {
@@ -144,7 +147,8 @@ constexpr std::pair<StringView, NodeKind> builtin_nodes[]{{"Column", NodeKind::c
                                                           {"Popup", NodeKind::popup},
                                                           {"MenuItem", NodeKind::menu_item},
                                                           {"Overlay", NodeKind::overlay},
-                                                          {"CodeEditor", NodeKind::code_editor}};
+                                                          {"CodeEditor", NodeKind::code_editor},
+                                                          {"ColorPlane", NodeKind::color_plane}};
 
 Optional<NodeKind> builtin_node(StringView name) {
     const auto at = std::ranges::find_if(builtin_nodes, [&](const auto& item) { return item.first == name; });
@@ -505,6 +509,15 @@ private:
             binding.literal = String::from_utf8_validated(view_of(*decoded));
             return true;
         }
+        if (property == Property::icon && tokens.size() == 1 && tokens[0].kind == Token::Kind::string) {
+            ATELIER_TRY_BIND(decoded, string_value(tokens[0]));
+            const auto icon = ui::parse_control_icon(*decoded);
+            if (!icon)
+                return reject(tokens[0].position, "Unknown UI icon name.");
+            binding.mode = Binding::Mode::literal;
+            binding.literal = static_cast<double>(*icon);
+            return true;
+        }
         const bool accepts_number =
             is_numeric_property(property) || (property == Property::argument && eval.kind == InputKind::number);
         if (accepts_number) {
@@ -800,7 +813,9 @@ private:
                                              "menu_behavior", "radio_group",
                                              "document",      "tooltip",
                                              "tooltip_title", "tooltip_identity",
-                                             "draggable"};
+                                             "draggable",     "placeholder",
+                                             "read_only",     "hue",
+                                             "brightness"};
                 const auto at = std::ranges::find(names, property_view);
                 if (at == std::end(names))
                     return reject(property.position, "Unknown UI property.");
@@ -836,8 +851,13 @@ private:
                     return reject(property.position, "Menu properties require MenuItem.");
                 if ((value == Property::value || value == Property::minimum || value == Property::maximum ||
                      value == Property::step || value == Property::vertical || value == Property::click_action) &&
-                    kind != NodeKind::splitter)
-                    return reject(property.position, "Drag properties require Splitter.");
+                    kind != NodeKind::splitter &&
+                    !(kind == NodeKind::color_plane && (value == Property::value || value == Property::vertical)))
+                    return reject(property.position, "Drag properties require Splitter or ColorPlane.");
+                if ((value == Property::hue || value == Property::brightness) && kind != NodeKind::color_plane)
+                    return reject(property.position, "hue and brightness require ColorPlane.");
+                if ((value == Property::placeholder || value == Property::read_only) && kind != NodeKind::text_field)
+                    return reject(property.position, "placeholder and read_only require TextField.");
                 if (value == Property::caption && kind != NodeKind::text)
                     return reject(property.position, "caption requires Text.");
                 if ((value == Property::align_center || value == Property::wrap) && !container_node(kind))

@@ -1,9 +1,10 @@
 #include "ui/text.hpp"
-#include "ui/icons.hpp"
-#include "memory/fatal.hpp"
 #include "foundation/inline_array.hpp"
 #include "foundation/map.hpp"
 #include "foundation/result.hpp"
+#include "memory/fatal.hpp"
+#include "platform/utf.hpp"
+#include "ui/icons.hpp"
 #include <Windows.h>
 #include <dwrite_3.h>
 #include <wrl/client.h>
@@ -218,7 +219,9 @@ struct TextStore::Impl {
     };
 
     struct Entry {
-        std::wstring text;
+        String text;
+
+        InlineArray<wchar_t, 128> wide_text;
 
         Font font;
 
@@ -228,7 +231,7 @@ struct TextStore::Impl {
 
         TextAlign alignment{TextAlign::left};
 
-        std::uint64_t revision{1};
+        std::uint64_t revision{};
 
         std::array<Paragraph, 2> paragraphs;
     };
@@ -293,8 +296,9 @@ struct TextStore::Impl {
                 DWRITE_FONT_STRETCH_NORMAL, entry.font.size, entry.font.locale.c_str(), &format));
             ATELIER_TRY(result);
         }
-        ATELIER_TRY(check(factory->CreateTextLayout(entry.text.data(), static_cast<UINT32>(entry.text.size()),
-                                                    format.Get(), width.value_or(0), 0, &paragraph.layout)));
+        const wchar_t* wide_ptr = entry.wide_text.empty() ? L"" : entry.wide_text.data();
+        ATELIER_TRY(check(factory->CreateTextLayout(wide_ptr, static_cast<UINT32>(entry.wide_text.size()), format.Get(),
+                                                    width.value_or(0), 0, &paragraph.layout)));
         ++statistics.text_layouts;
         ATELIER_TRY(check(paragraph.layout->SetIncrementalTabStop(entry.font.size * 2.4f)));
         ATELIER_TRY(check(paragraph.layout->SetWordWrapping(width && entry.wrap ? DWRITE_WORD_WRAPPING_WRAP
@@ -343,7 +347,7 @@ struct TextSnapshot::Impl {
 
     ComPtr<IDWriteTextLayout> layout;
 
-    std::wstring text;
+    String text;
 
     Font font;
 
@@ -357,18 +361,27 @@ struct TextSnapshot::Impl {
         FLOAT x{};
         FLOAT y{};
         DWRITE_HIT_TEST_METRICS metrics{};
-        const bool trailing = position.trailing && position.offset != 0;
-        ATELIER_TRY(
-            check(layout->HitTestTextPosition(position.offset - (trailing ? 1 : 0), trailing, &x, &y, &metrics)));
+        const std::size_t clamped_u8 = std::min<std::size_t>(position.offset, text.size());
+        const bool trailing = position.trailing && clamped_u8 != 0;
+        UINT32 dwrite_pos = 0;
+        if (trailing) {
+            std::size_t prev_u8 = clamped_u8 - 1;
+            while (prev_u8 > 0 && (static_cast<unsigned char>(text[prev_u8]) & 0xc0u) == 0x80u)
+                --prev_u8;
+            dwrite_pos = static_cast<UINT32>(platform::utf8_offset_to_utf16(text.view(), prev_u8));
+        } else {
+            dwrite_pos = static_cast<UINT32>(platform::utf8_offset_to_utf16(text.view(), clamped_u8));
+        }
+        ATELIER_TRY(check(layout->HitTestTextPosition(dwrite_pos, trailing ? TRUE : FALSE, &x, &y, &metrics)));
         return Rect{x, y, 1, metrics.height};
     }
 
     Result<void> resolve_stops() const {
         if (!stops.empty())
             return {};
-        ATELIER_TRY_BIND(boundaries, character_boundaries(text));
+        ATELIER_TRY_BIND(boundaries, character_boundaries(text.view()));
         Array<Stop> candidate;
-        candidate.reserve(boundaries->size());
+        candidate.reserve(boundaries->size() * 2);
         for (auto offset : *boundaries) {
             const TextPosition leading{offset, false};
             const TextPosition trailing{offset, offset != 0};
@@ -386,7 +399,7 @@ struct TextSnapshot::Impl {
 
 TextSnapshot::TextSnapshot(std::shared_ptr<const Impl> impl) : impl_(std::move(impl)) {}
 
-bool TextSnapshot::matches(std::wstring_view text) const noexcept {
+bool TextSnapshot::matches(StringView text) const noexcept {
     return impl_->text == text;
 }
 
@@ -401,12 +414,18 @@ Result<void> TextStore::initialize(Span<const std::wstring> files) {
     return {};
 }
 
-std::uint64_t TextStore::set(TextKey key, std::wstring_view text, const Font& font, bool wrap, TextAlign alignment,
+std::uint64_t TextStore::set(TextKey key, StringView text, const Font& font, bool wrap, TextAlign alignment,
                              bool ellipsis) {
     auto& entry = *impl_->entries.try_emplace(key).value;
-    if (entry.text != text || entry.font != font || entry.wrap != wrap || entry.alignment != alignment ||
-        entry.ellipsis != ellipsis) {
-        entry.text = text;
+    const bool text_changed = entry.text != text;
+    if (entry.revision == 0 || text_changed || entry.font != font || entry.wrap != wrap ||
+        entry.alignment != alignment || entry.ellipsis != ellipsis) {
+        if (text_changed) {
+            entry.text = String::from_utf8_validated(text);
+            const auto widened = platform::utf8_to_utf16_into(entry.text.view(), entry.wide_text);
+            if (!widened)
+                fatal("UI TextStore received invalid UTF-8 text.");
+        }
         entry.font = font;
         entry.wrap = wrap;
         entry.alignment = alignment;
@@ -729,6 +748,80 @@ std::shared_ptr<const Coverage> TextStore::symbol(Symbol symbol, std::uint32_t p
                                                        (px >= .12f && px <= .88f && py >= .48f &&
                                                         std::abs(std::hypot(px - .50f, py - .20f) - .48f) <= .044f) ||
                                                        std::hypot(px - .50f, py - .50f) <= .145f)
+                            : symbol == Symbol::eye_off
+                                ? (((px >= .12f && px <= .88f && py <= .52f &&
+                                     std::abs(std::hypot(px - .50f, py - .80f) - .48f) <= .042f) ||
+                                    (px >= .12f && px <= .88f && py >= .48f &&
+                                     std::abs(std::hypot(px - .50f, py - .20f) - .48f) <= .042f)) &&
+                                   std::abs((px - .5f) + (py - .5f)) > .09f) ||
+                                      segment(px, py, .18f, .82f, .82f, .18f)
+                            : symbol == Symbol::scene
+                                ? (outline(.12f, .18f, .88f, .82f) || segment(px, py, .12f, .56f, .88f, .56f) ||
+                                   segment(px, py, .50f, .56f, .24f, .82f) || segment(px, py, .50f, .56f, .76f, .82f) ||
+                                   std::hypot(px - .70f, py - .35f) <= .085f)
+                            : symbol == Symbol::material
+                                ? (std::abs(std::hypot(px - .50f, py - .50f) - .36f) <= .042f ||
+                                   (px >= .50f && std::hypot(px - .50f, py - .50f) <= .36f) ||
+                                   std::hypot(px - .35f, py - .36f) <= .065f)
+                            : symbol == Symbol::texture
+                                ? (outline(.14f, .16f, .86f, .84f) || std::hypot(px - .34f, py - .35f) <= .075f ||
+                                   segment(px, py, .16f, .76f, .44f, .46f) || segment(px, py, .44f, .46f, .60f, .64f) ||
+                                   segment(px, py, .60f, .64f, .73f, .50f) || segment(px, py, .73f, .50f, .85f, .76f))
+                            : symbol == Symbol::source_file
+                                ? (segment(px, py, .20f, .12f, .62f, .12f) || segment(px, py, .62f, .12f, .80f, .30f) ||
+                                   segment(px, py, .80f, .30f, .80f, .88f) || segment(px, py, .80f, .88f, .20f, .88f) ||
+                                   segment(px, py, .20f, .88f, .20f, .12f) || segment(px, py, .62f, .12f, .62f, .30f) ||
+                                   segment(px, py, .62f, .30f, .80f, .30f) || segment(px, py, .43f, .46f, .31f, .58f) ||
+                                   segment(px, py, .31f, .58f, .43f, .70f) || segment(px, py, .57f, .46f, .69f, .58f) ||
+                                   segment(px, py, .69f, .58f, .57f, .70f))
+                            : symbol == Symbol::procgraph
+                                ? (std::hypot(px - .26f, py - .24f) <= .12f ||
+                                   std::hypot(px - .74f, py - .24f) <= .12f ||
+                                   std::hypot(px - .50f, py - .76f) <= .13f ||
+                                   segment(px, py, .26f, .34f, .50f, .65f) || segment(px, py, .74f, .34f, .50f, .65f))
+                            : symbol == Symbol::physics
+                                ? (std::abs(std::hypot(px - .56f, py - .36f) - .20f) <= .042f ||
+                                   segment(px, py, .14f, .80f, .86f, .80f) || segment(px, py, .18f, .78f, .34f, .54f) ||
+                                   segment(px, py, .34f, .54f, .42f, .76f))
+                            : symbol == Symbol::camera
+                                ? (outline(.12f, .28f, .66f, .74f) || segment(px, py, .66f, .43f, .88f, .30f) ||
+                                   segment(px, py, .88f, .30f, .88f, .72f) || segment(px, py, .66f, .59f, .88f, .72f))
+                            : symbol == Symbol::copy
+                                ? (outline(.32f, .30f, .84f, .86f) || segment(px, py, .16f, .14f, .68f, .14f) ||
+                                   segment(px, py, .16f, .14f, .16f, .70f) || segment(px, py, .16f, .70f, .32f, .70f) ||
+                                   segment(px, py, .68f, .14f, .68f, .30f))
+                            : symbol == Symbol::save
+                                ? (segment(px, py, .16f, .16f, .70f, .16f) || segment(px, py, .70f, .16f, .84f, .30f) ||
+                                   segment(px, py, .84f, .30f, .84f, .84f) || segment(px, py, .84f, .84f, .16f, .84f) ||
+                                   segment(px, py, .16f, .84f, .16f, .16f) || outline(.30f, .16f, .64f, .40f) ||
+                                   outline(.28f, .54f, .72f, .84f))
+                            : symbol == Symbol::play
+                                ? (px >= .26f && px <= .80f && std::abs(py - .50f) <= (.80f - px) * .62f)
+                            : symbol == Symbol::stop ? (px >= .24f && px <= .76f && py >= .24f && py <= .76f)
+                            : symbol == Symbol::build
+                                ? (segment(px, py, .20f, .80f, .60f, .40f) || segment(px, py, .24f, .84f, .64f, .44f) ||
+                                   segment(px, py, .46f, .20f, .80f, .54f) || segment(px, py, .50f, .16f, .84f, .50f))
+                            : symbol == Symbol::reload
+                                ? ((std::abs(std::hypot(px - .50f, py - .50f) - .32f) <= .045f &&
+                                    !(px > .58f && py < .44f)) ||
+                                   segment(px, py, .78f, .18f, .78f, .40f) || segment(px, py, .56f, .40f, .78f, .40f))
+                            : symbol == Symbol::warning
+                                ? (segment(px, py, .50f, .15f, .87f, .82f) || segment(px, py, .87f, .82f, .13f, .82f) ||
+                                   segment(px, py, .13f, .82f, .50f, .15f) ||
+                                   (std::abs(px - .50f) <= .042f && py >= .38f && py <= .61f) ||
+                                   std::hypot(px - .50f, py - .71f) <= .052f)
+                            : symbol == Symbol::lock
+                                ? (outline(.23f, .46f, .77f, .85f) ||
+                                   (std::abs(px - .50f) <= .045f && py >= .58f && py <= .73f) ||
+                                   (std::abs(std::hypot(px - .50f, py - .33f) - .15f) <= .042f && py <= .33f) ||
+                                   (std::abs(px - .35f) <= .042f && py >= .33f && py <= .46f) ||
+                                   (std::abs(px - .65f) <= .042f && py >= .33f && py <= .46f))
+                            : symbol == Symbol::unlock
+                                ? (outline(.23f, .48f, .77f, .86f) ||
+                                   (std::abs(px - .50f) <= .045f && py >= .60f && py <= .74f) ||
+                                   (std::abs(std::hypot(px - .54f, py - .28f) - .15f) <= .042f && py <= .28f) ||
+                                   (std::abs(px - .39f) <= .042f && py >= .28f && py <= .48f) ||
+                                   (std::abs(px - .69f) <= .042f && py >= .28f && py <= .33f))
                             : symbol == Symbol::template_flag
                                 ? ((py >= .21f && py <= .36f &&
                                     std::abs(px - .50f) <= .30f - std::max(0.f, .28f - py) * 1.15f) ||
@@ -856,7 +949,7 @@ Result<std::shared_ptr<const TextSnapshot>> TextStore::snapshot(TextKey key, flo
 }
 
 Result<std::shared_ptr<const TextSnapshot>> TextStore::edited_snapshot(std::uint64_t key, const TextSnapshot& displayed,
-                                                                       std::wstring_view value) {
+                                                                       StringView value) {
     const auto& policy = *displayed.impl_;
     set(key, value, policy.font, false, policy.alignment);
     return snapshot(key, policy.width);
@@ -870,7 +963,8 @@ Result<Rect> TextSnapshot::character(std::uint32_t position) const {
     FLOAT x{};
     FLOAT y{};
     DWRITE_HIT_TEST_METRICS metrics{};
-    ATELIER_TRY(check(impl_->layout->HitTestTextPosition(position, FALSE, &x, &y, &metrics)));
+    const auto u16_pos = static_cast<UINT32>(platform::utf8_offset_to_utf16(impl_->text.view(), position));
+    ATELIER_TRY(check(impl_->layout->HitTestTextPosition(u16_pos, FALSE, &x, &y, &metrics)));
     // The leading caret of an RTL run is its right edge. Native character
     // position requests need the actual enclosing character's upper-left.
     return Rect{metrics.left, metrics.top, metrics.width, metrics.height};
@@ -883,7 +977,9 @@ Result<TextPosition> TextSnapshot::hit(float x, float y) const {
     DWRITE_HIT_TEST_METRICS metrics{};
     ATELIER_TRY(check(impl_->layout->HitTestPoint(x, y, &trailing, &inside, &metrics)));
     (void)inside;
-    const TextPosition candidate{metrics.textPosition + (trailing ? metrics.length : 0), trailing != FALSE};
+    const std::size_t u16_cand = static_cast<std::size_t>(metrics.textPosition) + (trailing ? metrics.length : 0);
+    const auto u8_cand = static_cast<std::uint32_t>(platform::utf16_offset_to_utf8(impl_->text.view(), u16_cand));
+    const TextPosition candidate{u8_cand, trailing != FALSE && u8_cand != 0};
     auto selected = impl_->stops.front();
     for (auto stop : impl_->stops) {
         const auto distance = std::abs(stop.x - x);
@@ -902,9 +998,9 @@ Result<TextPosition> TextSnapshot::move(TextPosition position, int direction, bo
     ATELIER_TRY_BIND(caret, impl_->caret_box(position));
     const float x = caret->x;
     if (direction < 0) {
-        for (auto at = stops.rbegin(); at != stops.rend(); ++at)
-            if (at->x < x - .01f)
-                return at->position;
+        for (std::size_t i = stops.size(); i-- > 0;)
+            if (stops[i].x < x - .01f)
+                return stops[i].position;
     } else
         for (auto stop : stops)
             if (stop.x > x + .01f)
@@ -913,19 +1009,24 @@ Result<TextPosition> TextSnapshot::move(TextPosition position, int direction, bo
 }
 
 Result<Array<Rect>> TextSnapshot::selection(std::uint32_t first, std::uint32_t last) const {
-    if (first == last)
+    if (first >= last)
+        return {};
+    const auto u16_first = static_cast<UINT32>(platform::utf8_offset_to_utf16(impl_->text.view(), first));
+    const auto u16_last = static_cast<UINT32>(platform::utf8_offset_to_utf16(impl_->text.view(), last));
+    if (u16_first >= u16_last)
         return {};
     UINT32 count{};
-    const auto status = impl_->layout->HitTestTextRange(first, last - first, 0, 0, nullptr, 0, &count);
+    const auto status = impl_->layout->HitTestTextRange(u16_first, u16_last - u16_first, 0, 0, nullptr, 0, &count);
     if (status != HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER))
         ATELIER_TRY(check(status));
-    Array<DWRITE_HIT_TEST_METRICS> metrics;
+    InlineArray<DWRITE_HIT_TEST_METRICS, 8> metrics;
     metrics.resize_uninitialized(count);
-    ATELIER_TRY(check(impl_->layout->HitTestTextRange(first, last - first, 0, 0, metrics.data(), count, &count)));
+    ATELIER_TRY(
+        check(impl_->layout->HitTestTextRange(u16_first, u16_last - u16_first, 0, 0, metrics.data(), count, &count)));
     Array<Rect> result;
     result.reserve(count);
-    for (const auto& metric : metrics)
-        result.add({metric.left, metric.top, metric.width, metric.height});
+    for (std::uint32_t i = 0; i < count; ++i)
+        result.add({metrics[i].left, metrics[i].top, metrics[i].width, metrics[i].height});
     return result;
 }
 } // namespace atelier::ui::detail

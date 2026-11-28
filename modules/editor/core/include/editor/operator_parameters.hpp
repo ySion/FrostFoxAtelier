@@ -45,7 +45,6 @@ enum class RegionKind : std::uint32_t {
     none,
     viewport,
     scene_tree,
-    structure,
     parameters,
     assets,
     code,
@@ -206,6 +205,14 @@ struct SceneRename {
 
     AFIELD(DESC = "完整新名称；非交互调用必须提供非空名称。")
     String name{};
+};
+
+ASTRUCT(Name = "editor.SceneSetEnabled", DESC = "设置被检视的 Entity 或组件的启用状态。")
+struct SceneSetEnabled {
+    AGENERATED_BODY(SceneSetEnabled)
+
+    AFIELD(DESC = "是否启用目标 Entity 或组件。")
+    bool enabled{true};
 };
 
 ASTRUCT(Name = "editor.SceneTransform", DESC = "写入活动 Entity 的完整局部变换；必要时创建空间能力。")

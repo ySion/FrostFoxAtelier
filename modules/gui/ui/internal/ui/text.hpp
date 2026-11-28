@@ -56,7 +56,7 @@ struct TextStatistics {
 // Immutable paragraph geometry retained by accepted frames. Native types stay private.
 class TextSnapshot {
 public:
-    bool matches(std::wstring_view) const noexcept;
+    bool matches(StringView) const noexcept;
 
     Result<Rect> caret(TextPosition) const;
 
@@ -88,7 +88,7 @@ public:
     // Stable-address storage; failure leaves only a destructible empty store.
     Result<void> initialize(Span<const std::wstring> font_files = {});
 
-    std::uint64_t set(TextKey key, std::wstring_view, const Font&, bool wrap, TextAlign = TextAlign::left,
+    std::uint64_t set(TextKey key, StringView, const Font&, bool wrap, TextAlign = TextAlign::left,
                       bool ellipsis = false);
 
     enum class Symbol {
@@ -170,7 +170,24 @@ public:
         info_glyph,
         snowflake,
         eye,
-        template_flag
+        template_flag,
+        eye_off,
+        scene,
+        material,
+        texture,
+        source_file,
+        procgraph,
+        physics,
+        camera,
+        copy,
+        save,
+        play,
+        stop,
+        build,
+        reload,
+        warning,
+        lock,
+        unlock
     };
 
     std::shared_ptr<const Coverage> symbol(Symbol, std::uint32_t pixels);
@@ -191,8 +208,7 @@ public:
 
     // Keyboard edits may arrive before repaint. Shape the current draft using
     // the displayed paragraph's font/width policy, never the pending style.
-    Result<std::shared_ptr<const TextSnapshot>> edited_snapshot(std::uint64_t key, const TextSnapshot&,
-                                                                std::wstring_view);
+    Result<std::shared_ptr<const TextSnapshot>> edited_snapshot(std::uint64_t key, const TextSnapshot&, StringView);
 
     static ui_layout::MeasureResult measure(void*, const ui_layout::MeasureQuery&);
 

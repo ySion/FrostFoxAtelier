@@ -1176,12 +1176,14 @@ Result<bool> ViewportTool::key(Session& session, const ViewportView& view, const
         return true;
     if (gesture_) {
         if (event.kind == ui::EventKind::text) {
-            if (const auto* text = std::get_if<std::wstring>(&event.data))
-                for (const auto c : *text)
-                    if ((c >= L'0' && c <= L'9') || c == L'.' || c == L'-') {
+            if (const auto* text = std::get_if<String>(&event.data))
+                for (std::size_t i = 0; i < text->size(); ++i) {
+                    const char c = (*text)[i];
+                    if ((c >= '0' && c <= '9') || c == '.' || c == '-') {
                         if (gesture_->typed.size() < 24)
-                            gesture_->typed += c;
+                            gesture_->typed += static_cast<wchar_t>(c);
                     }
+                }
             const auto result = update(session, view, pointer, event.control, event.shift);
             if (!result)
                 return std::unexpected(result.error());

@@ -171,6 +171,8 @@ struct Control {
 
     std::wstring text;
 
+    std::wstring placeholder; // text_edit only: muted hint rendered when text is empty and not composing.
+
     bool single_line{}; // Labels: one line with end ellipsis when their allocated width is exhausted.
 
     Role role{Role::normal};
@@ -244,6 +246,18 @@ struct Control {
     bool
         tree_draggable{}; // tree_item only: a primary drag past 4 px emits drag_begin/preview/commit instead of selecting.
 
+    std::array<ControlIcon, 4> tree_badges{}; // tree_item only: passive capability micro-icons in trailing gutter.
+
+    ControlIcon tree_trailing_icon{ControlIcon::none}; // tree_item only: interactive trailing action icon.
+
+    bool tree_trailing_dimmed{}; // tree_item only: dims the trailing icon when inactive.
+
+    bool transient_edit{}; // text_edit only: Enter/Esc/blur always emits edit_commit/edit_cancel even if unmodified.
+
+    ControlKey rename_anchor{}; // text_edit only: positions and clips over an earlier tree_item or table.
+
+    TableKey rename_cell{}; // text_edit only: target cell key when rename_anchor names a table.
+
     ControlKey popup_owner{}; // popup only: earlier visible local owner; zero for an externally owned surface.
 
     bool menu_branch{}; // Host opens a child menu; activating keeps this parent modal.
@@ -264,11 +278,18 @@ struct Control {
 
     std::shared_ptr<CodeDocument> code; // CodeEditor only; document owns text and history.
 
+    std::shared_ptr<const CodeAnnotations>
+        code_annotations; // CodeEditor only; optional semantic/search/diagnostic overlay.
+
     std::shared_ptr<const Tooltip> tooltip; // Owned documentation, shared across a parameter row and its fields.
 
     std::shared_ptr<const CanvasData> canvas; // Container only: immutable 2D grid, boxes and capsule strokes.
 
-    bool read_only{}; // CodeEditor only: selectable/copyable, without text mutations or an IME binding.
+    bool read_only{}; // CodeEditor/TextEdit: selectable/copyable, without text mutations or an IME binding.
+
+    double color_hue{}; // color_plane only: hue angle in [0, 360].
+
+    double color_value{1}; // color_plane only: normalized brightness V in [0, 1] for 2D SV planes.
 
     bool operator==(const Control& other) const;
 };
@@ -278,11 +299,16 @@ struct Control {
 class ControlList {
 public:
     static std::uint64_t new_region_revision();
+
     void begin(std::uint64_t decoration_revision = 0);
+
     void require_full_submission() noexcept { baseline_ = 0; }
     void append(Span<const Control>, std::uint64_t region_revision);
+
     void append(Array<Control>&&);
+
     Span<const Control> controls() const { return values_.slice(0, count_); }
+
     Array<Control> take() && {
         auto values = std::move(values_);
         *this = {};
@@ -298,26 +324,44 @@ public:
         regions_.truncate(region_);
         finished_ = true;
     }
+
     void finish() {
         finish([](Control&) {});
     }
 
 private:
     friend class Session;
+
     struct Range {
-        std::size_t first{}, count{};
+        std::size_t first{};
+
+        std::size_t count{};
     };
+
     struct Region {
         Range range;
+
         std::uint64_t revision{};
     };
+
     bool advance(std::size_t count, std::uint64_t revision);
     Array<Control> values_;
+
     Array<Region> regions_;
+
     Array<Range> dirty_;
-    std::size_t count_{}, region_{};
-    std::uint64_t decoration_revision_{}, baseline_{};
-    bool finished_{}, submitted_{};
+
+    std::size_t count_{};
+
+    std::size_t region_{};
+
+    std::uint64_t decoration_revision_{};
+
+    std::uint64_t baseline_{};
+
+    bool finished_{};
+
+    bool submitted_{};
 };
 
 struct Surface {
@@ -499,6 +543,8 @@ struct TreeRowGeometry {
 
     Rect disclosure; // Accepted physical hit area; empty on leaves.
 
+    Rect trailing_action{}; // Accepted physical hit area for tree_trailing_icon; empty when absent.
+
     bool expanded{};
 };
 
@@ -640,6 +686,8 @@ struct UiFrame {
     const TableGeometry* find_table(ControlKey) const noexcept;
 
     const CodeGeometry* find_code(ControlKey) const noexcept;
+
+    std::optional<std::uint32_t> code_offset_at(ControlKey, float x, float y) const;
 };
 
 // expand: a tree row requests the bool expansion state; the host owns it.
@@ -712,9 +760,9 @@ struct ClipboardRequest {
 
     EditToken token;
 
-    std::wstring text; // Owned selected text for copy/cut.
+    String text; // Owned UTF-8 selected text for copy/cut.
 
-    std::size_t limit{4096}; // Bounded by the active editor; native adapters cap at 1 MiB UTF-16 units.
+    std::size_t limit{16384}; // Bounded by the active editor; native adapters cap at 1 MiB UTF-8 bytes.
 };
 
 struct ClipboardResult {
@@ -728,7 +776,7 @@ struct ClipboardResult {
 
     std::uint32_t native_error{};
 
-    std::wstring text; // Owned CF_UNICODETEXT payload for read.
+    String text; // Owned UTF-8 payload transcoded from CF_UNICODETEXT on read.
 };
 
 enum class ImeKind { complete, cancel };
@@ -756,11 +804,11 @@ struct ImeResult {
 enum class CompositionKind { start, update, end, cancel };
 
 struct Preedit {
-    std::wstring text;
+    String text;
 
-    std::uint32_t cursor{}; // UTF-16 offset, clamped to an editing boundary by UI.
+    std::uint32_t cursor{}; // UTF-8 byte offset, clamped to an editing boundary by UI.
 
-    Array<std::uint8_t> attributes; // IMM attributes per UTF-16 unit; empty if absent.
+    Array<std::uint8_t> attributes; // IMM attributes per UTF-8 byte; empty if absent.
 };
 
 struct CompositionEvent {
@@ -770,7 +818,7 @@ struct CompositionEvent {
 
     EditToken token; // Fixed start binding; advanced only after a confirmed segment.
 
-    Optional<std::wstring> result;
+    Optional<String> result;
 
     Optional<Preedit> preedit; // Missing differs from an empty preedit.
 };
@@ -855,10 +903,19 @@ enum class Key {
     menu,
     f10,
     page_up,
-    page_down
+    page_down,
+    slash,
+    d,
+    f,
+    g,
+    h,
+    k,
+    f2,
+    f3,
+    f12
 };
 
-using InputData = std::variant<std::monostate, std::wstring, ClipboardResult, ImeResult, CompositionEvent>;
+using InputData = std::variant<std::monostate, String, ClipboardResult, ImeResult, CompositionEvent>;
 
 struct Event {
     EventKind kind{};
@@ -873,7 +930,7 @@ struct Event {
 
     Key key{Key::none};
 
-    InputData data{}; // Text is an owned, complete UTF-16 string, separate from key commands.
+    InputData data{}; // Text is an owned, complete UTF-8 String, separate from key commands.
 
     bool shift{};
 
@@ -1002,7 +1059,7 @@ public:
     // Zero clears focus; other targets must be visible, current accepted controls.
     // A transition finishes the previous draft. Same focus preserves its draft,
     // selection and composition; text fields bind input immediately, numbers passively.
-    Reply focus(ControlKey);
+    Reply focus(ControlKey, std::optional<std::uint32_t> select_length = {});
 
     Reply execute(EditCommand,
                   std::uint64_t incarnation); // External menu command, guarded by its opening target lifetime.

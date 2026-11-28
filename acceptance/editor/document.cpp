@@ -2188,6 +2188,281 @@ Result<void> verify_scene_recovery() {
     ATELIER_TRY(changed(recovered.session->close()));
     return changed(doc.close());
 }
+
+Result<void> verify_code_editor_intelligence() {
+    const auto temp_root =
+        std::filesystem::temp_directory_path() /
+        ("atelier-code-intel-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::error_code ec;
+    std::filesystem::remove_all(temp_root, ec);
+
+    auto created_proj = editor::Project::create(temp_root);
+    require(created_proj.has_value(), "Failed to create temporary project for CodeIntelligence acceptance.");
+    auto& project = *created_proj;
+
+    const auto source_dir = project.root() / L"Source";
+    const auto helper_path = source_dir / L"Helper.source";
+    const auto spinner_path = source_dir / L"Spinner.source";
+    const auto ui_path = project.root() / L"Config" / L"Hud.ui.source";
+    const auto ss_path = project.root() / L"Config" / L"theme.ss";
+
+    take(project.create_source(L"Source/Helper.source", "float helper_step(float speed, float dt) {\n"
+                                                        "    return speed * dt;\n"
+                                                        "}\n"));
+    take(project.create_source(L"Source/Spinner.source",
+                               "class project.Spinner : world.Component {\n"
+                               "    float speed = 2.0f;\n\n"
+                               "    void tick(float dt) {\n"
+                               "        const float step = helper_step(self.speed, math.clamp(dt, 0.0f, 1.0f));\n"
+                               "        self.translate_owner(step, 0.0f, 0.0f);\n"
+                               "    }\n"
+                               "}\n"));
+    take(editor::write_file(ui_path, "ui CustomBadge(in Text label) {\n"
+                                     "    Text t { text: input.label; single_line: true; }\n"
+                                     "}\n"
+                                     "ui TestHud(in Text title, in bool visible) {\n"
+                                     "    Column root {\n"
+                                     "        expand_height: true;\n"
+                                     "        CustomBadge badge { label: input.title; }\n"
+                                     "    }\n"
+                                     "}\n"));
+    take(editor::write_file(ss_path, "@tokens {\n"
+                                     "    brand-accent: #4a90e2;\n"
+                                     "}\n"
+                                     ".card { background: token(brand-accent); }\n"));
+
+    editor::SourceEditor source_ed;
+    take(source_ed.open(spinner_path));
+    auto* spinner_file = source_ed.active();
+    require(spinner_file && spinner_file->document->language() == ui::CodeLanguage::source,
+            "SourceEditor did not auto-detect .source language.");
+
+    source_ed.sync_intelligence(nullptr, &project, nullptr, true);
+    if (!source_ed.intelligence().problems().empty()) {
+        const auto& p = source_ed.intelligence().problems().front();
+        const std::string msg = std::string(p.file_label.view().std_view()) + ":" + std::to_string(p.line) + ": " +
+                                std::string(p.message.view().std_view());
+        fatal("Unexpected .source diagnostic: " + msg);
+    }
+    require(source_ed.intelligence().active_diagnostics().empty() && source_ed.intelligence().problems().empty(),
+            "Valid multi-file .source project reported unexpected diagnostics.");
+    require(source_ed.intelligence().outline().size() >= 2 &&
+                source_ed.intelligence().breadcrumb_for_line(4).contains("Spinner") &&
+                source_ed.intelligence().breadcrumb_for_line(4).contains("tick"),
+            "CodeIntelligence did not extract class + method outline and breadcrumb.");
+
+    // 1. Unsaved in-memory live diagnostic without touching disk
+    auto& buf = spinner_file->document->edit();
+    spinner_file->document->locate(5, 9);
+    take(buf.replace("int bad_local = \"wrong_type\";\n        "));
+    require(spinner_file->dirty(), "In-memory edit did not mark SourceEditor::File dirty.");
+    source_ed.sync_intelligence(nullptr, &project, nullptr, true);
+    require(!source_ed.intelligence().active_diagnostics().empty() &&
+                source_ed.intelligence().active_diagnostics().front().line == 4,
+            "In-memory .source type error was not reported at exact line without saving.");
+
+    take(buf.history(false));
+    source_ed.sync_intelligence(nullptr, &project, nullptr, true);
+    require(source_ed.intelligence().active_diagnostics().empty(),
+            "Undoing in-memory .source error did not clear live diagnostics.");
+
+    // 2. Context-aware member autocomplete on `self.` (both project fields and inherited native world.Component methods)
+    const std::size_t self_dot = spinner_file->document->text().find("self.translate_owner");
+    require(self_dot != StringView::npos, "Missing self.translate_owner in fixture.");
+    const auto self_completions =
+        source_ed.intelligence().completions(*spinner_file->document, static_cast<std::uint32_t>(self_dot + 5), true);
+    const bool has_speed_field =
+        std::ranges::any_of(self_completions, [](const editor::CodeCompletionItem& c) { return c.label == "speed"; });
+    const bool has_native_method = std::ranges::any_of(
+        self_completions, [](const editor::CodeCompletionItem& c) { return c.label == "translate_owner"; });
+    const bool clean_method_sig = std::ranges::any_of(self_completions, [](const editor::CodeCompletionItem& c) {
+        return c.label == "tick" && c.detail == "tick(float dt) -> void" && !c.detail.contains(":0(");
+    });
+    require(
+        has_speed_field && has_native_method && clean_method_sig,
+        "self. autocomplete did not include project field, native base method, and human-readable method signature.");
+
+    // 2b. Authoritative Source math/sequence/attribute completions & decoded function hover signature
+    const std::size_t helper_call = spinner_file->document->text().find("helper_step");
+    require(helper_call != StringView::npos, "Missing helper_step call in fixture.");
+    const auto fn_hover =
+        source_ed.intelligence().hover(*spinner_file->document, static_cast<std::uint32_t>(helper_call + 2));
+    require(fn_hover.has_value() && fn_hover->tooltip.title == L"helper_step(float speed, float dt) -> float",
+            "Hover on module function leaked internal ABI signature instead of decoded Source signature.");
+
+    spinner_file->document->locate(5, 9);
+    take(buf.replace(
+        "vector3 dir = vector3(1.0f);\n        Array<vector3> pts;\n        dir.\n        pts.\n        [L\n        "));
+    const std::size_t dir_dot = spinner_file->document->text().find("dir.");
+    const auto vec_comp =
+        source_ed.intelligence().completions(*spinner_file->document, static_cast<std::uint32_t>(dir_dot + 4), true);
+    require(std::ranges::any_of(vec_comp, [](const auto& c) { return c.label == "x"; }) &&
+                std::ranges::any_of(vec_comp, [](const auto& c) { return c.label == "z"; }),
+            "Canonical vector3 member completion did not offer .x / .z components.");
+    const std::size_t pts_dot = spinner_file->document->text().find("pts.");
+    const auto arr_comp =
+        source_ed.intelligence().completions(*spinner_file->document, static_cast<std::uint32_t>(pts_dot + 4), true);
+    require(
+        std::ranges::any_of(arr_comp, [](const auto& c) { return c.label == "size" && c.insert_text == "size()"; }) &&
+            std::ranges::any_of(arr_comp, [](const auto& c) { return c.label == "add"; }),
+        "Canonical Array<T> member completion did not offer .size() and .add().");
+    const std::size_t attr_br = spinner_file->document->text().find("[L");
+    const auto attr_comp =
+        source_ed.intelligence().completions(*spinner_file->document, static_cast<std::uint32_t>(attr_br + 2), true);
+    require(std::ranges::any_of(attr_comp, [](const auto& c) { return c.label == "Label"; }) &&
+                std::ranges::any_of(attr_comp, [](const auto& c) { return c.label == "LockMin"; }),
+            "Square-bracket '[...' attribute completion did not offer Label / LockMin.");
+    take(buf.history(false));
+
+    // 3. Signature help active parameter highlighting inside `math.clamp(dt, |0.0f, 1.0f)`
+    const std::size_t clamp_comma = spinner_file->document->text().find("math.clamp(dt, ");
+    require(clamp_comma != StringView::npos, "Missing math.clamp call in fixture.");
+    const auto sig =
+        source_ed.intelligence().signature_help(*spinner_file->document, static_cast<std::uint32_t>(clamp_comma + 15));
+    require(sig.has_value() && sig->active_parameter.contains("low"),
+            "Signature help did not highlight second parameter of clamp().");
+
+    // 4. Cross-file Go-to-Definition (`helper_step` -> `Helper.source`) & Navigate Back
+    const std::size_t helper_ref = spinner_file->document->text().find("helper_step");
+    require(helper_ref != StringView::npos, "Missing helper_step reference in fixture.");
+    const bool jumped =
+        take(source_ed.go_to_definition(Optional<std::uint32_t>{static_cast<std::uint32_t>(helper_ref + 2)}));
+    require(jumped && source_ed.active() && std::filesystem::equivalent(source_ed.active()->path, helper_path, ec),
+            "Cross-file Go-to-Definition did not open and focus Helper.source.");
+    const bool navigated_back = take(source_ed.navigate_back());
+    require(navigated_back && source_ed.active() &&
+                std::filesystem::equivalent(source_ed.active()->path, spinner_path, ec),
+            "navigate_back() did not return to Spinner.source.");
+
+    // 5. Inline Find & Replace All (single undo group, plus case-insensitive ASCII search)
+    source_ed.open_search(editor::CodeSearchMode::replace);
+    source_ed.set_find_query("SPEED", true);
+    require(source_ed.search_match_count() == 2,
+            "Case-insensitive Find query 'SPEED' did not locate both occurrences.");
+    source_ed.set_find_query("speed", true);
+    require(source_ed.search_match_count() == 2, "Find query 'speed' did not locate both occurrences.");
+    source_ed.set_replace_text("velocity");
+    require(source_ed.replace_all() == 2 && spinner_file->document->text().contains("velocity"),
+            "Replace All did not replace occurrences.");
+    take(spinner_file->document->edit().history(false));
+    require(spinner_file->document->text().contains("speed"), "Single undo did not restore Replace All.");
+    source_ed.close_search();
+
+    // 6. .ui.source & .ss live diagnostics and token completion
+    take(source_ed.open(ui_path));
+    source_ed.sync_intelligence(nullptr, &project, nullptr, true);
+    require(source_ed.intelligence().active_diagnostics().empty() && source_ed.intelligence().outline().size() == 2,
+            ".ui.source valid module failed live check or outline extraction.");
+    const std::size_t input_dot = source_ed.active()->document->text().find("input.title");
+    const auto ui_comp = source_ed.intelligence().completions(*source_ed.active()->document,
+                                                              static_cast<std::uint32_t>(input_dot + 6), true);
+    require(std::ranges::any_of(ui_comp, [](const auto& c) { return c.label == "title"; }) &&
+                std::ranges::any_of(ui_comp, [](const auto& c) { return c.label == "visible"; }),
+            ".ui.source 'input.' completion did not suggest component inputs.");
+
+    take(source_ed.open(ss_path));
+    source_ed.sync_intelligence(nullptr, &project, nullptr, true);
+    require(source_ed.intelligence().active_diagnostics().empty(), ".ss valid sheet reported error.");
+    const std::size_t tok_paren = source_ed.active()->document->text().find("token(");
+    const auto ss_comp = source_ed.intelligence().completions(*source_ed.active()->document,
+                                                              static_cast<std::uint32_t>(tok_paren + 6), true);
+    require(std::ranges::any_of(ss_comp, [](const auto& c) { return c.label == "brand-accent"; }),
+            ".ss 'token(' completion did not suggest @tokens entry.");
+    // Whole-word search in .ss must treat hyphenated properties as single words:
+    source_ed.open_search(editor::CodeSearchMode::find);
+    {
+        bool fb = false;
+        ui::ControlKey fk = 0;
+        take(source_ed.apply_action({ui::ActionKind::activate, editor::source_control::find_word, {}}, fb, fk));
+        source_ed.set_find_query("brand", false);
+        require(source_ed.search_match_count() == 0,
+                "Whole-word search in .ss matched prefix 'brand' inside hyphenated 'brand-accent'.");
+        source_ed.set_find_query("brand-accent", false);
+        require(source_ed.search_match_count() >= 1,
+                "Whole-word search in .ss failed to match full hyphenated 'brand-accent'.");
+        take(source_ed.apply_action({ui::ActionKind::activate, editor::source_control::find_word, {}}, fb, fk));
+    }
+    source_ed.close_search();
+
+    // Braces inside /* ... */ comments in .ss must not corrupt selector vs rule-body completion depth:
+    source_ed.active()->document->locate(1, 1);
+    take(source_ed.active()->document->edit().replace("/* { unclosed brace in comment */\n"));
+    const auto eof_off = static_cast<std::uint32_t>(source_ed.active()->document->text().size());
+    const auto ss_top_comp = source_ed.intelligence().completions(*source_ed.active()->document, eof_off, true);
+    require(std::ranges::any_of(ss_top_comp, [](const auto& c) { return c.label == "button"; }),
+            "Comment containing '{' in .ss corrupted top-level selector completion state.");
+    take(source_ed.active()->document->edit().history(false));
+
+    source_ed.active()->document->locate(4, 1);
+    take(source_ed.active()->document->edit().replace("button:hover { padding: 6dip; }\n"));
+    source_ed.sync_intelligence(nullptr, &project, nullptr, true);
+    require(!source_ed.intelligence().active_diagnostics().empty(),
+            ".ss invalid transient state property was not caught in memory.");
+
+    // 7. .source struct / enum / enumerator / const hover & definition symmetry:
+    take(source_ed.open(spinner_path));
+    source_ed.active()->document->locate(1, 1);
+    take(source_ed.active()->document->edit().replace(
+        "struct project.HitSample {\n    float dist;\n};\nenum project.SpinMode : uint {\n    Smooth = 0,\n    Snap = 1\n}\nconst float kDefaultRate = 2.0f;\n"));
+    source_ed.sync_intelligence(nullptr, &project, nullptr, true);
+    require(source_ed.intelligence().active_diagnostics().empty(),
+            "Valid struct/enum/const additions in Spinner.source produced diagnostics.");
+    const auto& spin_doc = *source_ed.active()->document;
+    const auto struct_pos = static_cast<std::uint32_t>(spin_doc.text().find("HitSample") + 2);
+    const auto enum_pos = static_cast<std::uint32_t>(spin_doc.text().find("SpinMode") + 2);
+    const auto enumerator_pos = static_cast<std::uint32_t>(spin_doc.text().find("Smooth") + 2);
+    const auto const_pos = static_cast<std::uint32_t>(spin_doc.text().find("kDefaultRate") + 2);
+    const auto struct_hover = source_ed.intelligence().hover(spin_doc, struct_pos);
+    const auto enum_hover = source_ed.intelligence().hover(spin_doc, enum_pos);
+    const auto enumerator_hover = source_ed.intelligence().hover(spin_doc, enumerator_pos);
+    const auto const_hover = source_ed.intelligence().hover(spin_doc, const_pos);
+    require(struct_hover && struct_hover->tooltip.identity == L"Source Struct" && struct_hover->definition.has_value(),
+            "Hover on Source struct failed or missed definition link.");
+    require(enum_hover && enum_hover->tooltip.identity == L"Source Enum" && enum_hover->definition.has_value(),
+            "Hover on Source enum failed or missed definition link.");
+    require(enumerator_hover && enumerator_hover->tooltip.identity == L"Source Enumerator" &&
+                enumerator_hover->definition.has_value(),
+            "Hover on Source enumerator failed or missed definition link.");
+    require(const_hover && const_hover->tooltip.identity == L"Source Constant" && const_hover->definition.has_value(),
+            "Hover on Source const failed or missed definition link.");
+
+    // 8. Cross-file per-document cache isolation & .ss comment-brace outline immunity:
+    const auto plain_ss_path = project.root() / L"Config" / L"secondary.ss";
+    take(editor::write_file(plain_ss_path, "/* brace in comment: { } */\n"
+                                           ".card-header {\n"
+                                           "    /* inner closing brace: } */\n"
+                                           "    color: #dfe4ec;\n"
+                                           "}\n"
+                                           ".card-footer {\n"
+                                           "    color: #9aa4b2;\n"
+                                           "}\n"));
+    take(source_ed.open(ss_path));
+    source_ed.active()->document->locate(1, 1);
+    source_ed.active()->document->edit().select(
+        {static_cast<std::uint32_t>(source_ed.active()->document->text().size()), true}, true);
+    take(source_ed.active()->document->edit().replace(
+        "@tokens {\n    leaked-accent: #ff5500;\n}\nbutton {\n    color: token(leaked-accent);\n}\n"));
+    source_ed.sync_intelligence(nullptr, &project, nullptr, true);
+    take(source_ed.open(plain_ss_path));
+    source_ed.sync_intelligence(nullptr, &project, nullptr, true);
+    require(source_ed.intelligence().active_diagnostics().empty() && source_ed.intelligence().outline().size() == 2 &&
+                source_ed.intelligence().outline()[0].name == ".card-header" &&
+                source_ed.intelligence().outline()[1].name == ".card-footer",
+            "secondary.ss outline was corrupted by braces inside /* ... */ comments.");
+    const auto& sec_doc = *source_ed.active()->document;
+    const auto sec_token_pos = static_cast<std::uint32_t>(sec_doc.text().find("#9aa4b2"));
+    source_ed.active()->document->edit().select({sec_token_pos, false}, false);
+    source_ed.active()->document->edit().select({sec_token_pos + 7, true}, true);
+    take(source_ed.active()->document->edit().replace("token(leaked"));
+    const auto leaked_pos = source_ed.active()->document->edit().current().caret.offset;
+    const auto sec_comps = source_ed.intelligence().completions(*source_ed.active()->document, leaked_pos, true);
+    for (const auto& ci : sec_comps)
+        require(ci.label != "leaked-accent", "Stale @tokens leaked across .ss files on file switch.");
+
+    source_ed.clear();
+    std::filesystem::remove_all(temp_root, ec);
+    return {};
+}
 }
 
 Result<void> run_document(int argc, char** argv, StringView& stage) {
@@ -2218,6 +2493,26 @@ Result<void> run_document(int argc, char** argv, StringView& stage) {
     require(single.selection().entity == entity && *restored == *mesh &&
                 take(single.presentation().render_items()).front().geometry == assets::mesh_assets().front().mesh,
             "Creation redo changed identity or mesh resource.");
+    ATELIER_TRY(changed(single.set_enabled(*restored, false)));
+    collect(single);
+    require(!take(world::inspect_component(single.world().runtime(), *restored)).enabled &&
+                take(single.presentation().render_items()).empty() && single.undo_count() == 2,
+            "Session::set_enabled(component, false) did not disable component rendering and record undo history.");
+    ATELIER_TRY(changed(single.undo()));
+    collect(single);
+    require(take(world::inspect_component(single.world().runtime(), *restored)).enabled &&
+                !take(single.presentation().render_items()).empty() && single.selection().object == *restored,
+            "Undo of Session::set_enabled(component) did not restore enabled state, rendering, and selection.");
+    ATELIER_TRY(changed(single.set_enabled(entity, false)));
+    collect(single);
+    require(!take(world::inspect_entity(single.world().runtime(), entity)).effective_enabled &&
+                take(single.presentation().render_items()).empty() && single.undo_count() == 2,
+            "Session::set_enabled(entity, false) did not disable entity rendering and record undo history.");
+    ATELIER_TRY(changed(single.undo()));
+    collect(single);
+    require(take(world::inspect_entity(single.world().runtime(), entity)).effective_enabled &&
+                !take(single.presentation().render_items()).empty() && single.selection().object == entity,
+            "Undo of Session::set_enabled(entity) did not restore entity enabled state, rendering, and selection.");
     ATELIER_TRY(changed(single.close()));
     stage = "glTF transform";
     verify_gltf_import();
@@ -2229,6 +2524,8 @@ Result<void> run_document(int argc, char** argv, StringView& stage) {
     ATELIER_TRY(verify_procedural_editor());
     stage = "scene recovery";
     ATELIER_TRY(verify_scene_recovery());
+    stage = "code editor intelligence";
+    ATELIER_TRY(verify_code_editor_intelligence());
     stage = "window quit sources";
     {
         application::Window win;

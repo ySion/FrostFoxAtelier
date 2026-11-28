@@ -118,13 +118,24 @@ Result<void> Application::initialize(std::unique_ptr<editor::Session> document, 
         error.message = String::concat("Cannot publish editor typography: ", error.message);
         return std::unexpected(std::move(error));
     }
-    ATELIER_TRY_BIND(styles, editor_styles());
+    Array<std::byte> initial_style_source;
+    ATELIER_TRY_BIND(styles, editor_styles(&initial_style_source));
     style_sheet_ = std::move(*styles);
     if (auto styled = ui_.set_style_sheet(style_sheet_); !styled) {
         auto error = ui_error(styled.error());
         error.message = String::concat("Cannot publish editor style sheet: ", error.message);
         return std::unexpected(std::move(error));
     }
+    if (auto style_path = editor_style_path()) {
+        style_watch_.path = std::move(*style_path);
+        std::error_code ec;
+        style_watch_.time = std::filesystem::last_write_time(style_watch_.path, ec);
+        if (!ec)
+            style_watch_.size = std::filesystem::file_size(style_watch_.path, ec);
+        style_watch_.error = ec.value();
+        style_watch_.has_stamp = true;
+    }
+    style_watch_.accepted_source = std::move(initial_style_source);
     renderer::Options options;
     options.validation = validation ? rhi::Validation::gpu : rhi::Validation::disabled;
     options.vsync = vsync_;
@@ -458,10 +469,20 @@ Result<void> Application::action(const ui::Action& source) {
         const auto* request = std::get_if<ui::ContextMenuRequest>(&event.value);
         if (!request)
             return invalid();
+        if (workspace_.color_edit) {
+            const auto k = request->source;
+            const bool in_color_editor = k == color_editor || k == color_hex || k == color_intensity ||
+                                         (k >= color_rgb && k < color_rgb + 3) || (k >= color_hsv && k < color_hsv + 3);
+            if (in_color_editor)
+                return {};
+            ATELIER_TRY(finish_color_edit(true));
+        }
         // A row menu acts on the selection: right-clicking outside it selects that row first.
         if (const auto* row = workspace_.binding(request->source);
             row && row->kind == editor::Workspace::Binding::Kind::object && row->path.empty() &&
-            row->object != ObjectId{} && !document_->is_selected(row->object))
+            row->object != ObjectId{} &&
+            (document_->world().contains(row->object) ? !document_->is_selected(row->object)
+                                                      : document_->selection().object != row->object))
             ATELIER_TRY(workspace_.select_tree(*document_, *this, request->source));
         request_menu(*request);
         return {};
@@ -470,39 +491,76 @@ Result<void> Application::action(const ui::Action& source) {
         return finish_color_edit(true);
     if (event.key == editor::control::inline_rename && workspace_.row_rename) {
         if (event.kind == ui::ActionKind::edit_preview) {
-            if (const auto* text = std::get_if<std::wstring>(&event.value))
+            if (const auto* text = std::get_if<std::wstring>(&event.value)) {
                 workspace_.row_rename->text = *text;
+                workspace_.row_rename->invalid = false;
+            }
             return {};
         }
         if (event.kind != ui::ActionKind::edit_commit && event.kind != ui::ActionKind::edit_cancel)
             return {};
-        const auto rename = workspace_.row_rename.take();
-        if (!rename->asset.empty()) {
-            const auto* text = std::get_if<std::wstring>(&event.value);
-            if (event.kind == ui::ActionKind::edit_cancel || !text || *text == rename->asset.filename().wstring() ||
-                !project_)
+        if (event.kind == ui::ActionKind::edit_cancel) {
+            const auto rename = workspace_.row_rename.take();
+            effects(ui_.focus(!rename->asset.empty() ? editor::browser_control::results
+                                                     : workspace_.object_control(rename->object)));
+            workspace_.status = L"Rename cancelled";
+            return {};
+        }
+        const auto* text = std::get_if<std::wstring>(&event.value);
+        if (text)
+            workspace_.row_rename->text = *text;
+        const auto current = *workspace_.row_rename;
+        if (!current.asset.empty()) {
+            if (!text || *text == current.asset.filename().wstring() || !project_) {
+                workspace_.row_rename.reset();
+                effects(ui_.focus(editor::browser_control::results));
                 return {};
-            ATELIER_TRY_BIND(renamed, project_->rename(rename->asset, *text));
+            }
+            auto renamed = project_->rename(current.asset, *text);
+            if (!renamed) {
+                workspace_.row_rename->invalid = true;
+                pending_rename_focus_ = true;
+                return std::unexpected(renamed.error());
+            }
+            workspace_.row_rename.reset();
+            asset_relocated(current.asset, *renamed);
             workspace_.assets.reselect(*renamed);
+            effects(ui_.focus(editor::browser_control::results));
             workspace_.status = L"Renamed to " + renamed->filename().wstring();
             return {};
         }
-        effects(ui_.focus(workspace_.object_control(rename->object)));
-        const auto* text = std::get_if<std::wstring>(&event.value);
-        if (event.kind == ui::ActionKind::edit_cancel || !text || *text == document_->name(rename->object))
+        if (!text || *text == document_->name(current.object)) {
+            workspace_.row_rename.reset();
+            effects(ui_.focus(workspace_.object_control(current.object)));
             return {};
+        }
         auto name = platform::utf16_to_utf8(*text);
-        if (!name)
+        if (!name) {
+            workspace_.row_rename->invalid = true;
+            pending_rename_focus_ = true;
             return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-16 text."});
-        json::Builder args;
-        args.set_validated(args.root(), "name", *name);
-        return done(
-            run_operator({"scene.rename",
-                          args.finish(),
-                          {.selection = editor::SelectionContext{rename->object, rename->object, {rename->object}},
-                           .region = {}}},
-                         true, false),
-            L"Entity renamed / Undo restores its name");
+        }
+        Result<void> res;
+        if (name->empty()) {
+            res = document_->rename(current.object, *text);
+        } else {
+            json::Builder args;
+            args.set_validated(args.root(), "name", *name);
+            res =
+                run_operator({"scene.rename",
+                              args.finish(),
+                              {.selection = editor::SelectionContext{current.object, current.object, {current.object}},
+                               .region = {}}},
+                             true, false);
+        }
+        if (!res) {
+            workspace_.row_rename->invalid = true;
+            pending_rename_focus_ = true;
+            return std::unexpected(res.error());
+        }
+        workspace_.row_rename.reset();
+        effects(ui_.focus(workspace_.object_control(current.object)));
+        return done(std::move(res), L"Entity renamed / Undo restores its name");
     }
     if (event.kind == ui::ActionKind::dismiss) {
         close_menu();
@@ -526,17 +584,32 @@ Result<void> Application::action(const ui::Action& source) {
         request_menu({event.key, 0, 0, 0});
         return {};
     }
+    if (event.kind == ui::ActionKind::activate &&
+        event.key >= editor::source_control::first_document + editor::source_control::close_document_offset &&
+        event.key < editor::source_control::first_document + editor::source_control::close_document_offset * 2) {
+        const auto doc_key = event.key - editor::source_control::close_document_offset;
+        return close_source_tab(doc_key, true);
+    }
     if (event.kind == ui::ActionKind::activate && workspace_.source_editor.select(event.key)) {
         close_menu(false);
         workspace_.dock.select(editor::source_control::tab);
         pending_source_focus_ = true;
         return {};
     }
-    if (event.kind == ui::ActionKind::activate && event.key == editor::source_control::problem) {
-        ATELIER_TRY_BIND(located, workspace_.source_editor.locate_problem());
-        if (*located)
-            pending_source_focus_ = true;
-        return {};
+    {
+        bool focus_buffer = false;
+        ui::ControlKey focus_bar = 0;
+        ATELIER_TRY_BIND(code_handled, workspace_.source_editor.apply_action(event, focus_buffer, focus_bar));
+        if (*code_handled) {
+            close_menu(false);
+            if (focus_buffer) {
+                workspace_.dock.select(editor::source_control::tab);
+                pending_source_focus_ = true;
+            }
+            if (focus_bar)
+                pending_code_bar_focus_ = focus_bar;
+            return {};
+        }
     }
     if (event.kind == ui::ActionKind::activate && event.key == editor::network_control::new_scratch) {
         ATELIER_TRY(document_->create_scratch_graph());
@@ -869,22 +942,31 @@ Result<void> Application::action(const ui::Action& source) {
         const auto* expanded = std::get_if<bool>(&event.value);
         if (!expanded)
             return invalid();
-        using Tree = editor::Workspace::EntityTree;
         if (event.key == tree_world) {
             if (!workspace_.tree_query.empty())
                 return {};
             const std::array world_id{ObjectId{}};
-            return workspace_.set_tree_expanded(*document_, Tree::scene_tree, world_id, *expanded);
+            return workspace_.set_tree_expanded(*document_, world_id, *expanded);
         }
         const auto* row = workspace_.binding(event.key);
-        if (!row || !row->path.empty() ||
-            (row->kind != editor::Workspace::Binding::Kind::object &&
-             row->kind != editor::Workspace::Binding::Kind::structure))
+        if (!row || !row->path.empty() || row->kind != editor::Workspace::Binding::Kind::object)
             return invalid();
-        const auto tree = row->kind == editor::Workspace::Binding::Kind::object ? Tree::scene_tree : Tree::structure;
-        if (!(tree == Tree::scene_tree ? workspace_.tree_query : workspace_.structure_query).empty())
+        if (!workspace_.tree_query.empty())
             return {};
-        return workspace_.set_tree_expanded(*document_, tree, Span{&row->object, 1}, *expanded);
+        return workspace_.set_tree_expanded(*document_, Span{&row->object, 1}, *expanded);
+    }
+    if (event.kind == ui::ActionKind::activate && event.key == outliner_components_toggle) {
+        workspace_.outliner_show_components = !workspace_.outliner_show_components;
+        if (!workspace_.outliner_show_components) {
+            const auto sel = document_->selection();
+            if (sel.entity != ObjectId{} && sel.object != sel.entity) {
+                ATELIER_TRY(end_interaction());
+                ATELIER_TRY(completion(workspace_.select_object(*document_, *this, sel.entity)));
+            }
+        }
+        workspace_.status = workspace_.outliner_show_components ? L"Showing inline components in Scene Outliner"
+                                                                : L"Hiding inline components in Scene Outliner";
+        return {};
     }
     // The rail snap toggle is a second view of the shared snapping command.
     if (event.kind == ui::ActionKind::activate && event.key == viewport_rail_snap) {
@@ -896,17 +978,26 @@ Result<void> Application::action(const ui::Action& source) {
         workspace_.shelf_page = event.key;
         return {};
     }
-    if (event.key == parameter_search || event.key == tree_filter || event.key == structure_filter) {
+    if (event.kind == ui::ActionKind::activate &&
+        (event.key == tree_filter_clear || event.key == parameter_search_clear)) {
+        if (event.key == tree_filter_clear) {
+            workspace_.tree_query.clear();
+            workspace_.status = L"Outliner filter cleared";
+        } else {
+            workspace_.query.clear();
+            workspace_.status = L"Parameter filter cleared";
+        }
+        return {};
+    }
+    if (event.key == parameter_search || event.key == tree_filter) {
         const auto* value = std::get_if<std::wstring>(&event.value);
         if (!value)
             return invalid();
         if (event.kind == ui::ActionKind::edit_preview || event.kind == ui::ActionKind::edit_commit ||
             event.kind == ui::ActionKind::edit_cancel) {
-            (event.key == tree_filter        ? workspace_.tree_query
-             : event.key == structure_filter ? workspace_.structure_query
-                                             : workspace_.query) = *value;
+            (event.key == tree_filter ? workspace_.tree_query : workspace_.query) = *value;
             workspace_.status = event.kind == ui::ActionKind::edit_cancel ? L"Filter cancelled"
-                                : event.key == tree_filter                ? L"Tree filtered"
+                                : event.key == tree_filter                ? L"Outliner filtered"
                                                                           : L"Parameters filtered";
         }
         return {};
@@ -1153,11 +1244,35 @@ Result<void> Application::action(const ui::Action& source) {
                 result = document_->commit_material_edit(event.key);
             return done(result, L"Material parameter updated");
         }
+        if (event.kind == ui::ActionKind::activate && binding->kind == editor::Workspace::Binding::Kind::object &&
+            binding->path.empty() && binding->object != ObjectId{}) {
+            auto& rt = document_->world().runtime();
+            ObjectId owner_entity = binding->object;
+            bool current_enabled = true;
+            if (document_->world().contains(binding->object)) {
+                ATELIER_TRY_BIND(st, world::inspect_entity(rt, binding->object));
+                current_enabled = st->enabled;
+            } else {
+                ATELIER_TRY_BIND(st, world::inspect_component(rt, binding->object));
+                owner_entity = st->owner;
+                current_enabled = st->enabled;
+            }
+            json::Builder args;
+            static_cast<void>(args.set(args.root(), "enabled", !current_enabled));
+            auto toggled =
+                run_operator({"scene.set_enabled",
+                              args.finish(),
+                              {.selection = editor::SelectionContext{owner_entity, binding->object, {owner_entity}},
+                               .region = editor::RegionKind::scene_tree}},
+                             true, false);
+            return done(std::move(toggled),
+                        !current_enabled ? L"Enabled in World / Undo disables" : L"Disabled in World / Undo enables");
+        }
         if (const auto* modifiers = std::get_if<ui::SelectionModifiers>(&event.value);
             event.kind == ui::ActionKind::select && modifiers && modifiers->double_click && !modifiers->shift &&
             !modifiers->control && binding->kind == editor::Workspace::Binding::Kind::object && binding->path.empty() &&
-            document_->is_selected(binding->object)) {
-            // Double-clicking a selected row renames it in place (Blender Outliner / Houdini Tree View).
+            document_->world().contains(binding->object) && document_->is_selected(binding->object)) {
+            // Double-clicking a selected Entity row renames it in place (Blender Outliner / Houdini Tree View).
             workspace_.dock.select(editor::control::entities_tab);
             return run_operator(
                 {"scene.rename",
@@ -1165,9 +1280,7 @@ Result<void> Application::action(const ui::Action& source) {
                  {.selection = editor::SelectionContext{binding->object, binding->object, {binding->object}},
                   .region = editor::RegionKind::scene_tree}});
         }
-        if (event.kind == ui::ActionKind::select &&
-            (binding->kind == editor::Workspace::Binding::Kind::object ||
-             binding->kind == editor::Workspace::Binding::Kind::structure) &&
+        if (event.kind == ui::ActionKind::select && binding->kind == editor::Workspace::Binding::Kind::object &&
             binding->path.empty()) {
             if (!workspace_.active_graph.empty())
                 exit_graph_context();
@@ -1393,8 +1506,13 @@ Result<void> Application::open_color_edit(ObjectId object, Span<const FieldId> p
                 break;
             }
     const auto dpi = window_.dpi_scale();
-    edit.x = box ? (box->bounds.x + box->bounds.width) / dpi - 420 : 0;
+    edit.x = box ? (box->bounds.x + box->bounds.width) / dpi - 416 : 0;
     edit.y = box ? (box->bounds.y + box->bounds.height) / dpi + 2 : 0;
+    const auto init_hsv = editor::rgb_to_hsv(edit.value);
+    edit.hue = init_hsv[0];
+    edit.saturation = init_hsv[1];
+    edit.hdr_scale = edit.initial_hdr_scale =
+        std::max(1.0, std::max(edit.value[0], std::max(edit.value[1], edit.value[2])));
     edit.hex = editor::color_hex(edit.value);
     workspace_.color_edit = std::move(edit);
     workspace_.status = L"Colour editor · Done or click outside to keep · Revert restores";
@@ -1470,7 +1588,59 @@ Result<bool> Application::color_edit_action(const ui::Action& event) {
         return true;
     }
     if (event.key == color_revert && event.kind == ui::ActionKind::activate) {
+        const auto orig_hsv = editor::rgb_to_hsv(edit.original);
+        edit.hue = orig_hsv[0];
+        edit.saturation = orig_hsv[1];
+        edit.hdr_scale = edit.initial_hdr_scale =
+            std::max(1.0, std::max(edit.original[0], std::max(edit.original[1], edit.original[2])));
         ATELIER_TRY(apply_color(edit.original));
+        return true;
+    }
+    if (event.key == color_sv_plane) {
+        if (event.kind != ui::ActionKind::edit_preview && event.kind != ui::ActionKind::edit_commit &&
+            event.kind != ui::ActionKind::edit_cancel)
+            return true;
+        const auto* sv = std::get_if<ui::DragPoint>(&event.value);
+        if (!sv || !std::isfinite(sv->x) || !std::isfinite(sv->y))
+            return true;
+        const double s = std::clamp(static_cast<double>(sv->x), 0.0, 1.0);
+        const double v = std::clamp(static_cast<double>(sv->y), 0.0, 1.0) * std::max(1.0, edit.hdr_scale);
+        edit.saturation = s;
+        ATELIER_TRY(apply_color(editor::hsv_to_rgb({edit.hue, s, std::min(v, edit.maximum)})));
+        return true;
+    }
+    if (event.key == color_hue_bar) {
+        if (event.kind != ui::ActionKind::edit_preview && event.kind != ui::ActionKind::edit_commit &&
+            event.kind != ui::ActionKind::edit_cancel)
+            return true;
+        const auto* h_val = std::get_if<double>(&event.value);
+        if (!h_val || !std::isfinite(*h_val))
+            return true;
+        const auto cur_hsv = editor::rgb_to_hsv(edit.value);
+        edit.hue = std::clamp(*h_val, 0.0, 360.0);
+        ATELIER_TRY(apply_color(editor::hsv_to_rgb({edit.hue, edit.saturation, cur_hsv[2]})));
+        return true;
+    }
+    if (event.key == color_intensity || event.key == color_intensity_slider) {
+        if (event.kind == ui::ActionKind::edit_begin) {
+            edit.initial_hdr_scale = edit.hdr_scale;
+            return true;
+        }
+        if (event.kind != ui::ActionKind::edit_preview && event.kind != ui::ActionKind::edit_commit &&
+            event.kind != ui::ActionKind::edit_cancel)
+            return true;
+        const auto* v_val = std::get_if<double>(&event.value);
+        if (!v_val || !std::isfinite(*v_val))
+            return true;
+        const double next_v = std::clamp(*v_val, 0.0, edit.maximum);
+        if (event.kind == ui::ActionKind::edit_cancel) {
+            edit.hdr_scale = edit.initial_hdr_scale;
+        } else if (event.kind == ui::ActionKind::edit_commit) {
+            edit.hdr_scale = edit.initial_hdr_scale = std::max(1.0, next_v);
+        } else if (event.key == color_intensity && next_v > edit.hdr_scale) {
+            edit.hdr_scale = std::max(1.0, next_v);
+        }
+        ATELIER_TRY(apply_color(editor::hsv_to_rgb({edit.hue, edit.saturation, next_v})));
         return true;
     }
     if (event.key == color_hex) {
@@ -1482,6 +1652,13 @@ Result<bool> Application::color_edit_action(const ui::Action& event) {
             workspace_.status = L"Hex colour needs six digits, e.g. FF8800";
             return true;
         }
+        const auto next_hsv = editor::rgb_to_hsv(*parsed);
+        if (next_hsv[1] > 1e-5)
+            edit.hue = next_hsv[0];
+        if (next_hsv[2] > 1e-6)
+            edit.saturation = next_hsv[1];
+        edit.hdr_scale = edit.initial_hdr_scale =
+            std::max(1.0, std::max((*parsed)[0], std::max((*parsed)[1], (*parsed)[2])));
         ATELIER_TRY(apply_color(*parsed));
         return true;
     }
@@ -1496,11 +1673,33 @@ Result<bool> Application::color_edit_action(const ui::Action& event) {
     if (!value || !std::isfinite(*value))
         return true;
     auto next = edit.value;
-    if (rgb)
+    if (rgb) {
         next[event.key - color_rgb] = *value;
-    else {
+        const auto next_hsv = editor::rgb_to_hsv(next);
+        if (next_hsv[1] > 1e-5)
+            edit.hue = next_hsv[0];
+        if (next_hsv[2] > 1e-6)
+            edit.saturation = next_hsv[1];
+        if (event.kind == ui::ActionKind::edit_commit)
+            edit.hdr_scale = edit.initial_hdr_scale = std::max(1.0, std::max(next[0], std::max(next[1], next[2])));
+        else
+            edit.hdr_scale = std::max(1.0, std::max(next[0], std::max(next[1], next[2])));
+    } else {
         auto h = editor::rgb_to_hsv(edit.value);
+        h[0] = edit.hue;
+        h[1] = edit.saturation;
         h[event.key - color_hsv] = *value;
+        if (event.key == color_hsv)
+            edit.hue = std::clamp(*value, 0.0, 360.0);
+        if (event.key == color_hsv + 1)
+            edit.saturation = std::clamp(*value, 0.0, 1.0);
+        if (event.key == color_hsv + 2) {
+            h[2] = std::clamp(*value, 0.0, edit.maximum);
+            if (event.kind == ui::ActionKind::edit_commit)
+                edit.hdr_scale = edit.initial_hdr_scale = std::max(1.0, h[2]);
+            else if (h[2] > edit.hdr_scale)
+                edit.hdr_scale = std::max(1.0, h[2]);
+        }
         next = editor::hsv_to_rgb(h);
     }
     ATELIER_TRY(apply_color(next));
@@ -1573,6 +1772,7 @@ Result<void> Application::rename_asset(StringView key, StringView name) {
         return {};
     }
     ATELIER_TRY_BIND(renamed, project_->rename(entry->path, platform::utf8_to_utf16_validated(name)));
+    asset_relocated(entry->path, *renamed);
     workspace_.assets.reselect(*renamed);
     workspace_.status = L"Renamed to " + renamed->filename().wstring();
     return {};
@@ -1945,6 +2145,7 @@ void Application::cancel_interaction(const ui::Reply& reply, StringView input_ev
 
 void Application::invalidate_surface() {
     ++surface_revision_;
+    prepared_menu_frame_.reset();
     cancel_interaction(ui_.cancel_interaction());
 }
 
@@ -2046,6 +2247,7 @@ void Application::close_menu(bool restore_focus, std::source_location caller, St
     menu_context_target_ = menu_context_group_ = 0;
     menu_table_layout_ = {};
     menu_projection_.reset();
+    prepared_menu_frame_.reset();
     menu_dirty_ = false;
 }
 
@@ -2056,10 +2258,12 @@ Result<void> Application::update_menu() {
     }
     const auto request = *workspace_.menu;
     const auto* source = ui_.presented()->find(request.source);
+    const auto& selection_frame = prepared_menu_frame_ ? *prepared_menu_frame_ : *ui_.presented();
     if (!source || source->incarnation != menu_incarnation_ || !source->enabled ||
         source->context_target != menu_context_target_ || source->context_group != menu_context_group_ ||
-        source->table_layout != menu_table_layout_ || !live_table_context(*ui_.presented(), request, true) ||
-        source->bounds.y >= source->clip.bottom || source->bounds.y + source->bounds.height <= source->clip.top) {
+        source->table_layout != menu_table_layout_ || !live_table_context(*ui_.presented(), request, false) ||
+        !live_table_context(selection_frame, request, true) || source->bounds.y >= source->clip.bottom ||
+        source->bounds.y + source->bounds.height <= source->clip.top) {
         close_menu();
         return {};
     }
@@ -2452,6 +2656,7 @@ Result<void> Application::input(const ui::Event& event, WPARAM native_key) {
     if (event.kind == ui::EventKind::key_up && (native_key == 'Y' || event.key == ui::Key::y))
         workspace_.network.set_cut_key(false);
     if (event.kind == ui::EventKind::pointer_leave) {
+        workspace_.source_editor.update_pointer(nullptr, 0.f, 0.f, false);
         effects(ui_.input(event));
         return {};
     }
@@ -2563,6 +2768,77 @@ Result<void> Application::input(const ui::Event& event, WPARAM native_key) {
             ui_.dismiss_tooltip();
         return {};
     }
+    if (workspace_.dock.visible(editor::source_control::tab)) {
+        if (event.kind == ui::EventKind::pointer_move) {
+            workspace_.source_editor.update_pointer(ui_.presented().get(), pointer_position_.x, pointer_position_.y,
+                                                    event.control);
+        } else if (event.kind == ui::EventKind::pointer_leave) {
+            workspace_.source_editor.dismiss_hover();
+        } else if (event.kind == ui::EventKind::text || event.kind == ui::EventKind::composition) {
+            workspace_.source_editor.dismiss_hover();
+        } else if (event.kind == ui::EventKind::key_down || event.kind == ui::EventKind::key_up) {
+            workspace_.source_editor.set_ctrl_hover(ui_.presented().get(), event.control);
+        }
+    }
+    if (event.kind == ui::EventKind::key_down) {
+        const auto focused_key = ui_.focused_control();
+        const bool in_code_buffer = focused_key == editor::source_control::buffer;
+        const bool in_code_bar = focused_key == editor::source_control::find_input ||
+                                 focused_key == editor::source_control::replace_input ||
+                                 focused_key == editor::source_control::goto_input;
+        if (in_code_buffer && workspace_.source_editor.completion_open()) {
+            if (!event.control && !event.alt && event.key == ui::Key::down) {
+                workspace_.source_editor.step_completion(1);
+                return {};
+            }
+            if (!event.control && !event.alt && event.key == ui::Key::up) {
+                workspace_.source_editor.step_completion(-1);
+                return {};
+            }
+            if (!event.control && !event.alt && !event.shift &&
+                (event.key == ui::Key::enter || event.key == ui::Key::tab)) {
+                if (workspace_.source_editor.accept_selected_completion())
+                    return {};
+            }
+            if (!event.control && !event.alt && !event.shift && event.key == ui::Key::escape) {
+                workspace_.source_editor.dismiss_completion();
+                return {};
+            }
+        }
+        if (in_code_buffer || in_code_bar) {
+            if (in_code_buffer && event.control && !event.alt && !event.shift && event.key == ui::Key::space) {
+                workspace_.source_editor.trigger_completion(true);
+                return {};
+            }
+            if (in_code_buffer && !event.control && !event.alt && !event.shift && event.key == ui::Key::f12) {
+                ATELIER_TRY_BIND(jumped, workspace_.source_editor.go_to_definition());
+                if (*jumped)
+                    pending_source_focus_ = true;
+                return {};
+            }
+            if (event.control && !event.alt && !event.shift && event.key == ui::Key::f) {
+                pending_code_bar_focus_ = workspace_.source_editor.open_search(editor::CodeSearchMode::find);
+                return {};
+            }
+            if (event.control && !event.alt && !event.shift && event.key == ui::Key::h) {
+                pending_code_bar_focus_ = workspace_.source_editor.open_search(editor::CodeSearchMode::replace);
+                return {};
+            }
+            if (event.control && !event.alt && !event.shift && event.key == ui::Key::g) {
+                pending_code_bar_focus_ = workspace_.source_editor.open_search(editor::CodeSearchMode::goto_line);
+                return {};
+            }
+            if (!event.control && !event.alt && event.key == ui::Key::f3) {
+                workspace_.source_editor.find_step(!event.shift);
+                return {};
+            }
+            if (in_code_buffer && !event.control && !event.alt && !event.shift && event.key == ui::Key::escape &&
+                workspace_.source_editor.search_open()) {
+                workspace_.source_editor.close_search();
+                return {};
+            }
+        }
+    }
     const auto previous_focus = ui_.focused_control();
     auto reply = ui_.input(event);
     if (ui_.presented() && ui_.focused_control() != previous_focus && ui_.focused_control() != 0)
@@ -2570,6 +2846,10 @@ Result<void> Application::input(const ui::Event& event, WPARAM native_key) {
     if (!effects(reply))
         return {};
     if (!reply.consumed && event.kind == ui::EventKind::key_down) {
+        if (workspace_.color_edit && event.control && !event.shift && !event.alt && event.key == ui::Key::z) {
+            status(finish_color_edit(false), L"Colour edit cancelled");
+            return {};
+        }
         if (key_input(event, static_cast<std::uint32_t>(native_key), region, editor::KeyPhase::after_controls) ||
             key_input(event, static_cast<std::uint32_t>(native_key), editor::RegionKind::none,
                       editor::KeyPhase::after_controls))
@@ -2616,6 +2896,76 @@ Result<bool> Application::step(renderer::Capture* capture, StepTimes* times) {
     return running;
 }
 
+void Application::poll_style() {
+    if (style_watch_.path.empty())
+        return;
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= style_watch_.next_poll) {
+        style_watch_.next_poll = now + std::chrono::milliseconds(100);
+        std::error_code ec;
+        const auto time = std::filesystem::last_write_time(style_watch_.path, ec);
+        std::uintmax_t size{};
+        if (!ec)
+            size = std::filesystem::file_size(style_watch_.path, ec);
+        const int err = ec.value();
+        if (!style_watch_.has_stamp || time != style_watch_.time || size != style_watch_.size ||
+            err != style_watch_.error) {
+            style_watch_.time = time;
+            style_watch_.size = size;
+            style_watch_.error = err;
+            style_watch_.has_stamp = true;
+            style_watch_.changed = true;
+            style_watch_.changed_at = now;
+        }
+    }
+    if (!style_watch_.changed || now - style_watch_.changed_at < std::chrono::milliseconds(200))
+        return;
+    style_watch_.changed = false;
+    auto source = assets::read_file(style_watch_.path, 1024 * 1024);
+    if (!source) {
+        style_watch_.changed = true;
+        style_watch_.changed_at = now;
+        const auto message = diagnostic_text(source.error().message);
+        workspace_.status = L"Style reload failed: " + message;
+        if (!style_watch_.read_failed) {
+            style_watch_.read_failed = true;
+            notice("editor.style_reload_failed", workspace_.status, logging::Severity::warning);
+        }
+        return;
+    }
+    const bool had_failure = style_watch_.failed_source.has_value() || style_watch_.read_failed;
+    style_watch_.read_failed = false;
+    if (*source == style_watch_.accepted_source) {
+        style_watch_.failed_source.reset();
+        if (had_failure)
+            workspace_.status = L"Reloaded editor.ss";
+        return;
+    }
+    if (style_watch_.failed_source && *source == *style_watch_.failed_source)
+        return;
+    auto parsed = ui::StyleSheet::parse(as_chars(*source));
+    if (!parsed) {
+        style_watch_.failed_source = std::move(*source);
+        const auto message = String::concat("editor.ss:", parsed.error().line, ":", parsed.error().column, ": ",
+                                            parsed.error().message);
+        workspace_.status = diagnostic_text(message);
+        notice("editor.style_reload_failed", workspace_.status, logging::Severity::warning);
+        return;
+    }
+    if (auto applied = ui_.set_style_sheet(*parsed); !applied) {
+        style_watch_.failed_source = std::move(*source);
+        workspace_.status = L"Style reload rejected: " + diagnostic_text(ui_error(applied.error()).message);
+        notice("editor.style_reload_failed", workspace_.status, logging::Severity::warning);
+        return;
+    }
+    style_sheet_ = std::move(*parsed);
+    style_watch_.accepted_source = std::move(*source);
+    style_watch_.failed_source.reset();
+    menu_dirty_ = true;
+    ui_.dismiss_tooltip();
+    workspace_.status = L"Reloaded editor.ss";
+}
+
 Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times) {
     using Clock = std::chrono::steady_clock;
     frame_statistics_ = {};
@@ -2653,6 +3003,7 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
     }
     {
         timing::Scope project{phases::project};
+        poll_style();
         poll_project();
         diagnostics();
         if (workspace_.poll_output())
@@ -2827,6 +3178,7 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
             }
         }
     }
+    prepared_menu_frame_ = *prepared;
     if (workspace_.menu) {
         menu_projection_ = current_menu_projection();
         menu_dirty_ = false;
@@ -3040,6 +3392,7 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
             times->accept_begin = Clock::now();
         if (!ui_.accept(*prepared))
             return std::unexpected(Error{ErrorCode::invalid_storage, "UI rejected an accepted renderer frame."});
+        prepared_menu_frame_.reset();
         if (times)
             times->accepted = Clock::now();
         if (scene)
@@ -3067,6 +3420,12 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
             if (workspace_.source_editor.active())
                 effects(ui_.focus(editor::source_control::buffer));
         }
+        if (pending_code_bar_focus_ && (!workspace_.source_editor.search_open() ||
+                                        (ui_.presented() && ui_.presented()->find(pending_code_bar_focus_)))) {
+            const auto target_key = std::exchange(pending_code_bar_focus_, 0);
+            if (workspace_.source_editor.search_open() && target_key)
+                effects(ui_.focus(target_key));
+        }
         if (pending_network_search_focus_ &&
             (!workspace_.network.tab_search().open ||
              (ui_.presented() && ui_.presented()->find(editor::network_control::tab_search_input)))) {
@@ -3078,8 +3437,22 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
         if (pending_rename_focus_ &&
             (!workspace_.row_rename || (ui_.presented() && ui_.presented()->find(editor::control::inline_rename)))) {
             pending_rename_focus_ = false;
-            if (workspace_.row_rename)
-                effects(ui_.focus(editor::control::inline_rename));
+            if (workspace_.row_rename) {
+                std::size_t stem_w = workspace_.row_rename->text.size();
+                if (!workspace_.row_rename->invalid && !workspace_.row_rename->asset.empty()) {
+                    const auto* sel = workspace_.assets.selected() ? &*workspace_.assets.selected() : nullptr;
+                    const bool is_folder = sel && sel->kind == assets::AssetKind::folder;
+                    if (!is_folder) {
+                        const auto dot = workspace_.row_rename->text.find_last_of(L'.');
+                        if (dot != std::wstring::npos && dot > 0)
+                            stem_w = dot;
+                    }
+                }
+                const auto stem_u8 =
+                    platform::utf16_to_utf8(std::wstring_view(workspace_.row_rename->text).substr(0, stem_w));
+                const auto stem_len = static_cast<std::uint32_t>(stem_u8 ? stem_u8->size() : stem_w);
+                effects(ui_.focus(editor::control::inline_rename, stem_len));
+            }
         }
         if (pending_name_focus_) {
             pending_name_focus_ = false;

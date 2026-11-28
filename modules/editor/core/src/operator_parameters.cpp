@@ -6,7 +6,7 @@ using namespace atelier::literals;
 
 Result<void> register_editor_types(Runtime& runtime) {
     Array<TypeDefinition> definitions;
-    definitions.reserve(84);
+    definitions.reserve(85);
     definitions.add(reflection::Definition<TransformTool>::build(runtime));
     definitions.add(reflection::Definition<PivotMode>::build(runtime));
     definitions.add(reflection::Definition<SelectMode>::build(runtime));
@@ -19,6 +19,7 @@ Result<void> register_editor_types(Runtime& runtime) {
     definitions.add(reflection::Definition<SceneAddComponent>::build(runtime));
     definitions.add(reflection::Definition<SceneTransform>::build(runtime));
     definitions.add(reflection::Definition<SceneRename>::build(runtime));
+    definitions.add(reflection::Definition<SceneSetEnabled>::build(runtime));
     definitions.add(reflection::Definition<SceneSelectAll>::build(runtime));
     definitions.add(reflection::Definition<SceneTransformClear>::build(runtime));
     definitions.add(reflection::Definition<SceneSnap>::build(runtime));

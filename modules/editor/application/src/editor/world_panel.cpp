@@ -1,4 +1,5 @@
 #include "editor/world_panel.hpp"
+#include "editor/workspace.hpp"
 #include "platform/utf.hpp"
 #include <algorithm>
 #include <format>
@@ -192,8 +193,9 @@ void WorldPanel::append(ui_language::ControlOutput controls, ui::ControlKey pare
     static const renderer::ViewSettings defaults;
     help_.begin();
     auto groups = std::make_shared<Array<Item>>();
-    const auto group = [&](ui::ControlKey id, std::wstring name, std::shared_ptr<Array<Item>> rows) {
-        groups->add({id, {std::move(name), 0., ItemList{std::move(rows)}}});
+    const auto group = [&](ui::ControlKey id, std::wstring name, ui::ControlIcon icon,
+                           std::shared_ptr<Array<Item>> rows) {
+        groups->add({id, {std::move(name), static_cast<double>(icon), ItemList{std::move(rows)}}});
     };
     const auto row = [&](Array<Item>& rows, Span<const ViewOption> options, std::wstring label = std::wstring{}) {
         const auto* option = view_option(options.front());
@@ -265,7 +267,7 @@ void WorldPanel::append(ui_language::ControlOutput controls, ui::ControlKey pare
             rolling && kind < 2 ? (kind == 0 ? L"Min offset (m)" : L"Max offset (m)") : std::wstring{});
     }
     scalar(*volume, probe_volume_option(slot_, ProbeVolumeField::blend_cells));
-    group(key::root + 100, L"Volume " + std::to_wstring(slot_), std::move(volume));
+    group(key::root + 100, L"Volume " + std::to_wstring(slot_), ui::ControlIcon::bounds_cage, std::move(volume));
     auto volume_groups = groups;
     groups = std::make_shared<Array<Item>>();
     auto global = std::make_shared<Array<Item>>();
@@ -275,7 +277,7 @@ void WorldPanel::append(ui_language::ControlOutput controls, ui::ControlKey pare
     scalar(*global, ViewOption::probe_bounce);
     scalar(*global, ViewOption::indirect_gain);
     group(key::root + 101, platform::utf8_to_utf16_validated(view_option(ViewOption::ddgi)->category),
-          std::move(global));
+          ui::ControlIcon::shade_lit, std::move(global));
     auto propagation = groups;
     groups = std::make_shared<Array<Item>>();
     auto debug = std::make_shared<Array<Item>>();
@@ -290,7 +292,7 @@ void WorldPanel::append(ui_language::ControlOutput controls, ui::ControlKey pare
     scalar(*debug, ViewOption::probe_xray);
     scalar(*debug, ViewOption::probe_radius);
     group(key::root + 102, platform::utf8_to_utf16_validated(view_option(ViewOption::probe_debug)->category),
-          std::move(debug));
+          ui::ControlIcon::overlays, std::move(debug));
     auto diagnostics = groups;
     groups = std::make_shared<Array<Item>>();
     auto lighting = std::make_shared<Array<Item>>();
@@ -298,14 +300,14 @@ void WorldPanel::append(ui_language::ControlOutput controls, ui::ControlKey pare
     scalar(*lighting, ViewOption::shadows);
     scalar(*lighting, ViewOption::direct_candidates);
     group(key::root + 103, platform::utf8_to_utf16_validated(view_option(ViewOption::shadows)->category),
-          std::move(lighting));
+          ui::ControlIcon::sun_light, std::move(lighting));
     auto sky = std::make_shared<Array<Item>>();
     scalar(*sky, ViewOption::sky_enabled);
     scalar(*sky, ViewOption::sky_intensity);
     const std::array sky_options{ViewOption::sky_color_x, ViewOption::sky_color_y, ViewOption::sky_color_z};
     row(*sky, sky_options);
     group(key::root + 105, platform::utf8_to_utf16_validated(view_option(ViewOption::sky_enabled)->category),
-          std::move(sky));
+          ui::ControlIcon::sky_light, std::move(sky));
     auto lighting_groups = groups;
     groups = std::make_shared<Array<Item>>();
     auto effects = std::make_shared<Array<Item>>();
@@ -317,17 +319,22 @@ void WorldPanel::append(ui_language::ControlOutput controls, ui::ControlKey pare
     scalar(*effects, ViewOption::reflection_roughness);
     scalar(*effects, ViewOption::bloom);
     group(key::root + 104, platform::utf8_to_utf16_validated(view_option(ViewOption::antialiasing)->category),
-          std::move(effects));
+          ui::ControlIcon::sliders, std::move(effects));
     auto actual = std::make_shared<Array<Item>>();
     constexpr std::array labels{L"Placement",   L"World min (m)",  L"World max (m)",
                                 L"Spacing (m)", L"Resident (CPU)", L"This frame (CPU)"};
-    for (std::size_t i = 0; i < labels.size(); ++i)
-        actual->add({key::root + 128 + i,
-                     {std::wstring(labels[i]), readouts_[slot_][i].empty() ? std::wstring(L"—") : readouts_[slot_][i]}});
+    for (std::size_t i = 0; i < labels.size(); ++i) {
+        TextEditBinding readout_val{key::readout_first + i,
+                                    readouts_[slot_][i].empty() ? std::wstring(L"—") : readouts_[slot_][i]};
+        readout_val.read_only = true;
+        actual->add({key::root + 128 + i, {std::wstring(labels[i]), std::move(readout_val)}});
+    }
     std::uint32_t total{};
     for (const auto& item : view.lit.probe_volumes)
         if (item.enabled)
             total += item.counts[0] * item.counts[1] * item.counts[2];
+    TextEditBinding camera_val{key::main_camera_text, Workspace::single_line_field_text(main_camera)};
+    camera_val.read_only = true;
     const std::array<InputValue, 14> inputs{L"Volume " + std::to_wstring(slot_),
                                             ItemList{std::move(volume_groups)},
                                             ItemList{std::move(propagation)},
@@ -340,7 +347,7 @@ void WorldPanel::append(ui_language::ControlOutput controls, ui::ControlKey pare
                                             TableBinding{performance_.table(), performance_.selection()},
                                             performance_.status(),
                                             performance_.resources(),
-                                            std::wstring(main_camera),
+                                            std::move(camera_val),
                                             clear_camera};
     const std::array keys{KeyBinding{"slot", key::slot},
                           KeyBinding{"setup", key::setup},

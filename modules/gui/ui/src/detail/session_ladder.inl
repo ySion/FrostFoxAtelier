@@ -21,7 +21,9 @@
                 text_at(ladder.labels[row],y+geometry.row_height*(selected?.25f:.5f),ladder.text_height);
                 if (selected) {
                     // Slot zero is reserved for transient text. Stable frames reuse its paragraph and bitmap.
-                    self.text.set(0,L"*"+format(ladder.multiply?ladder.multiplier:(ladder.fine?.1:1)),appearance.font,false,TextAlign::center);
+                    String mult = String::literal<"*">();
+                    (void)mult.append(format(ladder.multiply ? ladder.multiplier : (ladder.fine ? .1 : 1)));
+                    self.text.set(0, mult.view(), appearance.font, false, TextAlign::center);
                     ATELIER_TRY_BIND(metrics,self.text.metrics(0,bounds.width/scale));
                     ATELIER_TRY_BIND(raster,self.text.raster(0,bounds.width/scale,scale));
                     text_at(*raster,y+geometry.row_height*.75f,metrics->height);

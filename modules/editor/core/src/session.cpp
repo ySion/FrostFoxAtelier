@@ -382,6 +382,30 @@ Result<void> Session::rename(ObjectId entity, std::wstring name) {
     return {};
 }
 
+Result<world::Commit> Session::set_enabled(ObjectId object, bool enabled) {
+    if (world_.running() || world_.closed())
+        return invalid("Enabled state authoring requires an open, stopped document.");
+    ObjectId owner_entity = object;
+    bool before = true;
+    if (world_.contains(object)) {
+        ATELIER_TRY(admit_entity_edit(object));
+        ATELIER_TRY_BIND(state, world::inspect_entity(runtime_, object));
+        before = state->enabled;
+    } else {
+        ATELIER_TRY_BIND(state, admit_component_edit(object));
+        owner_entity = state->owner;
+        before = state->enabled;
+    }
+    if (before == enabled)
+        return world::Commit{};
+    ATELIER_TRY_BIND(root, runtime_.hold(object));
+    ATELIER_TRY_BIND(cancelled, cancel_edit());
+    ATELIER_TRY_BIND(committed, world_.set_enabled(object, enabled));
+    if (committed->changed)
+        remember(EnabledChange{std::move(*root), owner_entity, before, enabled});
+    return committed;
+}
+
 void Session::set_selection(Selection next) {
     if (selection_ != next || selected_entities_.size() != (next.entity == ObjectId{} ? 0u : 1u))
         ++revision_;
@@ -1420,6 +1444,17 @@ Result<world::Commit> Session::replay(Change& change, bool forward, Project* pro
                 names_.at(item.root.id()) = forward ? item.after : item.before;
                 set_selection({item.root.id(), item.root.id()});
                 return world::Commit{true, {}};
+            } else if constexpr (std::is_same_v<T, EnabledChange>) {
+                if (item.entity == item.root.id())
+                    ATELIER_TRY(admit_entity_edit(item.root.id()));
+                else {
+                    ATELIER_TRY_BIND(state, admit_component_edit(item.root.id()));
+                    if (state->owner != item.entity)
+                        return invalid("The component's owning Entity changed.");
+                }
+                ATELIER_TRY_BIND(committed, world_.set_enabled(item.root.id(), forward ? item.after : item.before));
+                set_selection({item.entity, item.root.id()});
+                return *committed;
             } else if constexpr (std::is_same_v<T, TransformPresenceChange>) {
                 ATELIER_TRY(admit_entity_edit(item.root.id()));
                 const auto& value = forward ? item.after : item.before;

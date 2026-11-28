@@ -42,8 +42,8 @@ void append_parameter_row(Array<Control>& controls, const ParameterRow& row, flo
     };
     const bool modified = row.group_modified.value_or(false);
     const ControlKey ctx = row.context_target ? row.context_target : row.group_key;
-    auto layout = NodeInput::row(8);
-    layout.cross_gap = 3;
+    auto layout = NodeInput::row(6);
+    layout.cross_gap = 2;
     layout.flow = FlexSpec{};
     layout.flow->wrap = Wrap::wrap;
     layout.flow->align_items = Alignment::fit(.5f);
@@ -52,16 +52,18 @@ void append_parameter_row(Array<Control>& controls, const ParameterRow& row, flo
     root.context_target = ctx;
     root.context_group = row.group_key;
     root.classes = {"parameter-row"_s};
-    auto caption = single_line_layout(160);
+    auto caption = single_line_layout();
+    caption.width = Axis::flex(Basis::fixed(116.f), .34f, 1.f, 76.f, 162.f);
     auto& label =
         append(row.group_key ? row.group_key : row.label_key, row.key, ControlKind::label, caption, row.label);
+    label.single_line = true;
     label.classes = {"parameter-label"_s};
     label.modified = modified;
     label.context_target = ctx;
     label.context_group = row.group_key;
     auto body = NodeInput::row(2);
     body.height = Axis::content(single_line_height);
-    body.width = Axis::flex(Basis::fixed(std::max(144.f, body_minimum)), 1, 1, body_minimum);
+    body.width = Axis::flex(Basis::fixed(std::max(128.f, body_minimum)), .66f, 1.f, body_minimum);
     auto& body_ctrl = append(row.body_key, row.key, ControlKind::container, body);
     body_ctrl.context_target = ctx;
     body_ctrl.context_group = row.group_key;

@@ -29,8 +29,16 @@ ui::Key key(WPARAM value) {
         return ui::Key::page_down;
     case VK_APPS:
         return ui::Key::menu;
+    case VK_F2:
+        return ui::Key::f2;
+    case VK_F3:
+        return ui::Key::f3;
     case VK_F10:
         return ui::Key::f10;
+    case VK_F12:
+        return ui::Key::f12;
+    case VK_OEM_2:
+        return ui::Key::slash;
     case VK_HOME:
         return ui::Key::home;
     case VK_END:
@@ -39,6 +47,16 @@ ui::Key key(WPARAM value) {
         return ui::Key::space;
     case 'A':
         return ui::Key::a;
+    case 'D':
+        return ui::Key::d;
+    case 'F':
+        return ui::Key::f;
+    case 'G':
+        return ui::Key::g;
+    case 'H':
+        return ui::Key::h;
+    case 'K':
+        return ui::Key::k;
     case 'Z':
         return ui::Key::z;
     case 'Y':
@@ -53,6 +71,18 @@ ui::Key key(WPARAM value) {
         return ui::Key::none;
     }
 }
+
+struct ClickTracker {
+    HWND last_window{};
+
+    ULONGLONG last_dbl_tick{};
+
+    int last_x{};
+
+    int last_y{};
+};
+
+ClickTracker click_tracker{};
 }
 
 Optional<ui::Event> input_event(NativeEvent message, HWND window) {
@@ -74,19 +104,36 @@ Optional<ui::Event> input_event(NativeEvent message, HWND window) {
         event.kind = ui::EventKind::pointer_move;
         break;
     case WM_MOUSELEAVE:
+        click_tracker = {};
         event.kind = ui::EventKind::pointer_leave;
         break;
-    case WM_LBUTTONDOWN:
+    case WM_LBUTTONDOWN: {
         event.kind = ui::EventKind::pointer_down;
+        const ULONGLONG now = GetTickCount64();
+        const int x = GET_X_LPARAM(message.lparam);
+        const int y = GET_Y_LPARAM(message.lparam);
+        if (click_tracker.last_window == window && click_tracker.last_dbl_tick != 0 &&
+            now - click_tracker.last_dbl_tick <= GetDoubleClickTime() &&
+            std::abs(x - click_tracker.last_x) <= GetSystemMetrics(SM_CXDOUBLECLK) &&
+            std::abs(y - click_tracker.last_y) <= GetSystemMetrics(SM_CYDOUBLECLK)) {
+            event.clicks = 3;
+        }
+        click_tracker = {};
         break;
+    }
     case WM_LBUTTONDBLCLK:
         event.kind = ui::EventKind::pointer_down;
         event.clicks = 2;
+        click_tracker.last_window = window;
+        click_tracker.last_dbl_tick = GetTickCount64();
+        click_tracker.last_x = GET_X_LPARAM(message.lparam);
+        click_tracker.last_y = GET_Y_LPARAM(message.lparam);
         break;
     case WM_LBUTTONUP:
         event.kind = ui::EventKind::pointer_up;
         break;
     case WM_RBUTTONDOWN:
+        click_tracker = {};
         event.kind = ui::EventKind::pointer_down;
         event.button = ui::PointerButton::secondary;
         break;
@@ -95,6 +142,7 @@ Optional<ui::Event> input_event(NativeEvent message, HWND window) {
         event.button = ui::PointerButton::secondary;
         break;
     case WM_MBUTTONDOWN:
+        click_tracker = {};
         event.kind = ui::EventKind::pointer_down;
         event.button = ui::PointerButton::middle;
         break;
@@ -125,6 +173,7 @@ Optional<ui::Event> input_event(NativeEvent message, HWND window) {
         event.data = std::move(message.text);
         break;
     case WM_KILLFOCUS:
+        click_tracker = {};
         event.kind = ui::EventKind::focus_lost;
         break;
     case WM_CAPTURECHANGED:

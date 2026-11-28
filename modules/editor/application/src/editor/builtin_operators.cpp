@@ -326,6 +326,14 @@ Result<void> scene_rename(OperatorHost& host, const Context& context, const Scen
     return result;
 }
 
+Result<void> scene_set_enabled(OperatorHost& host, const Context& context, const SceneSetEnabled& p) {
+    const ObjectId target =
+        context.selection.object != ObjectId{} ? context.selection.object : context.selection.active;
+    auto result = committed(context.document.set_enabled(target, p.enabled));
+    host.scene_changed();
+    return result;
+}
+
 Result<void> snap_selection(OperatorHost& host, const Context& context, const SceneSnap& p) {
     return host.viewport_tool().snap_selection(context.document, context.selection.entities, context.tools,
                                                p.to == SnapTarget::cursor ? Optional{context.cursor}
@@ -971,6 +979,9 @@ Result<OperatorRegistry> OperatorRegistry::builtins() {
          [](const Context& context) -> Result<void> {
              if (!context.scene_available || context.selection.entities.empty())
                  return unavailable("Select Entities to duplicate.");
+             if (context.interactive && context.region == RegionKind::scene_tree &&
+                 context.selection.object != ObjectId{} && context.selection.object != context.selection.active)
+                 return unavailable("Select an Entity row to duplicate.");
              const auto members = context.document.world().members();
              if (!members)
                  return std::unexpected(members.error());
@@ -987,9 +998,26 @@ Result<OperatorRegistry> OperatorRegistry::builtins() {
          OperatorFlag::undo, editable_entity, with_parameters(scene_transform), "editor.SceneTransform"});
     add(interactive_when<SceneRename>(
         {"scene.rename", L"Rename", "Rename the context Entity; interactive calls can start inline editing",
-         OperatorFlag::undo, editable_entity, with_parameters(scene_rename), "editor.SceneRename"},
+         OperatorFlag::undo,
+         [](const Context& context) -> Result<void> {
+             if (context.interactive && context.region == RegionKind::scene_tree &&
+                 context.selection.object != ObjectId{} && context.selection.object != context.selection.active)
+                 return unavailable("Select an Entity row to rename.");
+             return editable_entity(context);
+         },
+         with_parameters(scene_rename), "editor.SceneRename"},
         +[](const SceneRename& p) { return p.name.empty(); },
         "An empty name starts inline editing; provide name to execute directly."));
+    add({"scene.set_enabled", L"Set Enabled", "Enable or disable the context Entity or inspected Component",
+         OperatorFlag::undo,
+         [](const Context& context) -> Result<void> {
+             if (!context.scene_available || context.document.world().running())
+                 return unavailable("Stop the document before changing enabled state.");
+             const ObjectId target =
+                 context.selection.object != ObjectId{} ? context.selection.object : context.selection.active;
+             return target != ObjectId{} ? Result<void>{} : unavailable("Select an Entity or Component.");
+         },
+         with_parameters(scene_set_enabled), "editor.SceneSetEnabled"});
     add({"scene.set_properties", L"Set Properties", "Apply a scalar patch to the inspected object's actual type",
          OperatorFlag::undo,
          [](const Context& context) -> Result<void> {
@@ -1098,9 +1126,12 @@ Result<OperatorRegistry> OperatorRegistry::builtins() {
         {"asset.rename", L"Rename Asset", "Rename the context's project asset", OperatorFlag::none,
          [](const Context& c) -> Result<void> {
              const auto* entry = c.project ? c.project->entry(c.asset) : nullptr;
-             return entry && std::distance(entry->path.begin(), entry->path.end()) >= 2
-                        ? Result<void>{}
-                        : unavailable("Select a project file or folder below a top-level root.");
+             if (!entry || std::distance(entry->path.begin(), entry->path.end()) < 2)
+                 return unavailable("Select a project file or folder below a top-level root.");
+             if (entry->path == c.project->startup_scene() ||
+                 (!c.project->ui_source().empty() && entry->path == c.project->ui_source()))
+                 return unavailable("The configured startup scene and UI source cannot be renamed.");
+             return {};
          },
          with_parameters(+[](OperatorHost& h, const Context& c, const SceneRename& p) {
              return h.rename_asset(c.asset, p.name.view());

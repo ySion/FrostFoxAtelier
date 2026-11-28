@@ -1,3 +1,4 @@
+#include "memory/arena.hpp"
 #include "memory/fatal.hpp"
 #include "../helpers.hpp"
 #include "foundation/array.hpp"
@@ -14,6 +15,7 @@
 #include "foundation/string.hpp"
 #include "platform/error.hpp"
 #include "platform/utf.hpp"
+#include "platform/windows_path.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -44,6 +46,25 @@ static_assert(std::is_trivially_copyable_v<atelier::Optional<int>> &&
 
 static_assert(atelier::Optional<int>{7} == 7 && atelier::Optional<int>{} == std::nullopt &&
               atelier::Optional<int>{}.value_or(9) == 9 && atelier::Optional<int>{7}.value_or(9) == 7);
+
+template <class T>
+concept ArenaAllocatable = requires(atelier::ScratchArena& a) { a.allocate<T>(1); };
+
+template <class T, class... Args>
+concept ArenaEmplaceable =
+    requires(atelier::ScratchArena& a, Args&&... args) { a.emplace<T>(std::forward<Args>(args)...); };
+
+struct ThrowingArenaProbe {
+    int v;
+
+    ThrowingArenaProbe() noexcept(false) : v(1) {}
+
+    explicit ThrowingArenaProbe(int x) noexcept(false) : v(x) {}
+};
+
+static_assert(ArenaAllocatable<int> && !ArenaAllocatable<ThrowingArenaProbe>);
+
+static_assert(ArenaEmplaceable<int, int> && !ArenaEmplaceable<ThrowingArenaProbe, int>);
 
 constexpr int verify_constexpr_views() {
     atelier::StringView path{"project.ui.source"};
@@ -82,6 +103,21 @@ constexpr int verify_constexpr_views() {
     }
     if (line_count != 3 || !std::ranges::empty(atelier::StringView{}.lines()))
         return 12;
+    if (!atelier::is_ascii_ident_start('_') || !atelier::is_ascii_ident_continue('9') ||
+        atelier::is_ascii_ident_start('9') || !atelier::is_ascii_hex('F') || atelier::is_ascii_hex('G'))
+        return 17;
+    constexpr atelier::StringView mixed{"Scene::TransformComponent"};
+    if (mixed.find_ascii_case_insensitive("transform") != 7 || !mixed.contains_ascii_case_insensitive("COMPONENT") ||
+        mixed.find_ascii_case_insensitive("missing") != atelier::StringView::npos)
+        return 18;
+    constexpr atelier::StringView emoji{"a😀b"};
+    if (atelier::platform::utf8_offset_to_utf16(emoji, 0) != 0 ||
+        atelier::platform::utf8_offset_to_utf16(emoji, 1) != 1 ||
+        atelier::platform::utf8_offset_to_utf16(emoji, 5) != 3 ||
+        atelier::platform::utf8_offset_to_utf16(emoji, 6) != 4 ||
+        atelier::platform::utf16_offset_to_utf8(emoji, 3) != 5 ||
+        atelier::platform::utf16_offset_to_utf8(emoji, 2) != 1)
+        return 19;
     constexpr int numbers[]{2, 4, 6, 4, 8};
     atelier::Span<const int> span{numbers};
     if (span.front() != 2 || span.back() != 8 || span.first(2)[1] != 4 || span.last(2)[0] != 4 ||
@@ -118,6 +154,117 @@ static_assert(std::is_convertible_v<atelier::Array<int>&, atelier::Span<int>> &&
               std::is_constructible_v<atelier::Span<const int>, std::span<int, 4>> &&
               !std::same_as<decltype(std::ranges::find(std::declval<atelier::Span<const int>>(), 0)),
                             std::ranges::dangling>);
+
+void verify_utf_paths_and_arena() {
+    using namespace atelier;
+    using acceptance::helpers::require;
+
+    InlineArray<wchar_t, 16> wide_buf;
+    const auto ascii_wide = platform::utf8_to_utf16_into("Transform_01", wide_buf);
+    require(ascii_wide && *ascii_wide == L"Transform_01" && wide_buf.capacity() == 16,
+            "ASCII utf8_to_utf16_into spilled or corrupted inline storage.");
+
+    const StringView rich{"alpha_中文_😀_omega_0123456789"};
+    const auto rich_wide = platform::utf8_to_utf16_into(rich, wide_buf);
+    require(rich_wide && wide_buf.capacity() > 16, "Non-ASCII utf8_to_utf16_into failed to spill.");
+    const auto roundtrip = platform::utf16_to_utf8(*rich_wide);
+    require(roundtrip && *roundtrip == rich, "utf16_to_utf8 round-trip mismatch.");
+    require(!platform::utf8_to_utf16_into("\xff\xfe", wide_buf), "Invalid UTF-8 was accepted by utf8_to_utf16_into.");
+    const wchar_t isolated_surrogate[]{0xd800, 0};
+    require(!platform::utf16_to_utf8({isolated_surrogate, 1}), "Isolated surrogate was accepted.");
+
+    for (std::size_t u8 = 0; u8 <= rich.size(); ++u8) {
+        const auto u16 = platform::utf8_offset_to_utf16(rich, u8);
+        const auto snapped = platform::utf16_offset_to_utf8(rich, u16);
+        if (u8 == rich.size() || (static_cast<unsigned char>(rich[u8]) & 0xc0u) != 0x80u)
+            require(snapped == u8, "UTF-8 <-> UTF-16 runtime offset round-trip failed at code-point boundary.");
+    }
+
+    require(platform::paths_lexically_equal("C:/Project/Assets/../Scripts/Main.source",
+                                            "c:\\project\\scripts\\main.source"),
+            "paths_lexically_equal rejected equivalent Windows spellings.");
+    require(platform::is_subpath_of("C:/Project/Scripts/Sub/Main.source", "c:\\project\\scripts\\") &&
+                !platform::is_subpath_of("C:/Project_Other/Main.source", "C:/Project") &&
+                !platform::is_subpath_of("C:/Project/../Outside/Main.source", "C:/Project") &&
+                !platform::is_subpath_of("C:\\Project\\Main.source", "C:") &&
+                !platform::is_subpath_of("C:Relative\\Main.source", "C:\\") &&
+                platform::is_subpath_of("../shared/sub/file.source", "../shared") &&
+                !platform::is_subpath_of("../other/file.source", "../shared"),
+            "is_subpath_of containment check failed.");
+    const auto generic = platform::generic_path_to_utf8("assets\\ui\\editor.ui.source");
+    const auto long_generic =
+        platform::generic_path_to_utf8(L"C:\\Projects\\FrostFoxAtelier\\Content\\脚本目录\\🚀SceneMain.source");
+    const auto fname = platform::filename_utf8("assets\\ui\\editor.ui.source");
+    require(generic && *generic == "assets/ui/editor.ui.source" && long_generic &&
+                *long_generic == "C:/Projects/FrostFoxAtelier/Content/脚本目录/🚀SceneMain.source" && fname &&
+                *fname == "editor.ui.source",
+            "UTF-8 path helpers produced unexpected output.");
+
+    // Verify String::replace in-place capacity reuse, geometric growth, literal replacement, and self-aliasing slice:
+    {
+        String lit_rep = String::literal<"hello_world">();
+        require(lit_rep.replace(5, 1, "::").has_value() && lit_rep == "hello::world",
+                "String::replace on literal_tag failed.");
+        auto heap_str = String::from_utf8("0123456789abcdefghijklmnopqrstuvwxyz_0123456789");
+        require(heap_str.has_value(), "Failed to construct heap String.");
+        heap_str->reserve(128);
+        const char* initial_ptr = heap_str->c_str();
+        const std::size_t initial_cap = heap_str->capacity();
+        require(heap_str->replace(10, 4, "ABCD").has_value() && heap_str->c_str() == initial_ptr &&
+                    heap_str->capacity() == initial_cap,
+                "Equal-length String::replace reallocated unnecessarily.");
+        require(heap_str->replace(10, 4, "XY").has_value() && heap_str->c_str() == initial_ptr &&
+                    heap_str->capacity() == initial_cap,
+                "Shrinking String::replace did not reuse heap capacity in place.");
+        require(heap_str->replace(10, 2, "ABCDEFGH").has_value() && heap_str->c_str() == initial_ptr,
+                "Growing String::replace within reserved capacity reallocated unnecessarily.");
+        require(heap_str->replace(0, 5, heap_str->slice(10, 8)).has_value() && heap_str->starts_with("ABCDEFGH56789"),
+                "Self-aliasing String::replace corrupted content.");
+    }
+
+    // Verify SIMD pure-ASCII fast paths (> 32 units) for utf8_to_utf16 and utf16_to_utf8:
+    {
+        constexpr StringView long_ascii = "modules/editor/application/src/editor/code_intelligence.cpp";
+        const auto w_ascii = platform::utf8_to_utf16(long_ascii);
+        require(w_ascii.has_value() && w_ascii->size() == long_ascii.size(), "ASCII utf8_to_utf16 failed.");
+        const auto u8_ascii = platform::utf16_to_utf8(*w_ascii);
+        require(u8_ascii.has_value() && *u8_ascii == long_ascii, "ASCII utf16_to_utf8 round-trip failed.");
+    }
+
+    ScratchArena arena{1024};
+    require(arena.allocate<int>(0).empty() && arena.reserved_bytes() == 0,
+            "Zero-length arena allocation touched heap.");
+    std::size_t peak_reserved = 0;
+    {
+        ScratchScope outer{arena};
+        auto ints = arena.allocate<std::uint64_t>(8);
+        ints[0] = 99;
+        {
+            ScratchScope inner{arena};
+            auto big = arena.allocate_uninitialized<std::byte>(2048);
+            require(big.size() == 2048, "Oversized scratch allocation failed.");
+            auto* over = arena.allocate_bytes(64, 256);
+            require((reinterpret_cast<std::uintptr_t>(over) & 255u) == 0,
+                    "Over-aligned scratch allocation violated alignment.");
+            peak_reserved = arena.reserved_bytes();
+        }
+        require(ints[0] == 99 && arena.reserved_bytes() == peak_reserved,
+                "Inner ScratchScope rewind clobbered outer scope or released reusable blocks.");
+        constexpr double sample_doubles[]{1.5, -2.25, 4.75, 8.125};
+        auto reused_doubles = arena.copy<double>(Span<const double>{sample_doubles});
+        require(reused_doubles.size() == 4 && reused_doubles[2] == 4.75 && arena.reserved_bytes() == peak_reserved,
+                "Heterogeneous implicit-lifetime block reuse failed.");
+        auto reused = arena.allocate_uninitialized<std::byte>(1536);
+        require(reused.size() == 1536 && arena.reserved_bytes() == peak_reserved,
+                "Sibling scope failed to reuse retained block.");
+    }
+    require(arena.used_bytes() == 0 && arena.reserved_bytes() == peak_reserved,
+            "Outer ScratchScope failed to rewind watermark to zero.");
+    const auto copied = arena.copy_string("scratch-label");
+    require(copied == "scratch-label" && copied.data()[copied.size()] == '\0', "copy_string failed.");
+    arena.release();
+    require(arena.reserved_bytes() == 0 && arena.used_bytes() == 0, "ScratchArena::release retained memory.");
+}
 
 void queued_resources() {
     using namespace atelier;
@@ -1658,6 +1805,7 @@ int main() {
     verify_string_view_simd_and_search_set();
     verify_string_enhancements_and_formatting();
     verify_span_and_array_practical_algorithms();
+    verify_utf_paths_and_arena();
     verify_tasks();
     std::puts("Foundation acceptance: PASS (owning aliases, queued resources and failed join cleanup)");
 }

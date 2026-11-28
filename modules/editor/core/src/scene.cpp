@@ -3719,267 +3719,264 @@ void Session::forward_change(const Change& change, bool forward) {
         }
         return {};
     };
-    auto result =
-        std::visit(
-            [&](const auto& item) -> Result<void> {
-                using T = std::decay_t<decltype(item)>;
-                if constexpr (std::is_same_v<T, EntityChange>) {
-                    const auto camera = [&]() -> Result<void> {
-                        if (item.cleared_camera) {
-                            const auto& edit = *item.cleared_camera;
-                            ATELIER_TRY_BIND(op, C::live_properties(*this, edit.root.id(), {&edit.path, 1}));
-                            ATELIER_TRY(push(op->root()));
-                        }
-                        return {};
-                    };
-                    if (item.added != forward) {
-                        ATELIER_TRY(camera());
-                        for (const auto& removal : item.removals) {
-                            json::Builder op;
-                            op.set_validated(op.root(), "op", "remove");
-                            ATELIER_TRY_BIND(id, scene_result(C::live_id(*this, removal.id())));
-                            op.set_validated(op.root(), "id", *id);
-                            ATELIER_TRY(push(op.root()));
-                        }
-                        return {};
-                    }
-                    struct Add {
-                        std::uint64_t parent;
-
-                        std::size_t index;
-
-                        json::Builder op;
-                    };
-                    Array<Add> adds;
-
-                    Map<String, std::size_t> added_entities;
-                    for (const auto& removal : item.removals) {
-                        const auto root = removal.id();
-                        ATELIER_TRY_BIND(parent, world::parent_entity(runtime_, root));
-                        ATELIER_TRY_BIND(index, C::live_position(*this, root, *parent));
-                        ATELIER_TRY_BIND(captured, C::capture(*this, {&root, 1}, true, false, true));
-                        json::Builder graph(captured->data);
-
-                        const auto entities = *graph.root().at("entities")->array();
-                        for (auto entity : entities)
-                            added_entities.try_emplace(String::from_utf8_validated(*entity.string({"id"})), adds.size());
-                        // This transaction restores its camera reference after all roots.
-                        // An earlier Environment add must not refer to the still-missing target.
-                        if (item.cleared_camera) {
-                            ATELIER_TRY_BIND(component,
-                                             scene_result(C::live_id(*this, item.cleared_camera->root.id())));
-                            for (auto entity : entities) {
-                                const auto components = *entity.at("components")->array();
-                                for (auto part : components)
-                                    if (*part.string({"id"}) == *component) {
-                                        ATELIER_TRY_BIND(properties, scene_result(part.at("properties")));
-                                        ATELIER_TRY(scene_result(graph.set_null(*properties, "main_camera")));
-                                    }
-                            }
-                        }
-                        json::Builder op;
-                        op.set_validated(op.root(), "op", "add");
-                        std::uint64_t parent_key{};
-                        if (*parent == ObjectId{}) {
-                            ATELIER_TRY(scene_result(op.set_null(op.root(), "parent")));
-                        } else {
-                            ATELIER_TRY_BIND(id, scene_result(C::identity(*this, *parent)));
-                            parent_key = *id;
-                            op.set_validated(op.root(), "parent", String::from_number(parent_key));
-                        }
-                        ATELIER_TRY(scene_result(op.set(op.root(), "index", std::uint64_t(*index))));
-                        op.set_validated(op.root(), "graph", graph.root());
-                        adds.add({parent_key, *index, std::move(op)});
-                    }
-                    // Import and Redo also own references inside their incoming forest.
-                    // Defer only main_camera across its roots; never resend an existing
-                    // Environment or pull a target outside this batch back into Play.
-                    Optional<json::Builder> imported_camera;
-                    if (const auto env = environment(); env != ObjectId{}) {
-                        ATELIER_TRY_BIND(component, scene_result(C::live_id(*this, env)));
-                        for (std::size_t i = 0; i < adds.size(); ++i) {
-                            auto& op = adds[i].op;
-                            const auto entities = *op.root().path({"graph", "entities"})->array();
-                            for (auto entity : entities) {
-                                const auto components = *entity.at("components")->array();
-                                for (auto part : components)
-                                    if (*part.string({"id"}) == *component) {
-                                        const auto properties = *part.at("properties");
-                                        if (properties.kind() != json::Kind::object)
-                                            continue; // A retained malformed record may replace properties.
-                                        const auto reference = *properties.find("main_camera");
-                                        if (!reference || reference->kind() != json::Kind::object)
-                                            continue;
-                                        if (const auto target = *reference->find("$ref"))
-                                            if (const auto* at = added_entities.find(*target->string());
-                                                at && *at != i) {
-                                                imported_camera.emplace();
-                                                auto& deferred = *imported_camera;
-                                                deferred.set_validated(deferred.root(), "op", "set");
-                                                deferred.set_validated(deferred.root(), "id", *component);
-                                                const auto props =
-                                                    deferred.object_validated(deferred.root(), "properties");
-                                                deferred.set_validated(props, "main_camera", *reference);
-                                                ATELIER_TRY(scene_result(op.set_null(properties, "main_camera")));
-                                            }
-                                    }
-                            }
-                        }
-                    }
-                    std::ranges::sort(adds, {}, [](const Add& add) { return std::pair{add.parent, add.index}; });
-                    for (const auto& add : adds)
-                        ATELIER_TRY(push(add.op.root()));
-                    if (imported_camera)
-                        ATELIER_TRY(push(imported_camera->root()));
-                    ATELIER_TRY(camera());
-                } else if constexpr (std::is_same_v<T, ComponentChange>) {
-                    const auto owner = item.removal.owner;
-                    const auto component = item.removal.id();
-                    if (item.added == forward) {
-                        if (item.created_transform) {
-                            ATELIER_TRY_BIND(space, C::live_space(*this, owner));
-                            ATELIER_TRY(set(owner, "space", space->root()));
-                        }
-                        std::size_t index{};
-                        ATELIER_TRY_BIND(parts, world::components(runtime_, owner));
-                        for (const auto& part : *parts) {
-                            if (part.id() == component)
-                                break;
-                            ++index;
-                        }
-                        ATELIER_TRY_BIND(entity, scene_result(C::live_id(*this, owner)));
-                        ATELIER_TRY_BIND(graph, C::live_components(*this, owner, {&component, 1}));
-                        json::Builder op;
-                        op.set_validated(op.root(), "op", "attach");
-                        op.set_validated(op.root(), "entity", *entity);
-                        ATELIER_TRY(scene_result(op.set(op.root(), "index", std::uint64_t(index))));
-                        op.set_validated(op.root(), "graph", graph->root());
-                        ATELIER_TRY(push(op.root()));
-                    } else {
-                        json::Builder op;
-                        op.set_validated(op.root(), "op", "remove");
-                        ATELIER_TRY_BIND(id, scene_result(C::live_id(*this, component)));
-                        op.set_validated(op.root(), "id", *id);
-                        ATELIER_TRY(push(op.root()));
-                        if (item.created_transform) {
-                            const json::Builder null(json::Kind::null);
-                            ATELIER_TRY(set(owner, "space", null.root()));
-                        }
-                    }
-                } else if constexpr (std::is_same_v<T, FieldChange>) {
-                    if (const auto* after = std::get_if<world::Trs>(&item.after))
-                        ATELIER_TRY(leaves(item.root.id(), std::get<world::Trs>(item.before), *after));
-                    else {
-                        ATELIER_TRY_BIND(op, C::live_properties(*this, item.root.id(), {&item.path, 1}));
+    auto result = std::visit(
+        [&](const auto& item) -> Result<void> {
+            using T = std::decay_t<decltype(item)>;
+            if constexpr (std::is_same_v<T, EntityChange>) {
+                const auto camera = [&]() -> Result<void> {
+                    if (item.cleared_camera) {
+                        const auto& edit = *item.cleared_camera;
+                        ATELIER_TRY_BIND(op, C::live_properties(*this, edit.root.id(), {&edit.path, 1}));
                         ATELIER_TRY(push(op->root()));
                     }
-                } else if constexpr (std::is_same_v<T, ReferenceFieldChange>) {
+                    return {};
+                };
+                if (item.added != forward) {
+                    ATELIER_TRY(camera());
+                    for (const auto& removal : item.removals) {
+                        json::Builder op;
+                        op.set_validated(op.root(), "op", "remove");
+                        ATELIER_TRY_BIND(id, scene_result(C::live_id(*this, removal.id())));
+                        op.set_validated(op.root(), "id", *id);
+                        ATELIER_TRY(push(op.root()));
+                    }
+                    return {};
+                }
+                struct Add {
+                    std::uint64_t parent;
+
+                    std::size_t index;
+
+                    json::Builder op;
+                };
+                Array<Add> adds;
+                Map<String, std::size_t> added_entities;
+                for (const auto& removal : item.removals) {
+                    const auto root = removal.id();
+                    ATELIER_TRY_BIND(parent, world::parent_entity(runtime_, root));
+                    ATELIER_TRY_BIND(index, C::live_position(*this, root, *parent));
+                    ATELIER_TRY_BIND(captured, C::capture(*this, {&root, 1}, true, false, true));
+                    json::Builder graph(captured->data);
+                    const auto entities = *graph.root().at("entities")->array();
+                    for (auto entity : entities)
+                        added_entities.try_emplace(String::from_utf8_validated(*entity.string({"id"})), adds.size());
+                    // This transaction restores its camera reference after all roots.
+                    // An earlier Environment add must not refer to the still-missing target.
+                    if (item.cleared_camera) {
+                        ATELIER_TRY_BIND(component, scene_result(C::live_id(*this, item.cleared_camera->root.id())));
+                        for (auto entity : entities) {
+                            const auto components = *entity.at("components")->array();
+                            for (auto part : components)
+                                if (*part.string({"id"}) == *component) {
+                                    ATELIER_TRY_BIND(properties, scene_result(part.at("properties")));
+                                    ATELIER_TRY(scene_result(graph.set_null(*properties, "main_camera")));
+                                }
+                        }
+                    }
+                    json::Builder op;
+                    op.set_validated(op.root(), "op", "add");
+                    std::uint64_t parent_key{};
+                    if (*parent == ObjectId{}) {
+                        ATELIER_TRY(scene_result(op.set_null(op.root(), "parent")));
+                    } else {
+                        ATELIER_TRY_BIND(id, scene_result(C::identity(*this, *parent)));
+                        parent_key = *id;
+                        op.set_validated(op.root(), "parent", String::from_number(parent_key));
+                    }
+                    ATELIER_TRY(scene_result(op.set(op.root(), "index", std::uint64_t(*index))));
+                    op.set_validated(op.root(), "graph", graph.root());
+                    adds.add({parent_key, *index, std::move(op)});
+                }
+                // Import and Redo also own references inside their incoming forest.
+                // Defer only main_camera across its roots; never resend an existing
+                // Environment or pull a target outside this batch back into Play.
+                Optional<json::Builder> imported_camera;
+                if (const auto env = environment(); env != ObjectId{}) {
+                    ATELIER_TRY_BIND(component, scene_result(C::live_id(*this, env)));
+                    for (std::size_t i = 0; i < adds.size(); ++i) {
+                        auto& op = adds[i].op;
+                        const auto entities = *op.root().path({"graph", "entities"})->array();
+                        for (auto entity : entities) {
+                            const auto components = *entity.at("components")->array();
+                            for (auto part : components)
+                                if (*part.string({"id"}) == *component) {
+                                    const auto properties = *part.at("properties");
+                                    if (properties.kind() != json::Kind::object)
+                                        continue; // A retained malformed record may replace properties.
+                                    const auto reference = *properties.find("main_camera");
+                                    if (!reference || reference->kind() != json::Kind::object)
+                                        continue;
+                                    if (const auto target = *reference->find("$ref"))
+                                        if (const auto* at = added_entities.find(*target->string());
+                                            at && *at != i) {
+                                            imported_camera.emplace();
+                                            auto& deferred = *imported_camera;
+                                            deferred.set_validated(deferred.root(), "op", "set");
+                                            deferred.set_validated(deferred.root(), "id", *component);
+                                            const auto props = deferred.object_validated(deferred.root(), "properties");
+                                            deferred.set_validated(props, "main_camera", *reference);
+                                            ATELIER_TRY(scene_result(op.set_null(properties, "main_camera")));
+                                        }
+                                }
+                        }
+                    }
+                }
+                std::ranges::sort(adds, {}, [](const Add& add) { return std::pair{add.parent, add.index}; });
+                for (const auto& add : adds)
+                    ATELIER_TRY(push(add.op.root()));
+                if (imported_camera)
+                    ATELIER_TRY(push(imported_camera->root()));
+                ATELIER_TRY(camera());
+            } else if constexpr (std::is_same_v<T, ComponentChange>) {
+                const auto owner = item.removal.owner;
+                const auto component = item.removal.id();
+                if (item.added == forward) {
+                    if (item.created_transform) {
+                        ATELIER_TRY_BIND(space, C::live_space(*this, owner));
+                        ATELIER_TRY(set(owner, "space", space->root()));
+                    }
+                    std::size_t index{};
+                    ATELIER_TRY_BIND(parts, world::components(runtime_, owner));
+                    for (const auto& part : *parts) {
+                        if (part.id() == component)
+                            break;
+                        ++index;
+                    }
+                    ATELIER_TRY_BIND(entity, scene_result(C::live_id(*this, owner)));
+                    ATELIER_TRY_BIND(graph, C::live_components(*this, owner, {&component, 1}));
+                    json::Builder op;
+                    op.set_validated(op.root(), "op", "attach");
+                    op.set_validated(op.root(), "entity", *entity);
+                    ATELIER_TRY(scene_result(op.set(op.root(), "index", std::uint64_t(index))));
+                    op.set_validated(op.root(), "graph", graph->root());
+                    ATELIER_TRY(push(op.root()));
+                } else {
+                    json::Builder op;
+                    op.set_validated(op.root(), "op", "remove");
+                    ATELIER_TRY_BIND(id, scene_result(C::live_id(*this, component)));
+                    op.set_validated(op.root(), "id", *id);
+                    ATELIER_TRY(push(op.root()));
+                    if (item.created_transform) {
+                        const json::Builder null(json::Kind::null);
+                        ATELIER_TRY(set(owner, "space", null.root()));
+                    }
+                }
+            } else if constexpr (std::is_same_v<T, FieldChange>) {
+                if (const auto* after = std::get_if<world::Trs>(&item.after))
+                    ATELIER_TRY(leaves(item.root.id(), std::get<world::Trs>(item.before), *after));
+                else {
                     ATELIER_TRY_BIND(op, C::live_properties(*this, item.root.id(), {&item.path, 1}));
                     ATELIER_TRY(push(op->root()));
-                } else if constexpr (std::is_same_v<T, FieldGroupChange>) {
-                    ATELIER_TRY_BIND(op, C::live_properties(*this, item.root.id(), item.paths));
-                    ATELIER_TRY(push(op->root()));
-                } else if constexpr (std::is_same_v<T, TransformChange>) {
-                    for (const auto& entry : item.entries)
-                        ATELIER_TRY(leaves(entry.root.id(), entry.before, entry.after));
-                } else if constexpr (std::is_same_v<T, NameChange>) {
-                    auto text = platform::utf16_to_utf8(name(item.root.id()));
-                    if (!text)
-                        return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-16 text."});
-                    ATELIER_TRY(set(item.root.id(), "name", *text));
-                } else if constexpr (std::is_same_v<T, BodyChange>) {
-                    ATELIER_TRY_BIND(op, C::live_body(*this, item.root.id()));
-                    ATELIER_TRY(push(op->root()));
-                } else if constexpr (std::is_same_v<T, TransformPresenceChange>) {
-                    ATELIER_TRY_BIND(space, C::live_space(*this, item.root.id()));
-                    ATELIER_TRY(set(item.root.id(), "space", space->root()));
-                } else if constexpr (std::is_same_v<T, SpaceReferenceChange>) {
-                    const auto entity = item.root.id();
-                    json::Builder space;
-                    if (item.spatial) {
-                        ATELIER_TRY_BIND(transform, world::read_transform(runtime_, entity));
-                        ATELIER_TRY_BIND(value, C::space_leaves(*transform, C::leaf_mask(item.before, item.after)));
-                        space.replace(space.root(), value->root());
-                    }
-                    ATELIER_TRY_BIND(origin, C::live_origin(*this, entity));
-                    space.set_validated(space.root(), "origin", origin->root());
-                    ATELIER_TRY(set(entity, "space", space.root()));
-                } else if constexpr (std::is_same_v<T, ReparentChange>) {
-                    for (std::size_t i = 0; i < item.moves.size(); ++i) {
-                        const auto& move = item.moves[forward ? i : item.moves.size() - 1 - i];
-                        const auto root = move.root.id();
-                        const auto parent = forward ? move.after_parent : move.before_parent;
-                        const auto transform = std::ranges::find_if(
-                            move.transforms, [&](const auto& entry) { return entry.root.id() == root; });
-                        json::Builder op;
-                        op.set_validated(op.root(), "op", "move");
-                        ATELIER_TRY_BIND(id, scene_result(C::live_id(*this, root)));
-                        op.set_validated(op.root(), "id", *id);
-                        if (parent == ObjectId{})
-                            ATELIER_TRY(scene_result(op.set_null(op.root(), "parent")));
-                        else {
-                            ATELIER_TRY_BIND(parent_id, scene_result(C::live_id(*this, parent)));
-                            op.set_validated(op.root(), "parent", *parent_id);
-                        }
-                        ATELIER_TRY(scene_result(
-                            op.set(op.root(), "index", std::uint64_t(forward ? move.after_index : move.before_index))));
-                        if (transform != move.transforms.end()) {
-                            ATELIER_TRY_BIND(space, C::space_leaves(forward ? transform->after : transform->before, 7));
-                            op.set_validated(op.root(), "space", space->root());
-                        } else
-                            ATELIER_TRY(scene_result(op.set_null(op.root(), "space")));
-                        ATELIER_TRY(push(op.root()));
-                        for (const auto& entry : move.transforms)
-                            if (entry.root.id() != root) {
-                                ATELIER_TRY_BIND(space, C::space_leaves(forward ? entry.after : entry.before,
-                                                                        C::leaf_mask(entry.before, entry.after)));
-                                ATELIER_TRY(set(entry.root.id(), "space", space->root()));
-                            }
-                    }
-                } else if constexpr (std::is_same_v<T, MaterialBindingChange>) {
-                    // Play resolves a binding only to a material it already has, so definitions go first.
-                    const auto component = item.root.id();
-                    ATELIER_TRY_BIND(bindings, presentation::read_material_bindings(runtime_, component));
+                }
+            } else if constexpr (std::is_same_v<T, ReferenceFieldChange>) {
+                ATELIER_TRY_BIND(op, C::live_properties(*this, item.root.id(), {&item.path, 1}));
+                ATELIER_TRY(push(op->root()));
+            } else if constexpr (std::is_same_v<T, FieldGroupChange>) {
+                ATELIER_TRY_BIND(op, C::live_properties(*this, item.root.id(), item.paths));
+                ATELIER_TRY(push(op->root()));
+            } else if constexpr (std::is_same_v<T, TransformChange>) {
+                for (const auto& entry : item.entries)
+                    ATELIER_TRY(leaves(entry.root.id(), entry.before, entry.after));
+            } else if constexpr (std::is_same_v<T, NameChange>) {
+                auto text = platform::utf16_to_utf8(name(item.root.id()));
+                if (!text)
+                    return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-16 text."});
+                ATELIER_TRY(set(item.root.id(), "name", *text));
+            } else if constexpr (std::is_same_v<T, EnabledChange>) {
+                ATELIER_TRY(set(item.root.id(), "enabled", forward ? item.after : item.before));
+            } else if constexpr (std::is_same_v<T, BodyChange>) {
+                ATELIER_TRY_BIND(op, C::live_body(*this, item.root.id()));
+                ATELIER_TRY(push(op->root()));
+            } else if constexpr (std::is_same_v<T, TransformPresenceChange>) {
+                ATELIER_TRY_BIND(space, C::live_space(*this, item.root.id()));
+                ATELIER_TRY(set(item.root.id(), "space", space->root()));
+            } else if constexpr (std::is_same_v<T, SpaceReferenceChange>) {
+                const auto entity = item.root.id();
+                json::Builder space;
+                if (item.spatial) {
+                    ATELIER_TRY_BIND(transform, world::read_transform(runtime_, entity));
+                    ATELIER_TRY_BIND(value, C::space_leaves(*transform, C::leaf_mask(item.before, item.after)));
+                    space.replace(space.root(), value->root());
+                }
+                ATELIER_TRY_BIND(origin, C::live_origin(*this, entity));
+                space.set_validated(space.root(), "origin", origin->root());
+                ATELIER_TRY(set(entity, "space", space.root()));
+            } else if constexpr (std::is_same_v<T, ReparentChange>) {
+                for (std::size_t i = 0; i < item.moves.size(); ++i) {
+                    const auto& move = item.moves[forward ? i : item.moves.size() - 1 - i];
+                    const auto root = move.root.id();
+                    const auto parent = forward ? move.after_parent : move.before_parent;
+                    const auto transform = std::ranges::find_if(
+                        move.transforms, [&](const auto& entry) { return entry.root.id() == root; });
                     json::Builder op;
-                    op.set_validated(op.root(), "op", "materials");
-                    const auto definitions = *op.array(op.root(), "materials");
-                    json::Builder table(json::Kind::array);
-                    Set<ObjectId> defined;
-                    for (const auto& binding : *bindings) {
-                        const auto resource = binding.resource.id();
-                        ATELIER_TRY(C::material_definitions(*this, resource, op, definitions, defined));
-                        const auto entry = table.append_object(table.root());
-                        ATELIER_TRY(scene_result(table.set(entry, "slot", binding.slot)));
-                        ATELIER_TRY_BIND(id, scene_result(C::live_id(*this, resource)));
-                        table.set_validated(entry, "resource", *id);
-                        ATELIER_TRY(scene_result(table.set(entry, "overridden", binding.overridden)));
-                    }
-                    if (definitions.size())
-                        ATELIER_TRY(push(op.root()));
-                    ATELIER_TRY(set(component, "materials", table.root()));
-                } else if constexpr (std::is_same_v<T, MaterialValueChange>)
-                    forward_material(item.root.id());
-                else if constexpr (std::is_same_v<T, SkyMapChange>) {
-                    ATELIER_TRY_BIND(map, presentation::read_sky_map(runtime_, item.root.id()));
-                    ATELIER_TRY(set(item.root.id(), "sky_map", map->source));
-                } else if constexpr (std::is_same_v<T, ProceduralGraphChange>) {
-                    json::Builder op;
-                    op.set_validated(op.root(), "op", "set");
-                    ATELIER_TRY_BIND(id, scene_result(C::live_id(*this, item.root.id())));
+                    op.set_validated(op.root(), "op", "move");
+                    ATELIER_TRY_BIND(id, scene_result(C::live_id(*this, root)));
                     op.set_validated(op.root(), "id", *id);
-                    if (item.before != item.after)
-                        ATELIER_TRY(scene_result(op.set(op.root(), "graph", forward ? item.after : item.before)));
-                    if (item.before_overrides != item.after_overrides || item.before == item.after) {
-                        const auto& ov = forward ? item.after_overrides : item.before_overrides;
-                        op.set_validated(op.root(), "overrides", ov.root());
+                    if (parent == ObjectId{})
+                        ATELIER_TRY(scene_result(op.set_null(op.root(), "parent")));
+                    else {
+                        ATELIER_TRY_BIND(parent_id, scene_result(C::live_id(*this, parent)));
+                        op.set_validated(op.root(), "parent", *parent_id);
                     }
+                    ATELIER_TRY(scene_result(
+                        op.set(op.root(), "index", std::uint64_t(forward ? move.after_index : move.before_index))));
+                    if (transform != move.transforms.end()) {
+                        ATELIER_TRY_BIND(space, C::space_leaves(forward ? transform->after : transform->before, 7));
+                        op.set_validated(op.root(), "space", space->root());
+                    } else
+                        ATELIER_TRY(scene_result(op.set_null(op.root(), "space")));
                     ATELIER_TRY(push(op.root()));
-                } else
-                    static_assert(std::is_same_v<T, RetainedChange>,
-                                  "Every change kind is forwarded to Play or explicitly not.");
-                return {};
-            },
-            change);
+                    for (const auto& entry : move.transforms)
+                        if (entry.root.id() != root) {
+                            ATELIER_TRY_BIND(space, C::space_leaves(forward ? entry.after : entry.before,
+                                                                    C::leaf_mask(entry.before, entry.after)));
+                            ATELIER_TRY(set(entry.root.id(), "space", space->root()));
+                        }
+                }
+            } else if constexpr (std::is_same_v<T, MaterialBindingChange>) {
+                // Play resolves a binding only to a material it already has, so definitions go first.
+                const auto component = item.root.id();
+                ATELIER_TRY_BIND(bindings, presentation::read_material_bindings(runtime_, component));
+                json::Builder op;
+                op.set_validated(op.root(), "op", "materials");
+                const auto definitions = *op.array(op.root(), "materials");
+                json::Builder table(json::Kind::array);
+                Set<ObjectId> defined;
+                for (const auto& binding : *bindings) {
+                    const auto resource = binding.resource.id();
+                    ATELIER_TRY(C::material_definitions(*this, resource, op, definitions, defined));
+                    const auto entry = table.append_object(table.root());
+                    ATELIER_TRY(scene_result(table.set(entry, "slot", binding.slot)));
+                    ATELIER_TRY_BIND(id, scene_result(C::live_id(*this, resource)));
+                    table.set_validated(entry, "resource", *id);
+                    ATELIER_TRY(scene_result(table.set(entry, "overridden", binding.overridden)));
+                }
+                if (definitions.size())
+                    ATELIER_TRY(push(op.root()));
+                ATELIER_TRY(set(component, "materials", table.root()));
+            } else if constexpr (std::is_same_v<T, MaterialValueChange>)
+                forward_material(item.root.id());
+            else if constexpr (std::is_same_v<T, SkyMapChange>) {
+                ATELIER_TRY_BIND(map, presentation::read_sky_map(runtime_, item.root.id()));
+                ATELIER_TRY(set(item.root.id(), "sky_map", map->source));
+            } else if constexpr (std::is_same_v<T, ProceduralGraphChange>) {
+                json::Builder op;
+                op.set_validated(op.root(), "op", "set");
+                ATELIER_TRY_BIND(id, scene_result(C::live_id(*this, item.root.id())));
+                op.set_validated(op.root(), "id", *id);
+                if (item.before != item.after)
+                    ATELIER_TRY(scene_result(op.set(op.root(), "graph", forward ? item.after : item.before)));
+                if (item.before_overrides != item.after_overrides || item.before == item.after) {
+                    const auto& ov = forward ? item.after_overrides : item.before_overrides;
+                    op.set_validated(op.root(), "overrides", ov.root());
+                }
+                ATELIER_TRY(push(op.root()));
+            } else
+                static_assert(std::is_same_v<T, RetainedChange>,
+                              "Every change kind is forwarded to Play or explicitly not.");
+            return {};
+        },
+        change);
     C::finish_forward(*this, std::move(result));
 }
 
@@ -4475,10 +4472,11 @@ Array<Session::RetainedSwap> Session::release(const Change& change) {
         }
         drop(object, names);
     };
-
     static const std::array<String, 1> space{"space"_s};
 
     static const std::array<String, 1> name{"name"_s};
+
+    static const std::array<String, 1> enabled_key{"enabled"_s};
 
     static const std::array<String, 1> sky{"sky_map"_s};
 
@@ -4505,6 +4503,8 @@ Array<Session::RetainedSwap> Session::release(const Change& change) {
                     field(item.cleared_camera->root.id(), item.cleared_camera->path);
             } else if constexpr (std::is_same_v<T, NameChange>)
                 drop(item.root.id(), name);
+            else if constexpr (std::is_same_v<T, EnabledChange>)
+                drop(item.root.id(), enabled_key);
             else if constexpr (std::is_same_v<T, BodyChange>)
                 drop(item.root.id(), body);
             else if constexpr (std::is_same_v<T, TransformChange>) {

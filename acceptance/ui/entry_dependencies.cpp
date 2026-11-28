@@ -114,12 +114,12 @@ void verify_number_row_sign(std::shared_ptr<Component> component, ui::ControlKey
                                     const auto* clipboard =
                                         platform ? std::get_if<ui::ClipboardRequest>(platform) : nullptr;
                                     return clipboard && clipboard->kind == ui::ClipboardKind::copy &&
-                                           clipboard->text == L"-0";
+                                           clipboard->text == "-0";
                                 }),
             "The focused editor number field did not expose the updated -0 text.");
     ui::Event typed{};
     typed.kind = ui::EventKind::text;
-    typed.data = std::wstring{L"0"};
+    typed.data = String::literal<"0">();
     const auto preview = session.input(typed);
     require(std::ranges::any_of(preview.effects,
                                 [&](const ui::Effect& effect) {
@@ -262,7 +262,7 @@ void verify_ui_entry_dependencies() {
     require(valid_source.has_value(), "assets/editor.ui.source is not valid UTF-8.");
     String source = std::move(*valid_source);
     const auto declarations = take(lower_module("editor.ui.source", source));
-    require(declarations.size() == 48, "Update the real-editor dependency workload when its component set changes.");
+    require(declarations.size() == 49, "Update the real-editor dependency workload when its component set changes.");
     const auto jit_components = std::ranges::count_if(declarations, [](const auto& item) { return item.needs_jit; });
     require(jit_components == 20, "Unexpected JIT component count for assets/editor.ui.source.");
     auto now = LiveDocument::Clock::now();
@@ -311,27 +311,27 @@ void verify_ui_entry_dependencies() {
         require(source.replace(at, original.size(), replacement).has_value(), original);
     };
     reload(source);
-    present(56);
+    present(34);
     verify_number_row_sign(document.component("WorkbenchRgb"), next);
     const auto old = document.component("ToolShelf");
     const auto initial_shelf_stats = document.statistics("ToolShelf");
     require(initial_shelf_stats.has_value(), "Missing initial ToolShelf statistics.");
     const auto instance = initial_shelf_stats->instance;
     const auto types = runtime.type_count();
-    replace("return 56.0d;", "return 57.0d;");
+    replace("return 34.0d;", "return 35.0d;");
     reload(source);
-    present(57);
+    present(35);
     changed({"ToolShelf"}, Compilation::reused_dependencies);
     require(source.insert(0, "// move all author positions\n").has_value(), "insert comment in editor source");
     reload(source);
-    present(57);
+    present(35);
     changed({}, Compilation::reused_source);
     const auto revision = document.revision();
     reload(String::concat("double unused_probe() { return \"wrong\"; }\n", source));
     require(document.diagnostic().contains(":1:32: Type mismatch") && document.revision() == revision &&
                 document.committed_source() == source,
             document.diagnostic());
-    present(57);
+    present(35);
     for (const StringView type_decl :
          {"struct RejectedUiType { double value; };\n", "[Flags] enum RejectedUiFlags : uint { bit = 1 }\n"}) {
         reload(String::concat(String::validated(type_decl), source));
@@ -340,17 +340,17 @@ void verify_ui_entry_dependencies() {
                     document.revision() == revision && document.committed_source() == source &&
                     runtime.type_count() == types,
                 document.diagnostic());
-        present(57);
+        present(35);
     }
     require(source.insert(0, "double unused_probe() { return 1.0d; }\n").has_value(), "insert valid unused_probe");
     reload(source);
-    present(57);
+    present(35);
     changed({}, Compilation::reused_dependencies);
-    replace("return 57.0d;", "return rail_button_length(180.0d);");
+    replace("return 35.0d;", "return rail_button_length(180.0d);");
     reload(source);
-    present(36);
+    present(28);
     changed({"ToolShelf"}, Compilation::reused_dependencies);
-    replace("return 36.0d;", "return 38.0d;");
+    replace("return 28.0d;", "return 38.0d;");
     reload(source);
     present(38);
     changed({"PaneDivider", "ToolShelf"}, Compilation::reused_dependencies);
@@ -405,7 +405,7 @@ void verify_ui_entry_dependencies() {
                 recovered_shelf_stats->instance == instance,
             "A superseded failure displaced the accepted editor instance.");
     auto pinned = take(Instance::create(old, 0, next, keys, inputs));
-    require(pinned->controls().front().layout.height.value == 56, "Old ToolShelf lost its pinned entry.");
+    require(pinned->controls().front().layout.height.value == 34, "Old ToolShelf lost its pinned entry.");
     // A new Runtime type invalidates all 44 capture-time reuse decisions.
     save(path, newer);
     begin(document, now);

@@ -245,6 +245,11 @@ Result<bool> Scene::update_mesh(world::World::SpatialPass& pass, std::size_t slo
         cached.reset();
         return had;
     };
+    if (!member.active) {
+        mesh_tracker_.index_materials(slot, {});
+        mesh_tracker_.materials_dirty.set(slot, false);
+        return drop();
+    }
     ATELIER_TRY_BIND(matrix, pass.matrix(owner));
     if (!*matrix ||
         pass.degenerate(owner, **matrix, "A zero scale axis makes this space degenerate; meshes in it are not drawn."))
@@ -517,7 +522,7 @@ Result<void> Scene::update_meshes(std::uint64_t serial, const detail::Presented*
         ATELIER_TRY_BIND(changed, update_mesh(*pass, slot, (*meshes)[slot]));
         if (*changed)
             mesh_slots_[slot].changed = version_ = serial;
-        const bool always = !mesh_slots_[slot].item;
+        const bool always = !mesh_slots_[slot].item && (*meshes)[slot].active;
         if (always && !mesh_tracker_.volatile_flags[slot])
             mesh_tracker_.volatile_slots.add(slot);
         mesh_tracker_.volatile_flags.set(slot, always);

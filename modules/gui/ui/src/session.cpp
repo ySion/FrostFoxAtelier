@@ -1,8 +1,12 @@
 #include "ui/session.hpp"
+#include "detail/code_syntax.hpp"
+#include "foundation/inline_array.hpp"
+#include "foundation/result.hpp"
+#include "memory/fatal.hpp"
+#include "platform/utf.hpp"
 #include "ui/detail/number_bits.hpp"
 #include "ui/text.hpp"
 #include "foundation/map.hpp"
-#include "foundation/result.hpp"
 #include "foundation/scope_exit.hpp"
 #include "foundation/set.hpp"
 #include <algorithm>
@@ -10,7 +14,6 @@
 #include <charconv>
 #include <chrono>
 #include <cmath>
-#include <cwctype>
 #include <map>
 #include <type_traits>
 #include <utility>
@@ -19,11 +22,13 @@ namespace atelier::ui {
 namespace {
 constexpr std::array ladder_steps{100., 10., 1., .1, .01, .001, .0001};
 
-constexpr std::array ladder_labels{L"100", L"10", L"1", L".1", L".01", L".001", L".0001"};
+constexpr std::array<StringView, 7> ladder_labels{"100", "10", "1", ".1", ".01", ".001", ".0001"};
 
 constexpr float ladder_tick_distance = 4;
 
 const detail::TextKey tooltip_title_key{0, 0, true};
+
+const detail::TextKey tooltip_identity_key{0, 1, true};
 
 const detail::TextKey tooltip_body_key{0, 0, false}; // Transient slot; value ladder and help are mutually exclusive.
 
@@ -99,6 +104,23 @@ detail::TextStore::Symbol icon_symbol(ControlIcon icon) {
            : icon == Icon::snowflake        ? Symbol::snowflake
            : icon == Icon::eye              ? Symbol::eye
            : icon == Icon::template_flag    ? Symbol::template_flag
+           : icon == Icon::eye_off          ? Symbol::eye_off
+           : icon == Icon::scene            ? Symbol::scene
+           : icon == Icon::material         ? Symbol::material
+           : icon == Icon::texture          ? Symbol::texture
+           : icon == Icon::source_file      ? Symbol::source_file
+           : icon == Icon::procgraph        ? Symbol::procgraph
+           : icon == Icon::physics          ? Symbol::physics
+           : icon == Icon::camera           ? Symbol::camera
+           : icon == Icon::copy             ? Symbol::copy
+           : icon == Icon::save             ? Symbol::save
+           : icon == Icon::play             ? Symbol::play
+           : icon == Icon::stop             ? Symbol::stop
+           : icon == Icon::build            ? Symbol::build
+           : icon == Icon::reload           ? Symbol::reload
+           : icon == Icon::warning          ? Symbol::warning
+           : icon == Icon::lock             ? Symbol::lock
+           : icon == Icon::unlock           ? Symbol::unlock
            : icon == Icon::left             ? Symbol::left
            : icon == Icon::right            ? Symbol::right
            : icon == Icon::up               ? Symbol::up
@@ -142,9 +164,45 @@ bool editable(ControlKind kind) {
 }
 
 Rect slider_track(Rect bounds, float scale) {
-    const auto inset = std::min(7 * scale, bounds.width * .5f);
-    return {bounds.x + inset, bounds.y + bounds.height * .5f - scale, std::max(0.f, bounds.width - 2 * inset),
-            2 * scale};
+    const auto inset = std::min(5.f * scale, bounds.width * .5f);
+    const auto h = std::min(4.f * scale, bounds.height);
+    return {bounds.x + inset, bounds.y + (bounds.height - h) * .5f, std::max(0.f, bounds.width - 2 * inset), h};
+}
+
+std::array<float, 3> hsv_linear_rgb(double hue_deg, float s, float v) noexcept {
+    const float h = static_cast<float>(std::fmod(std::clamp(hue_deg, 0.0, 360.0), 360.0) / 60.0);
+    const float c = v * s;
+    const float x = c * (1.f - std::abs(std::fmod(h, 2.f) - 1.f));
+    const float m = v - c;
+    float r = 0;
+    float g = 0;
+    float b = 0;
+    if (h < 1.f) {
+        r = c;
+        g = x;
+    } else if (h < 2.f) {
+        r = x;
+        g = c;
+    } else if (h < 3.f) {
+        g = c;
+        b = x;
+    } else if (h < 4.f) {
+        g = x;
+        b = c;
+    } else if (h < 5.f) {
+        r = x;
+        b = c;
+    } else {
+        r = c;
+        b = x;
+    }
+    return {r + m, g + m, b + m};
+}
+
+std::uint8_t encode_srgb_byte(float linear) noexcept {
+    const float clamped = std::clamp(linear, 0.f, 1.f);
+    const float srgb = clamped <= .0031308f ? clamped * 12.92f : 1.055f * std::pow(clamped, 1.f / 2.4f) - .055f;
+    return static_cast<std::uint8_t>(std::lround(std::clamp(srgb, 0.f, 1.f) * 255.f));
 }
 
 bool focusable(ControlKind kind) {
@@ -226,7 +284,71 @@ bool visible(Rect bounds, Clip clip) {
            bounds.y + bounds.height > clip.top;
 }
 
-std::wstring format(double value, bool single_precision = false, bool integral = false) {
+bool valid_wide_text(std::wstring_view text, bool single_line = true) noexcept {
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        const auto c = static_cast<std::uint16_t>(text[i]);
+        if (!c || (single_line && (c < 32 || c == 127 || c == 0x2028 || c == 0x2029)))
+            return false;
+        if (c >= 0xd800 && c <= 0xdbff) {
+            if (++i == text.size() || text[i] < 0xdc00 || text[i] > 0xdfff)
+                return false;
+        } else if (c >= 0xdc00 && c <= 0xdfff) {
+            return false;
+        }
+    }
+    return true;
+}
+
+String wide_to_utf8(std::wstring_view text) {
+    auto converted = platform::utf16_to_utf8(text);
+    if (!converted)
+        fatal("Validated UI wide text failed UTF-8 conversion.");
+    return std::move(*converted);
+}
+
+StringView wide_to_utf8_scratch(std::wstring_view text, InlineArray<char, 256>& scratch) {
+    scratch.clear();
+    if (text.empty())
+        return {};
+    if (text.size() <= 85) {
+        for (std::size_t i = 0; i < text.size(); ++i) {
+            const auto c = static_cast<std::uint32_t>(static_cast<std::uint16_t>(text[i]));
+            if (c < 0x80u) {
+                scratch.add(static_cast<char>(c));
+            } else if (c < 0x800u) {
+                scratch.add(static_cast<char>(0xc0u | (c >> 6)));
+                scratch.add(static_cast<char>(0x80u | (c & 0x3fu)));
+            } else if (c >= 0xd800u && c <= 0xdbffu) {
+                if (i + 1 >= text.size())
+                    fatal("Validated UI wide text failed UTF-8 conversion.");
+                const auto trail = static_cast<std::uint32_t>(static_cast<std::uint16_t>(text[++i]));
+                if (trail < 0xdc00u || trail > 0xdfffu)
+                    fatal("Validated UI wide text failed UTF-8 conversion.");
+                const std::uint32_t cp = 0x10000u + (((c - 0xd800u) << 10) | (trail - 0xdc00u));
+                scratch.add(static_cast<char>(0xf0u | (cp >> 18)));
+                scratch.add(static_cast<char>(0x80u | ((cp >> 12) & 0x3fu)));
+                scratch.add(static_cast<char>(0x80u | ((cp >> 6) & 0x3fu)));
+                scratch.add(static_cast<char>(0x80u | (cp & 0x3fu)));
+            } else if (c < 0xd800u || c > 0xdfffu) {
+                scratch.add(static_cast<char>(0xe0u | (c >> 12)));
+                scratch.add(static_cast<char>(0x80u | ((c >> 6) & 0x3fu)));
+                scratch.add(static_cast<char>(0x80u | (c & 0x3fu)));
+            } else {
+                fatal("Validated UI wide text failed UTF-8 conversion.");
+            }
+        }
+        return StringView{scratch.data(), scratch.size()};
+    }
+    const String heap = wide_to_utf8(text);
+    scratch.append(Span<const char>{heap.c_str(), heap.size()});
+    return StringView{scratch.data(), scratch.size()};
+}
+
+std::wstring utf8_to_wide(StringView text) {
+    return platform::utf8_to_utf16_validated(text);
+}
+
+String format(double value, bool single_precision = false, bool integral = false) {
     char buffer[64];
     std::to_chars_result result{};
     if (integral && value >= -9007199254740992.0 && value <= 9007199254740992.0 && std::trunc(value) == value) {
@@ -236,11 +358,11 @@ std::wstring format(double value, bool single_precision = false, bool integral =
                                   : std::to_chars(buffer, buffer + sizeof(buffer), value);
     }
     if (result.ec != std::errc{})
-        return L"0";
-    return std::wstring(buffer, result.ptr);
+        return String::literal<"0">();
+    return String::from_utf8_validated({buffer, static_cast<std::size_t>(result.ptr - buffer)});
 }
 
-std::wstring format(const Control& control, double value) {
+String format(const Control& control, double value) {
     return format(value, control.single_precision, control.integral);
 }
 
@@ -254,21 +376,19 @@ double quantize_control_value(const Control& control, double raw) {
     return res == 0.0 ? 0.0 : res;
 }
 
-Optional<double> number(std::wstring_view text, const Control& control) {
+Optional<double> number(StringView text, const Control& control) {
     if (text.empty() || text.size() > 64)
         return {};
-    char buffer[64];
-    for (std::size_t i = 0; i < text.size(); ++i) {
-        if (text[i] > 127)
+    for (std::size_t i = 0; i < text.size(); ++i)
+        if (static_cast<unsigned char>(text[i]) >= 128u)
             return {};
-        buffer[i] = static_cast<char>(text[i]);
-    }
-    const auto* begin = buffer;
+    const char* begin = text.data();
+    const char* end = text.data() + text.size();
     if (*begin == '+')
         ++begin;
     double value{};
-    const auto parsed = std::from_chars(begin, buffer + text.size(), value, std::chars_format::general);
-    if (parsed.ec != std::errc{} || parsed.ptr != buffer + text.size() || !std::isfinite(value))
+    const auto parsed = std::from_chars(begin, end, value, std::chars_format::general);
+    if (parsed.ec != std::errc{} || parsed.ptr != end || !std::isfinite(value))
         return {};
     if (control.integral && std::trunc(value) != value)
         return {};
@@ -285,46 +405,69 @@ bool Control::operator==(const Control& other) const {
            number_bits(drag_step) == number_bits(other.drag_step) &&
            number_bits(fine_step) == number_bits(other.fine_step) &&
            default_value.transform(number_bits) == other.default_value.transform(number_bits) &&
-           layout == other.layout && text == other.text && single_line == other.single_line && role == other.role &&
-           icon == other.icon && enabled == other.enabled && selected == other.selected &&
-           click_action == other.click_action && single_precision == other.single_precision &&
-           integral == other.integral && drag_axis == other.drag_axis && classes == other.classes &&
-           style == other.style && style_scope == other.style_scope && invalid == other.invalid &&
-           modified == other.modified && context_target == other.context_target &&
+           layout == other.layout && text == other.text && placeholder == other.placeholder &&
+           single_line == other.single_line && role == other.role && icon == other.icon && enabled == other.enabled &&
+           selected == other.selected && click_action == other.click_action &&
+           single_precision == other.single_precision && integral == other.integral && drag_axis == other.drag_axis &&
+           classes == other.classes && style == other.style && style_scope == other.style_scope &&
+           invalid == other.invalid && modified == other.modified && context_target == other.context_target &&
            context_group == other.context_group && selection_group == other.selection_group &&
            action_target == other.action_target && tree_row_count == other.tree_row_count &&
            tree_index == other.tree_index && tree_depth == other.tree_depth && tree_branch == other.tree_branch &&
            tree_expanded == other.tree_expanded && tree_lines == other.tree_lines &&
            tree_primary == other.tree_primary && tree_draggable == other.tree_draggable &&
+           tree_badges == other.tree_badges && tree_trailing_icon == other.tree_trailing_icon &&
+           tree_trailing_dimmed == other.tree_trailing_dimmed && transient_edit == other.transient_edit &&
+           rename_anchor == other.rename_anchor && rename_cell == other.rename_cell &&
            popup_owner == other.popup_owner && menu_branch == other.menu_branch && edit_command == other.edit_command &&
            button_behavior == other.button_behavior && menu_behavior == other.menu_behavior &&
            radio_group == other.radio_group && table == other.table && table_selection == other.table_selection &&
-           table_layout == other.table_layout && code == other.code && tooltip == other.tooltip &&
+           table_layout == other.table_layout && code == other.code &&
+           (code_annotations == other.code_annotations ||
+            (code_annotations && other.code_annotations && *code_annotations == *other.code_annotations)) &&
+           tooltip == other.tooltip &&
            (canvas == other.canvas || (canvas && other.canvas && *canvas == *other.canvas)) &&
-           read_only == other.read_only;
+           read_only == other.read_only && number_bits(color_hue) == number_bits(other.color_hue) &&
+           number_bits(color_value) == number_bits(other.color_value);
 }
 
 Result<void> validate_control_properties(const Control& control) {
-    if (!control.key || static_cast<unsigned>(control.kind) > static_cast<unsigned>(ControlKind::code_editor) ||
+    if (!control.key || static_cast<unsigned>(control.kind) > static_cast<unsigned>(ControlKind::color_plane) ||
         static_cast<unsigned>(control.role) > static_cast<unsigned>(Role::caption) || control.text.size() > 4096 ||
-        !std::isfinite(control.value) || !std::isfinite(control.minimum) || !std::isfinite(control.maximum) ||
-        control.minimum > control.maximum || !std::isfinite(control.drag_step) || !std::isfinite(control.fine_step) ||
-        control.drag_step <= 0 || control.fine_step <= 0 ||
+        control.placeholder.size() > 4096 || !std::isfinite(control.value) || !std::isfinite(control.minimum) ||
+        !std::isfinite(control.maximum) || control.minimum > control.maximum || !std::isfinite(control.drag_step) ||
+        !std::isfinite(control.fine_step) || control.drag_step <= 0 || control.fine_step <= 0 ||
+        !std::isfinite(control.color_hue) || !std::isfinite(control.color_value) ||
         static_cast<unsigned>(control.drag_axis) > static_cast<unsigned>(DragAxis::vertical) ||
         static_cast<unsigned>(control.button_behavior) > static_cast<unsigned>(ButtonBehavior::toggle) ||
         static_cast<unsigned>(control.menu_behavior) > static_cast<unsigned>(MenuBehavior::radio))
         return std::unexpected(Error{ErrorCode::invalid_control, control.key});
+    if ((!control.placeholder.empty() && control.kind != ControlKind::text_edit) ||
+        (control.kind != ControlKind::color_plane && (control.color_hue != 0 || control.color_value != 1)) ||
+        (control.kind == ControlKind::color_plane &&
+         (control.color_hue < 0 || control.color_hue > 360 || control.color_value < 0 || control.color_value > 1 ||
+          (control.drag_axis != DragAxis::vertical && (control.value < 0 || control.value > 1)))))
+        return std::unexpected(Error{ErrorCode::invalid_control, control.key});
     if (static_cast<unsigned>(control.icon) > static_cast<unsigned>(last_control_icon) ||
+        static_cast<unsigned>(control.tree_trailing_icon) > static_cast<unsigned>(last_control_icon) ||
+        std::ranges::any_of(
+            control.tree_badges,
+            [](ControlIcon b) { return static_cast<unsigned>(b) > static_cast<unsigned>(last_control_icon); }) ||
         (control.icon != ControlIcon::none && control.kind != ControlKind::button &&
          control.kind != ControlKind::label && control.kind != ControlKind::splitter &&
          control.kind != ControlKind::combo && control.kind != ControlKind::tree_item &&
-         control.kind != ControlKind::menu_item) ||
+         control.kind != ControlKind::menu_item && control.kind != ControlKind::foldout &&
+         control.kind != ControlKind::tab) ||
+        ((control.transient_edit || control.rename_anchor || control.rename_cell) &&
+         control.kind != ControlKind::text_edit) ||
+        (control.rename_cell && !control.rename_anchor) ||
         (control.click_action && control.kind != ControlKind::splitter) ||
         (control.action_target && control.kind != ControlKind::button && control.kind != ControlKind::checkbox &&
          control.kind != ControlKind::table) ||
         ((control.kind == ControlKind::table) != static_cast<bool>(control.table)) ||
         ((control.kind == ControlKind::code_editor) != static_cast<bool>(control.code)) ||
-        (control.read_only && control.kind != ControlKind::code_editor) ||
+        (control.code_annotations && control.kind != ControlKind::code_editor) ||
+        (control.read_only && control.kind != ControlKind::code_editor && control.kind != ControlKind::text_edit) ||
         (control.integral &&
          ((control.kind != ControlKind::number && control.kind != ControlKind::slider) || control.single_precision ||
           std::ceil(control.minimum) > std::floor(control.maximum) ||
@@ -349,23 +492,26 @@ Result<void> validate_control_properties(const Control& control) {
          (control.minimum >= control.maximum || !std::isfinite(control.maximum - control.minimum) ||
           (control.integral && std::ceil(control.minimum) >= std::floor(control.maximum)))))
         return std::unexpected(Error{ErrorCode::invalid_control, control.key});
-    if (!detail::valid_text(control.text, control.kind == ControlKind::text_edit))
+    if (!valid_wide_text(control.text, control.kind == ControlKind::text_edit) ||
+        !valid_wide_text(control.placeholder, true))
         return std::unexpected(Error{ErrorCode::invalid_control, control.key});
     if ((control.kind != ControlKind::tree && control.tree_row_count) || control.tree_row_count > maximum_tree_rows ||
         (control.kind != ControlKind::tree_item &&
          (control.tree_index || control.tree_depth || control.tree_branch || control.tree_expanded ||
-          control.tree_lines.any() || control.tree_primary)) ||
+          control.tree_lines.any() || control.tree_primary || control.tree_trailing_icon != ControlIcon::none ||
+          control.tree_trailing_dimmed ||
+          std::ranges::any_of(control.tree_badges, [](ControlIcon b) { return b != ControlIcon::none; }))) ||
         control.tree_depth >= 128 || (control.tree_expanded && !control.tree_branch) || control.tree_lines[0] ||
         (control.tree_lines >> (control.tree_depth + 1)).any())
         return std::unexpected(Error{ErrorCode::invalid_control, control.key});
     if (control.tooltip) {
         const auto& help = *control.tooltip;
         const auto multiline = [](std::wstring_view value) {
-            return detail::valid_text(value, false) && std::ranges::all_of(value, [](wchar_t c) {
+            return valid_wide_text(value, false) && std::ranges::all_of(value, [](wchar_t c) {
                        return c >= 32 || c == L'\n' || c == L'\r' || c == L'\t';
                    });
         };
-        if (!detail::valid_text(help.title) || !detail::valid_text(help.identity) || !multiline(help.description))
+        if (!valid_wide_text(help.title) || !valid_wide_text(help.identity) || !multiline(help.description))
             return std::unexpected(Error{ErrorCode::invalid_control, control.key});
     }
     if (control.canvas) {
@@ -458,6 +604,24 @@ const CodeGeometry* UiFrame::find_code(ControlKey key) const noexcept {
     return at == code_editors.end() ? nullptr : &*at;
 }
 
+std::optional<std::uint32_t> UiFrame::code_offset_at(ControlKey key, float x, float y) const {
+    const auto* geometry = find_code(key);
+    if (!geometry || geometry->lines.empty() || x < geometry->body.x || x >= geometry->body.x + geometry->body.width ||
+        y < geometry->body.y || y >= geometry->body.y + geometry->body.height)
+        return std::nullopt;
+    for (const auto& line : geometry->lines) {
+        if (y >= line.y && y < line.y + geometry->line_height) {
+            if (!line.paragraph)
+                return std::nullopt;
+            const auto pos = line.paragraph->hit((x - line.x) / geometry->scale, (y - line.y) / geometry->scale);
+            if (!pos)
+                return std::nullopt;
+            return line.start + pos->offset;
+        }
+    }
+    return std::nullopt;
+}
+
 struct Session::Impl {
     using TableIndex = Map<TableKey, std::size_t>;
 
@@ -502,6 +666,22 @@ struct Session::Impl {
         std::uint64_t code_selection_revision{};
 
         std::uint64_t code_revision{};
+
+        std::uint64_t code_comment_revision{};
+
+        CodeLanguage code_comment_lang{CodeLanguage::plain};
+
+        Array<std::uint8_t> code_block_comments;
+
+        std::uint64_t code_scope_revision{std::numeric_limits<std::uint64_t>::max()};
+
+        CodeLanguage code_scope_lang{CodeLanguage::plain};
+
+        std::uint32_t code_scope_caret{std::numeric_limits<std::uint32_t>::max()};
+
+        Optional<detail::CodeBracketMatch> code_bracket_match;
+
+        detail::ActiveIndentScope code_active_scope{0, 0, std::numeric_limits<std::uint32_t>::max()};
 
         float code_width{};
 
@@ -589,6 +769,8 @@ struct Session::Impl {
 
         bool tree_disclosure{};
 
+        bool tree_trailing{};
+
         bool scrollbar{}; // Scroll offset belongs to the UI, never a document edit.
 
         bool horizontal{};
@@ -600,6 +782,18 @@ struct Session::Impl {
         bool table_resize{};
 
         bool table_activate{};
+
+        Rect color_bounds{};
+
+        DragPoint color_sv_original{};
+
+        DragPoint color_sv{};
+
+        std::uint8_t code_select_mode{}; // 0 = char, 1 = word, 2 = line.
+
+        std::uint32_t code_anchor_start{};
+
+        std::uint32_t code_anchor_end{};
     };
 
     struct Edit {
@@ -655,12 +849,12 @@ struct Session::Impl {
                 document_selection = buffer().selection_revision();
         }
 
-        static Result<Edit> create(const State& state, std::wstring value, double numeric, bool mode, bool select_all) {
+        static Result<Edit> create(const State& state, String value, double numeric, bool mode, bool select_all) {
             Edit result(state, numeric, mode);
             if (!result.document) {
-                ATELIER_TRY_BIND(buffer, detail::TextEdit::create(std::move(value),
-                                                                  state.control.kind == ControlKind::number ? 64 : 4096,
-                                                                  select_all));
+                ATELIER_TRY_BIND(
+                    buffer, detail::TextEdit::create(
+                                std::move(value), state.control.kind == ControlKind::number ? 64 : 16384, select_all));
                 result.field_buffer.emplace(std::move(*buffer));
             }
             return result;
@@ -717,6 +911,12 @@ struct Session::Impl {
 
     ControlKey hover{};
 
+    float hover_x{};
+
+    float hover_y{};
+
+    std::optional<ClipboardRequest> table_clipboard;
+
     ControlKey keyboard_pressed{};
 
     Key keyboard_key{Key::none};
@@ -762,9 +962,13 @@ struct Session::Impl {
 
         ui_layout::MeasuredSize title_size{};
 
+        ui_layout::MeasuredSize identity_size{};
+
         ui_layout::MeasuredSize body_size{};
 
         detail::RasterText title;
+
+        detail::RasterText identity;
 
         detail::RasterText body;
     };
@@ -772,6 +976,60 @@ struct Session::Impl {
     Optional<TooltipHover> tooltip_hover;
 
     Optional<TooltipCache> tooltip_cache;
+
+    std::shared_ptr<const ColorImage> hue_bar_image;
+
+    double sv_cached_hue{-1.0};
+
+    std::shared_ptr<const ColorImage> sv_plane_image;
+
+    const std::shared_ptr<const ColorImage>& ensure_hue_bar() {
+        if (!hue_bar_image) {
+            auto img = std::make_shared<ColorImage>();
+            img->identity = detail::new_identity();
+            img->revision = 1;
+            img->width = 1;
+            img->height = 128;
+            img->row_pitch = 4;
+            img->pixels.resize(128 * 4);
+            for (unsigned y = 0; y < 128; ++y) {
+                const auto rgb = hsv_linear_rgb(static_cast<double>(y) / 127.0 * 360.0, 1.f, 1.f);
+                img->pixels[y * 4 + 0] = encode_srgb_byte(rgb[0]);
+                img->pixels[y * 4 + 1] = encode_srgb_byte(rgb[1]);
+                img->pixels[y * 4 + 2] = encode_srgb_byte(rgb[2]);
+                img->pixels[y * 4 + 3] = 255;
+            }
+            hue_bar_image = std::move(img);
+        }
+        return hue_bar_image;
+    }
+
+    const std::shared_ptr<const ColorImage>& ensure_sv_plane(double hue) {
+        if (!sv_plane_image || std::abs(sv_cached_hue - hue) > 1e-4) {
+            auto img = std::make_shared<ColorImage>();
+            img->identity = detail::new_identity();
+            img->revision = 1;
+            img->width = 64;
+            img->height = 64;
+            img->row_pitch = 64 * 4;
+            img->pixels.resize(64 * 64 * 4);
+            for (unsigned y = 0; y < 64; ++y) {
+                const float v = 1.f - static_cast<float>(y) / 63.f;
+                for (unsigned x = 0; x < 64; ++x) {
+                    const float s = static_cast<float>(x) / 63.f;
+                    const auto rgb = hsv_linear_rgb(hue, s, v);
+                    const std::size_t idx = (y * 64 + x) * 4;
+                    img->pixels[idx + 0] = encode_srgb_byte(rgb[0]);
+                    img->pixels[idx + 1] = encode_srgb_byte(rgb[1]);
+                    img->pixels[idx + 2] = encode_srgb_byte(rgb[2]);
+                    img->pixels[idx + 3] = 255;
+                }
+            }
+            sv_cached_hue = hue;
+            sv_plane_image = std::move(img);
+        }
+        return sv_plane_image;
+    }
 
     Impl() { static_cast<void>(layout.set_root({ui_layout::Kind::overlay})); }
 
@@ -832,6 +1090,7 @@ struct Session::Impl {
         if (focus == next)
             return;
         retire_keyboard(reply);
+        table_clipboard.reset();
         focus = next;
         reply.redraw = true;
     }
@@ -893,7 +1152,12 @@ struct Session::Impl {
         auto input = state.control.layout;
         const auto& appearance = *state.resolved;
         input.padding = padding;
-        if (state.control.kind == ControlKind::tree_item) {
+        if (state.control.rename_anchor) {
+            input.out_of_flow = true;
+            input.anchor_x = input.anchor_y = input.pivot_x = input.pivot_y = input.offset_x = input.offset_y = 0;
+            input.width = ui_layout::Axis::fixed(padding.left + padding.right + 1.f);
+            input.height = ui_layout::Axis::fixed(padding.top + padding.bottom + 1.f);
+        } else if (state.control.kind == ControlKind::tree_item) {
             // A described row sits at its host row index; rows outside the window have no node.
             const auto row_height = states.at(state.control.parent).resolved->tree_row_height;
             input.out_of_flow = true;
@@ -912,15 +1176,22 @@ struct Session::Impl {
         if (text_kind(state.control.kind)) {
             input.kind = ui_layout::Kind::measured;
             input.content_key = state.control.key;
-            input.content_revision =
-                text_field(state.control.kind)
-                    ? text.set(state.control.key, display(state), appearance.font, false, appearance.text_align)
-                    : text.set(state.control.key, state.control.text, appearance.font,
-                               state.control.kind == ControlKind::label && !state.control.single_line,
-                               appearance.text_align,
-                               state.control.kind == ControlKind::label && state.control.single_line);
+            if (text_field(state.control.kind)) {
+                const String content_u8 = display(state);
+                input.content_revision =
+                    text.set(state.control.key, content_u8.view(), appearance.font, false, appearance.text_align);
+            } else {
+                InlineArray<char, 256> u8_scratch;
+                const StringView content_u8 = wide_to_utf8_scratch(state.control.text, u8_scratch);
+                input.content_revision = text.set(
+                    state.control.key, content_u8, appearance.font,
+                    state.control.kind == ControlKind::label && !state.control.single_line, appearance.text_align,
+                    (state.control.kind == ControlKind::label && state.control.single_line) ||
+                        state.control.kind == ControlKind::tree_item);
+            }
         } else if (state.control.kind == ControlKind::viewport || state.control.kind == ControlKind::splitter ||
-                   state.control.kind == ControlKind::slider || state.control.kind == ControlKind::table) {
+                   state.control.kind == ControlKind::slider || state.control.kind == ControlKind::table ||
+                   state.control.kind == ControlKind::color_plane) {
             input.kind = ui_layout::Kind::box;
         } else if (scrolling(state.control.kind)) {
             input.kind = ui_layout::Kind::column;
@@ -1339,9 +1610,8 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
         const auto span = bar.horizontal ? bar.bounds.width : bar.bounds.height;
         if (bar.maximum <= 0 || width <= 0 || span <= 0)
             return;
-        const auto step = std::min(appearance.scrollbar_button_size > 0 ? appearance.scrollbar_button_size * scale
-                                                                        : (width >= 8 * scale ? width : 0.f),
-                                   span / 3);
+        const auto step =
+            appearance.scrollbar_button_size > 0 ? std::min(appearance.scrollbar_button_size * scale, span / 3) : 0.f;
         const auto segment = [&](float offset, float length) {
             return bar.horizontal ? Rect{bar.bounds.x + offset, bar.bounds.y, length, width}
                                   : Rect{bar.bounds.x, bar.bounds.y + offset, width, length};
@@ -1359,23 +1629,21 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
             return;
         const auto stroke = std::max(1.f, std::round(scale * 2.f / 3));
         const Color shadow{0, 0, 0, appearance.indicator_border.a};
-        paint_box(bar.track, bar.clip, appearance.indicator_background, {}, {}, stroke, shadow, BorderStyle::solid);
-        paint_box(bar.thumb, bar.clip, appearance.scrollbar, appearance.scrollbar_image, {}, stroke,
-                  appearance.indicator_border, BorderStyle::solid);
-        if (length > 12 * scale && width > 7 * scale) {
-            const auto pitch = std::max(2.f, std::round(scale * 4.f / 3));
-            const auto center_x = bar.thumb.x + bar.thumb.width * .5f;
-            const auto center_y = bar.thumb.y + bar.thumb.height * .5f;
-            for (int row = 0; row < 4; ++row)
-                for (int column = 0; column < 3; ++column) {
-                    const auto across = (column - 1) * pitch;
-                    const auto along = (row - 1.5f) * pitch;
-                    const auto x = std::round(center_x + (bar.horizontal ? along : across));
-                    const auto y = std::round(center_y + (bar.horizontal ? across : along));
-                    quad({x + stroke, y + stroke, stroke, stroke}, bar.clip, appearance.indicator_border);
-                    quad({x, y, stroke, stroke}, bar.clip, shadow);
-                }
+        const float r = std::min(1.5f * scale, width * .5f);
+        const CornerRadii radii{r, r, r, r};
+        const bool dragging = self.press && self.press->scrollbar && self.press->key == bar.key &&
+                              self.press->horizontal == bar.horizontal;
+        const bool hot = enabled && (dragging || self.hover == bar.key);
+        auto thumb_fill = appearance.scrollbar;
+        if (hot) {
+            const float boost = dragging ? .18f : .09f;
+            thumb_fill.r = std::min(1.f, thumb_fill.r + boost);
+            thumb_fill.g = std::min(1.f, thumb_fill.g + boost);
+            thumb_fill.b = std::min(1.f, thumb_fill.b + boost);
         }
+        paint_box(bar.track, bar.clip, appearance.indicator_background, {}, radii, stroke, shadow, BorderStyle::solid);
+        paint_box(bar.thumb, bar.clip, thumb_fill, appearance.scrollbar_image, radii, stroke,
+                  appearance.indicator_border, BorderStyle::solid);
         for (const auto [button, decrement] : {std::pair{bar.decrement, true}, std::pair{bar.increment, false}}) {
             if (step <= 0)
                 continue;
@@ -1409,6 +1677,8 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
         const auto* box = geometry->find(state.node);
         if (!box)
             continue;
+        float box_width = box->width;
+        float box_height = box->height;
         Rect bounds{box->x * scale, box->y * scale, box->width * scale, box->height * scale};
         Clip clip = target;
         bool enabled = state.control.enabled;
@@ -1430,6 +1700,76 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
                                               std::floor(parent_box.bounds.x + parent_box.bounds.width -
                                                          (style.scrollbar_width + style.scrollbar_inset * 2) * scale)));
             }
+        }
+        if (state.control.rename_anchor) {
+            const auto& anchor_state = self.states.at(state.control.rename_anchor);
+            if (anchor_state.frame_index == std::numeric_limits<std::size_t>::max())
+                continue;
+            const auto& anchor_box = output->controls[anchor_state.frame_index];
+            enabled = enabled && anchor_box.enabled;
+            if (!enabled)
+                continue;
+            if (anchor_state.control.kind == ControlKind::tree_item) {
+                if (anchor_box.bounds.height <= 0 || !visible(anchor_box.bounds, anchor_box.clip))
+                    continue;
+                const auto row_pad = self.padding_for(anchor_state);
+                const float left_dip = std::max(0.f, row_pad.left - 3.f);
+                bounds = {anchor_box.bounds.x + left_dip * scale, anchor_box.bounds.y,
+                          std::max(36.f * scale, anchor_box.bounds.width - (left_dip + row_pad.right) * scale),
+                          anchor_box.bounds.height};
+                clip = intersect(anchor_box.clip, clip_rect(anchor_box.bounds));
+            } else {
+                const auto* table_geom = output->find_table(state.control.rename_anchor);
+                if (!table_geom)
+                    continue;
+                const auto cell_it =
+                    std::ranges::find(table_geom->cells, state.control.rename_cell, &TableCellGeometry::cell);
+                if (cell_it == table_geom->cells.end() || !visible(cell_it->bounds, cell_it->clip))
+                    continue;
+                enabled = enabled && Impl::table_row_enabled(anchor_state, cell_it->row);
+                if (!enabled)
+                    continue;
+                ControlIcon cell_icon = ControlIcon::none;
+                if (anchor_state.control.table) {
+                    if (const auto* r_idx = anchor_state.table_index.find(cell_it->row);
+                        r_idx && *r_idx < anchor_state.control.table->rows.size()) {
+                        for (const auto& c : anchor_state.control.table->rows[*r_idx].cells)
+                            if (c.key == cell_it->cell) {
+                                cell_icon = c.icon;
+                                break;
+                            }
+                    }
+                }
+                const auto& table_style = *anchor_state.resolved;
+                if (anchor_state.control.table_layout.view == TableView::tiles) {
+                    float used = 0.f;
+                    if (cell_icon != ControlIcon::none) {
+                        const float icon_sz =
+                            std::min(table_style.indicator_size * scale,
+                                     std::min(cell_it->bounds.height - 2 * scale, cell_it->bounds.width));
+                        if (icon_sz > 0.f)
+                            used = std::min(cell_it->bounds.height, icon_sz + 8 * scale);
+                    }
+                    const float rem_h = std::max(0.f, cell_it->bounds.height - used);
+                    const float band_h = std::min(22.f * scale, std::max(16.f * scale, rem_h));
+                    const float band_y = cell_it->bounds.y + used + std::max(0.f, rem_h - band_h) * .5f;
+                    bounds = {cell_it->bounds.x + 2 * scale, band_y,
+                              std::max(32.f * scale, cell_it->bounds.width - 4 * scale), band_h};
+                } else {
+                    float lead = std::max(4.f, table_style.padding.left) * scale;
+                    if (cell_icon != ControlIcon::none) {
+                        const float icon_sz =
+                            std::min(table_style.indicator_size * scale, cell_it->bounds.height - 2 * scale);
+                        if (icon_sz > 0.f)
+                            lead += icon_sz + 2 * scale;
+                    }
+                    bounds = {cell_it->bounds.x + lead, cell_it->bounds.y,
+                              std::max(36.f * scale, cell_it->bounds.width - lead - 2 * scale), cell_it->bounds.height};
+                }
+                clip = cell_it->clip;
+            }
+            box_width = bounds.width / scale;
+            box_height = bounds.height / scale;
         }
         if (state.control.kind == ControlKind::popup) {
             bounds.x =
@@ -1470,9 +1810,16 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
             const auto indent = self.states.at(state.control.parent).resolved->tree_indent * scale;
             const auto x = bounds.x + (state.control.layout.padding.left + state.resolved->padding.left) * scale +
                            state.control.tree_depth * indent;
+            Rect trailing_rect{};
+            if (state.control.tree_trailing_icon != ControlIcon::none) {
+                const float right_edge = std::min(bounds.x + bounds.width, static_cast<float>(clip.right)) -
+                                         (state.control.layout.padding.right + state.resolved->padding.right) * scale;
+                const float slot_w = 18.f * scale;
+                trailing_rect = {right_edge - slot_w, bounds.y, slot_w, bounds.height};
+            }
             output->tree_rows.add({key, state.control.tree_index, state.control.tree_depth,
                                    state.control.tree_branch ? Rect{x, bounds.y, indent, bounds.height} : Rect{},
-                                   state.control.tree_expanded});
+                                   trailing_rect, state.control.tree_expanded});
         }
         // Keep every arranged box and its parent transform. Only painting is culled.
         if (!visible(bounds, clip)) {
@@ -1481,10 +1828,10 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
             continue;
         }
         // Popup controls are reordered after scrollbars, outside the contiguous base paint ranges.
-        const bool retain = paint && retains_local_paint(kind) &&
+        const bool retain = paint && retains_local_paint(kind) && !state.control.rename_anchor &&
                             popup_draw_begin == std::numeric_limits<std::size_t>::max() &&
                             !(self.edit && self.edit->key == key) && !(self.press && self.press->key == key);
-        const ui_layout::Size size{box->width, box->height};
+        const ui_layout::Size size{box_width, box_height};
         if (retain) {
             const auto previous = std::exchange(
                 state.paint_range, Impl::State::PaintRange{frame_id, state.frame_index, draws->draws.size(), 0,
@@ -1509,7 +1856,7 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
         // Resolve text geometry once for either mode; painting consumes the
         // same width/metrics rather than resolving an alternate layout path.
         const auto text_padding = text_kind(kind) ? self.padding_for(state) : ui_layout::Insets{};
-        const float text_width = std::max(0.f, box->width - (text_padding.left + text_padding.right));
+        const float text_width = std::max(0.f, box_width - (text_padding.left + text_padding.right));
         ATELIER_TRY_BIND(text_metrics_result, text_kind(kind)
                                                   ? self.text.metrics(key, text_width)
                                                   : Result<ui_layout::MeasuredSize>{ui_layout::MeasuredSize{}});
@@ -1667,31 +2014,73 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
                 const auto cy = std::round(bounds.y + bounds.height * .5f);
                 const auto tree_clip = intersect(clip, clip_rect(bounds));
                 const auto stroke = std::max(1.f, std::round(scale * .667f));
+                Color guide_color = tree_style.tree_line;
+                guide_color.a *= .7f;
                 if (depth) {
                     const auto px = std::round(cx - indent);
                     quad({px, bounds.y, stroke, (state.control.tree_lines[depth] ? bounds.height : cy - bounds.y)},
-                         tree_clip, tree_style.tree_line);
-                    quad({px, cy, indent + (state.control.tree_branch ? 0 : indent * .5f), stroke}, tree_clip,
-                         tree_style.tree_line);
+                         tree_clip, guide_color);
+                    const float h_len =
+                        state.control.tree_branch ? std::max(0.f, indent - 5.5f * scale) : indent * .65f;
+                    quad({px, cy, h_len, stroke}, tree_clip, guide_color);
                     for (std::uint32_t level = 1; level < depth; ++level)
                         if (state.control.tree_lines[level])
                             quad({std::round(start + (level - .5f) * indent), bounds.y, stroke, bounds.height},
-                                 tree_clip, tree_style.tree_line);
+                                 tree_clip, guide_color);
                 }
                 if (state.control.tree_branch) {
                     const bool expanded = state.control.tree_expanded;
-                    if (expanded)
-                        quad({cx, cy, stroke, bounds.y + bounds.height - cy}, tree_clip, tree_style.tree_line);
-                    const auto diameter = std::min(9 * scale, indent - 2 * scale);
-                    const auto radius = diameter * .5f;
-                    paint_box({cx - radius, cy - radius, diameter, diameter}, tree_clip,
-                              appearance.indicator_background, {}, {radius, radius, radius, radius}, 0, {},
-                              BorderStyle::solid);
-                    quad({cx - 2.5f * scale, cy - stroke * .5f, 5 * scale, stroke}, tree_clip,
-                         appearance.indicator_border);
-                    if (!expanded)
-                        quad({cx - stroke * .5f, cy - 2.5f * scale, stroke, 5 * scale}, tree_clip,
-                             appearance.indicator_border);
+                    const float tri = std::min(9.5f * scale, std::min(indent - scale, bounds.height - 2 * scale));
+                    if (expanded && cy + tri * .55f < bounds.y + bounds.height)
+                        quad({cx, cy + tri * .55f, stroke, bounds.y + bounds.height - (cy + tri * .55f)}, tree_clip,
+                             guide_color);
+                    if (tri > 0) {
+                        const bool disc_hot = enabled && self.hover == key &&
+                                              contains(output->tree_rows.back().disclosure, self.hover_x, self.hover_y);
+                        Color arrow_col = disc_hot || state.control.selected ? appearance.foreground
+                                                                             : appearance.indicator_background;
+                        quad({cx - tri * .5f, cy - tri * .5f, tri, tri}, tree_clip, arrow_col,
+                             self.text.symbol(expanded ? detail::TextStore::Symbol::disclosure_down
+                                                       : detail::TextStore::Symbol::disclosure_right,
+                                              static_cast<std::uint32_t>(std::ceil(tri))));
+                    }
+                }
+                float cursor_right = std::min(bounds.x + bounds.width, static_cast<float>(clip.right)) -
+                                     (state.control.layout.padding.right + appearance.padding.right) * scale;
+                if (state.control.tree_trailing_icon != ControlIcon::none) {
+                    const Rect& hit_box = output->tree_rows.back().trailing_action;
+                    const bool trail_hot =
+                        enabled && self.hover == key && contains(hit_box, self.hover_x, self.hover_y);
+                    if (trail_hot)
+                        quad({hit_box.x + scale, hit_box.y + 2 * scale, std::max(0.f, hit_box.width - 2 * scale),
+                              std::max(0.f, hit_box.height - 4 * scale)},
+                             tree_clip, Color{1.f, 1.f, 1.f, .09f});
+                    const float sz =
+                        std::min(12.5f * scale, std::min(hit_box.width - 2 * scale, bounds.height - 2 * scale));
+                    if (sz > 0) {
+                        Color ic = trail_hot ? Color{1.f, 1.f, 1.f, 1.f} : appearance.foreground;
+                        if (state.control.tree_trailing_dimmed && !trail_hot)
+                            ic.a *= .42f;
+                        else if (!trail_hot)
+                            ic.a *= .82f;
+                        quad({hit_box.x + (hit_box.width - sz) * .5f, bounds.y + (bounds.height - sz) * .5f, sz, sz},
+                             tree_clip, ic,
+                             self.text.symbol(icon_symbol(state.control.tree_trailing_icon),
+                                              static_cast<std::uint32_t>(std::ceil(sz))));
+                    }
+                    cursor_right = hit_box.x - 2 * scale;
+                }
+                const float badge_sz = std::min(11.f * scale, bounds.height - 4 * scale);
+                if (badge_sz > 0) {
+                    Color bc = appearance.indicator_foreground.value_or(appearance.foreground);
+                    bc.a *= state.control.selected ? .88f : .62f;
+                    for (auto it = state.control.tree_badges.rbegin(); it != state.control.tree_badges.rend(); ++it) {
+                        if (*it == ControlIcon::none)
+                            continue;
+                        cursor_right -= 13.5f * scale;
+                        quad({cursor_right, bounds.y + (bounds.height - badge_sz) * .5f, badge_sz, badge_sz}, tree_clip,
+                             bc, self.text.symbol(icon_symbol(*it), static_cast<std::uint32_t>(std::ceil(badge_sz))));
+                    }
                 }
             }
             if (appearance.accent_width > 0) {
@@ -1705,13 +2094,60 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
                 const auto fraction = static_cast<float>(std::clamp(
                     (value - state.control.minimum) / (state.control.maximum - state.control.minimum), 0.0, 1.0));
                 const auto slider_clip = intersect(clip, clip_rect(bounds));
-                quad(track, slider_clip, appearance.border);
-                quad({track.x, track.y, track.width * fraction, track.height}, slider_clip, appearance.accent);
-                const auto height = std::min(16 * scale, bounds.height);
-                paint_box({track.x + track.width * fraction - 2.5f * scale, bounds.y + (bounds.height - height) * .5f,
-                           5 * scale, height},
-                          slider_clip, appearance.indicator_background, {}, {}, scale, appearance.indicator_border,
-                          BorderStyle::outset);
+                const float r_tr = std::min(1.5f * scale, track.height * .5f);
+                const CornerRadii tr_rad{r_tr, r_tr, r_tr, r_tr};
+                paint_box(track, slider_clip, Color{.086f, .086f, .086f, 1.f}, {}, tr_rad,
+                          std::min(scale * .667f, track.height * .5f), appearance.border, BorderStyle::solid);
+                if (fraction > 0.f)
+                    paint_box({track.x, track.y, track.width * fraction, track.height}, slider_clip, appearance.accent,
+                              {}, tr_rad, 0.f, {}, BorderStyle::solid);
+                const float thumb_w = 4.5f * scale;
+                const float thumb_h = std::min(13.f * scale, std::max(track.height, bounds.height - 2 * scale));
+                const float r_th = std::min(1.5f * scale, thumb_w * .5f);
+                paint_box({track.x + track.width * fraction - thumb_w * .5f, bounds.y + (bounds.height - thumb_h) * .5f,
+                           thumb_w, thumb_h},
+                          slider_clip, appearance.indicator_background, {}, {r_th, r_th, r_th, r_th},
+                          std::min(scale * .667f, thumb_w * .5f), appearance.indicator_border, BorderStyle::solid);
+            }
+            if (kind == ControlKind::color_plane) {
+                const auto plane_clip = intersect(clip, clip_rect(bounds));
+                const Rect inner{bounds.x + border, bounds.y + border, std::max(0.f, bounds.width - 2 * border),
+                                 std::max(0.f, bounds.height - 2 * border)};
+                const CornerRadii inner_r{
+                    std::max(0.f, radius.top_left - border), std::max(0.f, radius.top_right - border),
+                    std::max(0.f, radius.bottom_right - border), std::max(0.f, radius.bottom_left - border)};
+                if (state.control.drag_axis == DragAxis::vertical) {
+                    const double hue =
+                        self.press && self.press->key == key ? self.press->value : state.control.color_hue;
+                    paint_box(inner, plane_clip, {1, 1, 1, 1}, self.ensure_hue_bar(), inner_r, 0.f, {},
+                              BorderStyle::solid);
+                    const float cy = inner.y + std::clamp(static_cast<float>(hue / 360.0), 0.f, 1.f) * inner.height;
+                    const float bar_out = 5.f * scale;
+                    const float bar_in = 3.2f * scale;
+                    paint_box({bounds.x, cy - bar_out * .5f, bounds.width, bar_out}, plane_clip, {0, 0, 0, 0}, {},
+                              {1.5f * scale, 1.5f * scale, 1.5f * scale, 1.5f * scale}, std::max(1.f, 1.25f * scale),
+                              {0, 0, 0, .82f}, BorderStyle::solid);
+                    paint_box({bounds.x + scale, cy - bar_in * .5f, std::max(0.f, bounds.width - 2.f * scale), bar_in},
+                              plane_clip, {0, 0, 0, 0}, {}, {scale, scale, scale, scale}, std::max(1.f, 1.33f * scale),
+                              {1, 1, 1, .96f}, BorderStyle::solid);
+                } else {
+                    const DragPoint sv = self.press && self.press->key == key
+                                             ? self.press->color_sv
+                                             : DragPoint{static_cast<float>(state.control.value),
+                                                         static_cast<float>(state.control.color_value)};
+                    paint_box(inner, plane_clip, {1, 1, 1, 1}, self.ensure_sv_plane(state.control.color_hue), inner_r,
+                              0.f, {}, BorderStyle::solid);
+                    const float cx = inner.x + std::clamp(sv.x, 0.f, 1.f) * inner.width;
+                    const float cy = inner.y + (1.f - std::clamp(sv.y, 0.f, 1.f)) * inner.height;
+                    const float r_out = 5.f * scale;
+                    const float r_in = 4.f * scale;
+                    paint_box({cx - r_out, cy - r_out, r_out * 2.f, r_out * 2.f}, plane_clip, {0, 0, 0, 0}, {},
+                              {r_out, r_out, r_out, r_out}, std::max(1.f, 1.25f * scale), {0, 0, 0, .82f},
+                              BorderStyle::solid);
+                    paint_box({cx - r_in, cy - r_in, r_in * 2.f, r_in * 2.f}, plane_clip, {0, 0, 0, 0}, {},
+                              {r_in, r_in, r_in, r_in}, std::max(1.f, 1.35f * scale), {1, 1, 1, .96f},
+                              BorderStyle::solid);
+                }
             }
             if (state.control.icon != ControlIcon::none) {
                 using Icon = ControlIcon;
@@ -1837,12 +2273,9 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
                              self.text.symbol(detail::TextStore::Symbol::caret,
                                               static_cast<std::uint32_t>(std::ceil(size))));
                 } else {
-                    quad({bounds.x + bounds.width - 15 * scale, bounds.y + border, 15 * scale - border,
-                          std::max(0.f, bounds.height - 2 * border)},
-                         arrow_clip, {0, 0, 0, .17f});
                     const auto arrow = [&](detail::TextStore::Symbol symbol, float cy) {
-                        quad({bounds.x + bounds.width - (15 * scale + size) * .5f, cy - size * .5f, size, size},
-                             arrow_clip, appearance.indicator_foreground.value_or(appearance.foreground),
+                        quad({bounds.x + bounds.width - 5 * scale - size, cy - size * .5f, size, size}, arrow_clip,
+                             appearance.indicator_foreground.value_or(appearance.foreground),
                              self.text.symbol(symbol, static_cast<std::uint32_t>(std::ceil(size))));
                     };
                     if (appearance.combo_indicator == ComboIndicator::arrows) {
@@ -1866,7 +2299,7 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
             const auto& paragraph = *paragraph_result;
             float x = bounds.x + padding.left * scale;
             float y = bounds.y + padding.top * scale;
-            const float content_height = std::max(0.f, box->height - (padding.top + padding.bottom));
+            const float content_height = std::max(0.f, box_height - (padding.top + padding.bottom));
             // Baseline contexts use the same top origin as layout measurement,
             // including text contributing a nested container's first baseline.
             if (!state.baseline_content) {
@@ -1929,9 +2362,25 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
                                            bound && self.edit->composition ? self.edit->composition->id : 0});
             }
             if (paint) {
-                ATELIER_TRY(draw_paragraph(self.text, key, width, scale, x, y, text_clip,
-                                           text_field(kind) ? text_clip : clip_rect(bounds), appearance.foreground,
-                                           appearance.text_shadow, quad));
+                if (kind == ControlKind::text_edit && !state.control.placeholder.empty() && self.display_empty(state) &&
+                    !(editing && self.edit->composition)) {
+                    const detail::TextKey ph_key{key, 0, true};
+                    InlineArray<char, 256> ph_scratch;
+                    const StringView ph_u8 = wide_to_utf8_scratch(state.control.placeholder, ph_scratch);
+                    self.text.set(ph_key, ph_u8, appearance.font, false, appearance.text_align, true);
+                    ATELIER_TRY_BIND(ph_raster, self.text.raster(ph_key, width, scale));
+                    if (ph_raster->coverage) {
+                        Color muted = appearance.foreground;
+                        muted.a *= .42f;
+                        quad({x + ph_raster->left, y + ph_raster->top, static_cast<float>(ph_raster->coverage->width),
+                              static_cast<float>(ph_raster->coverage->height)},
+                             text_clip, muted, ph_raster->coverage);
+                    }
+                } else {
+                    ATELIER_TRY(draw_paragraph(self.text, key, width, scale, x, y, text_clip,
+                                               text_field(kind) ? text_clip : clip_rect(bounds), appearance.foreground,
+                                               appearance.text_shadow, quad));
+                }
             }
             if (editing) {
                 if (paint && self.edit->composition) {
@@ -1968,7 +2417,8 @@ Result<std::shared_ptr<const UiFrame>> Session::prepare(Preparation preparation)
                     start = *start_result;
                 }
                 anchor.bounds = {x + start.x * scale, y + start.y * scale, start.width * scale, start.height * scale};
-                output->input_anchor = anchor;
+                if (!state.control.read_only)
+                    output->input_anchor = anchor;
             }
         }
         if (retain)
@@ -2062,7 +2512,7 @@ Result<Reply> Session::commit_edit() {
     return reply;
 }
 
-Reply Session::focus(ControlKey key) {
+Reply Session::focus(ControlKey key, std::optional<std::uint32_t> select_length) {
     Reply reply;
     const auto* box = impl_->published ? impl_->published->find(key) : nullptr;
     if (key && (!impl_->active() || !box || !impl_->current(*box) || !focusable(box->kind) ||
@@ -2073,6 +2523,15 @@ Reply Session::focus(ControlKey key) {
     impl_->set_focus(reply, key);
     if (key && text_field(box->kind) && !impl_->edit)
         impl_->begin_edit(reply, key, box->kind == ControlKind::text_edit);
+    if (select_length && impl_->edit && impl_->edit->key == key && !impl_->edit->document) {
+        const auto len = std::min<std::uint32_t>(
+            *select_length, static_cast<std::uint32_t>(impl_->edit->buffer().current().text.size()));
+        impl_->edit->text_mode = true;
+        bool changed = impl_->edit->buffer().select({0, false}, false);
+        changed |= impl_->edit->buffer().select({len, len != 0}, true);
+        if (changed)
+            impl_->revise();
+    }
     reply.redraw = true;
     return reply;
 }
@@ -2091,16 +2550,17 @@ ControlKey Session::focused_control() const noexcept {
 
 bool Session::wants_keyboard() const noexcept {
     const auto* state = impl_->live(impl_->focus);
-    return state && text_field(state->control.kind) && impl_->active();
+    return state && text_field(state->control.kind) && !state->control.read_only && impl_->active();
 }
 
 InteractionState Session::interaction_state() const noexcept {
     const auto& state = *impl_;
     return {state.press.has_value(),
             state.keyboard_pressed != 0,
-            state.edit && !state.edit->document && state.edit->buffer().active(),
+            state.edit && !state.edit->document &&
+                (state.edit->buffer().active() || state.states.at(state.edit->key).control.transient_edit),
             state.edit && (state.edit->composition.has_value() || state.edit->ime_request.has_value()),
-            state.edit && state.edit->clipboard.has_value(),
+            (state.edit && state.edit->clipboard.has_value()) || state.table_clipboard.has_value(),
             has_popup()};
 }
 
@@ -2110,6 +2570,13 @@ bool Session::has_popup() const noexcept {
 
 bool Session::clipboard_current(const ClipboardRequest& request) const noexcept {
     const auto& self = *impl_;
+    if (self.table_clipboard && request.kind == ClipboardKind::copy && self.focus == self.table_clipboard->token.key &&
+        self.active()) {
+        const auto* box = self.published->find(self.focus);
+        if (box && self.current(*box) && self.table_clipboard->operation_id == request.operation_id &&
+            self.table_clipboard->token == request.token)
+            return true;
+    }
     if (!self.edit || !self.edit->clipboard || self.focus != self.edit->key || !self.active())
         return false;
     const auto* box = self.published->find(self.focus);

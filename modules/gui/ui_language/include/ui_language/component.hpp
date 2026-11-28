@@ -37,6 +37,18 @@ struct TextEditBinding {
 
     bool enabled{true};
 
+    bool invalid{};
+
+    bool transient{};
+
+    ui::ControlKey rename_anchor{};
+
+    ui::TableKey rename_cell{};
+
+    bool read_only{};
+
+    std::wstring placeholder{};
+
     bool operator==(const TextEditBinding&) const = default;
 };
 
@@ -74,7 +86,13 @@ struct CodeBinding {
 
     bool read_only{}; // Selection, copy and navigation remain enabled; UI input cannot modify the document.
 
-    bool operator==(const CodeBinding&) const = default;
+    std::shared_ptr<const ui::CodeAnnotations> annotations{};
+
+    bool operator==(const CodeBinding& other) const {
+        return document == other.document && enabled == other.enabled && read_only == other.read_only &&
+               (annotations == other.annotations ||
+                (annotations && other.annotations && *annotations == *other.annotations));
+    }
 };
 
 // Optional immutable help shared with native controls. It owns text only, never
@@ -94,6 +112,12 @@ struct TreeRowBinding {
     bool primary{};
 
     std::bitset<128> lines;
+
+    std::array<ui::ControlIcon, 4> badges{};
+
+    ui::ControlIcon trailing_icon{ui::ControlIcon::none};
+
+    bool trailing_dimmed{};
 
     bool operator==(const TreeRowBinding&) const = default;
 };

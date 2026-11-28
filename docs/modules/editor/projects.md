@@ -43,7 +43,7 @@ CPU 侧 `SceneRecovery`（取消未确认手势、写出 `.scene` 与 `recovery.
 
 - 工程管理目录、资源身份和 Source 文档。场景文档管理 Session/World、场景路径、未保存状态、撤销、选择及已绑定代码的寿命。
 - Scene View 绑定一个稳定的文档身份，拥有自己的相机、显示设置、手势和接受帧。不同 Scene View 可以展示不同场景，同一场景也可被多个视图观察；打开场景不必先关闭当前场景。
-- Scene Tree、Entity Structure、Parameters 和场景命令随当前文档切换。已开始的拖动、编辑、菜单命令和异步请求必须保留原文档身份及代次，不能因用户切换标签而落到另一场景。
+- Scene Outliner、Parameters 和场景命令随当前文档切换。已开始的拖动、编辑、菜单命令和异步请求必须保留原文档身份及代次，不能因用户切换标签而落到另一场景。
 - 同工程重复打开同一路径默认激活现有文档；额外观察角度通过新建视图表达。关闭视图与关闭文档分开，关闭最后一个视图时处理未保存修改和正在执行的加载。非活动文档保留数据，默认不持续渲染或自行运行游戏。
 
 加载采用同一条阶段式流程：后台读取、解析与准备不可变资源，所有者线程按帧预算构建和连接对象，Renderer 按既有资源寿命与提交合同完成上传和首帧准备，候选就绪后发布。Runtime 当前是单线程拥有的上下文；不能直接将整个 `Session::deserialize` 丢入后台，并与主线程共用 Project 缓存或活动 Runtime。源码编译准备与 Runtime 类型绑定也需要明确分开。首帧 shader/pipeline 创建、纹理上传和旧 GPU 资源退休同样属于加载链，否则只把磁盘读取移到后台仍会在第一帧卡住。
@@ -176,7 +176,7 @@ Scene 统一写出 v10：顶层 `materials` 按文档 ID 保存具名资产引�
 - 编辑器渲染快照组合 World authoring 与视口偏好；Project Run 从载入的 World 读取同一配置，并复用 `SceneSnapshot` 投影真实材质与灯光；天光由宿主按 Environment 求出 `Frame.environment`，没有 Environment 或天光关闭时为零。探针滚动位置、历史、统计、可视化与编辑器观察相机不写入 Scene；场景 CameraComponent 和 Environment.main_camera 则是持久作者数据。
 - TRS 按 `position` / `scale` 的 xyz 数组和 `rotation` 的 xyzw 数组保存，颜色同样是数值数组；不保存数学类型名或原生内存布局。统一到 `math.vector3` / `math.quaternion` 后，float 精度、分量顺序、局部变换与行向量组合语义保持一致。
 - Scene 按限定类型名恢复已注册的 Entity/Component 派生类型；公开标量和内联记录进入 `properties`，新增未保存字段保留 Runtime 默认值。Physics Body 设置沿 `properties.body` 保存；普通引用为 null 或 `{"$ref":"ID"}`，序列为引用数组，持有/观察由 Runtime schema 决定。未知版本、失效关系、身份冲突和组合/空间环拒绝整个场景；未知类型、未知已保存属性、类型不符的值和缺失资源由宽容加载保留（占位对象、默认值加原值、占位资源、诊断），由严格加载拒绝；无法编码的字段保存失败；空网格保留为空。单场景最多 8192 Entity、每个 Entity 最多 1024 组件、文件最多 16 MiB。详见[项目场景合同](../world/project-scenes.md)。
-- 加载策略分两种。宽容加载用于交互打开工程、场景和示例，以及 Rebuild Types：无法应用的数据按对象保留，诊断写入 Project Output（一行汇总加逐项列表）；Scene Tree 以琥珀色标出含保留数据的 Entity，Entity Structure 与 Parameters 把占位对象显示为 `类型 (missing type)`，Parameters 的 Saved Data 组只读列出保留值，Edit → Discard Saved Data 丢弃所选对象的保留值（可撤销）。缺失的 Material 或 Texture 在材质槽和贴图输入中显示为 `(missing) 键或名称`，目录中仍列出但无法读取的显示为 `(unreadable) …`；Mesh 不可用的组件多一行只读 `Mesh`，其材质绑定表列在 Saved Data；网格的默认材质或其贴图不可用时以替代品显示，诊断记在该组件的 `mesh` 字段。不可用按资源种类记录：场景把材质的键写成 Mesh 引用时，只有该 Mesh 不可用，材质照常打开、编辑和保存；贴图文件无法解码时，引用它的材质也照常保存。保存原样写回保留数据和不可用资源的引用，状态栏给出保留项数量；目标已删除的保留引用写为 null 并在 Project Output 报告。严格加载用于可复现流程：`ProjectOpenPolicy::require_scene`（`--profile-render-performance` 打开与 Control 复现导入）拒绝严格规则不允许的加载问题；info 诊断不触发拒绝，格式合法的稀疏材质声明失配保留作者项并使用继承值。Play 子进程宽容加载，开始时输出一行汇总；占位对象没有行为。Control 的 `editor.inspect` 对占位对象另报告 `placeholder: true` 与 `saved_type`，单对象详情列出 `saved_data`，网格组件带 `mesh.source` / `mesh.missing` 与 `mesh.default_materials`（每个默认槽的 `slot`、`object`、`source`、`missing`），材质槽带 `missing`。当前限制：文档级保留数据（未知的顶层键）只在 Project Output 报告，面板中没有对应显示。
+- 加载策略分两种。宽容加载用于交互打开工程、场景和示例，以及 Rebuild Types：无法应用的数据按对象保留，诊断写入 Project Output（一行汇总加逐项列表）；Scene Outliner 以琥珀色标出含保留数据的对象并把占位对象显示为 `类型 (missing type)`，Parameters 同步显示占位身份并在 Saved Data 组只读列出保留值，Edit → Discard Saved Data 丢弃所选对象的保留值（可撤销）。缺失的 Material 或 Texture 在材质槽和贴图输入中显示为 `(missing) 键或名称`，目录中仍列出但无法读取的显示为 `(unreadable) …`；Mesh 不可用的组件多一行只读 `Mesh`，其材质绑定表列在 Saved Data；网格的默认材质或其贴图不可用时以替代品显示，诊断记在该组件的 `mesh` 字段。不可用按资源种类记录：场景把材质的键写成 Mesh 引用时，只有该 Mesh 不可用，材质照常打开、编辑和保存；贴图文件无法解码时，引用它的材质也照常保存。保存原样写回保留数据和不可用资源的引用，状态栏给出保留项数量；目标已删除的保留引用写为 null 并在 Project Output 报告。严格加载用于可复现流程：`ProjectOpenPolicy::require_scene`（`--profile-render-performance` 打开与 Control 复现导入）拒绝严格规则不允许的加载问题；info 诊断不触发拒绝，格式合法的稀疏材质声明失配保留作者项并使用继承值。Play 子进程宽容加载，开始时输出一行汇总；占位对象没有行为。Control 的 `editor.inspect` 对占位对象另报告 `placeholder: true` 与 `saved_type`，单对象详情列出 `saved_data`，网格组件带 `mesh.source` / `mesh.missing` 与 `mesh.default_materials`（每个默认槽的 `slot`、`object`、`source`、`missing`），材质槽带 `missing`。当前限制：文档级保留数据（未知的顶层键）只在 Project Output 报告，面板中没有对应显示。
 - 物理角色、布娃娃/部件、力和运动学组件复用上述属性格式。DistanceConstraint 的 `properties.target` 保存统一文档观察引用，RagdollComponent.parts 保存显式 Entity 持有引用数组；全部对象创建后恢复引用并校验，场景外目标拒绝，不保存后端句柄。当前使用方式见 [Physic 示例](../../../examples/Content/Physic/README.md)。
 - SceneQueryComponent 复用当前 Scene 格式保存 TraceSettings、局部端点和自动/忽略自身开关；枚举使用名称，运行中的查询请求与命中结果不写入文档。重新打开必须重新采样，详见[场景查询](../physics/scene-queries.md)。
 - StaticMeshComponent 自身保存反射可见的 `mesh_source`；World 的 `set_mesh_binding` 一次替换来源、解析内容和不持久化的槽默认材质（编辑器按网格资产解析，`Session::mesh_defaults`），`read_static_mesh` 覆盖 Detached 与空网格。没有组件的消费者用 `Session::mesh_surfaces` 取同一份默认材质下每个槽的表面。裸 `set_geometry` 清空旧来源。编辑器不维护 Component ID 到资源键的权威副表。
@@ -207,7 +207,7 @@ JSON 当前位于打开、保存和显式目录刷新路径；帧绘制不解析
 
 1. 打开工程，在 Project → New Component Source 创建 `Source/Move.source`。创建使用独占写入，已有文件不会被覆盖。Code 面板的 New 使用同一入口。
 2. 编辑后 Ctrl+S。F6 或 Project → Build 编译所有工程 Source；外部保存由 500 ms 文件检查发现。新增类、方法、全局函数或 struct/enum 直接兼容发布。生命周期方法为 begin、tick（pre_physics）、post_physics_tick、late_tick、end，新增后在发布的同时绑定，Play 中也在帧间生效：已开始的对象从下一个阶段起执行新方法，不补发 Begin。修改已有类型的字段或默认值，或删除、改名、改变公开函数签名后，停止运行并选择 Rebuild Types。
-3. 选择一个 Entity，打开 Window → Entity Structure，通过 Add Component 选择 `project.Move`。添加后自动检查该组件。Parameters 中公开数值使用单行参数编辑器，bool 使用 Checkbox，枚举使用命名选项菜单；结构页负责删除，属性修改与结构变化都进入场景文档。
+3. 选择一个 Entity，在 **Scene Outliner** 顶栏点击 `+`（Add Component）选择 `project.Move`。添加后自动检查该组件。Parameters 中公开数值使用单行参数编辑器，bool 使用右列对齐 Checkbox，枚举使用命名选项菜单；Scene Outliner 顶栏或 Delete 键负责移除组件，属性修改与结构变化都进入场景文档。
 4. 保存场景。F8 或 Run 启动独立游戏窗口；Shift+F8 或 Stop 停止。运行期间场景照常可编辑（创建、删除、改名、改父级、复制、字段与变换），修改即时转发给游戏窗口；它们是普通的文档修改，停止后仍在并且可以撤销。Project Output 显示构建、运行与退出信息。
    运行中单个对象的失败（Begin/Tick/End、任务、提取或命令被拒）只隔离该对象，Play 继续运行；每个失败写一行 `Diagnostic [严重度] kind in phase "Entity 名" (类型) 字段: 消息`，有源码位置时附 `at 文件:行:列`，持续中的同一失败不重复输出。修好代码并兼容发布后，故障对象在下个安全点恢复，不重发 Begin。
    编辑器自身的场景提取诊断（例如零缩放使网格不绘制）也写入 Project Output；同一行在消失后再次出现时，原行后面计数 `(×N)`，不新增行。
@@ -354,7 +354,7 @@ ui ProjectUI(in Text title, in double elapsed, in double entities) {
 
 编辑器对项目 UI 只做编译检查，不求值表达式和事件。用户 UI 代码在子进程执行，所以表达式或事件陷入死循环也能停止。保存兼容 UI 变更保留局部状态。ProjectUI::prepare 统一完成源码、控件和真实布局准备，成功后才发布候选；错误恢复上次成功定义、状态与控件。窗口最小化或零 Surface 时暂停发布；冷启动无有效版本时报告失败。入口配置变更在下一次启动运行或预览时采用。
 
-File → Edit Editor UI Source 是引擎开发命令，用于修改编辑器自身的受信任 UI；它与项目 UI 的执行边界不同。SS 仍按启动加载策略生效。
+File → Edit Editor UI Source 是引擎开发命令，用于修改编辑器自身的受信任 UI；它与项目 UI 的执行边界不同。开发工作树中的 `assets/editor.ss` 同样支持保存热重载，项目 UI 的 SS 仍按进程启动加载。
 
 ### 保存、失败与重建
 

@@ -52,7 +52,7 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 | op.call project.new / project.open / scene.open / scene.save | Application 工程/场景操作；New/Open 拒绝未保存场景、材质或源码草稿，避免无人处理的保存对话框。`project.build` 在无占位对象时先尝试兼容热更（方法体变化即使传 `rebuild:true` 也原地发布且保留撤销历史）；遇到 `rebuild_required` 时，若 `rebuild:true` 或当前无场景/图/材质 Undo 历史且无活动交互，执行保状态类型重建：保存 Source 草稿与材质，内存态完整迁移场景、已打开 `.procgraph`（保持磁盘文件与各自 `dirty` 标记不偷写）与 `scratch` 图，恢复视口相机、SOP 上下文、`NetworkCanvas` 缩放平移及实体/节点选择，仅显式退役历史 |
 | op.call scene.add | Entity、StaticMeshEntity、ProceduralGeneratorEntity（`kind: "procedural_generator"`，可选 `graph`）、Camera、Point/Rectangle/Directional Light，与 Create 菜单共享操作符；返回创建后的 active/object/选择。kind 不含 sky，天空通过 view.set 的 sky 键设置 |
 | op.call procedural.assign_graph / procedural.set_override / procedural.bake | `procedural.assign_graph {component, asset}` 为目标或当前 `ProceduralGeneratorComponent` 绑定或清空 `.procgraph` 资产键并记一步场景历史；`procedural.set_override {entity, component, parameter, clear, value_json}` 设置或清除场景生成器组件上的 `.procgraph` 公开参数差量覆写并记一步场景历史；`procedural.bake {entity, component}` 将目标或当前生成器的 `CopyToPoints` 实例一次性烘焙为 `<Entity> Baked` 下的 `StaticMeshEntity` 子层级（单步可撤销） |
-| op.call scene.rename / scene.delete / scene.select | Session 的名称、删除和选择；rename 只修改 Entity 名称，Component 使用类型名。目标来自 context.selection，delete 的 target 为 object 或 entities |
+| op.call scene.rename / scene.set_enabled / scene.delete / scene.select | Session 的名称、启用状态、删除和选择；rename 只修改 Entity 名称，Component 使用类型名；`scene.set_enabled {enabled}` 切换 `context.selection.object`（Entity 或 Component）的启用状态并记入场景历史。目标来自 context.selection，delete 的 target 为 object 或 entities |
 | op.call scene.set_properties | 按实际类型字段名组成嵌套 Scalar 补丁，枚举使用名称；多叶沿组写入和最终校验记一个历史条目。Entity 的实际 Transform 字段在写入前拒绝，使用专用 Transform 操作符 |
 | op.call scene.transform_set / scene.transform_remove | Entity 的可选内联完整 TRS；设置时无空间则添加空间，一次撤销。position/scale 为 `{x,y,z}`，rotation 为 `{x,y,z,w}` |
 | op.call scene.add_component / scene.delete | 添加组件的 type 来自 component_types；删除组件使用 target: object，Context object 为组件且 active 为其 Entity |
@@ -91,7 +91,7 @@ Transform、parent_set 和 space_reference_set 的 Context 目标必须是 Entit
 
 程序化图补丁拒绝字段时，`graph.apply` 返回 `operation_failed` 和含字段路径的首个诊断，并恢复提交前的属性、连线以及撤销/重做位置。
 
-完整 inspect 的 Entity 包含 parent（顶层为空字符串）、children 句柄数组、可选 transform 和 space_reference（null / 空字符串 / 句柄）。实体与组件句柄和分页目录一致。组件记录沿用单对象详情，包含反射参数与材质。完整查询读取场景层级、对象详情或组件类型目录失败时，返回 `operation_failed` 和底层首条诊断，响应中没有 `result`。组件记录不含 TRS。创建子实体复用 op.call scene.add 和 scene.parent_set；没有第二套 create_child 工厂或对象身份。
+完整 inspect 的 Entity 包含 `enabled`、`effective_enabled`、parent（顶层为空字符串）、children 句柄数组、可选 transform 和 space_reference（null / 空字符串 / 句柄）。实体与组件句柄和分页目录一致。组件记录沿用单对象详情，包含 `enabled`、`effective_enabled`、反射参数与材质。完整查询读取场景层级、对象详情或组件类型目录失败时，返回 `operation_failed` 和底层首条诊断，响应中没有 `result`。组件记录不含 TRS。创建子实体复用 op.call scene.add 和 scene.parent_set；没有第二套 create_child 工厂或对象身份。
 
 `editor.inspect` 的普通对象记录带 `type_description` 和反射 `properties`。每条属性的 `description` 来自 Runtime 的字段描述；Vector 分量沿用聚合字段的说明，未声明说明时返回空字符串。名称、类型、值和可选枚举 `choices` 保持原有语义；声明了范围的属性另附 `range`，只列出已声明的端点：`ui_min`/`ui_max` 为常用范围（面板滑条），`hard_min`/`hard_max` 为写入时夹值的边界，Vector 分量沿用聚合字段的范围。材质不以固定 Runtime 字段表达参数，改用下述 `declarations` 与 `entries`。说明不包含可执行入口，查询不改变作者值或历史。
 

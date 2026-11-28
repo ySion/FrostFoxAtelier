@@ -1,49 +1,105 @@
 #include "ui/detail/text_edit.hpp"
 #include "foundation/inline_array.hpp"
 #include "foundation/result.hpp"
+#include "foundation/scope_exit.hpp"
 #include <Windows.h>
 #include <icu.h>
 #include <algorithm>
+#include <cstring>
 #include <memory>
 
 namespace atelier::ui::detail {
-bool valid_text(std::wstring_view text, bool single_line) noexcept {
-    for (std::size_t i = 0; i < text.size(); ++i) {
-        const auto c = static_cast<std::uint16_t>(text[i]);
-        if (!c || (single_line && (c < 32 || c == 127 || c == 0x2028 || c == 0x2029)))
+namespace {
+void splice_offsets(Array<std::uint32_t>& offsets, std::size_t prefix_len, std::size_t old_mid_len,
+                    Span<const std::uint32_t> inserted, std::int64_t delta) {
+    const std::size_t suffix_start = prefix_len + old_mid_len;
+    const std::size_t suffix_len = offsets.size() - suffix_start;
+    const std::size_t new_mid_len = inserted.size();
+    const std::size_t new_total = prefix_len + new_mid_len + suffix_len;
+    if (new_total > offsets.size()) {
+        offsets.resize(new_total);
+        if (suffix_len > 0) {
+            std::memmove(offsets.data() + prefix_len + new_mid_len, offsets.data() + suffix_start,
+                         suffix_len * sizeof(std::uint32_t));
+        }
+    } else if (new_total < offsets.size()) {
+        if (suffix_len > 0) {
+            std::memmove(offsets.data() + prefix_len + new_mid_len, offsets.data() + suffix_start,
+                         suffix_len * sizeof(std::uint32_t));
+        }
+        offsets.resize(new_total);
+    }
+    if (new_mid_len > 0)
+        std::memcpy(offsets.data() + prefix_len, inserted.data(), new_mid_len * sizeof(std::uint32_t));
+    if (delta != 0) {
+        std::uint32_t* tail = offsets.data() + prefix_len + new_mid_len;
+        for (std::size_t i = 0; i < suffix_len; ++i)
+            tail[i] = static_cast<std::uint32_t>(static_cast<std::int64_t>(tail[i]) + delta);
+    }
+}
+
+enum class TextValidationPolicy : std::uint8_t { multiline_any, single_line, document_lf };
+
+bool check_utf8_text(StringView text, TextValidationPolicy policy) noexcept {
+    if (!text.is_valid_utf8())
+        return false;
+    const char* data = text.data();
+    const std::size_t len = text.size();
+    for (std::size_t i = 0; i < len; ++i) {
+        const auto b = static_cast<unsigned char>(data[i]);
+        if (b == 0u)
             return false;
-        if (c >= 0xd800 && c <= 0xdbff) {
-            if (++i == text.size() || text[i] < 0xdc00 || text[i] > 0xdfff)
+        if (policy == TextValidationPolicy::single_line) {
+            if (b < 32u || b == 127u)
                 return false;
-        } else if (c >= 0xdc00 && c <= 0xdfff)
-            return false;
+            if (b == 0xe2u && i + 2 < len && static_cast<unsigned char>(data[i + 1]) == 0x80u) {
+                const auto b2 = static_cast<unsigned char>(data[i + 2]);
+                if (b2 == 0xa8u || b2 == 0xa9u)
+                    return false;
+            }
+        } else if (policy == TextValidationPolicy::document_lf) {
+            if ((b < 32u && b != '\n' && b != '\t') || b == 127u)
+                return false;
+        }
     }
     return true;
 }
+} // namespace
 
-bool valid_document_text(std::wstring_view text) noexcept {
-    return valid_text(text, false) &&
-           std::ranges::none_of(text, [](wchar_t c) { return (c < 32 && c != L'\n' && c != L'\t') || c == 127; });
+bool valid_text(StringView text, bool single_line) noexcept {
+    return check_utf8_text(text, single_line ? TextValidationPolicy::single_line : TextValidationPolicy::multiline_any);
 }
 
-Result<Array<std::uint32_t>> character_boundaries(std::wstring_view text) {
-    // ICU retains the source until close. An explicit conversion avoids aliasing
-    // wchar_t storage as UChar when these are distinct C++ types.
-    const InlineArray<UChar, 256> input(text.begin(), text.end());
+bool valid_document_text(StringView text) noexcept {
+    return check_utf8_text(text, TextValidationPolicy::document_lf);
+}
+
+Result<Array<std::uint32_t>> character_boundaries(StringView text) {
+    Array<std::uint32_t> result;
+    if (text.empty()) {
+        result.add(0);
+        return result;
+    }
     UErrorCode error = U_ZERO_ERROR;
+    UText ut = UTEXT_INITIALIZER;
+    utext_openUTF8(&ut, text.data(), static_cast<std::int64_t>(text.size()), &error);
+    ScopeExit close_ut{[&]() noexcept { utext_close(&ut); }};
     std::unique_ptr<UBreakIterator, decltype(&ubrk_close)> iterator(
-        ubrk_open(UBRK_CHARACTER, "root", input.data(), static_cast<std::int32_t>(input.size()), &error), ubrk_close);
+        ubrk_open(UBRK_CHARACTER, "root", nullptr, 0, &error), ubrk_close);
+    if (U_SUCCESS(error) && iterator)
+        ubrk_setUText(iterator.get(), &ut, &error);
     if (U_FAILURE(error) || !iterator)
         return std::unexpected(
             Error{ErrorCode::text_failed, 0, static_cast<std::uint32_t>(E_FAIL), "UI text/resource operation failed"});
-    Array<std::uint32_t> result;
-    result.reserve(input.size() + 1);
+    result.reserve(text.size() + 1);
     for (auto at = ubrk_first(iterator.get()); at != UBRK_DONE; at = ubrk_next(iterator.get()))
         result.add(static_cast<std::uint32_t>(at));
     return result;
 }
 
-Result<TextEdit> TextEdit::create(std::wstring text, std::size_t limit, bool select_all, bool single_line) {
+Result<TextEdit> TextEdit::create(String text, std::size_t limit, bool select_all, bool single_line) {
+    if (text.size() > limit || !(single_line ? valid_text(text.view(), true) : valid_document_text(text.view())))
+        return std::unexpected(Error{ErrorCode::invalid_text, 0, 0, "TextEdit requires bounded valid UTF-8 text."});
     TextEdit result(limit, single_line);
     result.current_.text = std::move(text);
     result.current_.caret = {static_cast<std::uint32_t>(result.current_.text.size()), true};
@@ -51,11 +107,11 @@ Result<TextEdit> TextEdit::create(std::wstring text, std::size_t limit, bool sel
     if (single_line)
         result.original_ = result.current_.text;
     if (!result.current_.text.empty()) {
-        ATELIER_TRY_BIND(boundaries, character_boundaries(result.current_.text));
+        ATELIER_TRY_BIND(boundaries, character_boundaries(result.current_.text.view()));
         result.boundaries_ = std::move(*boundaries);
     }
     for (std::size_t i = 0; i < result.current_.text.size(); ++i)
-        if (result.current_.text[i] == L'\n')
+        if (result.current_.text[i] == '\n')
             result.lines_.add(static_cast<std::uint32_t>(i + 1));
     return result;
 }
@@ -68,12 +124,12 @@ std::uint32_t TextEdit::line_start(std::size_t row) const noexcept {
     return row < lines_.size() ? lines_[row] : static_cast<std::uint32_t>(current_.text.size());
 }
 
-std::wstring_view TextEdit::line(std::size_t row) const noexcept {
+StringView TextEdit::line(std::size_t row) const noexcept {
     if (row >= lines_.size())
         return {};
     const auto start = lines_[row];
     const auto end = row + 1 < lines_.size() ? lines_[row + 1] - 1 : static_cast<std::uint32_t>(current_.text.size());
-    return std::wstring_view(current_.text).substr(start, end - start);
+    return current_.text.slice(start, end - start);
 }
 
 TextPosition TextEdit::snap(std::uint32_t offset, bool trailing) const noexcept {
@@ -108,60 +164,63 @@ bool TextEdit::select_all() {
     return changed;
 }
 
-Result<void> TextEdit::splice(std::uint32_t first, std::uint32_t last, std::wstring_view inserted) {
+Result<void> TextEdit::splice(std::uint32_t first, std::uint32_t last, StringView inserted) {
     // Re-segment only the touched logical lines. Newlines isolate grapheme
     // clusters; unchanged suffix offsets need a shift, not another ICU scan.
     const auto start = line_start(line_at(first));
     const auto end = line_start(line_at(last) + 1);
-    auto segment = current_.text.substr(start, first - start);
-    segment.append(inserted);
-    segment.append(current_.text, last, end - last);
-    ATELIER_TRY_BIND(local, character_boundaries(segment));
+    const StringView prefix = current_.text.slice(start, first - start);
+    const StringView suffix = current_.text.slice(last, end - last);
+    InlineArray<char, 256> segment;
+    segment.resize(prefix.size() + inserted.size() + suffix.size());
+    if (!prefix.empty())
+        std::memcpy(segment.data(), prefix.data(), prefix.size());
+    if (!inserted.empty())
+        std::memcpy(segment.data() + prefix.size(), inserted.data(), inserted.size());
+    if (!suffix.empty())
+        std::memcpy(segment.data() + prefix.size() + inserted.size(), suffix.data(), suffix.size());
+    ATELIER_TRY_BIND(local, character_boundaries(StringView{segment.data(), segment.size()}));
     for (auto& offset : *local)
         offset += start;
-    const auto delta = static_cast<std::int64_t>(inserted.size()) - (last - first);
-    Array<std::uint32_t> new_lines;
+    const auto delta = static_cast<std::int64_t>(inserted.size()) - static_cast<std::int64_t>(last - first);
+    InlineArray<std::uint32_t, 8> new_lines;
     for (std::size_t i = 0; i < segment.size(); ++i)
-        if (segment[i] == L'\n')
+        if (segment[i] == '\n')
             new_lines.add(start + static_cast<std::uint32_t>(i + 1));
-    current_.text.replace(first, last - first, inserted);
-    const auto b_first =
+    (void)current_.text.replace(first, last - first, inserted);
+    const auto b_low =
         static_cast<std::size_t>(std::lower_bound(boundaries_.begin(), boundaries_.end(), start) - boundaries_.begin());
-    const auto b_last =
+    const auto b_high =
         static_cast<std::size_t>(std::upper_bound(boundaries_.begin(), boundaries_.end(), end) - boundaries_.begin());
-    boundaries_.remove_at(b_first, b_last - b_first);
-    for (std::size_t tail = b_first; tail < boundaries_.size(); ++tail)
-        boundaries_[tail] = static_cast<std::uint32_t>(boundaries_[tail] + delta);
-    boundaries_.insert_range(b_first, *local);
-    const auto l_first =
-        static_cast<std::size_t>(std::upper_bound(lines_.begin(), lines_.end(), start) - lines_.begin());
-    const auto l_last = static_cast<std::size_t>(std::upper_bound(lines_.begin(), lines_.end(), end) - lines_.begin());
-    lines_.remove_at(l_first, l_last - l_first);
-    for (std::size_t tail = l_first; tail < lines_.size(); ++tail)
-        lines_[tail] = static_cast<std::uint32_t>(lines_[tail] + delta);
-    lines_.insert_range(l_first, new_lines);
+    splice_offsets(boundaries_, b_low, b_high - b_low, local->view(), delta);
+    const auto l_low = static_cast<std::size_t>(std::upper_bound(lines_.begin(), lines_.end(), start) - lines_.begin());
+    const auto l_high = static_cast<std::size_t>(std::upper_bound(lines_.begin(), lines_.end(), end) - lines_.begin());
+    splice_offsets(lines_, l_low, l_high - l_low, new_lines.view(), delta);
     ++revision_;
     ++selection_revision_;
     return {};
 }
 
-Result<TextEdit::Change> TextEdit::replace(std::wstring_view inserted, Group group) {
+Result<TextEdit::Change> TextEdit::replace(StringView inserted, Group group) {
     return replace_range(std::min(current_.caret.offset, current_.anchor.offset),
                          std::max(current_.caret.offset, current_.anchor.offset), inserted, group);
 }
 
-Result<TextEdit::Change> TextEdit::replace_range(std::uint32_t first, std::uint32_t last, std::wstring_view inserted,
+Result<TextEdit::Change> TextEdit::replace_range(std::uint32_t first, std::uint32_t last, StringView inserted,
                                                  Group group) {
     if (!(single_line_ ? valid_text(inserted) : valid_document_text(inserted)) ||
         current_.text.size() - (last - first) + inserted.size() > limit_)
         return Change::rejected;
-    if (std::wstring_view(current_.text).substr(first, last - first) == inserted) {
+    if (current_.text.slice(first, last - first) == inserted) {
         const bool changed = select(snap(first + static_cast<std::uint32_t>(inserted.size()), true), false);
         return changed ? Change::selection : Change::none;
     }
-    Entry next{
-        first, current_.text.substr(first, last - first), std::wstring(inserted), {current_.caret, current_.anchor}, {},
-        group};
+    Entry next{first,
+               String::from_utf8_validated(current_.text.slice(first, last - first)),
+               String::from_utf8_validated(inserted),
+               {current_.caret, current_.anchor},
+               {},
+               group};
     bool merge = merge_ && applied_ == history_.size() && applied_ && group != Group::isolated &&
                  history_.back().group == group && history_.back().after == next.before;
     if (merge) {
@@ -169,22 +228,27 @@ Result<TextEdit::Change> TextEdit::replace_range(std::uint32_t first, std::uint3
         if (group == Group::insert && next.removed.empty() && first == previous.first + previous.inserted.size()) {
             next.first = previous.first;
             next.removed = previous.removed;
-            next.inserted = previous.inserted + next.inserted;
+            String merged = previous.inserted;
+            (void)merged.append(next.inserted);
+            next.inserted = std::move(merged);
         } else if (group == Group::backspace && next.inserted.empty() && previous.inserted.empty() &&
                    last == previous.first) {
-            next.removed += previous.removed;
+            (void)next.removed.append(previous.removed);
         } else if (group == Group::delete_forward && next.inserted.empty() && previous.inserted.empty() &&
                    first == previous.first) {
-            next.removed = previous.removed + next.removed;
-        } else
+            String merged = previous.removed;
+            (void)merged.append(next.removed);
+            next.removed = std::move(merged);
+        } else {
             merge = false;
+        }
         if (merge)
             next.before = previous.before;
     }
     ATELIER_TRY(splice(first, last, inserted));
     current_.caret = current_.anchor = snap(first + static_cast<std::uint32_t>(inserted.size()), true);
     next.after = {current_.caret, current_.anchor};
-    const auto cost = [](const Entry& entry) { return 2 * (entry.removed.size() + entry.inserted.size()); };
+    const auto cost = [](const Entry& entry) { return entry.removed.size() + entry.inserted.size(); };
     while (history_.size() > applied_) {
         bytes_ -= cost(history_.back());
         history_.pop_back();
@@ -231,7 +295,7 @@ Result<TextEdit::Change> TextEdit::history(bool redo) {
     const auto& entry = history_[redo ? applied_ : applied_ - 1];
     ATELIER_TRY(splice(entry.first,
                        entry.first + static_cast<std::uint32_t>(redo ? entry.removed.size() : entry.inserted.size()),
-                       redo ? entry.inserted : entry.removed));
+                       redo ? entry.inserted.view() : entry.removed.view()));
     const auto selection = redo ? entry.after : entry.before;
     current_.caret = selection.caret;
     current_.anchor = selection.anchor;
@@ -242,4 +306,4 @@ Result<TextEdit::Change> TextEdit::history(bool redo) {
     active_ = true;
     return Change::text;
 }
-}
+} // namespace atelier::ui::detail

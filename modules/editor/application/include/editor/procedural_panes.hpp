@@ -41,6 +41,8 @@ inline constexpr ui::ControlKey page_prev = 1109;
 
 inline constexpr ui::ControlKey page_next = 1110;
 
+inline constexpr ui::ControlKey filter_clear = 1111;
+
 inline constexpr ui::ControlKey column_first = 1120;
 } // namespace spreadsheet_control
 

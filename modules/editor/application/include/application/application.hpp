@@ -188,6 +188,34 @@ private:
 
     std::shared_ptr<const ui::StyleSheet> style_sheet_;
 
+    struct StyleWatch {
+        std::filesystem::path path;
+
+        std::filesystem::file_time_type time{};
+
+        std::uintmax_t size{};
+
+        int error{};
+
+        bool has_stamp{};
+
+        bool changed{};
+
+        bool read_failed{};
+
+        std::chrono::steady_clock::time_point next_poll{};
+
+        std::chrono::steady_clock::time_point changed_at{};
+
+        Array<std::byte> accepted_source;
+
+        Optional<Array<std::byte>> failed_source;
+    };
+
+    StyleWatch style_watch_;
+
+    void poll_style();
+
     std::unique_ptr<PopupHost> popup_;
 
     Array<std::unique_ptr<PopupHost>> submenus_;
@@ -240,6 +268,8 @@ private:
 
     Optional<MenuProjection> menu_projection_;
 
+    std::shared_ptr<const ui::UiFrame> prepared_menu_frame_;
+
     bool menu_dirty_{};
 
     MenuProjection current_menu_projection() const noexcept;
@@ -257,6 +287,8 @@ private:
     ui::ControlKey pie_hot_{};
 
     bool pending_source_focus_{};
+
+    ui::ControlKey pending_code_bar_focus_{};
 
     bool pending_network_search_focus_{};
 
@@ -487,6 +519,10 @@ private:
     Result<bool> confirm_source(editor::SourceEditor::File&, bool interactive = true);
 
     Result<void> save_source(editor::SourceEditor::File&, bool interactive = true);
+
+    Result<void> close_source_tab(ui::ControlKey, bool interactive);
+
+    void asset_relocated(const std::filesystem::path& old_relative, const std::filesystem::path& new_relative);
 
     bool has_any_undo_history() const;
 

@@ -1,7 +1,17 @@
+    static float tree_trailing_width(const Control& control) noexcept {
+        std::uint32_t badges{};
+        for (auto icon : control.tree_badges)
+            if (icon != ControlIcon::none)
+                ++badges;
+        return (badges ? static_cast<float>(badges) * 14.f + 4.f : 0.f) +
+               (control.tree_trailing_icon != ControlIcon::none ? 18.f : 0.f);
+    }
     ui_layout::Insets padding_for(const State& state) const {
         auto padding=effective_padding(state.control,*state.resolved);
-        if (state.control.kind==ControlKind::tree_item)
+        if (state.control.kind==ControlKind::tree_item) {
             padding.left+=(state.control.tree_depth+1)*states.at(state.control.parent).resolved->tree_indent;
+            padding.right+=tree_trailing_width(state.control);
+        }
         return padding;
     }
     const TreeRowGeometry* tree_row(ControlKey key) const {

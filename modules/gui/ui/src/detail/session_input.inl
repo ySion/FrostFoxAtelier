@@ -7,6 +7,7 @@ Reply Session::input(const Event& event) {
     if (event.kind == EventKind::pointer_leave) {
         reply.redraw |= self.hover != 0;
         self.hover = 0;
+        self.hover_x = self.hover_y = -1e6f;
         return reply;
     }
     if (event.kind == EventKind::capture_lost && !self.press)
@@ -51,13 +52,14 @@ Reply Session::input(const Event& event) {
     // A policy change takes effect for writes immediately, but making the
     // field editable again must wait for its new accepted frame. Consume
     // forbidden keys even during suspended frames so they cannot reach the host.
-    const bool read_only = focus_state && focus_state->control.kind == ControlKind::code_editor &&
+    const bool read_only = focus_state &&
+                           (focus_state->control.kind == ControlKind::code_editor ||
+                            focus_state->control.kind == ControlKind::text_edit) &&
                            (focus_state->control.read_only || (focus_box && focus_box->read_only));
     if (read_only && (event.kind == EventKind::text || event.kind == EventKind::composition ||
                       (event.kind == EventKind::key_down &&
                        (event.key == Key::enter || event.key == Key::delete_key || event.key == Key::backspace ||
-                        (event.control && (event.key == Key::x || event.key == Key::v || event.key == Key::z ||
-                                           event.key == Key::y)))))) {
+                        (event.control && (event.key == Key::x || event.key == Key::v)))))) {
         reply.consumed = true;
         return reply;
     }
@@ -173,14 +175,25 @@ Reply Session::input(const Event& event) {
         }
         break;
     }
+    if (event.kind == EventKind::wheel && hit && self.states.at(hit->key).control.rename_anchor)
+        hit = self.published->find(self.states.at(hit->key).control.rename_anchor);
     if (self.code_input(reply, event, hit))
         return reply;
     if (self.table_input(reply, event, hit, released_keyboard))
         return reply;
     if (event.kind == EventKind::pointer_move) {
         const auto key = hit ? hit->key : 0;
+        if (const auto* row = key ? self.tree_row(key) : nullptr) {
+            const bool was_zone = contains(row->disclosure, self.hover_x, self.hover_y) ||
+                                  contains(row->trailing_action, self.hover_x, self.hover_y);
+            const bool now_zone =
+                contains(row->disclosure, event.x, event.y) || contains(row->trailing_action, event.x, event.y);
+            reply.redraw |= was_zone != now_zone;
+        }
         reply.redraw |= self.hover != key;
         self.hover = key;
+        self.hover_x = event.x;
+        self.hover_y = event.y;
         if (self.press) {
             auto& press = *self.press;
             const auto* state = self.live(press.key);
@@ -192,7 +205,8 @@ Reply Session::input(const Event& event) {
                 if (reply.error)
                     return reply;
             } else if (control.kind == ControlKind::tab ||
-                       (control.kind == ControlKind::tree_item && control.tree_draggable && !press.tree_disclosure)) {
+                       (control.kind == ControlKind::tree_item && control.tree_draggable && !press.tree_disclosure &&
+                        !press.tree_trailing)) {
                 if (!press.dragging && (std::abs(event.x - press.x) > 4 * self.surface.dpi_scale ||
                                         std::abs(event.y - press.y) > 4 * self.surface.dpi_scale)) {
                     if (!self.finish_edit(reply, true))
@@ -204,6 +218,25 @@ Reply Session::input(const Event& event) {
                     Impl::action(reply, ActionKind::drag_preview, press.key, DragPoint{event.x, event.y});
                     reply.redraw = true;
                 }
+            } else if (control.kind == ControlKind::color_plane) {
+                const float bw = std::max(1.f, press.color_bounds.width);
+                const float bh = std::max(1.f, press.color_bounds.height);
+                const float nx = std::clamp((event.x - press.color_bounds.x) / bw, 0.f, 1.f);
+                const float ny = std::clamp((event.y - press.color_bounds.y) / bh, 0.f, 1.f);
+                if (control.drag_axis == DragAxis::vertical) {
+                    const double next = static_cast<double>(ny) * 360.0;
+                    if (next != press.value) {
+                        press.value = next;
+                        Impl::action(reply, ActionKind::edit_preview, press.key, press.value);
+                    }
+                } else {
+                    const DragPoint next{nx, 1.f - ny};
+                    if (next.x != press.color_sv.x || next.y != press.color_sv.y) {
+                        press.color_sv = next;
+                        Impl::action(reply, ActionKind::edit_preview, press.key, press.color_sv);
+                    }
+                }
+                reply.redraw = true;
             } else if (editable(control.kind)) {
                 if (press.ladder) {
                     auto& ladder = *press.ladder;
@@ -321,7 +354,25 @@ Reply Session::input(const Event& event) {
                 }
             }
             if (ctx_box && self.states.at(ctx_box->key).control.context_target) {
+                const ControlKey focus_target = focusable(hit->kind)       ? hit->key
+                                                : focusable(ctx_box->kind) ? ctx_box->key
+                                                                           : ControlKey{0};
+                if (!focus_target || self.focus != focus_target) {
+                    if (!self.finish_edit(reply, true))
+                        return reply;
+                    self.retire_keyboard(reply);
+                    if (focus_target) {
+                        self.set_focus(reply, focus_target);
+                        const auto& target_ctrl = self.states.at(focus_target).control;
+                        if (text_field(target_ctrl.kind) &&
+                            !self.begin_edit(reply, focus_target, target_ctrl.kind == ControlKind::text_edit, false))
+                            return reply;
+                    }
+                } else {
+                    self.retire_keyboard(reply);
+                }
                 self.context_request(reply, *ctx_box, event.x, event.y);
+                reply.redraw = true;
                 return reply;
             }
         }
@@ -344,15 +395,24 @@ Reply Session::input(const Event& event) {
             !(hit && event.button == PointerButton::middle && hit->kind == ControlKind::number))
             return reply;
         self.retire_keyboard(reply);
+        const bool tree_aux_click = [&] {
+            if (!hit || hit->kind != ControlKind::tree_item)
+                return false;
+            const auto* row = self.tree_row(hit->key);
+            return row &&
+                   (contains(row->disclosure, event.x, event.y) || contains(row->trailing_action, event.x, event.y));
+        }();
         const auto next = hit && focusable(hit->kind) ? hit->key : 0;
-        if (next != self.focus) {
+        if (next != self.focus && !tree_aux_click) {
             if (!self.finish_edit(reply, true))
                 return reply;
             self.set_focus(reply, next);
-        }
+        } else if (tree_aux_click && !self.finish_edit(reply, true))
+            return reply;
         if (event.button == PointerButton::middle && !self.finish_edit(reply, true))
             return reply;
-        if (!hit || (!focusable(hit->kind) && hit->kind != ControlKind::splitter))
+        if (!hit ||
+            (!focusable(hit->kind) && hit->kind != ControlKind::splitter && hit->kind != ControlKind::color_plane))
             return reply;
         const auto& control = self.states.at(hit->key).control;
         if (text_field(control.kind) && (!self.edit || self.edit->key != hit->key) &&
@@ -369,8 +429,30 @@ Reply Session::input(const Event& event) {
             Impl::Press{hit->key, event.x, event.y, event.x, event.y, control.value, control.value, false, selecting};
         self.press->raw_value = control.value;
         self.press->button = event.button;
-        if (const auto* row = self.tree_row(hit->key))
+        if (const auto* row = self.tree_row(hit->key)) {
             self.press->tree_disclosure = contains(row->disclosure, event.x, event.y);
+            self.press->tree_trailing = contains(row->trailing_action, event.x, event.y);
+        }
+        if (control.kind == ControlKind::color_plane) {
+            auto& press = *self.press;
+            press.color_bounds = hit->bounds;
+            press.dragging = true;
+            const float bw = std::max(1.f, hit->bounds.width);
+            const float bh = std::max(1.f, hit->bounds.height);
+            const float nx = std::clamp((event.x - hit->bounds.x) / bw, 0.f, 1.f);
+            const float ny = std::clamp((event.y - hit->bounds.y) / bh, 0.f, 1.f);
+            if (control.drag_axis == DragAxis::vertical) {
+                press.original = control.color_hue;
+                press.value = static_cast<double>(ny) * 360.0;
+                Impl::action(reply, ActionKind::edit_begin, press.key, press.original);
+                Impl::action(reply, ActionKind::edit_preview, press.key, press.value);
+            } else {
+                press.color_sv_original = {static_cast<float>(control.value), static_cast<float>(control.color_value)};
+                press.color_sv = {nx, 1.f - ny};
+                Impl::action(reply, ActionKind::edit_begin, press.key, press.color_sv_original);
+                Impl::action(reply, ActionKind::edit_preview, press.key, press.color_sv);
+            }
+        }
         if (control.kind == ControlKind::slider) {
             const auto track = slider_track(hit->bounds, self.surface.dpi_scale);
             auto& press = *self.press;
@@ -454,11 +536,18 @@ Reply Session::input(const Event& event) {
                 }
                 self.edit.emplace(std::move(*candidate));
             }
-            Impl::action(reply, ActionKind::edit_commit, press.key, press.value);
+            if (self.states.at(press.key).control.kind == ControlKind::color_plane &&
+                self.states.at(press.key).control.drag_axis != DragAxis::vertical)
+                Impl::action(reply, ActionKind::edit_commit, press.key, press.color_sv);
+            else
+                Impl::action(reply, ActionKind::edit_commit, press.key, press.value);
         } else if (!press.selecting && hit && hit->key == press.key) {
             if (hit->kind == ControlKind::tree_item && press.tree_disclosure) {
                 if (const auto* row = self.tree_row(hit->key); row && contains(row->disclosure, event.x, event.y))
                     self.expand_tree(reply, hit->key, !row->expanded);
+            } else if (hit->kind == ControlKind::tree_item && press.tree_trailing) {
+                if (const auto* row = self.tree_row(hit->key); row && contains(row->trailing_action, event.x, event.y))
+                    Impl::action(reply, ActionKind::activate, hit->key, {}, hit->action_target);
             } else if (hit->kind == ControlKind::number && press.button == PointerButton::primary) {
                 if (!self.edit) {
                     if (!self.begin_edit(reply, hit->key, true, true))
@@ -483,6 +572,11 @@ Reply Session::input(const Event& event) {
         while (key) {
             auto& state = self.states.at(key);
             if (scrolling(state.control.kind)) {
+                if (self.edit && self.states.at(self.edit->key).control.transient_edit &&
+                    self.states.at(self.edit->key).control.rename_anchor) {
+                    if (!self.finish_edit(reply, true))
+                        return reply;
+                }
                 state.scroll =
                     std::clamp(state.scroll - static_cast<double>(event.wheel) * 48, 0.0, state.scroll_limit);
                 reply.consumed = reply.redraw = true;
@@ -542,8 +636,15 @@ Reply Session::input(const Event& event) {
     }
     auto* focused = self.live(self.focus);
     const auto* focused_box = self.published->find(self.focus);
-    if (!focused || !focused_box || !self.current(*focused_box))
+    if (!focused || !focused_box || !self.current(*focused_box)) {
+        if (self.edit && self.states.at(self.edit->key).control.transient_edit && event.kind == EventKind::key_down &&
+            event.key == Key::enter) {
+            reply.consumed = true;
+            self.terminal_key = Key::enter;
+            self.finish_edit(reply, true);
+        }
         return reply;
+    }
     if (self.tree_keyboard(reply, event, *focused))
         return reply;
     if (focused->control.selection_group && event.kind == EventKind::key_down && !event.control && !event.alt &&
@@ -604,13 +705,13 @@ Reply Session::input(const Event& event) {
         }
         reply.consumed = true;
         if (event.kind == EventKind::text && !event.control && !event.alt) {
-            if (const auto* value = std::get_if<std::wstring>(&event.data)) {
+            if (const auto* value = std::get_if<String>(&event.data)) {
                 // Enter/Tab/control WM_CHAR belong to their key command.
-                if (value->size() == 1 && (*value)[0] < 32)
+                if (value->size() == 1 && static_cast<unsigned char>((*value)[0]) < 32u)
                     return reply;
                 reply.redraw |= !edit.text_mode;
                 edit.text_mode = true;
-                self.insert(reply, *value, detail::TextEdit::Group::insert);
+                self.insert(reply, value->view(), detail::TextEdit::Group::insert);
             }
         } else if (event.kind == EventKind::key_down) {
             if (event.key == Key::enter) {
@@ -652,9 +753,10 @@ Reply Session::input(const Event& event) {
                     return reply;
                 }
                 const auto& selected = edit.buffer().current();
-                const auto paragraph = geometry->paragraph->matches(selected.text)
-                                           ? Result<std::shared_ptr<const detail::TextSnapshot>>{geometry->paragraph}
-                                           : self.text.edited_snapshot(edit.key, *geometry->paragraph, selected.text);
+                const auto paragraph =
+                    geometry->paragraph->matches(selected.text.view())
+                        ? Result<std::shared_ptr<const detail::TextSnapshot>>{geometry->paragraph}
+                        : self.text.edited_snapshot(edit.key, *geometry->paragraph, selected.text.view());
                 if (!self.text_ok(reply, paragraph, self.focus))
                     return reply;
                 const bool left = event.key == Key::left || event.key == Key::home;

@@ -6,6 +6,14 @@
 
 namespace atelier::editor {
 namespace workbench_control {
+inline constexpr ui::ControlKey filter = 305;
+
+inline constexpr ui::ControlKey filter_clear = 306;
+
+inline constexpr ui::ControlKey readonly_id = 307;
+
+inline constexpr ui::ControlKey readonly_summary = 308;
+
 inline constexpr ui::ControlKey disable = 310;
 
 inline constexpr ui::ControlKey long_labels = 311;
@@ -15,6 +23,10 @@ inline constexpr ui::ControlKey list = 319;
 inline constexpr ui::ControlKey fold = 320;
 
 inline constexpr ui::ControlKey body = 321;
+
+inline constexpr ui::ControlKey readonly_fold = 322;
+
+inline constexpr ui::ControlKey readonly_body = 323;
 
 inline constexpr ui::ControlKey position_reset = 334;
 
@@ -77,6 +89,10 @@ inline constexpr ui::ControlKey blue = 462;
 inline constexpr ui::ControlKey color_reset = 466;
 
 inline constexpr ui::ControlKey color_fold = 470;
+
+inline constexpr ui::ControlKey sv_plane = 473;
+
+inline constexpr ui::ControlKey hue_bar = 474;
 }
 
 // A live consumer of the production controls, inside the ordinary editor host.
@@ -132,7 +148,17 @@ private:
 
     bool expanded_{true};
 
+    bool readonly_expanded_{true};
+
     bool color_expanded_{true};
+
+    std::wstring query_;
+
+    double hue_{207.27272727272728};
+
+    double saturation_{.6875};
+
+    void sync_hsv() noexcept;
 
     ui::ControlKey page_{workbench_control::general_page};
 

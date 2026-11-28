@@ -6,7 +6,7 @@ namespace atelier::ui {
 
 enum class VectorAxis { none, x, y, z, w };
 
-inline constexpr float single_line_height = 23;
+inline constexpr float single_line_height = 22;
 
 inline constexpr float scalar_field_width = 140; // One tuple column in a default-width Parameters pane.
 

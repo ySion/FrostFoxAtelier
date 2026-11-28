@@ -7,7 +7,7 @@
 
 namespace atelier::ui {
 namespace {
-constexpr float divider_width = 8;
+constexpr float divider_width = 6;
 
 constexpr ControlKey close_offset = 1'000'000;
 

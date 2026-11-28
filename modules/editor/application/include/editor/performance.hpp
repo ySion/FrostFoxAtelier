@@ -216,7 +216,7 @@ private:
 
     Snapshot published_;
 
-    std::array<float, 6> widths_{180, 72, 72, 72, 72, 64};
+    std::array<float, 6> widths_{184, 84, 74, 72, 72, 66};
 
     ui::TableSelection selection_{};
 

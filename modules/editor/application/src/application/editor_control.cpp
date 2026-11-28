@@ -1556,6 +1556,9 @@ struct EditorControl::Impl {
         }
         ATELIER_TRY_BIND(entity, operation(runtime.is_a(*type_id, doc.types().entity)));
         if (*entity) {
+            ATELIER_TRY_BIND(ent_state, operation(world::inspect_entity(runtime, id)));
+            ATELIER_TRY(result.set(root, "enabled", ent_state->enabled));
+            ATELIER_TRY(result.set(root, "effective_enabled", ent_state->effective_enabled));
             ATELIER_TRY_BIND(origin, operation(world::space_reference(runtime, id)));
             if (*origin)
                 ATELIER_TRY(set_handle(result, root, "space_reference", **origin));
@@ -1574,6 +1577,14 @@ struct EditorControl::Impl {
                 ATELIER_TRY(result.numbers(field, "scale", Span{scale}));
             }
             return {};
+        }
+        bool comp_effective_enabled = true;
+        if (!doc.is_graph_object(id)) {
+            ATELIER_TRY_BIND(comp_state, operation(world::inspect_component(runtime, id)));
+            ATELIER_TRY_BIND(owner_state, operation(world::inspect_entity(runtime, comp_state->owner)));
+            comp_effective_enabled = comp_state->enabled && owner_state->effective_enabled;
+            ATELIER_TRY(result.set(root, "enabled", comp_state->enabled));
+            ATELIER_TRY(result.set(root, "effective_enabled", comp_effective_enabled));
         }
         const auto& types = doc.presentation_types();
         ATELIER_TRY_BIND(static_mesh, operation(runtime.is_a(*type_id, types.static_mesh_component)));
@@ -1604,9 +1615,10 @@ struct EditorControl::Impl {
                                !proc->source.empty() && !doc.has_graph(proc->source) &&
                                    doc.unavailable(assets::AssetKind::procedural_graph, proc->source) != nullptr));
                 ATELIER_TRY(
-                    result.set(proc_record, "has_surface", proc->output && proc->output->surface_mesh != nullptr));
+                    result.set(proc_record, "has_surface",
+                               comp_effective_enabled && proc->output && proc->output->surface_mesh != nullptr));
                 std::uint64_t instance_count = 0;
-                if (proc->output)
+                if (comp_effective_enabled && proc->output)
                     for (const auto& col : proc->output->publication.collections)
                         if (col.transforms)
                             instance_count += col.transforms->size();
@@ -2343,10 +2355,9 @@ struct EditorControl::Impl {
         for (const auto& file : app.workspace_.source_editor.files())
             if (file->dirty()) {
                 ATELIER_TRY_BIND(path, utf8_text(file->path.generic_wstring()));
-                ATELIER_TRY_BIND(source, utf8_text(file->document->text()));
                 const auto draft = drafts.append_object(drafts.root());
                 drafts.set_validated(draft, "path", *path);
-                drafts.set_validated(draft, "text", *source);
+                drafts.set_validated(draft, "text", file->document->text());
                 ATELIER_TRY(drafts.set(draft, "conflict", file->conflict));
             }
         data.drafts = drafts.finish();

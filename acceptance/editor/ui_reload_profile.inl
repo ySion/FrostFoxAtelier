@@ -54,7 +54,7 @@ atelier::Result<void> profile_accepted_dispatch(atelier::editor::Workspace& work
         const auto evaluations = (*shelf)->statistics().binding_evaluations - before;
         const auto controls = (*shelf)->controls();
         const auto row = std::ranges::find(controls, shelf_keys.front().key, &ui::Control::key);
-        if (!(row != controls.end() && row->layout.height.value == (collapsed ? 24.f : 56.f) && evaluations >= count))
+        if (!(row != controls.end() && row->layout.height.value == (collapsed ? 24.f : 34.f) && evaluations >= count))
             return command_error("ToolShelf did not evaluate and commit its new height.");
         record(batch, "shelf_update", count, evaluations, elapsed);
         return {};
@@ -104,12 +104,12 @@ atelier::Result<void> profile_editor_ui_reload(Application& app, const std::file
     ATELIER_TRY_BIND(path, workspace.ui_source());
     ATELIER_TRY_BIND(bytes, assets::read_utf8_file(*path, 1024 * 1024));
     const auto& original = *bytes;
-    constexpr StringView function = "double shelf_expanded_height() { return 56.0d; }";
+    constexpr StringView function = "double shelf_expanded_height() { return 34.0d; }";
     const auto at = original.find(function);
     if (!(at != String::npos && original.find(function, at + 1) == String::npos))
         return command_error("ToolShelf height fixture no longer matches the editor source.");
     auto taller = original;
-    static_cast<void>(taller.replace(at + function.find("56"), 2, "57"));
+    static_cast<void>(taller.replace(at + function.find("34"), 2, "35"));
     ATELIER_TRY(prepare_output(output));
     const auto author = output / "editor.ui.source";
     ATELIER_TRY(editor::write_file(author, original, editor::WriteMode::create));
@@ -162,7 +162,7 @@ atelier::Result<void> profile_editor_ui_reload(Application& app, const std::file
         return std::abs(pixels - expected * app.presented()->drawing->dpi_scale) < 0.01f;
     };
     ATELIER_TRY_BIND(initial_height, height_px());
-    if (!has_height(*initial_height, 56))
+    if (!has_height(*initial_height, 34))
         return command_error(String::concat("Unexpected initial ToolShelf height in pixels: ", *initial_height));
     using Profile = ui_language::LiveDocument::Profile;
     std::ofstream samples(output / "reloads.csv", std::ios::noreplace),
@@ -213,7 +213,7 @@ atelier::Result<void> profile_editor_ui_reload(Application& app, const std::file
             expanded_edit = !expanded_edit;
         else
             comment = !comment;
-        const auto height = expanded_edit ? 57.f : 56.f;
+        const auto height = expanded_edit ? 35.f : 34.f;
         auto next = expanded_edit ? taller : original;
         if (comment)
             static_cast<void>(
@@ -392,9 +392,9 @@ atelier::Result<void> profile_editor_ui_reload(Application& app, const std::file
                 return {};
         }
     };
-    ATELIER_TRY(wait_height(57, base + 1, "ToolShelf failed to reopen with the new height."));
+    ATELIER_TRY(wait_height(35, base + 1, "ToolShelf failed to reopen with the new height."));
     ATELIER_TRY(editor::write_file(author, original));
-    ATELIER_TRY(wait_height(56, base + 2, "ToolShelf failed to restore the original height."));
+    ATELIER_TRY(wait_height(34, base + 2, "ToolShelf failed to restore the original height."));
     // ToolShelf routes button actions to the host. Hot-rebuild the editor's own
     // foldout handler before timing events, then restore the exact authored body.
     auto edited_group = original;
@@ -420,7 +420,7 @@ atelier::Result<void> profile_editor_ui_reload(Application& app, const std::file
         ATELIER_TRY_BIND(pixels, height_px());
         if (!(workspace.ui_component("PropertyGroup")->compilation() == ui_language::Component::Compilation::compiled &&
               workspace.ui_component("ToolShelf")->compilation() != ui_language::Component::Compilation::compiled &&
-              has_height(*pixels, 56)))
+              has_height(*pixels, 34)))
             return command_error("Unexpected component reuse after PropertyGroup hot edit.");
     }
     workspace.profile_ui_reloads(Profile::off);

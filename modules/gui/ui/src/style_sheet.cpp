@@ -3,6 +3,7 @@
 #include "foundation/inline_array.hpp"
 #include "foundation/map.hpp"
 #include "foundation/result.hpp"
+#include "foundation/string.hpp"
 #include "platform/utf.hpp"
 #include <algorithm>
 #include <bit>
@@ -180,10 +181,10 @@ class Parser {
             else {
                 ATELIER_TRY_BIND(type, identifier());
                 any = true;
-                constexpr StringView kinds[] = {"container", "label",    "button",    "list",      "item",
-                                                "number",    "splitter", "viewport",  "text_edit", "checkbox",
-                                                "foldout",   "popup",    "menu_item", "combo",     "tab",
-                                                "slider",    "tree",     "tree_item", "table",     "code_editor"};
+                constexpr StringView kinds[] = {
+                    "container", "label",     "button",   "list",      "item",  "number",      "splitter",
+                    "viewport",  "text_edit", "checkbox", "foldout",   "popup", "menu_item",   "combo",
+                    "tab",       "slider",    "tree",     "tree_item", "table", "code_editor", "color_plane"};
                 const auto found = std::find(std::begin(kinds), std::end(kinds), type->view());
                 if (found == std::end(kinds))
                     return fail(String::concat("Unknown control type: ", *type));
@@ -316,6 +317,9 @@ class Parser {
         ATELIER_TRY_BIND(input, resolve(value));
         if (const auto* found = gradients_.find(input->text))
             return *found;
+        auto key = String::from_utf8(input->text);
+        if (!key)
+            return fail("Invalid UTF-8 in gradient", input->position);
         auto stops = trim(input->text.slice(16, input->text.size() - 17));
         bool horizontal = false;
         if (stops.starts_with("to right,")) {
@@ -346,7 +350,7 @@ class Parser {
                 image->pixels.add(encode(std::lerp(pair.first, pair.second, t)));
             image->pixels.add(static_cast<std::uint8_t>(std::lround(std::lerp(a->a, b->a, t) * 255)));
         }
-        gradients_.try_emplace(String::from_utf8_validated(input->text), image);
+        gradients_.try_emplace(std::move(*key), image);
         return image;
     }
 
@@ -739,7 +743,7 @@ StyleSheet::Result StyleSheet::create(Array<StyleRule> rules) {
         auto& s = rule.selector;
         const auto bits = static_cast<unsigned>(s.states);
         if (!valid_properties(rule.properties) ||
-            (s.kind && static_cast<unsigned>(*s.kind) > static_cast<unsigned>(ControlKind::code_editor)) ||
+            (s.kind && static_cast<unsigned>(*s.kind) > static_cast<unsigned>(ControlKind::color_plane)) ||
             (s.role && static_cast<unsigned>(*s.role) > static_cast<unsigned>(Role::caption)) || bits > 255 ||
             has_all(s.states, flags_or(StyleState::enabled, StyleState::disabled)) ||
             invalid_state_properties(rule.properties, s.states) || s.classes.size() > 16 ||

@@ -170,6 +170,16 @@ inline constexpr ui::ControlKey color_done = 955;
 
 inline constexpr ui::ControlKey color_group = 956; // rgb 941..943, hsv 944..946
 
+inline constexpr ui::ControlKey color_sv_plane = 957;
+
+inline constexpr ui::ControlKey color_hue_bar = 958;
+
+inline constexpr ui::ControlKey color_intensity = 959;
+
+inline constexpr ui::ControlKey color_intensity_slider = 960;
+
+inline constexpr ui::ControlKey color_intensity_group = 961;
+
 inline constexpr ui::ControlKey scene_tab = 600;
 
 inline constexpr ui::ControlKey entities_tab = 601;
@@ -186,13 +196,15 @@ inline constexpr ui::ControlKey output_content = 690;
 
 inline constexpr ui::ControlKey output_table = 691;
 
-inline constexpr ui::ControlKey structure_tab = 608;
+inline constexpr ui::ControlKey outliner_components_toggle = 695;
 
-inline constexpr ui::ControlKey structure_content = 694;
+inline constexpr ui::ControlKey resource_header_name = 1260;
 
-inline constexpr ui::ControlKey structure_tree = 695;
+inline constexpr ui::ControlKey material_header_name = 1261;
 
-inline constexpr ui::ControlKey structure_filter = 696;
+inline constexpr ui::ControlKey tree_filter_clear = 1262;
+
+inline constexpr ui::ControlKey parameter_search_clear = 1263;
 
 inline constexpr ui::ControlKey shelf = 730;
 
@@ -315,7 +327,6 @@ struct Workspace {
     struct Binding {
         enum class Kind {
             object,
-            structure,
             property_group,
             field,
             slider,
@@ -507,6 +518,14 @@ struct Workspace {
 
         double maximum{1};
 
+        double hue{};
+
+        double saturation{};
+
+        double hdr_scale{1};
+
+        double initial_hdr_scale{1};
+
         float x{};
 
         float y{};
@@ -520,6 +539,8 @@ struct Workspace {
 
     Optional<ColorEdit> color_edit;
 
+    static std::wstring single_line_field_text(std::wstring_view raw, bool* sanitized_out = nullptr);
+
     // Inline rename over a tree row: the renamed Entity, drawn once its row is presented.
     // An Entity row (object set) or an Asset Browser cell (asset set); asset paths are project-relative.
     struct RowRename {
@@ -530,9 +551,13 @@ struct Workspace {
         std::filesystem::path asset{};
 
         ui::TableKey cell{};
+
+        bool invalid{};
     };
 
     Optional<RowRename> row_rename;
+
+    bool outliner_show_components{};
 
     bool show_workbench() const noexcept { return dock.visible(control::workbench); }
 
@@ -547,11 +572,9 @@ struct Workspace {
     Result<void> select_tree(Session&, OperatorHost&, ui::ControlKey, ui::SelectionModifiers = {});
 
     // Tree row expansion is view state: not undoable, never changes the document
-    // or the selection. Scene Tree addresses its World row as ObjectId{}. If any
+    // or the selection. Scene Outliner addresses its World row as ObjectId{}. If any
     // identity is not a row of the tree, nothing changes.
-    enum class EntityTree { scene_tree, structure };
-
-    Result<void> set_tree_expanded(const Session&, EntityTree, Span<const ObjectId>, bool expanded);
+    Result<void> set_tree_expanded(const Session&, Span<const ObjectId>, bool expanded);
 
     // Expands the Entity's Scene Tree ancestors; false when the tree filter hides its row.
     Result<bool> reveal_in_tree(const Session&, ObjectId entity);
@@ -657,8 +680,6 @@ struct Workspace {
 
     std::wstring tree_query;
 
-    std::wstring structure_query;
-
     Optional<ui::ContextMenuRequest> menu;
 
     Array<ui::MenuItem> menu_items; // Same model for menubar, combo, pane and parameter menus.
@@ -750,6 +771,8 @@ private:
 
     std::array<ui::ControlKey, 5> resource_properties_{};
 
+    std::array<ui::ControlKey, 5> resource_property_values_{};
+
     Array<ObjectId> navigation_{ObjectId{}}; // Selection history; never retains scene objects.
 
     std::size_t navigation_cursor_{};
@@ -809,10 +832,6 @@ private:
     Optional<Set<ObjectId>> pending_live_;
 
     EntityTreeView scene_tree_;
-
-    EntityTreeView structure_tree_;
-
-    Result<void> build_structure_tree(const Session&, ObjectId entity, TreeBuild&) const;
 
     Array<ComponentType> component_choices_;
 

@@ -510,6 +510,7 @@ struct Context {
                     : type == NodeKind::splitter                        ? ui::ControlKind::splitter
                     : type == NodeKind::popup                           ? ui::ControlKind::popup
                     : type == NodeKind::menu_item                       ? ui::ControlKind::menu_item
+                    : type == NodeKind::color_plane                     ? ui::ControlKind::color_plane
                                                                         : ui::ControlKind::container;
         if (type == NodeKind::toggle_button)
             node.button_behavior = ui::ButtonBehavior::toggle;
@@ -546,6 +547,8 @@ struct Context {
         if (static_cast<Property>(property) == Property::text ||
             static_cast<Property>(property) == Property::empty_text)
             node.text = std::move(value);
+        else if (static_cast<Property>(property) == Property::placeholder)
+            node.placeholder = std::move(value);
         else if (const auto kind = static_cast<Property>(property);
                  kind == Property::tooltip || kind == Property::tooltip_title || kind == Property::tooltip_identity) {
             const auto member = kind == Property::tooltip         ? &ui::Tooltip::description
@@ -619,6 +622,9 @@ struct Context {
         node.tree_expanded = row.expanded;
         node.tree_primary = row.primary;
         node.tree_lines = row.lines;
+        node.tree_badges = row.badges;
+        node.tree_trailing_icon = row.trailing_icon;
+        node.tree_trailing_dimmed = row.trailing_dimmed;
     }
 
     static Result<void> apply_key(NodeState& node, Property p, ui::ControlKey value) noexcept {
@@ -714,7 +720,19 @@ struct Context {
             break;
         }
         case Property::value:
+            if (node.kind == ui::ControlKind::color_plane && (value < 0 || value > 1))
+                return failure("ColorPlane saturation requires a value in [0, 1].");
             node.value = value;
+            break;
+        case Property::hue:
+            if (value < 0 || value > 360)
+                return failure("ColorPlane hue requires a value in [0, 360].");
+            node.color_hue = value;
+            break;
+        case Property::brightness:
+            if (value < 0 || value > 1)
+                return failure("ColorPlane brightness requires a value in [0, 1].");
+            node.color_value = value;
             break;
         case Property::minimum:
             node.minimum = value;
@@ -841,6 +859,9 @@ struct Context {
         case Property::single_line:
             node.single_line = value;
             node.layout.height = ui_layout::Axis::content(value ? ui::single_line_height : 0.f);
+            break;
+        case Property::read_only:
+            node.read_only = value;
             break;
         default:
             fatal("Invalid boolean UI property.");
@@ -1303,6 +1324,9 @@ Result<void> detail::DefinitionState::apply_direct(const Binding& binding) {
         control.tree_expanded = row.expanded;
         control.tree_primary = row.primary;
         control.tree_lines = row.lines;
+        control.tree_badges = row.badges;
+        control.tree_trailing_icon = row.trailing_icon;
+        control.tree_trailing_dimmed = row.trailing_dimmed;
         return {};
     }
     }
@@ -2172,6 +2196,7 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
         } else if (kind == NodeKind::code_editor) {
             auto control = node.control;
             control.code = node.code.document;
+            control.code_annotations = node.code.annotations;
             control.enabled &= node.code.enabled;
             control.read_only = node.code.read_only;
             output.add(std::move(control));
@@ -2186,7 +2211,14 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
             auto control = node.control;
             control.key = node.text_edit.key;
             control.text = node.text_edit.text;
+            if (!node.text_edit.placeholder.empty())
+                control.placeholder = node.text_edit.placeholder;
             control.enabled &= node.text_edit.enabled;
+            control.invalid |= node.text_edit.invalid;
+            control.read_only |= node.text_edit.read_only;
+            control.transient_edit = node.text_edit.transient;
+            control.rename_anchor = node.text_edit.rename_anchor;
+            control.rename_cell = node.text_edit.rename_cell;
             if (!control.key)
                 return failure("TextField requires a nonzero host edit key.");
             output.add(std::move(control));

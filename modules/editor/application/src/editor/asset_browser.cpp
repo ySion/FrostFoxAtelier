@@ -1,4 +1,5 @@
 #include "editor/asset_browser.hpp"
+#include "application/diagnostics.hpp"
 #include "ui_language/live_document.hpp"
 #include "assets/builtin_materials.hpp"
 #include "platform/utf.hpp"
@@ -24,6 +25,8 @@ std::wstring_view kind_name(assets::AssetKind kind) {
         return L"Material";
     case assets::AssetKind::procedural_graph:
         return L"Procedural Graph";
+    case assets::AssetKind::sky:
+        return L"Sky";
     default:
         return L"File";
     }
@@ -43,7 +46,8 @@ bool matches_filter(const AssetBrowser::Item& item, std::wstring_view query, uns
                           : filter == 3 ? assets::AssetKind::source
                           : filter == 4 ? assets::AssetKind::material
                           : filter == 5 ? assets::AssetKind::texture
-                                        : assets::AssetKind::procedural_graph));
+                          : filter == 6 ? assets::AssetKind::procedural_graph
+                                        : assets::AssetKind::sky));
 }
 
 int compare_names(std::wstring_view a, std::wstring_view b) {
@@ -70,9 +74,26 @@ Optional<std::size_t> column_index(ui::TableKey key) {
 }
 
 ui::ControlIcon item_icon(assets::AssetKind kind) {
-    return kind == assets::AssetKind::folder ? ui::ControlIcon::folder
-           : kind == assets::AssetKind::mesh ? ui::ControlIcon::mesh
-                                             : ui::ControlIcon::object;
+    switch (kind) {
+    case assets::AssetKind::folder:
+        return ui::ControlIcon::folder;
+    case assets::AssetKind::mesh:
+        return ui::ControlIcon::mesh;
+    case assets::AssetKind::scene:
+        return ui::ControlIcon::scene;
+    case assets::AssetKind::material:
+        return ui::ControlIcon::material;
+    case assets::AssetKind::texture:
+        return ui::ControlIcon::texture;
+    case assets::AssetKind::source:
+        return ui::ControlIcon::source_file;
+    case assets::AssetKind::procedural_graph:
+        return ui::ControlIcon::procgraph;
+    case assets::AssetKind::sky:
+        return ui::ControlIcon::sky_light;
+    default:
+        return ui::ControlIcon::object;
+    }
 }
 }
 
@@ -92,6 +113,8 @@ void AssetBrowser::reset(bool has_project) {
     row_indices_.clear();
     directories_.clear();
     project_root_.clear();
+    startup_scene_.clear();
+    ui_source_.clear();
     table_data_.reset();
     active_column_ = browser_control::name_column;
     directory_items_.reset();
@@ -162,6 +185,8 @@ void AssetBrowser::navigate(std::filesystem::path path) {
 }
 
 void AssetBrowser::update_directories(const Project* project) {
+    startup_scene_ = project ? project->startup_scene() : std::filesystem::path{};
+    ui_source_ = project ? project->ui_source() : std::filesystem::path{};
     const auto root = project ? project->root() : std::filesystem::path{};
     const auto revision = project ? project->revision() : 0;
     if (root == project_root_ && revision == directory_revision_ && has_project_ == (project != nullptr))
@@ -377,8 +402,8 @@ Array<ui::MenuItem> AssetBrowser::menu_items(ui::ControlKey source) const {
         items.add(std::move(item));
     };
     if (source == id::filter) {
-        const std::array names{L"All types", L"Meshes",   L"Scenes",           L"Source",
-                               L"Materials", L"Textures", L"Procedural Graphs"};
+        const std::array names{L"All types",         L"Meshes", L"Scenes", L"Source", L"Materials", L"Textures",
+                               L"Procedural Graphs", L"Skies"};
         for (std::size_t i = 0; i < names.size(); ++i)
             radio(id::filter_first + i, names[i], true, filter_ == i);
     } else if (source == id::view_menu) {
@@ -521,7 +546,7 @@ bool AssetBrowser::apply(const ui::Action& action) {
         }
     if (action.kind != ui::ActionKind::activate)
         return false;
-    if (action.key >= filter_first && action.key < filter_first + 7) {
+    if (action.key >= filter_first && action.key < filter_first + 8) {
         filter_ = static_cast<unsigned>(action.key - filter_first);
         filter_changed();
         return true;
@@ -557,9 +582,9 @@ bool AssetBrowser::apply(const ui::Action& action) {
     return false;
 }
 
-ui::Result<void> AssetBrowser::append(ui_language::ControlOutput controls, ui::ControlKey parent,
-                                      const Project* project, bool can_create, const ui::UiFrame* frame,
-                                      ui_language::LiveDocument& document) {
+Result<void> AssetBrowser::append(ui_language::ControlOutput controls, ui::ControlKey parent, const Project* project,
+                                  bool can_create, const ui::UiFrame* frame, ui_language::LiveDocument& document,
+                                  const ui_language::TextEditBinding* rename) {
     namespace id = browser_control;
     update_directories(project);
     can_create_ = can_create;
@@ -574,8 +599,8 @@ ui::Result<void> AssetBrowser::append(ui_language::ControlOutput controls, ui::C
     const auto* body = frame ? frame->find(id::root + 103) : nullptr;
     const double directory_limit =
         body ? std::max(96., static_cast<double>(body->bounds.width / frame->drawing->dpi_scale) - 69.) : 144.;
-    ATELIER_TRY_BIND(directories, directory_items());
-    const std::array<ui_language::InputValue, 18> inputs{
+    ATELIER_TRY_BIND(directories, directory_items().transform_error(application::ui_error));
+    const std::array<ui_language::InputValue, 12> inputs{
         std::move(*directories),
         static_cast<double>(directory_rows_),
         ui_language::TextEditBinding{id::search, query_},
@@ -588,12 +613,6 @@ ui::Result<void> AssetBrowser::append(ui_language::ControlOutput controls, ui::C
         static_cast<double>(view_ == View::list      ? ui::ControlIcon::view_list
                             : view_ == View::details ? ui::ControlIcon::view_details
                                                      : ui::ControlIcon::view_tiles),
-        static_cast<double>(ui::ControlIcon::back),
-        static_cast<double>(ui::ControlIcon::up),
-        static_cast<double>(ui::ControlIcon::search),
-        static_cast<double>(ui::ControlIcon::close),
-        static_cast<double>(ui::ControlIcon::filter),
-        static_cast<double>(ui::ControlIcon::more),
         std::min(directory_width_, directory_limit),
         directory_limit};
     const std::array<ui_language::KeyBinding, 15> keys{{{"toolbar", id::root + 100},
@@ -611,17 +630,20 @@ ui::Result<void> AssetBrowser::append(ui_language::ControlOutput controls, ui::C
                                                         {"divider", id::divider},
                                                         {"content", id::content},
                                                         {"status", id::root + 104}}};
-    static_cast<void>(document.append("AssetBrowserShell", parent, keys, inputs, controls));
-    const std::array<ui_language::InputValue, 5> results{
+    ATELIER_TRY(document.append("AssetBrowserShell", parent, keys, inputs, controls));
+    const std::array<ui_language::InputValue, 7> results{
         ui_language::TableBinding{table_data(), {selected_ ? row_key(selected_->key) : 0, active_column_}},
-        ui_language::ActionBinding{id::open}, id::results,
+        ui_language::ActionBinding{id::open},
+        id::results,
         std::wstring(view_ == View::details ? L"details"
                      : view_ == View::tiles ? L"tiles"
                                             : L"list"),
         std::wstring(query_.empty() && !filter_ ? L"This folder is empty."
-                                                : L"No matches. Clear the search or type filter.")};
+                                                : L"No matches. Clear the search or type filter."),
+        rename != nullptr,
+        rename ? *rename : ui_language::TextEditBinding{id::results, {}, false}};
     const std::array<ui_language::KeyBinding, 1> result_keys{{{"results", id::results}}};
-    static_cast<void>(document.append("AssetResults", id::content, result_keys, results, controls));
+    ATELIER_TRY(document.append("AssetResults", id::content, result_keys, results, controls));
     return {};
 }
 }

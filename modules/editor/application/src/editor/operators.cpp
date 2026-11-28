@@ -19,7 +19,7 @@ String Context::focused_graph() const {
             return *owner_graph;
     }
     if (!active_graph.empty() && region != RegionKind::code && region != RegionKind::controls &&
-        region != RegionKind::scene_tree && region != RegionKind::structure && region != RegionKind::world)
+        region != RegionKind::scene_tree && region != RegionKind::world)
         return active_graph;
     return {};
 }
@@ -174,9 +174,9 @@ String history_violation(const OperatorInfo& info, std::uint64_t recorded, std::
 }
 
 Span<const StringView> region_names() noexcept {
-    static constexpr std::array<StringView, 12> names{"none",       "viewport", "scene_tree", "structure",
-                                                      "parameters", "assets",   "code",       "output",
-                                                      "world",      "controls", "network",    "spreadsheet"};
+    static constexpr std::array<StringView, 11> names{"none",     "viewport", "scene_tree", "parameters",
+                                                      "assets",   "code",     "output",     "world",
+                                                      "controls", "network",  "spreadsheet"};
     return names;
 }
 

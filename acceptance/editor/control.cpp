@@ -1436,12 +1436,11 @@ Result<void> verify_editor_trees(application::Application& app, editor::Session&
         return rows;
     };
     Optional<world::EntityRemoval> deep_branch;
-    for (const bool structure : {false, true}) {
-        const auto tree = structure ? editor::control::structure_tree : editor::control::entity_tree;
-        const auto tab = structure ? "structure" : "scene_tree";
+    {
+        const auto tree = editor::control::entity_tree;
         auto opened = while_polling(endpoint, [&]() -> Result<void> {
             json::Builder args;
-            args.set_validated(args.root(), "tab", tab);
+            args.set_validated(args.root(), "tab", "scene_tree");
             ATELIER_TRY(driver.call("editor.inspect", json::Document::literal<R"({"detail":"summary"})">()));
             ATELIER_TRY(driver.op("layout.show", args.finish()));
             return {};
@@ -1453,7 +1452,7 @@ Result<void> verify_editor_trees(application::Application& app, editor::Session&
             baseline.back().expanded)
             return fixture_failure("Unexpected initial parent/child rows in the editor tree");
         const auto toggle = [&]() -> Result<void> {
-            const auto key = (structure ? baseline.front() : baseline.back()).key;
+            const auto key = baseline.back().key;
             const auto& rows = app.presented()->tree_rows;
             const auto row = std::ranges::find(rows, key, &ui::TreeRowGeometry::key);
             if (row == rows.end() || !(row->disclosure.width > 0))
@@ -1468,7 +1467,7 @@ Result<void> verify_editor_trees(application::Application& app, editor::Session&
         };
         ATELIER_TRY(toggle());
         ATELIER_TRY(next_editor_frame(app));
-        if (visible(tree).size() != (structure ? 1u : 3u))
+        if (visible(tree).size() != 3u)
             return fixture_failure("Tree disclosure did not change visible rows");
         ATELIER_TRY(toggle());
         ATELIER_TRY(next_editor_frame(app));
@@ -1476,10 +1475,7 @@ Result<void> verify_editor_trees(application::Application& app, editor::Session&
             return fixture_failure("Tree disclosure did not restore the original rows");
         const auto accepted = app.presented();
         ObjectId branch;
-        if (deep_branch) {
-            ATELIER_TRY(world.restore(*deep_branch));
-            branch = deep_branch->root.id();
-        } else {
+        {
             auto at = child;
             for (unsigned i = 0; i < 128; ++i) {
                 ATELIER_TRY_BIND(entity, world::create_entity(world.runtime()));
@@ -1490,8 +1486,7 @@ Result<void> verify_editor_trees(application::Application& app, editor::Session&
             }
         }
         ATELIER_TRY(toggle()); // Reject an explicit expansion edit along with the candidate rows.
-        if (!structure)
-            ATELIER_TRY(session.select(child)); // Automatic reveal must roll back as well.
+        ATELIER_TRY(session.select(child)); // Automatic reveal must roll back as well.
         const auto refused = next_editor_frame(app);
         if (refused || refused.error().code != ErrorCode::capacity_exceeded ||
             refused.error().message != "A tree exceeds 128 levels." || app.presented() != accepted)
@@ -1501,15 +1496,13 @@ Result<void> verify_editor_trees(application::Application& app, editor::Session&
         ATELIER_TRY(next_editor_frame(app));
         if (visible(tree) != baseline)
             return fixture_failure("Rejected tree changed stable row keys, positions or expansion");
-        if (!structure) {
-            ATELIER_TRY(session.select(child));
-            ATELIER_TRY(next_editor_frame(app));
-            const auto expanded = visible(tree);
-            if (expanded.size() != 3 || expanded[1].key != baseline.back().key || !expanded[1].expanded ||
-                expanded.back().depth != 2)
-                return fixture_failure("Selecting a child did not expand its accepted Scene Tree parent");
-            ATELIER_TRY(session.select(parent));
-        }
+        ATELIER_TRY(session.select(child));
+        ATELIER_TRY(next_editor_frame(app));
+        const auto expanded = visible(tree);
+        if (expanded.size() != 3 || expanded[1].key != baseline.back().key || !expanded[1].expanded ||
+            expanded.back().depth != 2)
+            return fixture_failure("Selecting a child did not expand its accepted Scene Outliner parent");
+        ATELIER_TRY(session.select(parent));
     }
 
     return {};

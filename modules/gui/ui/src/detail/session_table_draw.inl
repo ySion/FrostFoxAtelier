@@ -71,7 +71,8 @@
                 const auto body_clip=intersect(table_clip,clip_rect(table.body));
                 if (paint) quad(table.header,header_clip,appearance.indicator_background);
                 Array<detail::TextKey> visible_text;
-                const auto paint_text=[&](TableKey id,bool header,std::wstring_view value,Rect cell,Clip cell_clip,
+                InlineArray<char, 256> cell_u8_scratch;
+                const auto paint_text=[&](TableKey id,bool header,const std::wstring& wide_value,Rect cell,Clip cell_clip,
                     TextAlign alignment,ControlIcon icon,bool row_enabled,float trailing=0.f,bool above=false) -> Result<void> {
                     float x=cell.x+std::max(4.f,appearance.padding.left)*scale;
                     auto width=std::max(0.f,cell.width-(std::max(4.f,appearance.padding.left)+std::max(4.f,appearance.padding.right)+trailing)*scale);
@@ -93,9 +94,10 @@
                             else {x+=size+4*scale; width=std::max(0.f,width-size-4*scale);}
                         }
                     }
-                    if (value.empty() || width<=0 || !visible({x,cell.y,width,cell.height},cell_clip)) return {};
+                    if (wide_value.empty() || width<=0 || !visible({x,cell.y,width,cell.height},cell_clip)) return {};
+                    const StringView u8_value = wide_to_utf8_scratch(wide_value, cell_u8_scratch);
                     const detail::TextKey text_key{key,id,header}; visible_text.add(text_key);
-                    self.text.set(text_key,value,appearance.font,false,alignment);
+                    self.text.set(text_key,u8_value,appearance.font,false,alignment,true);
                     ATELIER_TRY_BIND(metrics,self.text.metrics(text_key,width/scale));
                     const auto y=cell.y+std::max(0.f,cell.height-metrics->height*scale)*.5f;
                     if (!paint) return {};
@@ -113,11 +115,16 @@
                     const Rect header{column_x,inner.y,widths[column],header_height};
                     if (visible(header,header_clip)) {
                         const auto cell_clip=intersect(header_clip,clip_rect(header));
-                        table.columns.add({descriptor.key,header,{header.x+header.width-3*scale,header.y,6*scale,header.height},header_clip});
+                        const Rect resize_zone{header.x+header.width-3*scale,header.y,6*scale,header.height};
+                        table.columns.add({descriptor.key,header,resize_zone,header_clip});
+                        if (paint && enabled && self.hover==key && descriptor.sortable &&
+                            contains(header,self.hover_x,self.hover_y) && !contains(resize_zone,self.hover_x,self.hover_y) &&
+                            !(column>0 && self.hover_x<header.x+3*scale))
+                            quad(header,cell_clip,Color{1.f,1.f,1.f,.055f});
                         ATELIER_TRY(paint_text(descriptor.key,true,descriptor.title,header,cell_clip,descriptor.alignment,ControlIcon::none,enabled,
                             data.sort.column==descriptor.key?12.f:0.f));
                         if (paint && data.sort.column==descriptor.key) {
-                            const auto size=std::min(10*scale,header_height);
+                            const auto size=std::min(9*scale,header_height);
                             quad({header.x+header.width-size-5*scale,header.y+(header.height-size)*.5f,size,size},cell_clip,appearance.foreground,
                                 self.text.symbol(data.sort.direction==TableSortDirection::ascending?detail::TextStore::Symbol::up:detail::TextStore::Symbol::down,
                                     static_cast<std::uint32_t>(std::ceil(size))));
@@ -161,10 +168,17 @@
                     if (paint) quad({table.body.x,y+row_height-scale,body_width,scale},body_clip,appearance.tree_line);
                 }
                 if (paint) {
+                    const auto divider_clip=intersect(table_clip,clip_rect({inner.x,inner.y,body_width,header_height+body_height}));
                     column_x=inner.x-static_cast<float>(state.scroll_x)*scale;
-                    for (auto width:widths) {
-                        column_x+=width;
-                        quad({column_x-scale,inner.y,scale,header_height+body_height},intersect(table_clip,clip_rect({inner.x,inner.y,body_width,header_height+body_height})),appearance.tree_line);
+                    for (std::size_t col_idx=0;col_idx<widths.size();++col_idx) {
+                        column_x+=widths[col_idx];
+                        const auto col_key=data.columns[col_idx].key;
+                        const bool resizing=self.press && self.press->key==key && self.press->table_resize && self.press->table_column==col_key;
+                        const bool hover_grip=!self.press && self.hover==key &&
+                            contains(Rect{column_x-3*scale,inner.y,6*scale,header_height},self.hover_x,self.hover_y);
+                        const float div_w=(resizing || hover_grip)?std::max(1.5f*scale,scale):scale;
+                        quad({column_x-div_w,inner.y,div_w,header_height+body_height},divider_clip,
+                            (resizing || hover_grip)?appearance.border:appearance.tree_line);
                     }
                     if (details) quad({inner.x,inner.y+header_height-scale,body_width,scale},header_clip,appearance.tree_line);
                 }
