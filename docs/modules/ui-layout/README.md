@@ -1,6 +1,6 @@
 # UI 布局核心
 
-`atelier_ui_layout` 是正式原生布局核心。支持稳定节点身份、共享列、重复格、Flex 伸缩/换行/分布/首基线、二维 Grid 轨道/跨格/自动放置，以及逻辑列表的可见范围和滚动锚点。当前布局消费者只保留 2 个代表，覆盖与独立真值见[验收记录](acceptance.md)；[审计记录](audit.md)中的历史 PASS 和性能数据只适用于记录中的版本。
+`atelier_ui_layout` 是正式原生布局核心。支持稳定节点身份、共享列、重复格、Flex 伸缩/换行/分布/首基线、二维 Grid 轨道/跨格/自动放置，以及逻辑列表的可见范围和滚动锚点。当前布局消费者只保留 2 个代表，覆盖与独立真值见[验收记录](acceptance.md)。
 
 尺寸语义、CSS 兼容边界和不支持的循环依赖见[Flex/Grid 合同](flex-grid.md)。正式控件、文字与输入由[UI 模块](../ui/README.md)提供；声明式作者层和真实窗口消费见[编辑器](../editor/README.md)。布局验收不替代这些上层模块的验收。
 
@@ -25,7 +25,6 @@
 | 了解当前设计取舍 | [决策](decisions.md) |
 | 接入共享列、物品格、版本和错误处理 | [调用示例](usage.md) |
 | 使用原生Flex、二维Grid、基线和统一对齐 | [Flex/Grid合同与示例](flex-grid.md) |
-| 查看已完成的数值修复、交叉二审和同场景性能 | [审计与优化](audit.md) |
 | 管理逻辑行高、可见范围与滚动锚点 | [VirtualList契约](virtual-list.md) |
 | 接入内容绑定与完整呈现帧 | [完整内容消费](composition.md) |
 
@@ -72,7 +71,7 @@ cmake --build --preset release --target ui_layout_acceptance
 - [三候选真实验证](../../research/ui-layout-reassessment/validation-results.md)：历史比较路径、性能分项、反例及覆盖限制。
 - [工业游戏UI](../../research/ui-layout-reassessment/industry-game-ui.md) / [工业编辑器UI](../../research/ui-layout-reassessment/industry-editor-ui.md)：通过Exa调查的机制依据。
 - [研究总入口](../../research/ui-layout-reassessment/README.md)：来源和历史资料，不是当前生产依赖。
-- [算法取舍与来源](decisions.md#算法依据)：保留规范和工业实现的依据；已完成建议及实测结果见审计记录。
+- [算法取舍与来源](decisions.md#算法依据)：保留规范和工业实现的依据。
 - 已退役的候选与原生首步探针可从Git历史恢复；源码、独立runner和已失效方案不再留在当前树中。固定来源、许可与必要实测摘要保存在研究目录。
 
 正式代码位于 `modules/gui/ui_layout/`，消费者位于 `acceptance/ui_layout/`。当前树只保留这一套正式布局实现和验收入口。

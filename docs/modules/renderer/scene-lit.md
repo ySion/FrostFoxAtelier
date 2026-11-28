@@ -46,6 +46,10 @@ Scene Lit 是 `Renderer::render(Frame)` 的物理光照着色模式，消费同�
 
 `FrameStats` 通过 4 槽非阻塞 `ReadbackSlotRing` 与 RDG 校准硬件时间戳共同发布上一已完成帧的时间轴并集耗时 `scene_lit_gpu_union_ms`、8 个顶层 GPU 阶段（`GBuffer`、`AS`、`direct`、`GI`、`SSILVB`、`Reflections`、`temporal`、`composite`）、子阶段细分、VSM 页池缓存统计、15 位 `scene_lit_gpu_pass_mask`（稳态帧置齐 `0x5fffu`）、分簇计数及硬件光追阴影/GI 主射线/反射光线计数；`scene_lit_resource_bytes` 统计当前逻辑 GPU 资源与加速结构字节数。
 
-## 后续方向
+## 后续按需扩展方向
 
-尚未实施的扩展能力与待统一清扫的跨模块双轨/旧壳层残留清单见 [多线并存清扫与契约收口清单](cleanup-roadmap.md)。
+以下能力不预埋空壳占位，待实际场景需求驱动时独立立项：
+
+- **延迟 Slab 贴花**：`World` / `Presentation` 贴花组件与 `2.5D Clustered DecalModifySlab CS`。
+- **前向半透明与单层水面**：`LitDirectCompose` 之后的 `SingleLayerWater` / 前向半透明通道及 `Atelier TAAU` `ReactiveMask`。
+- **外部超分 SDK 接入**：基于 `NRIUpscaler` 的 `FSR / DLSS / XeSS` 可选路径（内置超分抗锯齿由 `Atelier TAAU` 承担）。

@@ -14,11 +14,12 @@ npm ci --prefix tools/icons
 npm run generate --prefix tools/icons
 ```
 
-The generator writes 128×128 transparent PNGs for inspection and the same alpha
-data, run-length encoded, into `modules/gui/ui/src/detail/icon_data.inl`. This checked-in output
-keeps ordinary C++ builds offline and avoids adding a PNG decoder or runtime
+The generator rasterizes 128×128 alpha masks and writes run-length encoded data
+into `modules/gui/ui/src/detail/icon_data.inl` (pass `-- --png` to emit local
+inspection PNGs under `out/icons-preview/`, not committed to Git). This checked-in
+output keeps ordinary C++ builds offline and avoids adding a PNG decoder or runtime
 asset lookup for these small masks. Node and resvg are generation tools only.
-The source SVGs are authoritative; do not edit the PNGs or generated C++ data.
+The source SVGs are authoritative; do not edit the generated C++ data.
 
 `ui::raster_icon` area-samples the embedded masks to the requested physical pixel
 size. Controls retain the existing `ControlIcon → TextStore::Symbol → Coverage`

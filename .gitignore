@@ -1,11 +1,7 @@
 /.tools/
 /out/
-/project-document-evidence/
 /CMakeUserPresets.json
 /.vs/
 /compile_commands.json
 /.cache/clangd/
-
-# Machine-local configuration
-/.omp/mcp.json
 

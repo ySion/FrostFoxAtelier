@@ -1,6 +1,6 @@
 # 基础库工业依据与选型
 
-本文的 ankerl 分析记录最初选型。默认 Map/Set 的后续接入结果见[同哈希 Runtime 对照](small-table-experiment/retirement/README.md)。
+本文的 ankerl 分析记录最初选型。默认 Map/Set 的自有分组索引最终接入结果见[原生哈希表选型与退役对照](native-hash-table.md#自有分组索引最终接入与-ankerl-退役)。
 
 资料核对：2026-10-04。本文保留选型依据，不规定迁移排期。当前接口与语言开放边界以[基础库合同](../foundation.md)为准；外部版本用于固定研究证据，项目依赖版本只由[锁文件](../../cmake/dependencies-lock.json)维护。UE 依据为公开官方文档/API，未读取完整引擎源码；外部基准不作为本项目性能证据。
 

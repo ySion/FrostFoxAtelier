@@ -40,4 +40,4 @@ ghost拖动由调用方保留候选宽度，在松开时执行一次上层提交
 
 ## 验收
 
-VirtualList 目前没有专项端到端验收，保留范围见[验收](acceptance.md)；历史结果与性能见[审计](audit.md)。
+VirtualList 目前没有专项端到端验收，保留范围见[验收](acceptance.md)。

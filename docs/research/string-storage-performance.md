@@ -1,8 +1,8 @@
 # String 存储与性能取舍
 
-资料与采样日期：2026-09-30，测量基线为 [db6ec54](https://github.com/ySion/FrostFoxAtelier/commit/db6ec54)。下文保留实现依据与历史测量，不代表当前版本重新采样的结果；实际行为以[基础库合同](../foundation.md)为准，工业对象体积为布局推导。
+> **现状对齐说明**：当前生产 `atelier::String` 已在本文 2026-09-30 基线（15 字节 SSO）之上演进为 **32 字节对象、8 字节对齐、30 字节短字符串内联存储（SSO）**，支持编译期静态字面量零拷贝借用，堆缓冲统一经 `mi_malloc/mi_realloc/mi_free_size` 原地扩容管理；现行权威契约见[基础库合同](../foundation.md#string-与-stringview)。下文保留工业标准库/引擎布局推导与早期 15 字节 SSO 对照采样依据。
 
-## 布局选择
+## 早期 15 字节 SSO 基线（2026-09-30）
 
 String 采用独占所有权、32 字节对象、15 字节短字符串内联存储（SSO），堆字符串按约 1.5 倍扩容，支持预留容量和赋值复用。有效 UTF-8、字节长度与索引、内嵌 NUL、结尾 NUL、深复制和移动后为空是共同合同；原生注册、Runtime 和源码沿同一 String 的生命周期操作接线。
 
@@ -47,7 +47,7 @@ LLVM libc++ 对照版本为 `llvmorg-20.1.8`。它将短、长表示放进 union
 
 ## 2026-09-30 Release 测量
 
-2026-09-30，Windows x64，AMD Ryzen 9 3950X，锁定 clang-cl/MSVC 工具链，共享 mimalloc。当时的消费者为 `string_measure.cpp`；当前 [string_lifetime.cpp](../../acceptance/foundation/string_lifetime.cpp) 只检查缓冲释放，不复现下表测量。旧实现的源码与可执行文件先冻结，再在同一工作树顺序运行旧、新消费者；测量驱动源码完全相同。每项先预热 1,000 次，再做 7 组，每组 200,000 次（4 KiB 复制为 50,000 次），下表取组内每操作耗时的中位数。分配统计在计时区间外显式汇总。
+2026-09-30，Windows x64，AMD Ryzen 9 3950X，锁定 clang-cl/MSVC 工具链，共享 mimalloc。当时的消费者为 `string_measure.cpp`；当前 [foundation_acceptance](../../acceptance/foundation/main.cpp) 只检查缓冲释放与契约正确性，不复现下表测量。旧实现的源码与可执行文件先冻结，再在同一工作树顺序运行旧、新消费者；测量驱动源码完全相同。每项先预热 1,000 次，再做 7 组，每组 200,000 次（4 KiB 复制为 50,000 次），下表取组内每操作耗时的中位数。分配统计在计时区间外显式汇总。
 
 | 操作 | 旧 String ns/op | 新 String ns/op | MSVC STL 同校验 ns/op | 旧→新分配次数/op |
 | --- | ---: | ---: | ---: | ---: |

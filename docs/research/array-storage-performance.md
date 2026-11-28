@@ -53,7 +53,7 @@ Array 继续独占连续存储，Windows x64 下为指针、大小、容量三�
 
 **实际实现。** 只采用上述操作级平凡字节路径和容量复用；非平凡元素继续完整副本替换。`RelocationSource = decltype(std::move_if_noexcept(std::declval<T&>()))` 直接表示现有选择，避免复制一份选择条件。append 与扩容共享后缀先构造、前缀后处理的提交/回退链；预留 emplace 在单个构造成功后提交大小。没有新增分配器层或可自定义 relocation 许可。
 
-**历史采样条件。** Windows x64，AMD Ryzen 9 3950X，正式 release preset、C++23 和项目锁定工具链，全局共享 mimalloc。当时的 `array_measure.cpp` 每场景预热 1000 次、7 个样本取中位数；常规 50000 次，过滤与 String 场景 10000 次。统计页刷新在计时外，消耗结果并检查预热后活堆占用和最终释放。外层批次与输入相同，使用 MSVC std::vector 作为工业对照。当时的性能采样入口已移除，当前 [array_lifetime.cpp](../../acceptance/foundation/array_lifetime.cpp) 只检查一次拷贝后缓冲释放，不复现下表测量。
+**历史采样条件。** Windows x64，AMD Ryzen 9 3950X，正式 release preset、C++23 和项目锁定工具链，全局共享 mimalloc（注：现行 `Array` / `InlineArray` 已进一步升级为直接调用 `mi_malloc_aligned/mi_realloc_aligned/mi_free` 原地扩容，见[基础库](../foundation.md#arrayinlinearrayfixedarray-与-span)）。当时的 `array_measure.cpp` 每场景预热 1000 次、7 个样本取中位数；常规 50000 次，过滤与 String 场景 10000 次。统计页刷新在计时外，消耗结果并检查预热后活堆占用和最终释放。外层批次与输入相同，使用 MSVC std::vector 作为工业对照。当时的性能采样入口已移除，当前 [foundation_acceptance](../../acceptance/foundation/main.cpp) 只验证容器语义与缓冲释放，不复现下表测量。
 
 修改前冻结了原 Array 头文件、采样程序、可执行文件与分配器 DLL，后续保持相同采样程序。先取初始基线，再旧→新及新→旧各做一次顺序采样；没有并行运行计时程序，也没有固定 CPU 核心和频率。下表范围覆盖三个旧版运行和两个新版运行的各自中位数。保守速度比为“旧版最小中位数 / 新版最大中位数”，避免放大其中一次旧版复制/赋值明显偏慢的结果。工作负载是有明确规模的引擎式批次，尚未代表真实游戏帧预算。
 

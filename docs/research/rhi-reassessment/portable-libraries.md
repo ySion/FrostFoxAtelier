@@ -1,6 +1,6 @@
 # bgfx、SDL GPU、wgpu / wgpu-native：正式 RHI 基础候选比较
 
-历史来源记录：2026-09-25 的选型研究快照，保留固定版本的源码事实、许可证依据、比较理由和证据缺口。文中的“当前”“未确认”均指该次研究；gfx 已成为生产主体，现行选择见[模块决策](../../modules/rhi/decisions.md)，运行证据见[模块验收](../../modules/rhi/acceptance.md)。本文不再提供实施计划或待执行实验。
+历史来源记录：2026-09-25 的选型研究快照，保留固定版本的源码事实、许可证依据、比较理由和证据缺口。文中的“当前”“未确认”均指该次研究；生产 RHI 与 RDG 现已采用 NVIDIA NRI + `atelier_rhi` + `atelier_rdg`，现行选择见[模块决策](../../modules/rhi/decisions.md)，运行证据见[模块验收](../../modules/rhi/acceptance.md)。本文不再提供实施计划或待执行实验。
 
 ## 结论摘要
 

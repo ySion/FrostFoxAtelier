@@ -6,19 +6,12 @@ License: [MIT, including the upstream binary-distribution clarification](LICENSE
 
 Vendored without modification:
 
-- `SMAA.hlsl` ← upstream `SMAA.hlsl`.
 - `AreaTex.h` ← upstream `Textures/AreaTex.h`.
 - `SearchTex.h` ← upstream `Textures/SearchTex.h`.
 
-`modules/render/renderer/shaders/lit_smaa.hlsl` provides compute wrappers using the reference
-weight calculation and neighborhood blending. The first pass ports the original
-luma edge equations to explicit scene-linear-to-sRGB loads and zero stores
-instead of pixel-shader discard. The temporal pass keeps two independent spatial
-SMAA frames, with this engine's expected-depth/normal disocclusion checks.
-`cmake/renderer.cmake` embeds the pinned reference at the wrapper's source marker;
-runtime shader compilation requires no filesystem includes.
+`modules/render/renderer/shaders/post_taau_unjitter_cs.hlsl` implements compute SMAA (luma edge detection with `2.0 * delta` local contrast adaptation, exact `SearchTex` + `AreaTex` orthogonal/diagonal pattern search with corner rounding, and neighborhood blending) directly in SM 6.6 Bindless HLSL without runtime filesystem includes.
 
-LUT upload uses the existing RHI/Gfx texture upload path:
+LUT upload uses `atelier_rhi` persistent device textures (`modules/render/renderer/src/detail/lighting_lut.cpp`):
 
 | Data | Width × height | Format | Tight row pitch | Byte count |
 |---|---|---|---|---|

@@ -1,8 +1,8 @@
 # 日志体系评估：自有语义与成熟后端
 
-状态：历史选型评估与隔离 CPU 验证记录（2026-10-29，基于 Windows x64 基线 `25aa632a28f5edd95427bfcf522fb5af717653b6`）；正式落地的进程日志合同见 [Logging 模块文档](../modules/logging/README.md)。[Renderer 验收未覆盖项](../modules/renderer/acceptance.md#未覆盖)仍独立跟踪，不能用日志方案代替原因验证。
+> **现状对齐说明**：进程级日志宿主（`modules/core/logging`，基于锁定 Quill 后端 + 自有编译期格式检查 + JSONL 结构化输出与 Project Output 增量消费）已正式落地，权威行为以 [Logging 模块文档](../modules/logging/README.md) 为准。本文保留 2026-10-29 选型评估时的工业框架对照及 Quill 边界条件实证反例（ASCII 转义、句柄写失败与 `flush` 语义、有界丢弃/阻塞、DLL 卸载寿命）。
 
-## 结论
+## 评估时的背景与结论（2026-10-29）
 
 项目拥有自有的领域诊断和编辑器输出，但还没有贯穿引擎、编辑器、独立运行进程的统一日志服务。不能说“没有日志”，也不能把当前 Project Output 等同于 UE 的日志体系。
 
@@ -138,7 +138,7 @@ UE 值得借鉴的是分工，而非完整复制其宏和全局体系：[categor
 | 实际 DLL 卸载 | 生产 DLL 经 EXE 中的稳定回调提交文本；调用返回后 FreeLibrary，确认模块已卸载，再放行后台，正文与动态源位置完整 | Quill 宏/decoder 在 EXE，DLL 不调用库；不是任意 DLL 直接使用 Quill 后卸载，也不替代真实 Source/JIT 退役测试 |
 | 正常关闭 | 4 个生产线程各写 257/263/271/277 条，join 后不先 flush，直接 stop；1,068 条全部落盘，每线程序号无缺失/重复/倒序 | 有限生产者的正常关闭通过；没有验证持续生产、崩溃、停机超时、回调锁反转或 backtrace 退役 |
 
-本机证据在 `.amp/in/artifacts/quill-cpu-20261029/`：`run1/summary.csv`、`supplement/summary.csv`、逐进程 stdout/stderr 与实际 text/JSON 文件、`json-roundtrip.log`、两配置构建/预期编译拒绝日志、编译命令和版本 manifest。子进程隐藏运行，各有 30 秒 watchdog；没有窗口、GPU 设备或 GPU 锁，也未跑全仓验收。记录了夹具进程内存，但它包含采集副本、文件缓冲和分配器开销，不作为 Quill 性能/预算结论。临时源码和构建产物在收尾移除，保留结论与原始输出。
+上述隔离测试均使用隐藏子进程与 30 秒 watchdog，无窗口或 GPU 依赖；临时夹具源码与本地产物在验证收尾后已移除，正式生产契约验收转由 `logging_acceptance` 与 `editor_log_smoke_acceptance` 承担。
 
 ### 下一步与未验证项
 

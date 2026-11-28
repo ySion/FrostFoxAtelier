@@ -120,7 +120,7 @@ CMake 的 `acceptance_headless` 和 `acceptance_window` 是两类目标的清单
 
 **新增自动验收目标必须归入其中一层**：无窗口目标使用 `atelier_headless_acceptance`；窗口目标加入根 CMake 的 `_window_acceptance`，保留 `USES_TERMINAL`。不确定或含任何 GPU/窗口/原生输入的目标归窗口层。窗口清单由 CMake 生成到 `out/<配置>/acceptance-window-targets.txt`，无窗口清单为 `acceptance-headless-targets.txt`。脚本只读取这些清单，不维护第二份目标列表。
 
-脚本先在锁外构建并运行列出的无窗口目标，再按主检出（Git common dir 的上一级）的 `.amp/in/locks/gpu-window.lock` 文件协议取得窗口独占权；锁中记录调用者、检出、配置与用途，在 `finally` 释放。申请前检查已有持有者；释放后再次申请至少间隔 60 秒。别人持锁期间不得启动任何可见窗口（包括控制台），`Start-Process` 必须指定 `-WindowStyle Hidden`，不能用 `cmd /c start`；仅命令行输出的构建和无窗口验收可以继续。
+脚本先在锁外构建并运行列出的无窗口目标，再按 Git common dir 下的 `atelier-gpu-window.lock`（主检出即 `.git/atelier-gpu-window.lock`）文件协议取得窗口独占权；锁中记录调用者、检出、配置与用途，在 `finally` 释放。申请前检查已有持有者；释放后再次申请至少间隔 60 秒。别人持锁期间不得启动任何可见窗口（包括控制台），`Start-Process` 必须指定 `-WindowStyle Hidden`，不能用 `cmd /c start`；仅命令行输出的构建和无窗口验收可以继续。
 
 窗口目标的超时按配置取**包含冷编译的近期最长耗时的 2 倍**、最少 5 分钟，读取 CSV 中该配置/目标最近三次成功窗口运行。超时和 probe 不作为完整耗时样本，避免故障反复扩大预算。未测量目标默认 30 分钟。超时按目标计，Renderer 的每个入口是单独目标，各自也用默认 30 分钟，与运行脚本的单入口限时一致；ec-5 实测各入口整进程都在 6 分钟以内。`history.csv` 中加入验证级别之前的行，`Validation` 列为空。超时先用 `PrintWindow` 逐个截取当前 Windows Job 内进程的可见顶层窗口，不读取桌面或覆盖它的其他应用；没有窗口时只记录“没有可截的窗口”，不退回整桌面截图。每个截图辅助进程最多等待 4 秒，失败或卡住也继续终止包含编辑器子进程的 Job 进程树，记录 `TIMEOUT` 后继续下一项。激活器只在当前日志等待“click the editor title bar to begin”、之后尚无“activation acquired”或 `FAIL` 且编辑器仍响应时注入激活。
 持锁执行窗口目标时，脚本自身设为 `AboveNormal`，Windows Job 同时把该优先级应用于 cmake、Ninja 和所有验收子进程（Windows 不自动继承父进程的 AboveNormal）；锁外构建与无窗口目标保持 `Normal`，退出时恢复脚本原优先级。
@@ -197,7 +197,7 @@ cmake --build --preset dev --target ui_layout_acceptance
 cmake --build --preset release --target ui_layout_acceptance
 ```
 
-总体 `acceptance` 也包含这个消费者。几何变化仍求解参与布局的实例树；不承诺 CSS 全量、一般循环约束、通用局部调度、异步布局或硬帧预算。窗口输入、生产控件与 GPU 绘制由[UI 消费模块](docs/modules/ui/README.md)和编辑器接入；RGBA 图片、SS 样式及声明式参数/树组件已接入，图片解码和 Runtime 资源 composition 仍未实施。现行布局行为和测量边界见[合同](docs/modules/ui-layout/contract.md)、[验收](docs/modules/ui-layout/acceptance.md)和[审计与性能](docs/modules/ui-layout/audit.md)。
+总体 `acceptance` 也包含这个消费者。几何变化仍求解参与布局的实例树；不承诺 CSS 全量、一般循环约束、通用局部调度、异步布局或硬帧预算。窗口输入、生产控件与 GPU 绘制由[UI 消费模块](docs/modules/ui/README.md)和编辑器接入；RGBA 图片、SS 样式及声明式参数/树组件已接入，UI 与共享 Runtime Texture 的直接绑定仍未实施。现行布局行为和测量边界见[合同](docs/modules/ui-layout/contract.md)、[决策](docs/modules/ui-layout/decisions.md)和[验收](docs/modules/ui-layout/acceptance.md)。
 
 ## 引擎资源连接方案
 
@@ -207,7 +207,7 @@ cmake --build --preset release --target ui_layout_acceptance
 
 原生进程使用 C 模式构建的共享 mimalloc DLL 与官方 Windows CRT 重定向，普通代码继续调用默认分配函数。`atelier_target` 为每个可执行目标及自有 DLL 直接编译 [global_new_delete.cpp](modules/core/memory/src/global_new_delete.cpp)，覆盖普通、数组、nothrow、对齐及 sized delete，链接同一 mimalloc DLL；LLVM DLL 在自身 `/MT` 域编译，不再由支持对象重复提供覆盖。仅 CRT 重定向对照 `atelier_allocator_client` 保留不直接链接 mimalloc 的特例。自有全局 new 的分配失败直接进入 fatal，包括 nothrow 形式，不调用 new_handler 或尝试异常恢复。静态库内的代码随最终链接模块使用该分配器。
 
-基础层的 [memory/fatal.hpp](modules/core/memory/include/memory/fatal.hpp) 提供 `atelier::fatal(std::string_view) noexcept` 与 `atelier::install_fatal_handler() noexcept`。`atelier_memory_headers` 只传播头文件；`atelier_target` 在每个 exe/shared DLL 中按其自身 CRT 编译同一份 fatal 实现，不把宿主 CRT 对象链接进 LLVM 域。全部 exe 入口已安装处理器；Source 后端、JIT 平台验收 DLL 与两个 LLVM 工具在各自 CRT 域安装，LLVM 致命回调使用固定原因。错误政策与覆盖限制以[唯一 fatal 出口](docs/engineering.md#唯一-fatal-出口)为准；其他可空分配调用、线程启动及业务错误路径的去异常迁移仍在进行，本片不翻转全仓编译开关。
+基础层的 [memory/fatal.hpp](modules/core/memory/include/memory/fatal.hpp) 提供 `atelier::fatal(atelier::StringView) noexcept` 与 `atelier::install_fatal_handler() noexcept`。`atelier_memory_headers` 只传播头文件；`atelier_target` 在每个 exe/shared DLL 中按其自身 CRT 编译同一份 fatal 实现，并统一启用 `/EHs-c-` 与 `_HAS_EXCEPTIONS=0`，不把宿主 CRT 对象链接进 LLVM 域。全部 exe 入口已安装处理器；Source 后端、JIT 平台验收 DLL 与两个 LLVM 工具在各自 CRT 域安装，LLVM 致命回调使用固定原因。错误政策与覆盖限制以[唯一 fatal 出口](docs/engineering.md#唯一-fatal-出口)为准。
 
 fatal 只向成功设为非阻塞的 stderr 管道尽力写出至多 1024 字节原因；控制台（包括 QuickEdit）、文件、设备、无效句柄或不能切换为非阻塞的管道均跳过文本，直接 fail-fast。mimalloc 的[最小补丁](third_party/mimalloc/atelier.patch)关闭其默认 stderr 诊断，避免分配返回 null **之前**被满管道或控制台阻塞；该策略在初始化早期、dev 默认诊断及环境变量要求 verbose/show-errors 时均生效，不改分配或调试检查。需要诊断时使用本方 fatal，不依赖分配器的默认输出。
 

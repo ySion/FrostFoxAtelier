@@ -1,4 +1,4 @@
-#requires -Version 7.0
+﻿#requires -Version 7.0
 [CmdletBinding()]
 param(
     # Both configurations always build. Each test target runs only where listed:
@@ -291,7 +291,7 @@ try {
     . (Join-Path $PSScriptRoot 'enter-dev.ps1')
     $common = & git rev-parse --path-format=absolute --git-common-dir
     if ($LASTEXITCODE -ne 0) { throw 'Cannot locate git common directory.' }
-    $lock = Join-Path (Split-Path -Parent $common) '.amp\in\locks\gpu-window.lock'
+    $lock = Join-Path $common 'atelier-gpu-window.lock'
     New-Item -ItemType Directory -Force (Split-Path -Parent $lock) | Out-Null
     $windowRuns = [System.Collections.Generic.List[object]]::new()
     if ($ProbeWindowTarget) { Write-Gate 'PROBE ONLY: this run checks timeout cleanup and tests no change.' }

@@ -75,7 +75,7 @@ auto held = document.snapshot(); // 显式复制几何与索引，供跨发布�
 
 ## 性能与内存观察
 
-通过两次`stats()`的差值观察measure_calls、node_visits和内部缓冲分配；[历史场景成本](audit.md)不代表当前工作负载。`topology_commits` 统计产生变化的完整树提交，`topology_links_written` 统计改变的最终孩子序列写入的节点数；它们不计普通 `move`，也不表示整个调用没有其他扫描。内部缓冲计数排除provider、快照、公开结果 ID 数组及列描述复制，不能把其零分配推广到整个调用链。频繁读取使用view；只有需要跨发布保存时才复制快照。
+通过两次`stats()`的差值观察measure_calls、node_visits和内部缓冲分配。`topology_commits` 统计产生变化的完整树提交，`topology_links_written` 统计改变的最终孩子序列写入的节点数；它们不计普通 `move`，也不表示整个调用没有其他扫描。内部缓冲计数排除provider、快照、公开结果 ID 数组及列描述复制，不能把其零分配推广到整个调用链。频繁读取使用view；只有需要跨发布保存时才复制快照。
 
 ## 原生Flex与二维Grid
 

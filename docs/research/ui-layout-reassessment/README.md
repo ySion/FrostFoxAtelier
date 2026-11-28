@@ -6,7 +6,6 @@
 
 - [三候选比较](validation-results.md)：Yoga/Taffy/Clay真实DirectWrite、行为失败、成本和栈边界；包含失败结果，不代表当前生产验收。
 - [原生算法依据](../../modules/ui-layout/decisions.md#算法依据)：当前 Flex/Grid 设计决定及其来源。
-- [固定实验来源](sources.json)：保留实际候选commit、下载URL、SHA-256和实验Rust版本；不是生产依赖锁。
 - [工业游戏UI](industry-game-ui.md)、[工业编辑器UI](industry-editor-ui.md)：容器、失效、虚拟化与资源责任的一手依据。
 - [Yoga](yoga.md)、[Taffy](taffy.md)、[Clay](clay.md)、[其他原生框架](native-alternatives.md)：固定版本机制与采用成本，明确标记历史。
 

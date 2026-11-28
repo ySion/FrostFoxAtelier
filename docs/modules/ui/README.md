@@ -147,7 +147,7 @@ list/tree/popup 默认使用 `scrollbar-gutter: stable`，布局时保留 `scrol
 
 `Reply.cursor` 未提供时保留当前指针。指针意图由已接受命中或活动手势决定，数值调整、文本、分隔、停靠移动及视口观察各用相应形态。Window 缓存原生指针并处理客户区 `WM_SETCURSOR`；数值调整使用项目自己的双向箭头，文字和分隔条复用 Windows 指针。视口平移、环绕、移动、旋转和缩放使用独立语义指针，浅色笔画带暗描边，按意图与 DPI 缓存，销毁窗口时回收。捕获期间离开原控件仍保持手势指针。
 
-视口工具图标与语义指针共用精选 [Tabler Outline](https://github.com/tabler/tabler-icons) 图形（MIT）。原始 SVG、透明 PNG、版本与许可保存在 [assets/icons](../../../assets/icons/README.md)。构建使用离线生成的压缩 alpha，继续经过 `ControlIcon → TextStore::Symbol → Coverage` 的既有缓存与主题着色；不引入运行时 SVG/PNG 解码器或另一套图标资源管理。
+视口工具图标与语义指针共用精选 [Tabler Outline](https://github.com/tabler/tabler-icons) 图形（MIT）。原始 SVG、版本与许可保存在 [assets/icons](../../../assets/icons/README.md)。构建使用离线生成的压缩 alpha，继续经过 `ControlIcon → TextStore::Symbol → Coverage` 的既有缓存与主题着色；不引入运行时 SVG/PNG 解码器或另一套图标资源管理。
 
 `raster_icon` 的调用前置条件是有效 `Icon`、1…256 像素及恰好 pixels² 字节的输出 span；违例在采样/写入前 fatal，接口仍为 void。TextStore 的运行时尺寸拒绝及 Window 的 DPI 尺寸夹取不变。
 
