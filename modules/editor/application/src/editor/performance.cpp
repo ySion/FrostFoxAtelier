@@ -10,31 +10,31 @@ using Pass = FramePerformance::Pass;
 
 using Timing = FramePerformance::Timing;
 
-// Indices 0..14 match the completed sample's mask; total is computed per sample.
+// Indices 0..14 match the completed sample's mask; total uses the true union GPU interval.
 constexpr std::array<Pass, FramePerformance::pass_count> definitions{
-    {{"gbuffer", "GBuffer", -1, 0, true},
+    {{"gbuffer", "VisBuffer / GBuffer", -1, 0, true},
      {"acceleration", "AS / uploads", -1, 0, true},
      {"direct", "Direct lighting", -1, 0, true},
-     {"ddgi", "DDGI", -1, 0, true},
-     {"ao", "GTAO", -1, 0, true},
-     {"reflections", "Reflections (SSSR)", -1, 0, true},
+     {"gi", "3-Layer GI", -1, 0, true},
+     {"ao", "GT-VBAO", -1, 0, true},
+     {"reflections", "3-Tier reflections", -1, 0, true},
      {"hdr_resolve", "HDR resolve", -1, 0, true},
      {"display", "Bloom / tone / AA / display", -1, 0, true},
-     {"ddgi_update", "Update / transfer", 3, 1, false},
-     {"ddgi_gather", "Receiver gather", 3, 1, false},
-     {"ddgi_trace", "Primary trace / relocation", 8, 2, false},
-     {"ddgi_lighting", "Hit lighting / convolution", 8, 2, false},
-     {"direct_cluster", "Light list construction", 2, 1, false},
-     {"shadow_cache", "Shadow atlas updates", 2, 1, false},
-     {"direct_shading", "Shading / HDR composition", 2, 1, false},
-     {"total", "GPU measured total", -1, 0, false}}};
+     {"gi_update", "Update / SHaRC", 3, 1, false},
+     {"gi_gather", "Spatial-temporal gather", 3, 1, false},
+     {"gi_trace", "Screen-probe primary trace", 8, 2, false},
+     {"gi_lighting", "Secondary hit / SH2 / SHaRC", 8, 2, false},
+     {"direct_cluster", "16x16x32 light lists", 2, 1, false},
+     {"vsm", "VSM shadow pages", 2, 1, false},
+     {"direct_shading", "Direct BRDF / LTC", 2, 1, false},
+     {"total", "GPU measured union", -1, 0, false}}};
 
 constexpr std::array<std::size_t, FramePerformance::pass_count> row_order{
     FramePerformance::total_pass, 0, 1, 2, 12, 13, 14, 3, 8, 10, 11, 9, 4, 5, 6, 7};
 
 constexpr std::array<float, 6> minima{120, 60, 60, 60, 60, 55};
 
-constexpr std::array<std::wstring_view, 4> aa_names{L"Off", L"TAA", L"SMAA", L"SMAA T2x"};
+constexpr std::array<std::wstring_view, 3> aa_names{L"Off", L"SMAA", L"TAA"};
 
 std::wstring wide(StringView value) {
     return {value.begin(), value.end()};
@@ -110,13 +110,14 @@ void FramePerformance::observe(const renderer::Frame& frame, const renderer::Fra
         (!count_ || stats.scene_lit_gpu_sample_sequence > sequence_)) {
         std::array<double, pass_count> sample{};
         std::copy(stats.scene_lit_gpu_ms.begin(), stats.scene_lit_gpu_ms.end(), sample.begin());
-        std::copy(stats.scene_lit_ddgi_gpu_ms.begin(), stats.scene_lit_ddgi_gpu_ms.end(), sample.begin() + 8);
-        std::copy(stats.scene_lit_ddgi_update_gpu_ms.begin(), stats.scene_lit_ddgi_update_gpu_ms.end(),
+        std::copy(stats.scene_lit_gi_gpu_ms.begin(), stats.scene_lit_gi_gpu_ms.end(), sample.begin() + 8);
+        std::copy(stats.scene_lit_gi_update_gpu_ms.begin(), stats.scene_lit_gi_update_gpu_ms.end(),
                   sample.begin() + 10);
         sample[12] = stats.scene_lit_direct_cluster_gpu_ms;
-        sample[13] = stats.scene_lit_shadow_cache_gpu_ms;
+        sample[13] = stats.scene_lit_vsm_gpu_ms;
         sample[14] = stats.scene_lit_direct_shading_gpu_ms;
-        sample[total_pass] = std::accumulate(sample.begin(), sample.begin() + 8, 0.);
+        const double linear_sum = std::accumulate(sample.begin(), sample.begin() + 8, 0.);
+        sample[total_pass] = stats.scene_lit_gpu_union_ms > 0.f ? double(stats.scene_lit_gpu_union_ms) : linear_sum;
         if (std::ranges::all_of(sample, [](double value) { return std::isfinite(value) && value >= 0; })) {
             force |= count_ == 0;
             samples_[next_] = sample;
@@ -198,7 +199,7 @@ void FramePerformance::publish(Clock::time_point now) {
         published_.first_frame = first_frame_;
         published_.antialiasing = domain_->view.lit.antialiasing;
         published_.direct_candidates = domain_->view.lit.direct_candidates;
-        published_.ddgi = domain_->view.lit.ddgi;
+        published_.indirect_lighting = domain_->view.lit.indirect_lighting;
     }
     published_.state = domain_ && domain_->active ? (count_ ? State::ready : State::waiting) : State::unavailable;
     published_.samples = count_;
@@ -287,10 +288,12 @@ void FramePerformance::publish(Clock::time_point now) {
     if (structure_errors_)
         status_ += std::format(L" · {} timing structure errors, first {}", structure_errors_,
                                first_structure_error_ ? wide(first_structure_error_->key()) : std::wstring(L"frame"));
-    resources_ = resource_bytes_ ? std::format(L"Logical resources: {:.2f} MiB · {} · DDGI {} · 4 Hz",
+    resources_ = resource_bytes_ ? std::format(L"Logical resources: {:.2f} MiB · {} · 3-Layer GI {} · 4 Hz",
                                                double(*resource_bytes_) / (1024. * 1024.),
-                                               aa_names[static_cast<std::size_t>(published_.antialiasing)],
-                                               published_.ddgi ? L"on" : L"off")
+                                               aa_names[std::min<std::size_t>(
+                                                   static_cast<std::size_t>(published_.antialiasing),
+                                                   aa_names.size() - 1)],
+                                               published_.indirect_lighting ? L"on" : L"off")
                                  : L"Scene Lit logical resources: unavailable";
     dirty_ = false;
     next_publish_ = now + std::chrono::milliseconds(250);

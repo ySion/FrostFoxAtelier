@@ -37,8 +37,8 @@ AENUM(Name = "editor.CameraView", DESC = "视口相机：Perspective 透视，�
 enum class CameraView : std::uint32_t { perspective, top, front, right, bottom, back, left };
 
 AENUM(Name = "editor.AddKind",
-      DESC = "新建对象的种类：空 Entity、静态网格、程序化生成器、点光、矩形面光、平行光或相机。")
-enum class AddKind : std::uint32_t { entity, mesh, procedural_generator, point, rectangle, directional, camera };
+      DESC = "新建对象的种类：空 Entity、静态网格、程序化生成器、点光、矩形面光、平行光、聚光灯或相机。")
+enum class AddKind : std::uint32_t { entity, mesh, procedural_generator, point, rectangle, directional, spot, camera };
 
 AENUM(Name = "editor.RegionKind", DESC = "编辑器工作区区域。")
 enum class RegionKind : std::uint32_t {
@@ -359,17 +359,6 @@ struct MenuParameters {
 
     AFIELD()
     MenuKind menu{MenuKind::tools};
-};
-
-AENUM(Name = "editor.LightingFitMode", DESC = "按场景拟合，或按场景拟合并跟随焦点。")
-enum class LightingFitMode : std::uint32_t { scene, scene_focus };
-
-ASTRUCT(Name = "editor.LightingFit", DESC = "拟合场景探针范围。")
-struct LightingFit {
-    AGENERATED_BODY(LightingFit)
-
-    AFIELD()
-    LightingFitMode mode{LightingFitMode::scene};
 };
 
 ASTRUCT(Name = "editor.ProjectBuild", DESC = "构建工程；显式重建类型保留作者值但清空场景历史。")

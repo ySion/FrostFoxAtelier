@@ -45,7 +45,7 @@ void ui_shape_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     layered.image_background = {0, 1, 0, 1};
     image.reset();
     coverage.reset();
-    take(prepared_render(renderer, frame, &capture));
+    accepted_render(renderer, frame, &capture);
     check(pixel(capture, 60, 11)[2] > 250 && pixel(capture, 60, 50)[2] == 0 && pixel(capture, 10, 10)[2] == 0 &&
               pixel(capture, 109, 89)[2] > 250,
           "transparent fill retains an inside border with independent corner radii");

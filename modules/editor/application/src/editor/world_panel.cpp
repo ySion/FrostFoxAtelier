@@ -22,25 +22,26 @@ std::wstring title(StringView name) {
 }
 
 std::wstring choice_title(const ViewOptionInfo& option, double value) {
+    const auto idx = static_cast<std::size_t>(value);
     if (option.option == ViewOption::antialiasing) {
-        constexpr std::array names{L"Off", L"TAA", L"SMAA", L"SMAA T2x"};
-        return names[static_cast<std::size_t>(value)];
+        constexpr std::array names{L"Off", L"SMAA", L"TAA"};
+        return names[std::min(idx, names.size() - 1)];
     }
-    if (option.option == ViewOption::probe_debug_volume)
-        return value < 0 ? L"All volumes" : L"Volume " + std::to_wstring(unsigned(value));
-    return title(option.choices[static_cast<std::size_t>(value)]);
+    if (option.option == ViewOption::gi_quality) {
+        constexpr std::array names{L"High", L"Ultra"};
+        return names[std::min(idx, names.size() - 1)];
+    }
+    if (option.option == ViewOption::sky_mode) {
+        constexpr std::array names{L"None", L"Physical Atmosphere", L"HDRI Sky Map"};
+        return names[std::min(idx, names.size() - 1)];
+    }
+    if (option.option == ViewOption::tonemapper) {
+        constexpr std::array names{L"Khronos PBR Neutral", L"AgX"};
+        return names[std::min(idx, names.size() - 1)];
+    }
+    return title(option.choices[idx]);
 }
-
-bool same(const renderer::ProbeVolumeStats& a, const renderer::ProbeVolumeStats& b) {
-    return a.enabled == b.enabled && a.rolling == b.rolling && a.minimum == b.minimum && a.maximum == b.maximum &&
-           a.spacing == b.spacing && a.counts == b.counts && a.resident == b.resident && a.updated == b.updated &&
-           a.reset_probes == b.reset_probes;
-}
-
-std::wstring vector_text(math::Vector3 v) {
-    return std::format(L"{:.4g} / {:.4g} / {:.4g}", v.x, v.y, v.z);
-}
-}
+} // namespace
 
 double WorldPanel::displayed(const renderer::ViewSettings& view, ViewOption option) const {
     return edit_ && edit_->key == world_control::field(option) ? edit_->value : view_value(view, option);
@@ -50,32 +51,16 @@ Result<bool> WorldPanel::apply(const ui::Action& action, renderer::ViewSettings&
     using namespace world_control;
     if (action.key == performance_table)
         return performance_.apply(action);
-    if (action.kind == ui::ActionKind::activate && action.key >= slot_first &&
-        action.key < slot_first + renderer::probe_volume_limit) {
-        cancel();
-        slot_ = static_cast<unsigned>(action.key - slot_first);
-        return true;
-    }
     if (action.kind == ui::ActionKind::activate && action.key >= choice_first &&
-        action.key < choice_first + (static_cast<unsigned>(ViewOption::volume_last) + 1) * 32) {
+        action.key < choice_first + (static_cast<unsigned>(ViewOption::last) + 1) * 32) {
         const auto offset = action.key - choice_first;
         const auto* option = view_option(static_cast<ViewOption>(offset / 32));
         if (!option)
             return false;
-        if (option->option >= ViewOption::volume_first &&
-            (static_cast<unsigned>(option->option) - static_cast<unsigned>(ViewOption::volume_first)) /
-                    static_cast<unsigned>(ProbeVolumeField::count) !=
-                slot_)
-            return true;
         const auto value = offset % 32;
-        if (option->option != ViewOption::probe_debug_volume &&
-            (option->kind != ViewValueKind::enumeration || value >= option->choices.size()))
+        if (option->kind != ViewValueKind::enumeration || value >= option->choices.size())
             return false;
-        if (option->option == ViewOption::probe_debug_volume && value > renderer::probe_volume_limit)
-            return false;
-        ATELIER_TRY_BIND(changed,
-                         set_view_option(candidate, option->option,
-                                         double(value) - (option->option == ViewOption::probe_debug_volume ? 1 : 0)));
+        ATELIER_TRY_BIND(changed, set_view_option(candidate, option->option, double(value)));
         return true;
     }
     if (action.key < field_first || action.key >= choice_first)
@@ -83,11 +68,6 @@ Result<bool> WorldPanel::apply(const ui::Action& action, renderer::ViewSettings&
     const auto* option = view_option(static_cast<ViewOption>(action.key - field_first));
     if (!option)
         return false;
-    if (option->option >= ViewOption::volume_first &&
-        (static_cast<unsigned>(option->option) - static_cast<unsigned>(ViewOption::volume_first)) /
-                static_cast<unsigned>(ProbeVolumeField::count) !=
-            slot_)
-        return true;
     if (action.kind == ui::ActionKind::activate && option->kind == ViewValueKind::boolean) {
         const auto* checked = std::get_if<bool>(&action.value);
         if (!checked)
@@ -103,7 +83,7 @@ Result<bool> WorldPanel::apply(const ui::Action& action, renderer::ViewSettings&
         return true;
     }
     if (!edit_ || edit_->key != action.key)
-        return true; // A retired row cannot commit into a different volume.
+        return true;
     if (action.kind == ui::ActionKind::edit_cancel) {
         cancel();
         return true;
@@ -131,30 +111,13 @@ Result<bool> WorldPanel::apply(const ui::Action& action, renderer::ViewSettings&
 Array<ui::MenuItem> WorldPanel::menu(ui::ControlKey source, const renderer::ViewSettings& view) const {
     using namespace world_control;
     Array<ui::MenuItem> items;
-    if (source == slot) {
-        for (unsigned i = 0; i < renderer::probe_volume_limit; ++i) {
-            ui::MenuItem item{slot_first + i,
-                              L"Volume " + std::to_wstring(i) + (view.lit.probe_volumes[i].enabled ? L"" : L" (off)"),
-                              true,
-                              slot_ == i,
-                              {}};
-            item.behavior = ui::MenuBehavior::radio;
-            item.radio_group = slot;
-            items.add(std::move(item));
-        }
-        return items;
-    }
     if (source < field_first || source >= choice_first)
         return items;
     const auto* option = view_option(static_cast<ViewOption>(source - field_first));
-    if (!option)
+    if (!option || option->kind != ViewValueKind::enumeration)
         return items;
-    const bool debug = option->option == ViewOption::probe_debug_volume;
-    if (option->kind != ViewValueKind::enumeration && !debug)
-        return items;
-    const auto count = debug ? renderer::probe_volume_limit + 1 : option->choices.size();
-    for (unsigned i = 0; i < count; ++i) {
-        const auto value = double(i) - (debug ? 1 : 0);
+    for (unsigned i = 0; i < option->choices.size(); ++i) {
+        const auto value = double(i);
         ui::MenuItem item{choice(option->option, i),
                           choice_title(*option, value),
                           true,
@@ -168,21 +131,18 @@ Array<ui::MenuItem> WorldPanel::menu(ui::ControlKey source, const renderer::View
 }
 
 void WorldPanel::observe(const renderer::FrameStats& stats) {
-    for (std::size_t i = 0; i < observed_.size(); ++i) {
-        const auto& value = stats.scene_lit_probe_volumes[i];
-        if (same(value, observed_[i]) && !readouts_[i][0].empty())
-            continue;
-        observed_[i] = value;
-        auto& text = readouts_[i];
-        text[0] = value.enabled ? (value.rolling ? L"Following focus" : L"Fixed") : L"No resident field";
-        text[1] = value.enabled ? vector_text(value.minimum) : L"—";
-        text[2] = value.enabled ? vector_text(value.maximum) : L"—";
-        text[3] = value.enabled ? vector_text(value.spacing) : L"—";
-        text[4] = value.enabled ? std::format(L"{} × {} × {} · {} slots", value.counts[0], value.counts[1],
-                                              value.counts[2], value.resident)
-                                : L"—";
-        text[5] = value.enabled ? std::format(L"{} scheduled · {} reset", value.updated, value.reset_probes) : L"—";
-    }
+    readouts_[0] = std::format(L"{} primary · {} NEE", stats.scene_lit_gi_primary_rays,
+                               stats.scene_lit_gi_visibility_rays[0]);
+    readouts_[1] = std::format(L"{} allocated · {} reused", stats.scene_lit_vsm_allocated_pages,
+                               stats.scene_lit_vsm_reused_pages);
+    readouts_[2] = std::format(L"{} static · {} dynamic · {} CoW", stats.scene_lit_vsm_static_renders,
+                               stats.scene_lit_vsm_dynamic_renders, stats.scene_lit_vsm_cow_copies);
+    readouts_[3] = std::format(L"{} active tiles · {} max · {} overflow", stats.scene_lit_direct_cluster_cells,
+                               stats.scene_lit_direct_cluster_max_sources, stats.scene_lit_direct_cluster_overflows);
+    readouts_[4] = std::format(L"{} analytic · {} shadow-casting", stats.scene_lit_light_sources,
+                               stats.scene_lit_shadow_sources);
+    readouts_[5] = std::format(L"{} refl rays · {} resets", stats.scene_lit_reflection_work_items,
+                               stats.scene_lit_history_resets);
 }
 
 void WorldPanel::append(ui_language::ControlOutput controls, ui::ControlKey parent, ui_language::LiveDocument& document,
@@ -203,8 +163,7 @@ void WorldPanel::append(ui_language::ControlOutput controls, ui::ControlKey pare
         if (label.empty())
             label = platform::utf8_to_utf16_validated(option->label);
         const bool boolean = option->kind == ViewValueKind::boolean;
-        const bool enumeration =
-            option->kind == ViewValueKind::enumeration || option->option == ViewOption::probe_debug_volume;
+        const bool enumeration = option->kind == ViewValueKind::enumeration;
         const bool enabled = editable || !world_option(option->option);
         EditBinding edit{0, enabled, false, {}};
         if (!boolean && !enumeration)
@@ -214,7 +173,7 @@ void WorldPanel::append(ui_language::ControlOutput controls, ui::ControlKey pare
                 const auto initial = view_value(defaults, item->option);
                 edit.modified |= value != initial;
                 const bool integer = item->kind == ViewValueKind::integer;
-                constexpr std::array names{L"X", L"Y", L"Z"};
+                constexpr std::array names{L"R", L"G", L"B"};
                 edit.fields.add(
                     {key::field(item->option), options.size() == 1 ? L"" : names[i], value, initial, item->minimum,
                      item->maximum, integer ? 1. : .05, integer ? 1. : .005,
@@ -251,110 +210,83 @@ void WorldPanel::append(ui_language::ControlOutput controls, ui::ControlKey pare
         rows.add(std::move(property).item());
     };
     const auto scalar = [&](Array<Item>& rows, ViewOption option) { row(rows, {&option, 1}); };
-    auto volume = std::make_shared<Array<Item>>();
-    scalar(*volume, probe_volume_option(slot_, ProbeVolumeField::enabled));
-    scalar(*volume, probe_volume_option(slot_, ProbeVolumeField::placement));
-    const bool rolling = view.lit.probe_volumes[slot_].placement == renderer::ProbePlacement::follow_focus;
-    for (unsigned kind = 0; kind < 3; ++kind) {
-        const auto first = kind == 0   ? ProbeVolumeField::min_x
-                           : kind == 1 ? ProbeVolumeField::max_x
-                                       : ProbeVolumeField::count_x;
-        const std::array options{
-            probe_volume_option(slot_, first),
-            probe_volume_option(slot_, static_cast<ProbeVolumeField>(static_cast<unsigned>(first) + 1)),
-            probe_volume_option(slot_, static_cast<ProbeVolumeField>(static_cast<unsigned>(first) + 2))};
-        row(*volume, options,
-            rolling && kind < 2 ? (kind == 0 ? L"Min offset (m)" : L"Max offset (m)") : std::wstring{});
-    }
-    scalar(*volume, probe_volume_option(slot_, ProbeVolumeField::blend_cells));
-    group(key::root + 100, L"Volume " + std::to_wstring(slot_), ui::ControlIcon::bounds_cage, std::move(volume));
-    auto volume_groups = groups;
+
+    auto direct = std::make_shared<Array<Item>>();
+    scalar(*direct, ViewOption::shadows);
+    scalar(*direct, ViewOption::contact_shadow_length);
+    scalar(*direct, ViewOption::direct_candidates);
+    group(key::root + 100, L"Direct Lighting & Shadows", ui::ControlIcon::sun_light, std::move(direct));
+
+    auto sky_fog = std::make_shared<Array<Item>>();
+    scalar(*sky_fog, ViewOption::sky_mode);
+    scalar(*sky_fog, ViewOption::sky_intensity);
+    scalar(*sky_fog, ViewOption::sky_rotation);
+    const std::array sky_options{ViewOption::sky_color_x, ViewOption::sky_color_y, ViewOption::sky_color_z};
+    row(*sky_fog, sky_options);
+    scalar(*sky_fog, ViewOption::fog_enabled);
+    scalar(*sky_fog, ViewOption::fog_density);
+    scalar(*sky_fog, ViewOption::fog_height_falloff);
+    scalar(*sky_fog, ViewOption::fog_anisotropy);
+    group(key::root + 101, L"Sky & Volumetric Fog", ui::ControlIcon::sky_light, std::move(sky_fog));
+    auto lighting_groups = groups;
+
     groups = std::make_shared<Array<Item>>();
-    auto global = std::make_shared<Array<Item>>();
-    scalar(*global, ViewOption::ddgi);
-    scalar(*global, ViewOption::probe_update_budget);
-    scalar(*global, ViewOption::probe_rays);
-    scalar(*global, ViewOption::probe_bounce);
-    scalar(*global, ViewOption::indirect_gain);
-    group(key::root + 101, platform::utf8_to_utf16_validated(view_option(ViewOption::ddgi)->category),
-          ui::ControlIcon::shade_lit, std::move(global));
-    auto propagation = groups;
+    auto gi = std::make_shared<Array<Item>>();
+    scalar(*gi, ViewOption::indirect_lighting);
+    scalar(*gi, ViewOption::gi_quality);
+    scalar(*gi, ViewOption::indirect_gain);
+    scalar(*gi, ViewOption::ssilvb);
+    scalar(*gi, ViewOption::ao_radius);
+    group(key::root + 102, L"3-Layer Global Illumination", ui::ControlIcon::shade_lit, std::move(gi));
+
+    auto refl = std::make_shared<Array<Item>>();
+    scalar(*refl, ViewOption::reflections);
+    scalar(*refl, ViewOption::reflection_distance);
+    scalar(*refl, ViewOption::reflection_roughness);
+    group(key::root + 103, L"3-Tier Coat-Aware Reflections", ui::ControlIcon::shade_lit, std::move(refl));
+    auto gi_groups = groups;
+
+    groups = std::make_shared<Array<Item>>();
+    auto post = std::make_shared<Array<Item>>();
+    scalar(*post, ViewOption::exposure_ev);
+    scalar(*post, ViewOption::tonemapper);
+    scalar(*post, ViewOption::bloom);
+    scalar(*post, ViewOption::antialiasing);
+    group(key::root + 104, L"Post-Processing & Display", ui::ControlIcon::sliders, std::move(post));
+    auto post_groups = groups;
+
     groups = std::make_shared<Array<Item>>();
     auto debug = std::make_shared<Array<Item>>();
-    scalar(*debug, ViewOption::spatial_light_sampling);
-    scalar(*debug, ViewOption::probe_feedback_visibility);
-    scalar(*debug, ViewOption::probe_visualization);
-    scalar(*debug, ViewOption::probe_debug_volume);
-    scalar(*debug, ViewOption::probe_debug);
-    scalar(*debug, ViewOption::probe_coverage);
-    scalar(*debug, ViewOption::probe_volume);
-    scalar(*debug, ViewOption::probe_relocation);
-    scalar(*debug, ViewOption::probe_xray);
-    scalar(*debug, ViewOption::probe_radius);
-    group(key::root + 102, platform::utf8_to_utf16_validated(view_option(ViewOption::probe_debug)->category),
-          ui::ControlIcon::overlays, std::move(debug));
+    scalar(*debug, ViewOption::direct_cluster_inspect);
+    group(key::root + 105, L"Diagnostics", ui::ControlIcon::overlays, std::move(debug));
     auto diagnostics = groups;
-    groups = std::make_shared<Array<Item>>();
-    auto lighting = std::make_shared<Array<Item>>();
-    scalar(*lighting, ViewOption::exposure_ev);
-    scalar(*lighting, ViewOption::shadows);
-    scalar(*lighting, ViewOption::direct_candidates);
-    group(key::root + 103, platform::utf8_to_utf16_validated(view_option(ViewOption::shadows)->category),
-          ui::ControlIcon::sun_light, std::move(lighting));
-    auto sky = std::make_shared<Array<Item>>();
-    scalar(*sky, ViewOption::sky_enabled);
-    scalar(*sky, ViewOption::sky_intensity);
-    const std::array sky_options{ViewOption::sky_color_x, ViewOption::sky_color_y, ViewOption::sky_color_z};
-    row(*sky, sky_options);
-    group(key::root + 105, platform::utf8_to_utf16_validated(view_option(ViewOption::sky_enabled)->category),
-          ui::ControlIcon::sky_light, std::move(sky));
-    auto lighting_groups = groups;
-    groups = std::make_shared<Array<Item>>();
-    auto effects = std::make_shared<Array<Item>>();
-    scalar(*effects, ViewOption::antialiasing);
-    scalar(*effects, ViewOption::gtao);
-    scalar(*effects, ViewOption::ao_radius);
-    scalar(*effects, ViewOption::sssr);
-    scalar(*effects, ViewOption::reflection_distance);
-    scalar(*effects, ViewOption::reflection_roughness);
-    scalar(*effects, ViewOption::bloom);
-    group(key::root + 104, platform::utf8_to_utf16_validated(view_option(ViewOption::antialiasing)->category),
-          ui::ControlIcon::sliders, std::move(effects));
+
     auto actual = std::make_shared<Array<Item>>();
-    constexpr std::array labels{L"Placement",   L"World min (m)",  L"World max (m)",
-                                L"Spacing (m)", L"Resident (CPU)", L"This frame (CPU)"};
+    constexpr std::array labels{L"Screen probes",     L"VSM pages",     L"VSM updates",
+                                L"Light clusters",    L"Scene lights",  L"Reflections & history"};
     for (std::size_t i = 0; i < labels.size(); ++i) {
         TextEditBinding readout_val{key::readout_first + i,
-                                    readouts_[slot_][i].empty() ? std::wstring(L"—") : readouts_[slot_][i]};
+                                    readouts_[i].empty() ? std::wstring(L"—") : readouts_[i]};
         readout_val.read_only = true;
         actual->add({key::root + 128 + i, {std::wstring(labels[i]), std::move(readout_val)}});
     }
-    std::uint32_t total{};
-    for (const auto& item : view.lit.probe_volumes)
-        if (item.enabled)
-            total += item.counts[0] * item.counts[1] * item.counts[2];
     TextEditBinding camera_val{key::main_camera_text, Workspace::single_line_field_text(main_camera)};
     camera_val.read_only = true;
-    const std::array<InputValue, 14> inputs{L"Volume " + std::to_wstring(slot_),
-                                            ItemList{std::move(volume_groups)},
-                                            ItemList{std::move(propagation)},
-                                            ItemList{std::move(actual)},
-                                            std::to_wstring(total) + L" / 4096 configured probes",
-                                            ItemList{std::move(lighting_groups)},
-                                            ItemList{std::move(groups)},
+    const std::array<InputValue, 11> inputs{ItemList{std::move(lighting_groups)},
+                                            ItemList{std::move(gi_groups)},
+                                            ItemList{std::move(post_groups)},
                                             ItemList{std::move(diagnostics)},
+                                            ItemList{std::move(actual)},
                                             editable,
                                             TableBinding{performance_.table(), performance_.selection()},
                                             performance_.status(),
                                             performance_.resources(),
                                             std::move(camera_val),
                                             clear_camera};
-    const std::array keys{KeyBinding{"slot", key::slot},
-                          KeyBinding{"setup", key::setup},
-                          KeyBinding{"scroll", key::root + 80},
+    const std::array keys{KeyBinding{"scroll", key::root + 80},
                           KeyBinding{"lighting_tab", key::lighting_tab},
-                          KeyBinding{"ddgi_tab", key::ddgi_tab},
-                          KeyBinding{"effects_tab", key::effects_tab},
+                          KeyBinding{"gi_tab", key::gi_tab},
+                          KeyBinding{"post_tab", key::post_tab},
                           KeyBinding{"diagnostics_tab", key::diagnostics_tab},
                           KeyBinding{"performance_tab", key::performance_tab},
                           KeyBinding{"performance_table", key::performance_table},
@@ -363,4 +295,4 @@ void WorldPanel::append(ui_language::ControlOutput controls, ui::ControlKey pare
     static_cast<void>(document.append("WorldPanel", parent, keys, inputs, controls));
     help_.end();
 }
-}
+} // namespace atelier::editor

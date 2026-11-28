@@ -2539,10 +2539,13 @@ Result<void> verify_trace_requests(Driver& driver, json::Value original_shading)
     ATELIER_TRY(driver.op("view.set", json::Document::literal<R"({"shading":"smooth"})">()));
     ATELIER_TRY(require_control_error(
         driver.call("render.trace", json::Document::literal<R"({"scope":"unknown","timeout_ms":0})">()),
-        "invalid_request", "Only scene_lit_post observation is supported"));
-    const auto invalid_timeout = json::Document::literal<R"({"timeout_ms":0})">();
+        "invalid_request", "Supported render.trace scopes are full and scene_lit_post"));
+    const auto invalid_timeout = json::Document::literal<R"({"scope":"scene_lit_post","timeout_ms":0})">();
     ATELIER_TRY(require_control_error(driver.call("render.trace", invalid_timeout), "not_ready",
                                       "Select Scene Lit before requesting a post-chain trace"));
+    ATELIER_TRY(require_control_error(driver.call("render.trace", json::Document::literal<R"({"timeout_ms":0})">(),
+                                                  "rejected-full-trace"),
+                                      "invalid_request", "Integer outside supported range at /args/timeout_ms"));
     ATELIER_TRY(driver.op("view.set", json::Document::literal<R"({"shading":"scene_lit"})">()));
     ATELIER_TRY(require_control_error(driver.call("render.trace", invalid_timeout, "rejected-trace"), "invalid_request",
                                       "Integer outside supported range at /args/timeout_ms"));

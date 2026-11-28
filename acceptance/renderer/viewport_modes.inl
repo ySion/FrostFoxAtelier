@@ -17,7 +17,7 @@ void viewport_cases(render::Renderer& renderer, ui::PixelExtent extent) {
     // First interior sample: d <= 1 gives coverage >= .5, so R >= sRGB(.24), about 134.
     frame.view.wire_width = 2;
     render::Capture capture;
-    take(prepared_render(renderer, frame, &capture));
+    accepted_render(renderer, frame, &capture);
     const unsigned cx = extent.width / 2;
     const unsigned cy = extent.height / 2;
     check(pixel(capture, cx, cy)[0] == 0 && std::abs(depth(capture, cx, cy) - .8f) < .0001f,

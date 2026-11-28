@@ -195,25 +195,61 @@ void run(HWND window, const std::filesystem::path& output) {
     ++frame.scene_identity;
     frame.view.shading = render::Shading::scene_lit;
     auto& lit = frame.view.lit;
-    lit.gtao = lit.sssr = lit.bloom = lit.shadows = false;
+    lit.ssilvb = lit.reflections = lit.bloom = lit.shadows = false;
     lit.antialiasing = render::Antialiasing::none;
-    lit.ddgi = true;
-    lit.probe_volumes[0].minimum = {-5, -1, -1};
-    lit.probe_volumes[0].maximum = {5, 5, 8};
-    lit.probe_volumes[0].counts = {11, 7, 10};
-    lit.probe_update_budget = 96;
-    lit.probe_rays = 64;
+    lit.indirect_lighting = true;
+    lit.gi_quality = atelier::rendering::GiQuality::ultra;
     for (unsigned i = 1; i < scene_lit_e2e::warmup_frames; ++i) {
         pump();
         ++drawing.id;
         take(prepared_render(renderer, frame));
     }
-    draw("native-ddgi-masked");
+    draw("native-gi-masked");
     const auto region =
         scene_lit_e2e::project_region(frame.camera, frame.scene_viewport, drawing.extent, {-3.15f, .01f, 1.f});
     const auto rgb = scene_lit_e2e::mean_rgb(capture, region);
     check(rgb[0] > 10 && rgb[1] > 10 && rgb[2] > 10,
           "GI-only opaque traversal keeps emission from the offscreen negative-coverage Mask surface");
+
+    // Verify Masked RayQuery AnyHit shadow coverage (`ray_shadow_masked_pso`): opaque half casts shadow, cutout half transmits!
+    std::array<render::MeshInstance, 2> shadow_pair{};
+    shadow_pair[0] = {scene_lit_e2e::box(0, -.15f, 3.5f, 8, .3f, 7), false, geometry::cube_mesh(), 101, slots({3})};
+    shadow_pair[1].geometry =
+        take(geometry::Mesh::create(atelier::Array<geometry::Vertex>{{{-2, 1.6f, .5f}, {0, 1, 0}, {0, 0}},
+                                                                  {{-2, 1.6f, 2.5f}, {0, 1, 0}, {0, 1}},
+                                                                  {{2, 1.6f, 2.5f}, {0, 1, 0}, {1, 1}},
+                                                                  {{-2, 1.6f, .5f}, {0, 1, 0}, {0, 0}},
+                                                                  {{2, 1.6f, 2.5f}, {0, 1, 0}, {1, 1}},
+                                                                  {{2, 1.6f, .5f}, {0, 1, 0}, {1, 0}}}));
+    shadow_pair[1].world = scene_lit_e2e::box(0, 0, 0, 1, 1, 1);
+    shadow_pair[1].stable_key = 102;
+    shadow_pair[1].material_slots = slots({0});
+    std::array<render::Light, 1> mask_sun{};
+    mask_sun[0].stable_key = 500;
+    mask_sun[0].kind = render::LightKind::directional;
+    mask_sun[0].direction = {0, -1, 0};
+    mask_sun[0].intensity = 4.f;
+    mask_sun[0].casts_shadow = true;
+    frame.meshes = shadow_pair;
+    frame.lights = mask_sun;
+    ++frame.scene_identity;
+    frame.camera_cut = true;
+    lit.indirect_lighting = false;
+    lit.shadows = true;
+    draw("native-masked-ray-shadow");
+    const auto mask_shadowed =
+        scene_lit_e2e::project_region(frame.camera, frame.scene_viewport, drawing.extent, {-1.f, 0.f, 1.5f}, 2);
+    const auto mask_lit =
+        scene_lit_e2e::project_region(frame.camera, frame.scene_viewport, drawing.extent, {1.5f, 0.f, 1.5f}, 2);
+    check(
+        scene_lit_e2e::mean_rgb(capture, mask_shadowed)[0] < 2.0 &&
+            scene_lit_e2e::mean_rgb(capture, mask_lit)[0] > 40.0,
+        "Masked RayQuery AnyHit casts shadow on positive-coverage half and transmits light through negative-coverage cutout");
+
+    frame.meshes = room;
+    frame.lights = {};
+    ++frame.scene_identity;
+    frame.camera_cut = true;
     // Last use is not captured/finished: retirement must preserve in-flight work.
     ++drawing.id;
     take(prepared_render(renderer, frame));

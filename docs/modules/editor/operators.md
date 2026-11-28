@@ -134,7 +134,7 @@ struct Context {
 
 | 记录 | 操作符 | 字段 |
 | --- | --- | --- |
-| `editor.SceneAdd` | `scene.add` | kind（`editor.AddKind`：entity、mesh、procedural_generator、point、rectangle、directional、camera）、mesh（String，空为第一个内置网格）、graph（String，`.procgraph` 资产键） |
+| `editor.SceneAdd` | `scene.add` | kind（`editor.AddKind`：entity、mesh、procedural_generator、point、spot、rectangle、directional、camera）、mesh（String，空为第一个内置网格）、graph（String，`.procgraph` 资产键） |
 | `editor.AssignProceduralGraph` | `procedural.assign_graph` | component（弱 `world.ProceduralGeneratorComponent` 引用，默认 null 使用当前选择）、asset（String，绑定到生成器的 `.procgraph` 资产键，空字符串清空） |
 | `editor.ProceduralBake` | `procedural.bake` | entity（弱 `world.Entity` 引用，默认 null）、component（弱 `world.ProceduralGeneratorComponent` 引用，默认 null）；将目标生成器的 `CopyToPoints` 实例烘焙为可单步撤销的 `StaticMeshEntity` 子树。只接受该生成器本次成功发布的结果；求值失败时返回原始错误，视口可继续显示上次输出。含剪切的实例矩阵需先在图中 `Realize` |
 | `editor.SceneParent` | `scene.parent_set` | parent（弱 Entity 引用，默认 null）、keep_world（默认 true）、index（默认 -1，表示 append） |
@@ -285,7 +285,6 @@ struct KeymapEntry { RegionKind region; KeyChord chord; KeyPhase phase; StringVi
 | set_main_camera / clear_main_camera | `scene.main_camera_set` / `scene.main_camera_clear`（undo；Set 使用 Context 的 active Entity） |
 | view_from_camera | `view.from_camera`（一次性复制 Context active 相机的完整位姿和投影，无作者历史） |
 | viewport_options / show_fps | `view.toggle {option: tool_options\|fps}` |
-| fit_probe_scene / fit_probe_scene_focus | `view.lighting_fit {mode: scene\|scene_focus}`（undo） |
 | show_scene / parameters / entities / network / spreadsheet / assets / code / output / controls / world_settings | `layout.show {tab}` |
 | previous_tab / next_tab / close_tab / maximize_pane / reset_layout | `layout.cycle_tab {direction}` / `layout.close_tab` / `layout.maximize` / `layout.reset` |
 
@@ -322,7 +321,7 @@ struct KeymapEntry { RegionKind region; KeyChord chord; KeyPhase phase; StringVi
 | scene.add_component / remove_component | `scene.add_component {type}` / `scene.delete {target: object}` |
 | scene.delete / undo / redo | `scene.delete {target: entities}` / `edit.undo` / `edit.redo` |
 | camera.set / camera.look_at | `view.camera_set {state: editor.CameraState}` / `view.look_at {eye, target}`；相机 view 用枚举名，向量用 `{x,y,z}`，inspect 与参数共用 Runtime 编解码 |
-| view.set {patch} / view.layout {layout} | `view.set {...}` / `view.lighting_fit {mode}` |
+| view.set {patch} | `view.set {...}` |
 | material.create / texture.import / mesh.import | `asset.new_material {path, entries}`（父材质为 context.asset）/ `asset.new_material_source {path, source}` / `asset.import {kind: texture\|mesh, path}`，结果记录带资产键 |
 | material.set_entry / set_texture / assign / create_scene / override / discard | 保留：无重复 operator；材质编辑随 O2 的 preview/commit 一起迁移 |
 | material.undo / redo {asset} | `edit.undo` / `edit.redo`，context.asset，region 为 parameters |

@@ -110,7 +110,7 @@ Result<Array<material::ImageRef>> decode_images(Span<const Span<const std::byte>
                         result[i] = found->lock();
                 }
                 if (result[i]) {
-                    return budget.charge(result[i]->pixels().size());
+                    return budget.charge(result[i]->byte_size());
                 }
                 ATELIER_TRY_BIND(decoded, decode(sources[i], &budget));
                 if (cache) {

@@ -134,31 +134,37 @@ Result<void> ProceduralGeneratorComponent::validate() const {
 Result<Types> register_types(Runtime& runtime) {
     ATELIER_TRY(material::register_resource_types(runtime));
     Array<TypeDefinition> definitions;
-    definitions.add(reflection::Definition<StaticMeshComponent>::build(runtime));
-    definitions.add(reflection::Definition<StaticMeshEntity>::build(runtime));
-    definitions.add(reflection::Definition<LightKind>::build(runtime));
-    definitions.add(reflection::Definition<LightSettings>::build(runtime));
-    definitions.add(reflection::Definition<LightComponent>::build(runtime));
-    definitions.add(reflection::Definition<Antialiasing>::build(runtime));
-    definitions.add(reflection::Definition<ProbePlacement>::build(runtime));
-    definitions.add(reflection::Definition<ProbeVolume>::build(runtime));
-    definitions.add(reflection::Definition<EnvironmentComponent>::build(runtime));
-    definitions.add(reflection::Definition<CameraComponent>::build(runtime));
-    definitions.add(reflection::Definition<ProceduralGeneratorComponent>::build(runtime));
-    definitions.add(reflection::Definition<ProceduralGeneratorEntity>::build(runtime));
+    const auto push = [&](TypeDefinition def) {
+        const std::size_t index = definitions.size();
+        definitions.add(std::move(def));
+        return index;
+    };
+    const auto idx_static_mesh_comp = push(reflection::Definition<StaticMeshComponent>::build(runtime));
+    const auto idx_static_mesh_ent = push(reflection::Definition<StaticMeshEntity>::build(runtime));
+    const auto idx_light_kind = push(reflection::Definition<LightKind>::build(runtime));
+    const auto idx_light_settings = push(reflection::Definition<LightSettings>::build(runtime));
+    const auto idx_light_comp = push(reflection::Definition<LightComponent>::build(runtime));
+    static_cast<void>(push(reflection::Definition<Antialiasing>::build(runtime)));
+    static_cast<void>(push(reflection::Definition<GiQuality>::build(runtime)));
+    static_cast<void>(push(reflection::Definition<SkyMode>::build(runtime)));
+    static_cast<void>(push(reflection::Definition<Tonemapper>::build(runtime)));
+    const auto idx_env_comp = push(reflection::Definition<EnvironmentComponent>::build(runtime));
+    const auto idx_cam_comp = push(reflection::Definition<CameraComponent>::build(runtime));
+    const auto idx_proc_comp = push(reflection::Definition<ProceduralGeneratorComponent>::build(runtime));
+    const auto idx_proc_ent = push(reflection::Definition<ProceduralGeneratorEntity>::build(runtime));
     if (!runtime.find_type("core.String"))
         definitions.add(string_definition(runtime));
     ATELIER_TRY_BIND(ids, runtime.register_types(std::move(definitions)));
     Types types;
-    types.static_mesh_component = (*ids)[0];
-    types.static_mesh_entity = (*ids)[1];
-    types.light_kind = (*ids)[2];
-    types.light_settings = (*ids)[3];
-    types.light_component = (*ids)[4];
-    types.environment_component = (*ids)[8];
-    types.camera_component = (*ids)[9];
-    types.procedural_generator_component = (*ids)[10];
-    types.procedural_generator_entity = (*ids)[11];
+    types.static_mesh_component = (*ids)[idx_static_mesh_comp];
+    types.static_mesh_entity = (*ids)[idx_static_mesh_ent];
+    types.light_kind = (*ids)[idx_light_kind];
+    types.light_settings = (*ids)[idx_light_settings];
+    types.light_component = (*ids)[idx_light_comp];
+    types.environment_component = (*ids)[idx_env_comp];
+    types.camera_component = (*ids)[idx_cam_comp];
+    types.procedural_generator_component = (*ids)[idx_proc_comp];
+    types.procedural_generator_entity = (*ids)[idx_proc_ent];
     return types;
 }
 

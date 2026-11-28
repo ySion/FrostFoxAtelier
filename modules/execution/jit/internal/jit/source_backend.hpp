@@ -565,6 +565,8 @@ struct MaterialTextureInfo {
     std::uint32_t slot;
 
     std::size_t offset;
+
+    bool is_normal_map;
 };
 
 struct MaterialCodeView {
@@ -575,7 +577,9 @@ struct MaterialCodeView {
     const char* shade_hlsl;
     const char* footprint_hlsl;
     const char* coverage_hlsl;
+    const char* gi_hit_hlsl;
     language::MaterialCoverageStatus coverage_status;
+    language::MaterialCoverageStatus gi_hit_status;
 
     const MaterialTextureInfo* textures;
 
@@ -635,7 +639,8 @@ atelier_compile_material(const char* name, const char* source, std::uint32_t siz
                          std::uint32_t output_type, std::uint32_t texture_input,
                          std::uint32_t (*sample)(void*, std::uint32_t, const float*, float*) noexcept,
                          std::uint32_t (*orientation)(void*, std::uint32_t, const float*, float*) noexcept,
-                         atelier::source::detail::MaterialCode** output, char* error, std::uint32_t capacity) noexcept;
+                         atelier::source::detail::MaterialCode** output, char* error, std::uint32_t capacity,
+                         std::uint32_t normal_texture_input = UINT32_MAX) noexcept;
 
 extern "C" ATELIER_BUSINESS_BACKEND atelier::source::detail::MaterialCodeView
 atelier_material_code_view(atelier::source::detail::MaterialCode*) noexcept;

@@ -204,8 +204,9 @@ atelier::Result<void> verify_mesh_reimport() {
                 first.mesh->bounds().maximum[0] == 1 && binding(update.mesh, "Paint") == paint_key &&
                 binding(update.mesh, "Trim") == trim_key,
             "Reimport lost identity, slot bindings or old geometry.");
-    require(update.textures.size() == 1 && update.textures.front().image->pixels()[0] == 20 &&
-                update.textures.front().image->pixels()[2] == 220,
+    const auto reimported_px =
+        update.textures.empty() ? nullptr : update.textures.front().image->acquire_pixels();
+    require(update.textures.size() == 1 && reimported_px && (*reimported_px)[0] == 20 && (*reimported_px)[2] == 220,
             "Reimport did not publish the new input pixels.");
     const auto restored = take(project.assets().material(paint_key));
     const auto& restored_entries = std::get<assets::MaterialInstanceAsset>(restored.author).entries;

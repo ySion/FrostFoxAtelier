@@ -2,6 +2,8 @@
 #include "renderer/renderer.hpp"
 #include "assets/builtin_materials.hpp"
 
+#include <windows.h>
+#include <objbase.h>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -82,6 +84,14 @@ render::Result<render::FrameResult> prepared_render(render::Renderer& renderer, 
 render::Result<render::FrameResult> prepared_render(render::Renderer& renderer, const render::Frame& frame,
                                                     render::Capture* capture = nullptr) {
     return prepared_render(renderer, frame.prepare(renderer), capture);
+}
+
+template <class FrameValue>
+render::FrameResult accepted_render(render::Renderer& renderer, const FrameValue& frame,
+                                    render::Capture* capture = nullptr) {
+    auto result = take(prepared_render(renderer, frame, capture));
+    check(result.status == render::FrameStatus::accepted, "renderer default frame accepted");
+    return result;
 }
 
 LRESULT CALLBACK procedure(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
@@ -201,7 +211,7 @@ int main(int argc, char** argv) {
     frame.camera.projection = {{2.0f / 3, 0, 0, 0, 0, 1, 0, 0, 0, 0, -.1f / 9.9f, 1, 0, 0, 1.0f / 9.9f, 0}};
     cubes[0].world = translation(0, 0, 0);
     ++ui_frame.id;
-    take(prepared_render(renderer, frame, &capture));
+    accepted_render(renderer, frame, &capture);
     check(std::abs(depth(capture, 360, 200) - (1.0f / (9.9f * 3.5f) - .1f / 9.9f)) < .0001f,
           "left-handed row-major view and perspective projection");
     frame.release_materials();

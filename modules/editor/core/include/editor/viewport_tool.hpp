@@ -11,6 +11,7 @@
 #include "renderer/overlay.hpp"
 #include "ui/session.hpp"
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -53,6 +54,14 @@ struct ViewportScene {
     Array<Locator> locators;
 };
 
+struct GpuPickSample {
+    std::uint32_t instance_index{};
+
+    std::uint32_t global_triangle_id{};
+
+    float depth{};
+};
+
 // Camera and owned geometry for one accepted viewport, in physical pixels.
 struct ViewportView {
     ui::Rect bounds;
@@ -80,6 +89,12 @@ struct ViewportView {
     float far_depth{};
 
     std::shared_ptr<const ViewportScene> scene;
+
+    bool show_locators{true};
+
+    std::function<std::optional<GpuPickSample>(std::uint32_t, std::uint32_t)> gpu_pick_pixel;
+
+    std::function<std::vector<std::uint32_t>(std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t)> gpu_pick_box;
 
     // Builds the camera only. The producer must attach the exact drawn group.
     static ViewportView make(const Camera&, ui::Rect bounds, float dpi_scale);

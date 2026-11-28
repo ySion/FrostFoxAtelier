@@ -2,9 +2,13 @@
 
 #include "foundation/array.hpp"
 #include "foundation/span.hpp"
+#include "foundation/string.hpp"
 #include "runtime/runtime.hpp"
+
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 
 namespace atelier::material {
 
@@ -13,16 +17,13 @@ class Image;
 using ImageRef = std::shared_ptr<const Image>;
 
 // Immutable RGBA8 content. The material input determines its transfer function.
+// After GPU/ATX staging, evict_cold_pixels() compresses RGBA8 losslessly in-memory
+// and acquire_pixels() inflates a pinned shared_ptr buffer on cold CPU paths.
 class Image final {
 public:
     // Failure consumes the candidate pixels without publishing an image.
     [[nodiscard]] static Result<ImageRef> create(std::uint32_t width, std::uint32_t height,
-                                                 Array<std::uint8_t> pixels) {
-        if (!width || !height || width > 8192 || height > 8192 || std::uint64_t(width) * height * 4 != pixels.size())
-            return std::unexpected(
-                Error{ErrorCode::invalid_storage, "Invalid material image dimensions or RGBA storage."});
-        return ImageRef(new Image(width, height, std::move(pixels)));
-    }
+                                                 Array<std::uint8_t> pixels);
 
     Image& operator=(const Image&) = delete;
 
@@ -32,24 +33,40 @@ public:
 
     std::uint32_t height() const noexcept { return height_; }
 
-    Span<const std::uint8_t> pixels() const noexcept { return pixels_; }
+    [[nodiscard]] std::size_t byte_size() const noexcept { return std::size_t(width_) * height_ * 4u; }
+
+    [[nodiscard]] std::shared_ptr<const Array<std::uint8_t>> acquire_pixels() const;
+
+    void evict_cold_pixels() const noexcept;
+
+    [[nodiscard]] bool has_resident_pixels() const noexcept;
+
+    [[nodiscard]] StringView rgba_sha256() const noexcept { return rgba_sha256_; }
 
     bool has_alpha() const noexcept { return has_alpha_; }
 
+    bool is_grayscale() const noexcept { return is_grayscale_; }
+
 private:
-    Image(std::uint32_t width, std::uint32_t height, Array<std::uint8_t> pixels)
-        : width_(width), height_(height), pixels_(std::move(pixels)) {
-        for (std::size_t i = 3; i < pixels_.size(); i += 4)
-            has_alpha_ |= pixels_[i] != 255;
-    }
+    Image(std::uint32_t width, std::uint32_t height, Array<std::uint8_t> pixels);
 
     std::uint32_t width_;
 
     std::uint32_t height_;
 
-    Array<std::uint8_t> pixels_;
+    String rgba_sha256_;
+
+    mutable std::mutex mutex_;
+
+    mutable std::shared_ptr<const Array<std::uint8_t>> pixels_;
+
+    mutable std::weak_ptr<const Array<std::uint8_t>> cold_inflated_;
+
+    mutable Array<std::uint8_t> compressed_;
 
     bool has_alpha_{};
+
+    bool is_grayscale_{};
 };
 
 } // namespace atelier::material

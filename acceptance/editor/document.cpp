@@ -525,8 +525,6 @@ class game.DiagnosticSop : procedural.Node {
 
         void toggle_view(editor::ViewToggleOption) override {}
 
-        Result<void> fit_lighting(bool) override { return {}; }
-
         Result<void> rename_asset(StringView, StringView) override { return {}; }
 
         Result<void> save_scene(const std::filesystem::path&) override { return {}; }

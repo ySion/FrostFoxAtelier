@@ -54,7 +54,7 @@ bool sky_inside(const render::Frame& frame, unsigned x, unsigned y) {
 void sky_background_geometry(Fixture& f) {
     f.restore();
     auto& options = f.frame.view.lit;
-    options.ddgi = options.gtao = options.sssr = options.bloom = options.shadows = false;
+    options.indirect_lighting = options.ssilvb = options.reflections = options.bloom = options.shadows = false;
     options.antialiasing = render::Antialiasing::none;
     // Scene Lit needs a nonempty scene; this anchor is outside the authored view.
     f.room.meshes.assign(1, {});
@@ -69,6 +69,7 @@ void sky_background_geometry(Fixture& f) {
     f.frame.environment = {1, 1, 1};
     const auto marker = sky_direction(-20, 10);
     atelier::Array<SkyDirection> marker_texels;
+    options.sky_mode = atelier::rendering::SkyMode::hdri_sky_map;
     options.sky_map = sky_map(2048, [&](const SkyDirection& d) {
         const bool on = d[0] * marker[0] + d[1] * marker[1] + d[2] * marker[2] > std::cos(.8 * std::numbers::pi / 180);
         if (on)
@@ -104,7 +105,37 @@ void sky_background_geometry(Fixture& f) {
     oy = weight > 0 ? oy / weight : -1;
     check(brightest > 200 && std::abs(ox - ex) <= 1 && std::abs(oy - ey) <= 1,
           "the background marker lies at its map direction turned by the sky yaw");
-    std::puts("Renderer sky: PASS (authored yaw)");
+
+    // Two-Phase HZB disocclusion & post-Phase-2 HZB pyramid rebuild verification:
+    // Frame A (`camera_cut = true`): a near occluder cube (`z = 2`) hides a far wall (`z = 12`).
+    // Frame B (`camera_cut = false`, `use_two_phase_hzb = true`): camera shifts laterally so the far wall is newly
+    // disoccluded from behind `PrevHZB`, and Frame C (`camera_cut = false`) keeps that view so `LitHzbBuildPhase2`
+    // must have populated `CurrHZB` with the Phase-2 disoccluded wall depth!
+    options.sky_mode = atelier::rendering::SkyMode::none;
+    options.sky_map = {};
+    f.frame.environment = {0.25f, 0.25f, 0.25f};
+    f.room.meshes.assign(2, {});
+    f.room.meshes[0].geometry = atelier::geometry::cube_mesh();
+    f.room.meshes[0].world = box(0.0f, 0.0f, 2.0f, 1.4f, 1.4f, 0.2f);
+    f.room.meshes[0].stable_key = 10;
+    f.room.meshes[1].geometry = atelier::geometry::cube_mesh();
+    f.room.meshes[1].world = box(0.0f, 0.0f, 12.0f, 6.0f, 6.0f, 0.2f);
+    f.room.meshes[1].stable_key = 11;
+    f.edited();
+    f.frame.camera = sky_look({0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f, 0.0f}, aspect, 1.8f);
+    f.frame.camera_cut = true;
+    static_cast<void>(f.step());
+    f.frame.camera = sky_look({3.2f, 0.0f, 0.0f}, {-0.25f, 0.0f, 0.9682458f}, {0.0f, 1.0f, 0.0f}, aspect, 1.8f);
+    f.frame.camera_cut = false;
+    const auto disocc_f1 = f.capture("hzb-phase2-disocclusion", 1);
+    const auto disocc_f2 = f.capture("hzb-phase2-steady", 1);
+    const unsigned cx = static_cast<unsigned>(f.frame.scene_viewport.x + 0.5f * f.frame.scene_viewport.width);
+    const unsigned cy = static_cast<unsigned>(f.frame.scene_viewport.y + 0.5f * f.frame.scene_viewport.height);
+    check(depth(disocc_f1, cx, cy) > 0.01f && pixel(disocc_f1, cx, cy)[1] > 20,
+          "Two-Phase HZB Phase 2 recovers PrevHZB-occluded background geometry on disocclusion frame");
+    check(depth(disocc_f2, cx, cy) > 0.01f && pixel(disocc_f2, cx, cy)[1] > 20,
+          "Post-Phase-2 HZB rebuild preserves disoccluded geometry across subsequent steady frames");
+    std::puts("Renderer sky & Two-Phase HZB: PASS (authored yaw + Phase 2 disocclusion)");
 }
 
 atelier::rendering::SkyMapRef sky_real_map() {
@@ -125,7 +156,7 @@ atelier::rendering::SkyMapRef sky_real_map() {
     return std::move(*result);
 }
 
-// Cost of the real HDRI on the benchmark room: composition and the DDGI primary
+// Cost of the real HDRI on the benchmark room: composition and the GI primary
 // trace with and without it in alternating blocks, and the frame that uploads it.
 void sky_benchmark(Fixture& f) {
     const auto decode_start = std::chrono::steady_clock::now();
@@ -136,6 +167,7 @@ void sky_benchmark(Fixture& f) {
     const auto uniform = f.frame.environment;
     const auto& mean = map->mean();
     const auto set = [&](bool mapped) {
+        options.sky_mode = mapped ? atelier::rendering::SkyMode::hdri_sky_map : atelier::rendering::SkyMode::none;
         options.sky_map = mapped ? map : atelier::rendering::SkyMapRef{};
         f.frame.environment = mapped ? atelier::math::cwise_div(uniform, mean) : uniform;
     };
@@ -171,7 +203,7 @@ void sky_benchmark(Fixture& f) {
             for (float value : stats.scene_lit_gpu_ms)
                 total += value;
             series[mapped][0].add(stats.scene_lit_direct_shading_gpu_ms);
-            series[mapped][1].add(stats.scene_lit_ddgi_update_gpu_ms[0]);
+            series[mapped][1].add(stats.scene_lit_gi_update_gpu_ms[0]);
             series[mapped][2].add(total);
             ++taken;
         }
@@ -184,12 +216,12 @@ void sky_benchmark(Fixture& f) {
               << " steady_frame_cpu_ms_p50=" << percentile(steady, 50)
               << " upload_frame_as_uploads_gpu_ms=" << upload_gpu_ms
               << " resource_bytes_with_map=" << upload_stats.scene_lit_resource_bytes << "\n";
-    const char* names[]{"direct_shading_ms", "ddgi_primary_ms", "sum_gpu_ms"};
+    const char* names[]{"direct_shading_ms", "gi_primary_ms", "sum_gpu_ms"};
     for (unsigned i = 0; i < 3; ++i)
         f.metrics << "sky " << names[i] << " p50 without=" << percentile(series[0][i], 50)
                   << " with=" << percentile(series[1][i], 50) << "\n";
     std::printf(
-        "SceneLit sky benchmark: decode=%.1f ms upload frame cpu=%.2f ms (steady p50 %.2f) as/uploads gpu=%.3f ms; compose p50 %.3f/%.3f ms; ddgi primary p50 %.3f/%.3f ms\n",
+        "SceneLit sky benchmark: decode=%.1f ms upload frame cpu=%.2f ms (steady p50 %.2f) as/uploads gpu=%.3f ms; compose p50 %.3f/%.3f ms; gi primary p50 %.3f/%.3f ms\n",
         decode_ms, upload_ms, percentile(steady, 50), upload_gpu_ms, percentile(series[0][0], 50),
         percentile(series[1][0], 50), percentile(series[0][1], 50), percentile(series[1][1], 50));
 }

@@ -6,7 +6,7 @@
 
 ## Scene
 
-`presentation::Scene::create(World&, Types)` 在宿主边界为一个 World 建立呈现：登记网格（要求组件已有几何）、灯光、环境、相机四项能力，以及“每个 World 至多一个 EnvironmentComponent”和“每个 Entity 至多一个 CameraComponent”的准入（含派生与停用组件）。创建时也检查已有图。每个 World 只创建一个 Scene，它先于 World 析构；网格登记带谓词，重复创建会累积登记。编辑器 Session（编辑与 Play 共用）在 World 旁持有它，由 `Session::presentation()` 取得。`meshes() / lights() / cameras()` 返回对应的 `CapabilityId`，可经 `World::members(id)` 查询桶；环境通过 `environment()` 提取设置。
+`presentation::Scene::create(World&, Types)` 在宿主边界为一个 World 建立呈现：登记网格（要求组件已有几何）、程序化生成器（`ProceduralGeneratorComponent`）、灯光、环境、相机能力，以及“每个 World 至多一个 EnvironmentComponent”和“每个 Entity 至多一个 CameraComponent”的准入（含派生与停用组件）。创建时也检查已有图。每个 World 只创建一个 Scene，它先于 World 析构；网格登记带谓词，重复创建会累积登记。编辑器 Session（编辑与 Play 共用）在 World 旁持有它，由 `Session::presentation()` 取得。`meshes() / procedural_generators() / lights() / cameras()` 返回对应的 `CapabilityId`，可经 `World::members(id)` 查询桶；环境通过 `environment()` 提取设置。
 
 `render_items()`、`light_items()` 与 `environment()` 只遍历这些桶，经 `World::spatial_pass` 读取空间，对象失败经 `World::contain` 写入 World 的诊断日志，按 World 的失败策略隔离或使调用失败。
 
@@ -17,7 +17,7 @@
 Scene 缓存提取的结果，供消费者只重建变化的部分。缓存只经 `update()` 和 `render_items()` 推进。
 
 - 缓存内容：网格桶每个位置一个 `MeshSlot`，`item` 是该位置的 RenderItem（隔离或退化时为空），`changed` 是最后改变它的更新序号；上一次更新的灯光结果；上一次的 Environment 设置。
-- 布局：`World::revision()` 前进时，网格槽全部清空重建，`mesh_layout()` 记下这次更新的序号。在此之前，每个槽位都对应同一个组件，消费者可以按槽位保留自己的派生数据。
+- 布局：`World::revision()` 前进时，若可渲染网格与程序化生成器能力桶的成员序列未发生变化，则保留已有槽位与材质缓存，仅重建父链空间依赖并标脏发生父级重挂的子树；只有可渲染成员集合或顺序变化时才清空重建网格槽并推进 `mesh_layout()`。在此之前，每个槽位都对应同一个组件，消费者可以按槽位保留自己的派生数据。
 - 每次更新：在一次 presentation 遍历中消费 Runtime 自上次[变化游标](../../runtime-model.md#写代号与变化游标)以来的 `changed_objects`。布局建立时为每槽记下空间链（自身 Entity 在前），链上 Entity 与网格组件分别指向该槽；仅空间变化只更新矩阵，不重捕获材质。组件/绑定变化或材质依赖变化才重新捕获 surfaces。每次成功捕获同时取得实际遍历到的 live 材质、父链、纹理身份，Scene 按 ObjectId→槽建立反向索引；去重的依赖再用 `changed_since` 检查死亡，因为死对象不会出现在 `changed_objects` 中。经 `Runtime::write`、`with_native` 或 JIT 绕过 World 的写入同样盖章。脏槽仍按桶顺序处理；失败槽逐次重试。灯光组件或灯光链上的 Entity 被写过、有灯未被绘制、或呈现位姿移动了灯时，灯光整体重新提取并与缓存比较；Environment 每次读取。未变捕获使用只读借用，变化的派生 surfaces 缓存写回后才取本 Scene 的结束游标；各 Scene 独立消费，不互相清除变化。`update()` 必须在宿主安全点调用：在 Runtime 回调、原生借用或执行期间取游标返回 busy；即使无脏槽也不跳过此准入。
 - 版本号：`update()` 返回最近一次改变了某个网格槽、网格布局、灯光或 Environment 设置的更新序号。它单调、只在内容变化时前进；消费者保存上次同步的版本号，版本号相同时整帧跳过，否则只处理 `changed`、`mesh_layout()`、`lights_changed()` 大于该值的部分。版本号只在同一个 Scene 内可比；`identity()` 在进程内唯一、不被之后的 Scene 复用，消费者用它识别换了的 Scene。`render_items()` 也推进缓存，序号与 `update()` 共用，所以其他调用方插入的提取不会让消费者漏掉变化。
 - 所有权：缓存的 RenderItem 共享持有网格几何与 surfaces，组件被销毁或换了网格、材质后，旧内容保留到下一次更新。Scene 析构时释放全部缓存，它总是先于 World 析构。
@@ -34,7 +34,7 @@ Scene 缓存提取的结果，供消费者只重建变化的部分。缓存只�
 - 表为空、且上一次没有呈现矩阵时，整段跳过，静止场景没有额外开销；否则只检查表中 Entity 之下的槽和上一次有呈现矩阵的槽，沿布局时记下的空间链查表，开销与这些槽数乘以链深成正比。
 - 隔离或退化的槽不在缓存里，没有呈现矩阵；呈现矩阵不重新校验材质。
 
-Renderer 用上一帧 Frame 里的矩阵算运动向量（`scene_lit.cpp` 中 `previous_world` 取自上一帧该对象的 `world`），所以插值帧的运动向量与画面一致。
+Renderer 用上一帧 Frame 里的矩阵算运动向量（`RenderScene` 按 `stable_key` 记录上一帧该对象的 `prev_world`），所以插值帧的运动向量与画面一致。
 
 ## 网格
 
@@ -60,30 +60,31 @@ Scene 的依赖来自同一次真实捕获，不从最终 `Surface.inputs()` 反
 
 `LightComponent : SpatialComponent` 是真实 Runtime 能力对象，它的 owner Entity 必须有 Transform。公开字段 `settings : world.LightSettings` 保存灯参数；空间来自 owner Entity，沿实体空间参考链、组合顺序、生命周期和派生类型查询运行。
 
-`world.LightKind` 是 uint32 枚举：point=0、rectangle=1、directional=2。天光不是灯，而是 [Environment](#环境) 的设置。`LightSettings` 的反射字段如下：
+`world.LightKind` 是 uint32 枚举：point=0、rectangle=1、directional=2、spot=3。天光不是灯，而是 [Environment](#环境) 的设置。`LightSettings` 的反射字段如下：
 
 | 字段 | 默认值 | 合同 |
 | --- | --- | --- |
 | kind | point | 只能取已声明种类（校验器） |
 | color | (1,1,1) | 非负线性 RGB（硬下限 0），可大于 1，作为强度的 RGB 乘数 |
-| intensity | 1 | 硬下限 0；point 为 cd，rectangle 为 cd/m²，directional 为 lux |
-| range | 10 | 世界米，硬下限 0；局部灯必须 >0（校验器），directional 忽略且允许 0 |
-| source_radius | 0 | 硬下限 0；point 为世界米；directional 为角半径，单位弧度且 <π/2（校验器）；rectangle 忽略 |
+| intensity | 1 | 硬下限 0；point / spot 为 cd，rectangle 为 cd/m²，directional 为 lux |
+| range | 10 | 世界米，硬下限 0；point / spot / rectangle 必须 >0（校验器），directional 忽略且允许 0 |
+| source_radius | 0 | 硬下限 0；point / spot 为世界米；directional 为角半径，单位弧度且 <π/2（校验器）；rectangle 忽略 |
+| spot_inner_degrees / spot_outer_degrees | 25 / 40 | 聚光灯内外半角（度），spot 要求 `0 <= inner <= outer` 且 `outer in [0.5, 89]`（校验器），其余种类未使用 |
 | width / height | 1 / 1 | 世界米，硬下限 0；rectangle 必须 >0（校验器），其余种类未使用 |
 | two_sided | false | 矩形两面按同一 luminance 出光，不将每面强度减半 |
 | casts_shadow | true | 直接灯的投影意图；实际支持和预算由 Renderer 决定 |
 
 单位按参考白色定义，color 再逐通道调制。这里保存作者数据，不在 World 引入曝光、色调映射、光通量换算或阴影资源管理。
 
-点光、矩形光和平行光使用共享的解析光计算域：每通道 `color × intensity ≤ 2^32`；矩形光还要求 `color × intensity × width × height ≤ 2^32`，且面积必须为正、不超过 FP32 最大有限值。这是有效辐射量的乘积约束，不是对 intensity 单独限幅；例如很高强度乘很小颜色仍可有效。这条乘积规则在 LightSettings 的类型校验器中，World authoring、提取和 Renderer 编码前使用同一范围检查，超界拒绝且保留原值，不静默降低亮度。此范围为 FP32 解析光采样的中间计算保留余量，不等同于最终 HDR 纹理上限，也不保证任意发光几何或 reservoir 权重均可表示；具体边界见 [Scene Lit](../renderer/scene-lit.md)。
+点光、聚光灯（`Spot`，含 `spot_inner_degrees` ≤ `spot_outer_degrees`）、矩形光和平行光使用共享的解析光计算域：每通道 `color × intensity ≤ 2^32`；矩形光还要求 `color × intensity × width × height ≤ 2^32`，且面积必须为正、不超过 FP32 最大有限值。这是有效辐射量的乘积约束，不是对 intensity 单独限幅；例如很高强度乘很小颜色仍可有效。这条乘积规则在 LightSettings 的类型校验器中，World authoring、提取和 Renderer 编码前使用同一范围检查，超界拒绝且保留原值，不静默降低亮度。此范围为 FP32 解析光采样的中间计算保留余量，不等同于最终 HDR 纹理上限；具体边界见 [Scene Lit](../renderer/scene-lit.md)。
 
-单字段规则是反射硬边界，跨字段规则（种类、局部灯 range、矩形尺寸、方向光角半径、解析光乘积）是 LightSettings 登记的类型校验器，二者都由 Runtime 执行。`validate_light(Runtime&, LightSettings)`、`read_light(Runtime&, ObjectId)`、`set_light(World&, ObjectId, LightSettings)` 为正式值接口。read 返回拥有式参数，包括 Detached/停用对象；set 先按完整值检查（包括跨字段规则，即使组件原值已经违反规则），失败即拒绝、不夹值，再经整值 `World::write` 写入，准入与精确恢复同 write。World 标量属性编辑先经 Runtime 写入（硬边界夹值，NaN/Inf 与错误 Scalar 类型拒绝），再检查类型规则与准入，失败时恢复原值。应用保存/加载须调用公开验证，不以反射原始存储写入代替领域校验。
+单字段规则是反射硬边界，跨字段规则（种类、局部灯 range、聚光灯内外锥角、矩形尺寸、方向光角半径、解析光乘积）是 LightSettings 登记的类型校验器，二者都由 Runtime 执行。`validate_light(Runtime&, LightSettings)`、`read_light(Runtime&, ObjectId)`、`set_light(World&, ObjectId, LightSettings)` 为正式值接口。read 返回拥有式参数，包括 Detached/停用对象；set 先按完整值检查（包括跨字段规则，即使组件原值已经违反规则），失败即拒绝、不夹值，再经整值 `World::write` 写入，准入与精确恢复同 write。World 标量属性编辑先经 Runtime 写入（硬边界夹值，NaN/Inf 与错误 Scalar 类型拒绝），再检查类型规则与准入，失败时恢复原值。应用保存/加载须调用公开验证，不以反射原始存储写入代替领域校验。
 
 ## 环境
 
-`world.EnvironmentComponent : Component` 保存整个 World 的 Scene Lit 作者设置：阴影、效果、曝光、DDGI 传播、天光（`sky_enabled`、`sky_color`、`sky_intensity`、`sky_rotation` 和天空贴图）以及 4 个具名探针体积 `volume0..volume3`（`world.ProbeVolume`，探针数拆为 `count_x/y/z`）。字段、默认值和单字段硬边界与 `rendering::SceneLightingSettings` 一一对应，Scene 提取时在模块内部转换为这份设置；跨字段规则（体积 min < max、间距精度、Follow Focus 内部格子、4096 探针共享预算、天光每通道 `color × intensity ≤ 65504`）是组件登记的类型校验器，直接复用 `scene_lighting_error`。它不是 SpatialComponent，不需要 owner Entity 的 Transform。
+`world.EnvironmentComponent : Component` 保存整个 World 的 Scene Lit 单轨作者设置：直接光候选预算（`direct_candidates`）、阴影（`shadows`、`contact_shadow_length`）、四层全局光照（`indirect_lighting`、`gi_quality`、`indirect_gain`、`ssilvb`、`ao_radius`）、三级镜面反射（`reflections`、`reflection_distance`、`reflection_roughness`）、三态天空（`sky_mode`、`sky_color`、`sky_intensity`、`sky_rotation` 和天空贴图）、近场体积雾（`fog_enabled`、`fog_density`、`fog_height_falloff`）以及后处理（`bloom`、`exposure_ev`、`tonemapper`、`antialiasing`）。字段、默认值和单字段硬边界与 `rendering::SceneLightingSettings` 一一对应，Scene 提取时在模块内部转换为这份设置；跨字段规则（枚举合法性、有限非负区间、天光每通道 `color × intensity ≤ 65504`）是组件登记的类型校验器，直接复用 `scene_lighting_error`。它不是 SpatialComponent，不需要 owner Entity 的 Transform。
 
-天光的辐亮度是 `sky_color × sky_intensity × map(旋转后的方向)`，没有天空贴图时 map = 1，即均匀天空；`sky_enabled` 为假时环境辐射为零，颜色、强度、贴图和旋转都保留。`sky_rotation` 是绕世界 +Y 的偏航角（度，硬边界 [−180, 180]，与 Transform 绕 +Y 的正旋转同向），原值进入 `SceneLightingSettings::sky_rotation`。天空贴图是一对隐藏数据：持久的资产键和解析出的 `rendering::SkyMapRef`，没有公开 FieldId，只能经 `set_sky_map_binding(runtime, component, {key, map})` 成对设置、`read_sky_map` 读取；有贴图必须有键，键不超过 4096 字节且不含 NUL，键解析不到时贴图为空，天空按 map = 1 渲染。它与其他编辑一样在 World 派发期间返回 busy。Scene 提取把贴图指针原样放进 `SceneLightingSettings::sky_map`，设置比较按指针，所以只有换了贴图对象才算变化。宿主仍用 `rendering::sky_radiance(settings)` 求 `Frame.environment`，Renderer 从 `frame.view.lit` 读贴图与旋转。
+`sky_mode` 为 `none` 时天空辐射为零且背景为纯黑；`physical_atmosphere` 使用物理大气散射与太阳方向；`hdri_sky_map` 使用 `sky_color × sky_intensity × map(旋转后的方向)`（未绑定贴图时退化为 `map = 1` 均匀天光）。`sky_rotation` 是绕世界 +Y 的偏航角（度，硬边界 [−180, 180]，与 Transform 绕 +Y 的正旋转同向），原值进入 `SceneLightingSettings::sky_rotation`。天空贴图是一对隐藏数据：持久的资产键和解析出的 `rendering::SkyMapRef`，没有公开 FieldId，只能经 `set_sky_map_binding(runtime, component, {key, map})` 成对设置、`read_sky_map` 读取；有贴图必须有键，键不超过 4096 字节且不含 NUL，键解析不到时贴图为空。它与其他编辑一样在 World 派发期间返回 busy。Scene 提取把贴图指针原样放进 `SceneLightingSettings::sky_map`，设置比较按指针，所以只有换了贴图对象才算变化。宿主仍用 `rendering::sky_radiance(settings)` 求 `Frame.environment`，Renderer 从 `frame.view.lit` 读模式、贴图与旋转。
 
 每个 World 至多一个 EnvironmentComponent，停用的、派生类型的也计数；这是 Scene 登记的准入，创建 Scene 时也检查 World 里已有的内容，已有两个以上就拒绝创建（此时只留下可复用的环境登记）。`Scene::environment()` 返回启用中的那一个的设置；没有、或它被停用时返回 `SceneLightingSettings{}`，不保留任何缓存，所以移除或停用后立即回到默认值。经脚本、`with_native` 或 JIT 绕过写入路径而变成无效的 Environment，在 lighting 阶段当前的诊断遍历里记一条 `invalid_value`，提取返回默认值，不沿用上一次的有效值；halt 策略下提取失败。作者编辑跨字段的组合时用组写入，见 [World 编辑](../world/README.md#编辑呈现与资源)。
 

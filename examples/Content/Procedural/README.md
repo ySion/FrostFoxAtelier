@@ -15,7 +15,7 @@
      - **Central Terrace Island**（使用图默认种子 `101`）
      - **West Outpost Island**（开启 `Override Graph Seed`，独立种子 `2026`）
      - **East Sanctum Island**（开启 `Override Graph Seed`，独立种子 `777`）
-   - 地形连续网格的 `"default"` 材质槽绑定 `TerraceStone.material`；散布实例由 `BasaltColumn.obj`（玄武岩石柱）与 `AmberCrystal.obj`（自发光琥珀晶簇，参与 DDGI 间接照明）按台地高度与坡度自动选择变体。
+   - 地形连续网格的 `"default"` 材质槽绑定 `TerraceStone.material`；散布实例由 `BasaltColumn.obj`（玄武岩石柱）与 `AmberCrystal.obj`（自发光琥珀晶簇，参与四层全局光照间接照明）按台地高度与坡度自动选择变体。
 
 2. **三层同构参数与默认锁定预览（`.procgraph` v4）**：
    - 在 **Scene Tree** 或 **3D Viewport** 直接点击任一岛屿实体，**Parameters** 面板直接在 `ProceduralGeneratorComponent` 下方内联渲染 `Generator Parameters`（如 `Island Radius`、`Terrace Count`、`Plateau Height`、`Prop Density`），拖动滑杆仅为当前实体写入场景差量 `overrides`（接入场景 Undo/Redo 与 Play 同步）；同时 **Network** 面板默认以 **Locked Preview** 打开该 `.procgraph` 供安全检视，点击顶栏 `Unlock` 才进入共享数字资产编辑态并即时传播至全场景所有实例。

@@ -193,7 +193,7 @@ TLAS 路径仍需实测选择：
 保留 Dungeon 原样、Dungeon_10k、Dungeon_100k 三个只差生成器的工程副本，用同一现有网格、显式 LOD，报告单实例和总三角形数；实例在可走区域，镜头只见一部分。已对齐镜头参数为 `--scene-lit-camera 6.927793 -0.362655 24.410025 3.6086 -1.3809 33.7881`。
 
 - Renderer 的 release profile 看 clustered、clustered_orbit、docked_smooth；性能负责人届时补 clustered_motion，分别移动生成器和一个普通 Entity，覆盖 TLAS update。
-- CPU 看 render.prepare、render.encode.scene.lit、render、application_step_ms；GPU 看 acceleration、gbuffer、shadow_cache、ddgi_trace/ddgi_update、direct_visibility/direct、hdr_reflections、measured_main_total_ms。Acceleration 的 CPU 包含在 .lit，按场景差值比较。
+- CPU 看 render.prepare、render.encode.scene.lit、render、application_step_ms；GPU 看 gbuffer、as、vsm、gi_update/gi_resolve、direct_shading、reflections、union_gpu_ms。Acceleration 的 CPU 包含在 .lit，按场景差值比较。
 - 无窗口 scene CPU profile 看 render_items、light_items、scene_snapshot、scene_snapshot_changed，届时增加 generator_moved/replaced 情形，配合现有 procedural profile。
 - 依当时机器协议持锁、独占空闲采样；基线/改动版交替各两轮取中位数，不加产品专用 marker。静止 Dungeon 应在基线波动范围内，否则补成对测量；10k→100k 报静止 CPU 斜率、运动 ns/实例、各 GPU pass 增量及实例/剔除/draw/TLAS/上传字节数。这是诊断口径，不用测量代替正确性验收，也不以估算宣称达成 120 FPS。
 

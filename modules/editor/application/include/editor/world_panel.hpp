@@ -15,15 +15,11 @@ inline constexpr ui::ControlKey tab = root + 1;
 
 inline constexpr ui::ControlKey content = root + 2;
 
-inline constexpr ui::ControlKey slot = root + 3;
-
-inline constexpr ui::ControlKey setup = root + 4;
-
 inline constexpr ui::ControlKey lighting_tab = root + 8;
 
-inline constexpr ui::ControlKey ddgi_tab = root + 9;
+inline constexpr ui::ControlKey gi_tab = root + 9;
 
-inline constexpr ui::ControlKey effects_tab = root + 10;
+inline constexpr ui::ControlKey post_tab = root + 10;
 
 inline constexpr ui::ControlKey diagnostics_tab = root + 11;
 
@@ -34,8 +30,6 @@ inline constexpr ui::ControlKey performance_table = root + 13;
 inline constexpr ui::ControlKey performance_status = root + 14;
 
 inline constexpr ui::ControlKey performance_resources = root + 15;
-
-inline constexpr ui::ControlKey slot_first = root + 16;
 
 inline constexpr ui::ControlKey main_camera_text = root + 32;
 
@@ -52,10 +46,10 @@ constexpr ui::ControlKey field(ViewOption option) {
 constexpr ui::ControlKey choice(ViewOption option, unsigned value) {
     return choice_first + static_cast<unsigned>(option) * 32 + value;
 }
-}
+} // namespace world_control
 
-// Owns the panel's selection and uncommitted number edit, never another copy of
-// the authoritative display settings. A commit publishes through Workspace.
+// Owns the panel's uncommitted number edit, never another copy of the
+// authoritative display settings. A commit publishes through Workspace.
 class WorldPanel {
 public:
     Result<bool> apply(const ui::Action&, renderer::ViewSettings& candidate);
@@ -75,8 +69,6 @@ public:
 
     bool editing() const noexcept { return edit_.has_value(); }
 
-    unsigned selected_volume() const noexcept { return slot_; }
-
 private:
     struct Edit {
         ui::ControlKey key;
@@ -84,18 +76,14 @@ private:
         double value;
     };
 
-    unsigned slot_{};
-
     Optional<Edit> edit_;
 
     FramePerformance performance_;
 
     mutable PropertyHelpCache help_;
 
-    std::array<renderer::ProbeVolumeStats, renderer::probe_volume_limit> observed_{};
-
-    std::array<std::array<std::wstring, 6>, renderer::probe_volume_limit> readouts_{};
+    std::array<std::wstring, 6> readouts_{};
 
     double displayed(const renderer::ViewSettings&, ViewOption) const;
 };
-}
+} // namespace atelier::editor

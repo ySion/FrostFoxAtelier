@@ -1,0 +1,225 @@
+diff --git a/Include/Extensions/NRIDeviceCreation.h b/Include/Extensions/NRIDeviceCreation.h
+index 28ae7ea..3acd621 100644
+--- a/Include/Extensions/NRIDeviceCreation.h
++++ b/Include/Extensions/NRIDeviceCreation.h
+@@ -8,6 +8,10 @@
+ 
+ NriNamespaceBegin
+ 
++#ifdef ERROR
++#    undef ERROR
++#endif
++
+ NriEnum(Message, uint8_t,
+     INFO,
+     WARNING,
+diff --git a/Source/D3D12/CommandBufferD3D12.hpp b/Source/D3D12/CommandBufferD3D12.hpp
+index 9dc8dcd..a7f78e8 100644
+--- a/Source/D3D12/CommandBufferD3D12.hpp
++++ b/Source/D3D12/CommandBufferD3D12.hpp
+@@ -3047,22 +3047,22 @@ NRI_INLINE void CommandBufferD3D12::CopyQueries(const QueryPool& queryPool, uint
+ NRI_INLINE void CommandBufferD3D12::BeginAnnotation(const char* name, uint32_t bgra) {
+     if (m_Device.HasPix())
+         m_Device.GetPix().BeginEventOnCommandList(GetGraphicsCommandList(), bgra, name);
+-    else
+-        PIXBeginEvent(GetGraphicsCommandList(), bgra, name);
++    else if (name)
++        GetGraphicsCommandList()->BeginEvent(1, name, (UINT)(strlen(name) + 1));
+ }
+ 
+ NRI_INLINE void CommandBufferD3D12::EndAnnotation() {
+     if (m_Device.HasPix())
+         m_Device.GetPix().EndEventOnCommandList(GetGraphicsCommandList());
+     else
+-        PIXEndEvent(GetGraphicsCommandList());
++        GetGraphicsCommandList()->EndEvent();
+ }
+ 
+ NRI_INLINE void CommandBufferD3D12::Annotation(const char* name, uint32_t bgra) {
+     if (m_Device.HasPix())
+         m_Device.GetPix().SetMarkerOnCommandList(GetGraphicsCommandList(), bgra, name);
+-    else
+-        PIXSetMarker(GetGraphicsCommandList(), bgra, name);
++    else if (name)
++        GetGraphicsCommandList()->SetMarker(1, name, (UINT)(strlen(name) + 1));
+ }
+ 
+ NRI_INLINE void CommandBufferD3D12::BuildTopLevelAccelerationStructures(const BuildTopLevelAccelerationStructureDesc* buildTopLevelAccelerationStructureDescs, uint32_t buildTopLevelAccelerationStructureDescNum) {
+@@ -3102,7 +3102,7 @@ NRI_INLINE void CommandBufferD3D12::BuildBottomLevelAccelerationStructures(const
+ 
+         uint32_t micromapNum = 0;
+         for (uint32_t j = 0; j < desc.geometryNum; j++) {
+-            const BottomLevelGeometryDesc& geometryDesc = desc.geometries[i];
++            const BottomLevelGeometryDesc& geometryDesc = desc.geometries[j];
+             if (geometryDesc.type == BottomLevelGeometryType::TRIANGLES && geometryDesc.triangles.micromap)
+                 micromapNum++;
+         }
+diff --git a/Source/D3D12/DeviceD3D12.hpp b/Source/D3D12/DeviceD3D12.hpp
+index e8fa613..92e290b 100644
+--- a/Source/D3D12/DeviceD3D12.hpp
++++ b/Source/D3D12/DeviceD3D12.hpp
+@@ -518,15 +518,15 @@ Result DeviceD3D12::Create(const DeviceCreationDesc& desc, const DeviceCreationD
+     // IMPORTANT: Must be called before the D3D12 device is created, or the D3D12 runtime removes the device
+     if (desc.enableGraphicsAPIValidation) {
+         ComPtr<ID3D12Debug> debugController;
+-        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)))) {
+-            debugController->EnableDebugLayer();
+-
+-            if (desc.enableD3D12GpuBasedValidation) {
+-                ComPtr<ID3D12Debug1> debugController1;
+-
+-                if (SUCCEEDED(debugController->QueryInterface(IID_PPV_ARGS(&debugController1))))
+-                    debugController1->SetEnableGPUBasedValidation(true);
+-            }
++        HRESULT hr = D3D12GetDebugInterface(IID_PPV_ARGS(&debugController));
++        NRI_RETURN_ON_BAD_HRESULT(this, hr, "D3D12GetDebugInterface");
++        debugController->EnableDebugLayer();
++
++        if (desc.enableD3D12GpuBasedValidation) {
++            ComPtr<ID3D12Debug1> debugController1;
++            hr = debugController->QueryInterface(IID_PPV_ARGS(&debugController1));
++            NRI_RETURN_ON_BAD_HRESULT(this, hr, "ID3D12Debug::QueryInterface(ID3D12Debug1)");
++            debugController1->SetEnableGPUBasedValidation(true);
+         }
+     }
+ 
+diff --git a/Source/D3D12/FenceD3D12.h b/Source/D3D12/FenceD3D12.h
+index af667e9..8c1dcd9 100644
+--- a/Source/D3D12/FenceD3D12.h
++++ b/Source/D3D12/FenceD3D12.h
+@@ -35,8 +35,8 @@ struct FenceD3D12 final : public DebugNameBase {
+     //================================================================================================================
+ 
+     uint64_t GetFenceValue() const;
+-    void QueueSignal(QueueD3D12& queue, uint64_t value);
+-    void QueueWait(QueueD3D12& queue, uint64_t value);
++    Result QueueSignal(QueueD3D12& queue, uint64_t value);
++    Result QueueWait(QueueD3D12& queue, uint64_t value);
+     Result Wait(uint64_t value);
+ 
+ private:
+diff --git a/Source/D3D12/FenceD3D12.hpp b/Source/D3D12/FenceD3D12.hpp
+index ce55a17..8ff8be2 100644
+--- a/Source/D3D12/FenceD3D12.hpp
++++ b/Source/D3D12/FenceD3D12.hpp
+@@ -37,29 +37,34 @@ NRI_INLINE uint64_t FenceD3D12::GetFenceValue() const {
+     return m_Fence ? m_Fence->GetCompletedValue() : 0;
+ }
+ 
+-NRI_INLINE void FenceD3D12::QueueSignal(QueueD3D12& queue, uint64_t value) {
++NRI_INLINE Result FenceD3D12::QueueSignal(QueueD3D12& queue, uint64_t value) {
+     if (m_Fence) {
+         HRESULT hr = ((ID3D12CommandQueue*)queue)->Signal(m_Fence, value);
+-        NRI_RETURN_VOID_ON_BAD_HRESULT(&m_Device, hr, "ID3D12CommandQueue::Signal");
++        NRI_RETURN_ON_BAD_HRESULT(&m_Device, hr, "ID3D12CommandQueue::Signal");
+     }
++    return Result::SUCCESS;
+ }
+ 
+-NRI_INLINE void FenceD3D12::QueueWait(QueueD3D12& queue, uint64_t value) {
++NRI_INLINE Result FenceD3D12::QueueWait(QueueD3D12& queue, uint64_t value) {
+     if (m_Fence && value) {
+         HRESULT hr = ((ID3D12CommandQueue*)queue)->Wait(m_Fence, value);
+-        NRI_RETURN_VOID_ON_BAD_HRESULT(&m_Device, hr, "ID3D12CommandQueue::Wait");
++        NRI_RETURN_ON_BAD_HRESULT(&m_Device, hr, "ID3D12CommandQueue::Wait");
+     }
++    return Result::SUCCESS;
+ }
+ 
+ NRI_INLINE Result FenceD3D12::Wait(uint64_t value) {
+     if (!m_Fence)
+         return Result::SUCCESS;
+ 
++    uint64_t completed = m_Fence->GetCompletedValue();
++    if (completed == UINT64_MAX)
++        return Result::DEVICE_LOST;
++
+     if (m_Event == 0 || m_Event == INVALID_HANDLE_VALUE) {
+-        // Busy wait
+-        while (m_Fence->GetCompletedValue() < value)
++        while ((completed = m_Fence->GetCompletedValue()) < value)
+             ;
+-    } else if (m_Fence->GetCompletedValue() < value) {
++    } else if (completed < value) {
+         // Event-based wait
+         ResetEvent(m_Event);
+ 
+@@ -68,7 +73,11 @@ NRI_INLINE Result FenceD3D12::Wait(uint64_t value) {
+ 
+         uint32_t result = WaitForSingleObjectEx(m_Event, NRI_TIMEOUT_FENCE, FALSE);
+         NRI_RETURN_ON_FAILURE(&m_Device, result == WAIT_OBJECT_0, Result::FAILURE, "WaitForSingleObjectEx() failed, result = 0x%08X!", result);
++        completed = m_Fence->GetCompletedValue();
+     }
+ 
+-    return Result::SUCCESS;
++    if (completed == UINT64_MAX || m_Device->GetDeviceRemovedReason() != S_OK)
++        return Result::DEVICE_LOST;
++
++    return completed >= value ? Result::SUCCESS : Result::FAILURE;
+ }
+diff --git a/Source/D3D12/QueueD3D12.hpp b/Source/D3D12/QueueD3D12.hpp
+index 7cb62ff..8c9ca38 100644
+--- a/Source/D3D12/QueueD3D12.hpp
++++ b/Source/D3D12/QueueD3D12.hpp
+@@ -30,22 +30,22 @@ Result QueueD3D12::Create(ID3D12CommandQueue* queue) {
+ NRI_INLINE void QueueD3D12::BeginAnnotation(const char* name, uint32_t bgra) {
+     if (m_Device.HasPix())
+         m_Device.GetPix().BeginEventOnQueue(m_Queue, bgra, name);
+-    else
+-        PIXBeginEvent(m_Queue, bgra, name);
++    else if (name)
++        m_Queue->BeginEvent(1, name, (UINT)(strlen(name) + 1));
+ }
+ 
+ NRI_INLINE void QueueD3D12::EndAnnotation() {
+     if (m_Device.HasPix())
+         m_Device.GetPix().EndEventOnQueue(m_Queue);
+     else
+-        PIXEndEvent(m_Queue);
++        m_Queue->EndEvent();
+ }
+ 
+ NRI_INLINE void QueueD3D12::Annotation(const char* name, uint32_t bgra) {
+     if (m_Device.HasPix())
+         m_Device.GetPix().SetMarkerOnQueue(m_Queue, bgra, name);
+-    else
+-        PIXSetMarker(m_Queue, bgra, name);
++    else if (name)
++        m_Queue->SetMarker(1, name, (UINT)(strlen(name) + 1));
+ }
+ 
+ NRI_INLINE void QueueD3D12::GetCalibratedTimestamps(uint64_t& timestampGPU, uint64_t& timestampCPU) {
+@@ -57,7 +57,9 @@ NRI_INLINE Result QueueD3D12::Submit(const QueueSubmitDesc& queueSubmitDesc) {
+     for (uint32_t i = 0; i < queueSubmitDesc.waitFenceNum; i++) {
+         const FenceSubmitDesc& fenceSubmitDesc = queueSubmitDesc.waitFences[i];
+         FenceD3D12* fence = (FenceD3D12*)fenceSubmitDesc.fence;
+-        fence->QueueWait(*this, fenceSubmitDesc.value);
++        Result res = fence->QueueWait(*this, fenceSubmitDesc.value);
++        if (res != Result::SUCCESS)
++            return res;
+     }
+ 
+     if (queueSubmitDesc.commandBufferNum) {
+@@ -71,7 +73,9 @@ NRI_INLINE Result QueueD3D12::Submit(const QueueSubmitDesc& queueSubmitDesc) {
+     for (uint32_t i = 0; i < queueSubmitDesc.signalFenceNum; i++) {
+         const FenceSubmitDesc& fenceSubmitDesc = queueSubmitDesc.signalFences[i];
+         FenceD3D12* fence = (FenceD3D12*)fenceSubmitDesc.fence;
+-        fence->QueueSignal(*this, fenceSubmitDesc.value);
++        Result res = fence->QueueSignal(*this, fenceSubmitDesc.value);
++        if (res != Result::SUCCESS)
++            return res;
+     }
+ 
+     // Is device lost?
+@@ -86,8 +90,9 @@ NRI_INLINE Result QueueD3D12::WaitIdle() {
+     FenceDesc fenceDesc = {};
+     Result result = m_Device.CreateImplementation<FenceD3D12>(fence, fenceDesc);
+     if (result == Result::SUCCESS) {
+-        fence->QueueSignal(*this, 1);
+-        result = fence->Wait(1);
++        result = fence->QueueSignal(*this, 1);
++        if (result == Result::SUCCESS)
++            result = fence->Wait(1);
+ 
+         Destroy(fence);
+     }

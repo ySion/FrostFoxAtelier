@@ -139,6 +139,7 @@ include(cmake/style.cmake)
 include(cmake/foundation.cmake)
 
 add_library(atelier_material STATIC
+    modules/engine/material/src/image.cpp
     modules/engine/material/src/program.cpp
     modules/engine/material/src/program_resources.cpp
     modules/engine/material/src/resources.cpp)

@@ -3,6 +3,7 @@
 #include "editor/graph_format.hpp"
 #include "editor/project.hpp"
 #include "assets/file.hpp"
+#include "assets/image_decode.hpp"
 #include "assets/json_format.hpp"
 #include "editor/fields.hpp"
 #include "editor/properties.hpp"
@@ -3535,24 +3536,22 @@ struct Session::GraphCodec {
                 const auto height = *height_value;
                 if (!width || !height || width > 8192 || height > 8192)
                     return std::unexpected(SceneFailure("Invalid Play texture dimensions."));
-                const auto bytes = width * height * 4;
                 ATELIER_TRY_BIND(file, op.string({"file"}));
-                const auto rgba = assets::read_file(platform::utf8_to_utf16_validated(*file), bytes);
-                if (!rgba) {
-                    note(world::Severity::error, world::DiagnosticKind::command_rejected, rgba.error().message,
-                         &rgba.error());
+                const auto encoded_png =
+                    assets::read_file(platform::utf8_to_utf16_validated(*file), 256ull * 1024ull * 1024ull);
+                if (!encoded_png) {
+                    note(world::Severity::error, world::DiagnosticKind::command_rejected, encoded_png.error().message,
+                         &encoded_png.error());
                     return {};
                 }
-                if (rgba->size() != bytes)
-                    return std::unexpected(SceneFailure("Play texture RGBA byte count does not match its dimensions."));
-                Array<std::uint8_t> pixels;
-                pixels.resize_uninitialized(rgba->size());
-                std::memcpy(pixels.data(), rgba->data(), rgba->size());
-                auto image = material::Image::create(static_cast<std::uint32_t>(width),
-                                                     static_cast<std::uint32_t>(height), std::move(pixels));
+                auto image = assets::decode_image(*encoded_png);
                 if (!image) {
-                    note(world::Severity::error, world::DiagnosticKind::command_rejected, image.error().message);
+                    note(world::Severity::error, world::DiagnosticKind::command_rejected, image.error().message,
+                         &image.error());
                     return {};
+                }
+                if ((*image)->width() != width || (*image)->height() != height) {
+                    return std::unexpected(SceneFailure("Play texture PNG dimensions do not match declared metadata."));
                 }
                 ATELIER_TRY(session.publish_texture(key, std::move(*image)));
             } else if (kind == "mesh") {
@@ -3601,9 +3600,31 @@ struct Session::GraphCodec {
                 }
                 if (std::holds_alternative<assets::MaterialSourceAsset>(asset->author) && !exact_source)
                     return std::unexpected(SceneFailure("Live Material Source publication requires its exact text."));
-                // Refresh only the catalogue for newly created dependencies;
-                // published pixels and Source text above remain authoritative.
-                ATELIER_TRY(project.refresh());
+                // Only rescan the project directory when the live material references a newly created dependency
+                // not yet present in the catalogue; ordinary parameter/source hot-patches avoid O(N) disk scans.
+                const auto known_key = [&](StringView dep_key) {
+                    return dep_key.empty() || dep_key.starts_with("builtin/") || project.entry(dep_key) != nullptr;
+                };
+                bool needs_refresh = !known_key(key);
+                if (!needs_refresh) {
+                    if (const auto* ms = std::get_if<assets::MaterialSourceAsset>(&asset->author)) {
+                        for (const auto& inp : ms->inputs)
+                            if (!known_key(inp.binding.asset_key)) {
+                                needs_refresh = true;
+                                break;
+                            }
+                    } else if (const auto* mi = std::get_if<assets::MaterialInstanceAsset>(&asset->author)) {
+                        needs_refresh = !known_key(mi->parent_key);
+                        for (const auto& ov : mi->entries) {
+                            if (needs_refresh)
+                                break;
+                            if (const auto* tb = std::get_if<material::TextureBinding>(&ov.value))
+                                needs_refresh = !known_key(tb->asset_key);
+                        }
+                    }
+                }
+                if (needs_refresh)
+                    ATELIER_TRY(project.refresh());
                 Array<MissingResource> missing;
                 ATELIER_TRY(session.publish_material(project.assets(), *asset, std::move(exact_source), &missing));
                 for (const auto& item : missing)

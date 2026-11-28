@@ -48,9 +48,8 @@ CLI 补齐协议及实例身份；没有 request_id 时生成新 ID。异步操�
 | editor.inspect | 默认 `detail: full` 返回完整场景与资源目录，适用于小场景；`summary` 返回状态、历史、相机、显示和最近接受帧，不枚举对象或资产；`assets` 分页读取资源目录，`objects` 分页发现 Entity/Component 句柄，`object` 读取一个已发现对象的反射属性。full/summary 的 `performance` 共用 World 性能表的有界统计快照 |
 | op.list | 列出编辑器操作符：ID、标题、说明、kinds、历史标志和参数 schema，以及 Context 覆盖的 schema。固定项 kinds 为 `["direct"]` 或 `["interactive"]`；参数决定类别的项为 `["direct","interactive"]`，另有 interaction 条件说明。参数 schema 由文档 Runtime 中的参数记录生成（字段、枚举成员、硬边界 minimum/maximum、界面范围 ui_min/ui_max；非补丁式带 default，补丁式标 `"seeded": true`）。菜单、快捷键和 Control 调用同一个注册表，见[操作符](operators.md) |
 | op.call | `{id, args, context}` 调用一个操作符，需要状态令牌。`args` 按参数记录严格解码：未知字段、类型不符或越过硬边界都返回 `invalid_request`，不夹值；补丁式操作符（`tool.settings`、`view.set`、`scene.set_properties`）只改出现的字段。`context` 只在本次调用内替换 `selection {entities, active, object}`、`region` 或 `asset`，不改文档选择；句柄必须是存活成员，active 属于 entities，object 是 active 或它的组件。poll 不满足时返回 `poll_failed` 和原因；未知操作符为 `unknown_operator`。协议外层为 `status: ok`，其 `result` 包含业务 `status: finished / cancelled`、`message`、操作符结果 `result`（如新资产的 `asset` 键）及调用后的 `selection`、`active`、`inspected_object` |
-| op.call view.lighting_fit | `mode: scene` / `scene_focus`，沿 World 页同一操作符按当前可渲染几何拟合 DDGI 覆盖；保留传播和显示偏好，完整布局提交为一条场景历史 |
-| op.call project.new / project.open / scene.open / scene.save | Application 工程/场景操作；New/Open 拒绝未保存场景、材质或源码草稿，避免无人处理的保存对话框。`project.build` 在无占位对象时先尝试兼容热更（方法体变化即使传 `rebuild:true` 也原地发布且保留撤销历史）；遇到 `rebuild_required` 时，若 `rebuild:true` 或当前无场景/图/材质 Undo 历史且无活动交互，执行保状态类型重建：保存 Source 草稿与材质，内存态完整迁移场景、已打开 `.procgraph`（保持磁盘文件与各自 `dirty` 标记不偷写）与 `scratch` 图，恢复视口相机、SOP 上下文、`NetworkCanvas` 缩放平移及实体/节点选择，仅显式退役历史 |
-| op.call scene.add | Entity、StaticMeshEntity、ProceduralGeneratorEntity（`kind: "procedural_generator"`，可选 `graph`）、Camera、Point/Rectangle/Directional Light，与 Create 菜单共享操作符；返回创建后的 active/object/选择。kind 不含 sky，天空通过 view.set 的 sky 键设置 |
+| op.call project.new / project.open / scene.open / scene.save | Application 工程/场景操作；New/Open 拒绝未保存场景、材质或源码草稿，避免无人处理的保存对话框。`project.build` 在无占位对象时先尝试兼容热更（方法体变化即使传 `rebuild:true` 也原地发布且保留撤销历史）；遇到 `rebuild_required` 时，若 `rebuild:true` 或当前无场景/图/材质 Undo 历史且无活动交互，执行保状态类型重建：保存 Source 草稿、材质与工程 `.procgraph`，内存态完整迁移场景、已打开 `.procgraph` 与 `scratch` 图，恢复视口相机、SOP 上下文、`NetworkCanvas` 缩放平移及实体/节点选择，仅显式退役历史 |
+| op.call scene.add | Entity、StaticMeshEntity、ProceduralGeneratorEntity（`kind: "procedural_generator"`，可选 `graph`）、Camera、Point/Spot/Rectangle/Directional Light，与 Create 菜单共享操作符；返回创建后的 active/object/选择。kind 不含 sky，天空通过 view.set 的 sky 键设置 |
 | op.call procedural.assign_graph / procedural.set_override / procedural.bake | `procedural.assign_graph {component, asset}` 为目标或当前 `ProceduralGeneratorComponent` 绑定或清空 `.procgraph` 资产键并记一步场景历史；`procedural.set_override {entity, component, parameter, clear, value_json}` 设置或清除场景生成器组件上的 `.procgraph` 公开参数差量覆写并记一步场景历史；`procedural.bake {entity, component}` 将目标或当前生成器的 `CopyToPoints` 实例一次性烘焙为 `<Entity> Baked` 下的 `StaticMeshEntity` 子层级（单步可撤销） |
 | op.call scene.rename / scene.set_enabled / scene.delete / scene.select | Session 的名称、启用状态、删除和选择；rename 只修改 Entity 名称，Component 使用类型名；`scene.set_enabled {enabled}` 切换 `context.selection.object`（Entity 或 Component）的启用状态并记入场景历史。目标来自 context.selection，delete 的 target 为 object 或 entities |
 | op.call scene.set_properties | 按实际类型字段名组成嵌套 Scalar 补丁，枚举使用名称；多叶沿组写入和最终校验记一个历史条目。Entity 的实际 Transform 字段在写入前拒绝，使用专用 Transform 操作符 |
@@ -189,17 +188,11 @@ full 仍返回完整 assets，不静默截断；full/summary 不接受分页参�
 
 Control 的相机和视图 float 值与 Scene 共用 `json_format::number(float)`，写作可往返的最短十进制；manifest 与 inspect 使用同一编码。常规透视采用无限远 reversed-Z 深度映射：设备深度为 `near_clip / view_z`，near 映射为 1，深度 0 反投影为无穷远方向。`far_clip` 仍是相机 +Z 方向的有限裁剪平面，快照派生 `far_depth = near_clip / far_clip`，不新增作者字段或持久状态。正交仍为有限 reversed-Z，near=1、far=0，派生 far_depth=0。背景始终为 0，不按 far_depth 判断，也不把裁剪后的深度区间重新归一化。far 改变仍触发投影 cut，即使透视矩阵本身没有改变。有限且有序的裁剪值仍按既有范围接受；FP32 矩阵和运算不承诺一至数 ULP 极窄区间的端点保真，不另加固定间距阈值。
 
-持久网格平面由相机派生，view.set 拒绝改变它，临时 compare 可以覆盖。Scene Lit 背景为黑色，环境光来自 World 的天光设置；background 仍保存工作室模式偏好。天光是 scene 项 `sky_enabled`（bool）、`sky_intensity`（cd/m²）和 `sky_color_x/y/z`（线性 RGB 三个标量），与其他 World 选项一样经 `view.set` 写入 Environment 组件，第一次写入时创建 Environment，二者是同一条历史；`sky_enabled` 为 false 时环境辐射为零。
+持久网格平面由相机派生，view.set 拒绝改变它，临时 compare 可以覆盖。天空与大气是 scene 项 `sky_mode`（`none` / `physical_atmosphere` / `hdri_sky_map`）、`sky_intensity`、`sky_color_x/y/z` 与 `sky_rotation`，与其他 World 选项（直接光候选预算 `direct_candidates`，阴影 `shadows`、`contact_shadow_length`，四层 GI `indirect_lighting`、`gi_quality`、`indirect_gain`、`ssilvb`、`ao_radius`，三级反射 `reflections`、`reflection_distance`、`reflection_roughness`，体积雾 `fog_enabled`、`fog_density`、`fog_height_falloff`，后处理 `exposure_ev`、`tonemapper`、`bloom`、`antialiasing`）一样经 `view.set` 写入 Environment 组件，第一次写入时创建 Environment，二者是同一条历史。
 
-作者项 `direct_candidates` 通过相同的 `view.set` / `render.compare` 接受 1～32，默认 8；它控制 DDGI 探针命中点每次挑选的局部光候选数，方向光独立评估，屏幕直接光不受它影响。视口诊断 `spatial_light_sampling` 默认 true，控制探针命中点是否使用近源空间提议；false 只禁用该提议，仍保留 CPU 网格及 GPU 表以便同场景对照，不写 World 或 Undo。屏幕直接光只有一条路径（tile + depth-slice 的保守局部灯列表，逐盏确定求值，列表超过 64 项时回退完整枚举）。`direct_reference`、`direct_clustered` 与 `direct_shadow_cache` 已删除：`view.set` 和 `render.compare` 对这三个键返回 `invalid_request`，消息标明被拒绝的字段。`direct_cluster_inspect` 默认 false，按需统计 GBuffer 接收像素的局部解析灯支持数量；它不重置光照历史、不持久化，但其诊断工作计入列表构建，性能采样必须关闭。当前接口不接受旧阴影槽预算与单灯样本参数。
+视口诊断与覆盖项 `show_locators`（默认 `true`）与 `direct_cluster_inspect`（默认 `false`）不写 World 或 Undo。屏幕直接光采用统一单轨路径（`16×16×32` 三维视锥 + Z-Bitmask 保守局部灯列表，溢出 64 项时自动回退完整枚举）。`direct_cluster_inspect` 按需统计有效接收像素的局部解析灯支持数量，性能采样期间必须保持关闭。
 
-DDGI 诊断通过相同的入口使用 `probe_visualization`（off/irradiance/state/update_age/distance）、`probe_volume`、`probe_relocation`、`probe_xray`、`probe_radius`（最小间距的 0.01～0.45 倍）。既有 `probe_debug` 改为真实八邻 Receiver Coverage，默认为 false。具体显示、年龄、资源和精度合同见 [Scene Lit](../renderer/scene-lit.md#ddgi-空间与接收面诊断)；关闭 DDGI 不会自动开启光照，灰色表示当前无数据。
-
-多体积字段统一命名为 `probe_volume_0_*` 至 `probe_volume_3_*`，后缀为 `enabled`、`placement`、`min_x/y/z`、`max_x/y/z`、`count_x/y/z` 和 `blend_cells`。`placement` 取 `fixed` / `follow_focus`；后者以相机 target 为中心解释边界偏移。共享传播设置为 `probe_update_budget`、`probe_rays`、`probe_bounce`、`indirect_gain` 和 `probe_feedback_visibility`。`probe_debug_volume` 为 −1（全部）或 0–3，`probe_coverage` 为 status / volume / contributors / dominance。范围由 `capabilities.display_options` 返回，跨字段约束复用 Renderer 校验，整个 patch 原子发布。
-
-`op.call view.set`、`render.compare` 和复现重开只接受正式字段名称。观察与复现导出也只写正式名称；复现设置从默认值恢复，不继承当前会话中的额外体积或跟随模式。反馈/可见性改变会重建光场历史，最终间接光增益只影响合成；各体积容量和滚动网格的约束见 [Scene Lit](../renderer/scene-lit.md)。
-
-显示发布、相机更新和复现恢复在提交前用候选相机 target 校验跟随网格的世界坐标精度。超出受支持位置范围、或网格在该位置因浮点精度而塌缩时，整个操作失败，保留原相机、设置和 token；临时渲染对照也使用同一校验。
+`op.call view.set`、`render.compare` 和复现重开（`view_schema = 8`）只接受 `capabilities.display_options` 返回的正式单轨字段名称；未知或已废弃字段一律返回 `invalid_request`，跨字段约束复用 `scene_lighting_error`，整个 patch 原子发布。
 
 工作室 Cavity 同样通过 `view.set`、`render.compare` 和复现工程使用统一 ViewOption：`cavity` 为 bool，`cavity_ridge` / `cavity_valley` 为 0–2，`cavity_radius` 为 0.5–4 物理像素。默认开启且三个数值均为 1。MatCap、Smooth、Flat 使用该效果；Scene Lit 与纯线框保留设置但不执行效果。非法值使整个 patch 失败，不部分应用。
 
@@ -228,19 +221,19 @@ DDGI 诊断通过相同的入口使用 `probe_visualization`（off/irradiance/st
 
 相机平移和旋转属于同一个活动手势的互斥模式。模式、按键和上次指针位置只在手势存活期间保有；松手、失焦、捕获丢失及转入菜单会结束该手势。`camera_pan` / `camera_orbit` 只报告当前操作，不依据上次使用过的模式。结束后 Control 恢复可调用，活动期间仍按原合同拒绝改变状态的请求。
 
-## 后处理录制视图
+## RDG 渲染录制视图
 
-`render.trace` 是需要 state_token 的异步诊断操作，使用现有 job.status/job.cancel、请求去重、输出目录和取消规则。唯一范围为 `scene_lit_post`（也是默认值），从 Scene Lit 的 TAA 起点到 SMAA 末尾，不包含之前的光照、末尾 display draw、UI 或 Present。跟踪请求依次校验 scope、当前着色模式和 timeout_ms。未知范围返回 `invalid_request`，当前视图未选 Scene Lit 返回 `not_ready`，超时值越界返回带字段路径的 `invalid_request`。通过校验后才发布 job。需要就绪管线时先调用 render.prepare。trace 不切换显示、不修改 AA/Bloom、不推进作者历史、不激活窗口，也不为等到 accepted 自动重试。
+`render.trace` 是需要 state_token 的异步诊断操作，使用现有 job.status/job.cancel、请求去重、输出目录和取消规则。支持 `scope: "full"`（默认值，导出完整 RDG Pass 拓扑、资源生命周期、瞬态池混叠与跨 Pass 依赖边）与 `scope: "scene_lit_post"`（仅导出 Scene Lit 后处理链范围，从 `LitTemporalResolve` 起点到 `SMAA` 末尾，不包含之前的光照、末尾合成、UI 或 Present）。跟踪请求依次校验 scope、当前着色模式和 timeout_ms。未知范围返回 `invalid_request`，请求 `scene_lit_post` 但当前视图未选 Scene Lit 时返回 `not_ready`，超时值越界返回带字段路径的 `invalid_request`。通过校验后才发布 job。需要就绪管线时先调用 render.prepare。trace 不切换显示、不修改 AA/Bloom、不推进作者历史、不激活窗口，也不为等到 accepted 自动重试。
 
-    {"op":"render.trace","state_token":"INSTANCE_ID:VERSION","args":{"scope":"scene_lit_post","timeout_ms":120000}}
+    {"op":"render.trace","state_token":"INSTANCE_ID:VERSION","args":{"scope":"full","timeout_ms":120000}}
 
-它只收集下一次**请求视图的首次 render 尝试**。同一 Application step 随后采用旧 Lit 或 Smooth 回退时，不携带该快照借用，也不覆盖首轮 FrameResult/错误。未进入后处理范围返回 `observation.status: not_entered`；进入后正常关闭且全部观测到为 `complete`；中断、截断或未知绑定为 `incomplete`。这些与 `frame_status: accepted / skipped / not_ready / cancelled / error` 独立：导出成功的 job 可以包含失败的 render 尝试。一直没有 render 尝试时沿原期限失败，默认 120000 毫秒，可设 1–600000。
+它只收集下一次**请求视图的首次 render 尝试**。同一 Application step 随后采用旧 Lit 或 Smooth 回退时，不携带该快照借用，也不覆盖首轮 FrameResult/错误。未进入请求范围返回 `observation.status: not_entered`；进入后正常关闭且全部观测到为 `complete`；中断或异常结束为 `incomplete`。这些与 `frame_status: accepted / skipped / not_ready / cancelled / error` 独立：导出成功的 job 可以包含失败的 render 尝试。一直没有 render 尝试时沿原期限失败，默认 120000 毫秒，可设 1–600000。
 
 若本次宿主步骤因首轮或后续 fallback 的终止性错误立即退出，会先等待这份自有 CPU 快照的文件写入结束，避免关闭时取消任务而丢失首轮证据；仍记录首轮结果，不把 fallback 的错误嫁接给它。此等待不涉及 GPU，不补录或重试渲染；普通取消、断线和期限规则不变。
 
-结果给出 `json`、`html`、`manifest` 路径。`trace.json` 的 `schema: atelier.render.trace`、`version: 1` 包含实例/文档、UI frame、gfx recording sequence、实际请求视图、首轮结果和有序 `commands`；每条命令包含快照内 kernel 标识、entry、groups 和实际绑定。直接 dispatch 的 groups 来自录制参数；间接命令为 null，不猜测 GPU 缓冲内容。绑定记录 root_parameter/array_index、名称、kind、valid/dummy/unknown、resource 和 view 范围。`resources` 的 index 只在这次快照内有效，格式数值为 DXGI_FORMAT；不导出原生地址、常量值或资源内容，不把物理 index 当作者 ID。manifest 的 complete 只代表产物写完，不代表观测完整或 GPU 成功。
+结果给出 `json`、`html`、`manifest` 路径。`trace.json` 的 `schema: atelier.render.trace`、`version: 2` 包含实例/文档、UI frame、`recording_sequence`、`observation`、`transient_aliasing`（`heap_bytes` / `unaliased_bytes`）、有序 `passes`（`ordinal`、`name`、`scope`、`queue`、`culled`、`cull_reason` 与 `accesses`）、`resources`（`index`、`kind`、`name`、`imported`、`extent`、`format`、`heap_index`、`byte_offset`、`byte_size`、`first_pass`、`last_pass`）以及依赖边 `edges`（`from_pass`、`to_pass`、`resource`、`cross_queue`）。`resources` 的 index 只在这次快照内有效，格式数值为 `nri::Format` / DXGI 映射值；不导出原生指针、常量内容或像素数据，不把物理 index 当作者 ID。manifest 的 complete 只代表产物写完，不代表观测完整或 GPU 成功。
 
-`trace.html` 直接由同一事实生成内联 SVG、可展开绑定详情和资源表，不依赖外部脚本、不自动打开。实线箭头仅表示 CPU 命令录制顺序，虚线仅表示绑定；SRV/UAV 不等于完整读写集合，同一资源的多次绑定不推导生产者依赖。没有观察到命令时显示空态，不套用预制流程图。资源来源没有在本范围内证明，图不声称 GPU 完成或显示器显示。采集与有界存储见 [RHI 合同](../rhi/contract.md#按需命令录制观测)；录制视图目前没有自动验收。
+`trace.html` 直接由同一事实生成内联 SVG 拓扑、Pass 访问详情和资源表，不依赖外部脚本、不自动打开。没有观察到范围内的 Pass 时显示空态，不套用预制流程图；图不声称 GPU 完成或显示器显示。RDG 快照边界见 [Renderer 合同](../renderer/contract.md)；录制视图目前没有自动验收。
 
 ## 渲染对照
 
@@ -248,9 +241,9 @@ DDGI 诊断通过相同的入口使用 `probe_visualization`（off/irradiance/st
 
     {"op":"render.prepare","state_token":"INSTANCE_ID:VERSION","args":{}}
 
-Shadows 开启时，投影光源的可见性一律来自阴影 atlas；普通 view 快照与 Performance 的 `configuration` 不再记录直接光路径。
+Shadows 开启时，投影光源的可见性一律来自三级直接光阴影体系（动静分离软件分页 VSM、DXR 1.1 半影/近场光追、屏幕接触阴影与孔径微阴影）；普通 view 快照与 Performance 的 `configuration` 不再记录旧直接光双轨路径。
 
-当前 Renderer 首次 Scene Lit 绘制同步准备相关管线，同实例可复用；目前没有公开的异步准备入口。同步调用期间主线程无法及时处理状态查询和取消，取消在下一个宿主边界执行。准备阶段与正式采样分开，避免把冷启动混进等待帧；渐进准备和跨进程 shader 缓存由 Renderer/RHI 后续演进。准备进程的 CPU 时长或工作集不能作为 GPU 帧时。
+Renderer 在后台工作线程异步编译 Scene Lit 管线与材质原型 PSO，同实例可复用，编译结果缓存至 `ATELIER_SHADER_CACHE`（默认 `%LOCALAPPDATA%\FrostFoxAtelier\ShaderCache`）。首次准备期间主线程保持响应并绘制回退帧，因此正式采样前应先执行 `render.prepare` 将冷启动编译与采样帧分离；准备阶段的 CPU 时长或工作集不能作为 GPU 帧时。
 
 准备耗时应同时记录构建配置、显卡/驱动、是否启用 GPU validation 及管线是否已准备。开启 --gpu-validation 时的耗时不能直接代表普通编辑器启动体验，也不能与未开启验证的样本直接比较。当前协议未返回显卡及验证模式，调用方需随测量记录这些条件；单次工作流观察不等同于性能基准。
 
@@ -276,32 +269,22 @@ Shadows 开启时，投影光源的可见性一律来自阴影 atlas；普通 vi
 
 - PNG：完整客户区的 sRGB RGBA8，左上角原点。
 - .depth.f32：紧密排列的小端 float32，左上角原点、Reversed-Z near=1、background=0；透视 far 平面深度为 near/far，正交 far 为 0。现有 Renderer 提供不带 TAA 抖动的编辑器深度，使用 metadata 的 viewport 定位场景区。metadata 与 `last_frame.camera` 同时提供 `view`、`projection` 和 `far_depth`，三者共同描述已接受帧的投影与有限裁剪边界；不能只凭透视矩阵重建作者 far。
-- 每次采样 JSON：接受帧号、全局计数、case 内序号、viewport、相机矩阵、有效设置、Sky radiance、等待/跳过帧和 GPU 统计。`frame_stats` 提供当前帧的 `history_resets`、`light_sources`、`shadow_sources`、`di_candidates`；后两者是启用 Shadows 时具备投影资格的源数和初始候选预算，不是实际射线数。`spatial_light_sampling` 子对象返回当前编码帧的 `retained_sources`（局部表保留源数）、`nonempty_cells`、`resource_bytes`（三张表的逻辑容量，含空表 sentinel）和 `uploaded`；它们不是完成帧 GPU 计数，也不是可见光源或剔除结果。未编码 Scene Lit（例如无几何且不绘制探针诊断）时这四项为零，其他保留的 Scene Lit 缓存仍计入总 `resource_bytes`。`case_reported_history_resets` 累计本 case 所有已报告帧的重置次数。旧阴影槽统计不再属于当前输出。
+- 每次采样 JSON：接受帧号、全局计数、case 内序号、viewport、相机矩阵、有效设置、Sky radiance、等待/跳过帧和 GPU 统计。`frame_stats` 提供当前帧的 `scene_draw_calls`、`scene_instances`、`scene_culled_instances`、`history_resets`、`light_sources`、`shadow_sources`。`case_reported_history_resets` 累计本 case 所有已报告帧的重置次数。
 - manifest.json：文件大小及 SHA-256，最后发布的完整产物标记。
 
-GPU 统计带独立采样帧号和有效标志，可能落后于截图。`gpu_sample.ddgi_pass_ms` 的两项分别为探针更新/传输与接收点 gather 耗时；`ddgi_visibility_rays` 的两项分别为探针命中着色与接收点 gather 的可见性查询数。它们共用 `valid`、`sequence`、`frame_id`，分别是 `pass_ms[3]` 和 `shadow_rays` 的细分，不能再次相加。相机矩阵与深度使用不抖动的编辑器投影；TAA/SMAA T2x 内部栅格投影有抖动，本接口不提供该内部矩阵。捕获会等待 GPU，不是常规帧性能测量。Renderer 按自然变化维护历史；接口不承诺完整清空 DDGI 探针、逐位确定性或恢复原 GPU 历史。
+GPU 统计带独立采样帧号和有效标志，可能落后于截图。`gpu_sample.gi_pass_ms` 的两项分别为四层 GI 追踪/缓存更新与接收点解析/汇集耗时；`gi_visibility_rays` 的两项分别为二次命中 NEE 与探针可见性查询数。它们共用 `valid`、`sequence`、`frame_id`，分别是 `pass_ms[3]` 和 `shadow_rays` 的细分，不能再次相加。相机矩阵与深度使用不抖动的编辑器投影；Atelier TAAU 内部栅格投影带 Halton 亚像素抖动，并由 `LitUnjitterDepth` 精确重建无抖动公开深度。捕获会等待 GPU，不是常规帧性能测量。Renderer 按自然变化维护时域与辐射缓存历史；接口不承诺逐位确定性恢复原 GPU 历史。
 
-接受帧与捕获元数据的 `lighting_focus` 是实际传入 Renderer 的观察目标。`frame_stats.probe_volumes` 按固定槽位返回启用/滚动状态、世界边界、间距、数量、resident、updated 和 reset_probes；`probe_volumes_source: cpu_layout_and_schedule` 明确其来源。resident 是分配的槽位数，updated 是本帧计划更新数，均不能当成 GPU 完成数或有效探针数。
-
-`last_frame.frame_stats` 还提供当前接受帧的 `scene_draw_calls`、`scene_instances` 和 `scene_culled_instances`。后两项分别为主视图栅格化判定的总实例数和保守视锥剔除数；它们不是 GPU 完成样本，也不表示从 TLAS、发光或阴影场景中删除了对象。
-
-### DDGI 单接收点归因
-
-`view.set` / `render.compare` 共用视口选项 `probe_history: live | hold_irradiance | hold_distance`、`probe_inspect: bool`、`probe_inspect_x/y: 0..65535`。坐标是窗口物理像素；不改变 World 配置和 Undo。归因结束恢复 `live` 并关闭 inspection。
-
-`last_frame.frame_stats.probe_inspection` 为可空的异步完成样本，提供自己的 `sequence/frame_id/scene_identity/pixel/history/rays/updates/volumes`。`receiver` 返回实际 gather 状态、覆盖、权重和及贡献支配度；每个 probe 返回支持阶段、年龄、呈现/运输 RGB 与方向观测数、空间/朝向/距离可见性/最终权重和位置。`transport_observations` 对应权威运输场，`irradiance_observations` 对应显示场并镜像运输成熟度；不能把后者当成额外独立样本。空场、停用 DDGI 或关闭 inspection 返回 null，背景/越界产生 `position_valid.w=0` 且无邻居的样本。完成帧可能滞后或缺样，调用方按 sequence 去重并使用样本自己的布局，不能拼上当前截图冒充同步数据。
-
-`response_epoch_min_max_visits` 是请求代次、整个方向 tile 的最少/最多有效响应观测（0～12）及有效访问游标。`traced_probe` 按前一完成样本中最大的有效邻居权重选择，当前帧未更新它时 `ray_samples` 为空；这些记录只含实际可着色命中，不包含天空和未着色命中。每条提供 source/kind/ray ordinal、局部 diffuse/specular 和方向光 diffuse/specular 亮度、命中位置/roughness、RIS weight/接收点完整混合提议 PMF/反馈亮度/主射线距离。需要整批均值时除以 `rays`，不能除以有效记录数。诊断专用 Update 入口和读回按需创建，正常着色编译掉记录代码；仍共用完成序列、32 槽无等待发布与 Renderer 资源退休。
+接受帧与捕获元数据的 `lighting_focus` 是实际传入 Renderer 的体积场锚点（观察目标）。`last_frame.frame_stats` 的 `scene_instances` 与 `scene_culled_instances` 分别为主视图判定的总实例数与剔除数。
 
 ### 性能观测
 
-`editor.inspect` 的 `performance` 包含状态、最多 120 个完成样本、发布时间间隔、样本 sequence / frame_id、场景与域首帧、RT/视口尺寸、候选数/AA/DDGI 配置，以及 16 行层级统计（八个主阶段、七个子阶段、一个合计）。索引 0～7 为主阶段，8～9 为 DDGI update/gather，10～11 为 DDGI update 的主射线与命中照明，12～14 为 Direct lighting 之下的 `direct_cluster`（Light list construction）、`shadow_cache`（Shadow atlas updates）与 `direct_shading`（Shading / HDR composition），合计为 15；消费者应按稳定 `id` 识别行。`current_ms`、`mean_ms`、`p95_ms`、`max_ms`、`share_percent` 在没有对应观测时为 null；未启用项的当前 `state` 为 `skipped`。`active_samples` 表示窗口内计时 scope 启用的样本数，不是 GPU 命令数。表格和接口消费同一约 4 Hz 的发布快照，不因查询增加计时样本或读取 GPU。
+`editor.inspect` 的 `performance` 包含状态、最多 120 个完成样本、发布时间间隔、样本 sequence / frame_id、场景与域首帧、RT/视口尺寸、直接光候选数 / 四层 GI / AA 配置（`direct_candidates`、`indirect_lighting`、`antialiasing`），以及 16 行层级统计（八个主阶段、七个子阶段、一个合计）。索引 0～7 为主阶段，8～9 为 GI update / resolve，10～11 为 GI 主射线与二次命中着色，12～14 为 Direct lighting 之下的 `direct_cluster`、`vsm` 与 `direct_shading`，合计为 15（优先采用 `union_ms` 时间轴区间并集）；消费者应按稳定 `id` 识别行。`current_ms`、`mean_ms`、`p95_ms`、`max_ms`、`share_percent` 在没有对应观测时为 null；未启用项的当前 `state` 为 `skipped`。`active_samples` 表示窗口内计时 scope 启用的样本数，不是 GPU 命令数。表格和接口消费同一约 4 Hz 的发布快照，不因查询增加计时样本或读取 GPU。
 
 `performance.cpu` 是同一快照的 CPU 段：`state`（waiting / ready）、`window_capacity`、`samples`、最新样本的帧计时序号 `sequence` 与接受 UI 帧 `frame_id`、相邻采样步之间的 `frame_interval_ms`（mean / p95 / max）及其均值的倒数 `frames_per_second`、自启动以来所有步（不论是否采样）累计的 `structure_errors` 与 `first_structure_error`，以及 `phases`。`phases` 按目录顺序列出全部已安装阶段，包括本域从未进入的阶段（`state` 为 unavailable，统计为 null），最后是 `frame.unattributed`；每项带 `id`、`title`、`parent`、`depth`、`current_entries`（最新样本中的进入次数，unattributed 为 null）和与上文各行相同的统计字段。消费者按 `id` 识别阶段，不依赖数组下标；行与统计范围以[帧性能](README.md#帧性能)为准。
 
-`logical_resource_bytes` 是当前 CPU 所知的 Scene Lit 逻辑资源分配，和异步计时样本不是同一时刻的物理显存统计。`total_semantics` 明确只合计八个主区间；子项通过 `parent` 关联，`included_in_total` 防止重复累加。生命周期与统计范围以[性能表](README.md#帧性能)为准。
+`logical_resource_bytes` 是当前 CPU 所知的 Scene Lit 逻辑资源分配，和异步计时样本不是同一时刻的物理显存统计。生命周期与统计范围以[性能表](README.md#帧性能)为准。
 
-原始 `last_frame.gpu_sample` 包含八项 `pass_ms`、两项 `ddgi_pass_ms`、两项 `ddgi_update_pass_ms`、`direct_cluster_ms`、`shadow_cache_ms`、`direct_shading_ms` 及 `pass_mask`；`direct_pass_ms` 与 `direct_reconstruction_pass_ms` 已删除。mask 位 0～7 为主阶段、8～9 为 DDGI update/gather、10～11 为 DDGI update 子阶段、12 为灯列表、13 为阴影 atlas 更新（本帧有面重绘时才置位）、14 为着色与 HDR 合成；这些数组、耗时和 mask 共用完成 sequence。`direct_cluster` 返回 `cells`、`overflows`、`max_sources` 三个 uint32 完成帧统计，分别为有接收面的非空 cluster 数、候选数超过 64 而回退完整枚举的 cluster 数、单个 cluster 的最大保守候选数；它们不是每像素实际灯数。三个计数与耗时共用外层 `valid`、`sequence`、`frame_id`，不能作为当前 CPU 编码帧的数据。 `direct_cluster.receiver_histogram` 为 66 项 uint32：bin 0–64 是精确计数，bin 65 是超过 64 的接收像素数；`receiver_max_sources` 是最大支持数。仅统计有效 GBuffer 接收面通过支持球裁剪后的解析局部灯，不含太阳，也不表示遮挡后的灯数；诊断关闭时 histogram 与 max 均为零。这些值同样属于该完成帧，不新增 Performance 行。`shadow_cache_ms` 仅包含 atlas 更新，GPU mask 不包含性能表内部的合计位 15。`shadow_cache` 返回 faces、reused_faces、static_updates、dynamic_updates、draws、resolution_downgrades、dropped_lights、near_plane_faces、missing_taps、plane_fallbacks、deferred_faces、deferral_frames、atlas_cells、pending_lights，均与外层完成帧 sequence/frame_id 对齐；不是 CPU 当前帧数值。`dropped_lights` 是 atlas 最低分辨率也放不下、本帧整盏不贡献直接光的投影光源数；`deferred_faces` 是本帧因重绘预算沿用上一次投影与内容的过期 face 数，`deferral_frames` 是被延后的光连续等待的最长帧数，`atlas_cells` 是全部请求 face 占用的 128² 格数，`pending_lights` 是驻留但仍有 face 没画、本帧不贡献直接光的投影光源数；`pressure_batches`、`rt_fallbacks` 与 `clamped_taps` 已删除。`frame_stats` 不再有 `di_candidates`。数值与质量归因统一见 [Renderer 验收记录](../renderer/acceptance.md)。`resource_bytes_source: current_cpu_logical` 说明旧 `resource_bytes` 字段的来源，不能把它当作采样帧物理驻留量。
+原始 `last_frame.gpu_sample` 包含 `union_ms`、八项 `pass_ms`、两项 `gi_pass_ms`、两项 `gi_update_pass_ms`、`direct_cluster_ms`、`vsm_ms`、`direct_shading_ms` 及 `pass_mask`。mask 位 0～7 为主阶段、8～9 为 GI update / resolve、10～11 为 GI update 子阶段、12 为灯分簇、13 为 VSM 页更新（本帧有静态或动态物理页渲染时置位）、14 为直接光着色与 HDR 合成；这些数组、耗时和 mask 共用完成 sequence。`vsm_cache` 返回完成帧的 `allocated_pages`、`reused_pages`、`static_renders`、`dynamic_renders`、`cow_copies`、`draws` 与 `evictions`。`direct_cluster` 返回 `cells`、`overflows`、`max_sources`、`receiver_histogram`（66 项 uint32）与 `receiver_max_sources`。顶层同时返回 `shadow_rays`、`gi_primary_rays`、`gi_visibility_rays`、`reflection_work_items` 与 `resource_bytes`（`resource_bytes_source: current_cpu_logical`）。`render.trace` 支持 `scope: "full"`（导出完整 RDG 拓扑、资源生命周期与屏障）与 `scope: "scene_lit_post"`（仅导出后处理链范围）。数值与质量归因统一见 [Renderer 验收记录](../renderer/acceptance.md)。
 
 ## 复现工程
 
@@ -321,7 +304,7 @@ manifest 必须含 `engine_assets: {version: 1, records: [...]}`，空集合也�
 
 `material_resources: {version: 2, records: {...}}` 同样必需，核对可达材质的作者记录（包括休眠条目和 enabled 标记）、父身份、精确 Source 文本及有效图片尺寸/RGBA 摘要。manifest 的 `json_bytes_version: 2`、material_resources 版本与天空资源 `digest_version: 2` 共用 `assets::json_format::json_bytes_version`；网格仍使用独立的二进制摘要 v2。缺少必需依赖字段的旧包、未知 schema/编码版本返回 `invalid_request` 并要求重新导出；重复键、非正整数版本、非法摘要也是 `invalid_request`。未知/错种类引擎键、语义版本/内容不同、实际集合缺项/多项返回 `dependency_mismatch`。真正文件读取或密码提供者失败为 `storage_error`，不伪装成内容不一致。dirty、材质/Source 草稿与运行 Play 的替换前置拒绝保持不变；候选验证失败不关闭旧文档或改变历史、选择和相机。只支持 Scene v10、材质 v2，不提供旧格式转换。
 
-复制期间复核普通文件集合和内容，精确 Source/图片快照不与后来改变的源文件混用。在副本中重新加载资源，与文档实际持有的 Mesh 顶点、边、分段、槽和默认材质键比较；天空贴图比较纹素、2^k 缩放、均值和 cube。同键的不同已加载版本都必须匹配，不能只检查第一个；即使依赖文件集合相同，槽→材质关系不同也返回 `dependency_mismatch`。导出不按磁盘新关系重绑当前文档，不改变原文件、dirty 或 Undo。材质当前作者草稿只写入副本；严格加载允许正常保留的休眠/声明失配条目并提供诊断，但不把有效依赖缺失当成功。
+复制期间复核普通文件集合和内容，精确 Source/图片快照不与后来改变的源文件混用。在副本中重新加载资源，与文档实际持有的 Mesh 顶点、边、分段、槽和默认材质键比较；天空贴图比较尺寸与纹素内容摘要。同键的不同已加载版本都必须匹配，不能只检查第一个；即使依赖文件集合相同，槽→材质关系不同也返回 `dependency_mismatch`。导出不按磁盘新关系重绑当前文档，不改变原文件、dirty 或 Undo。材质当前作者草稿只写入副本；严格加载允许正常保留的休眠/声明失配条目并提供诊断，但不把有效依赖缺失当成功。
 
 不跟随链接，拒绝无法持久化的程序化资源。最多 10000 输入文件 / 1 GiB，单文件 256 MiB；manifest 使用现有 16 MiB、32 层及重复字段拒绝规则。文件操作共用支持 Windows 长路径的原子写入设施。输出不能位于源工程的任何根（`Project::roots`）内，包含大小写别名和链接别名；创建产物前返回 invalid_destination，避免复制自身。控制目录可以放在 Cache 内。
 
@@ -329,7 +312,7 @@ Windows 长路径转换覆盖产物复制、归档、文件时间读取、目录
 
 repro.open 校验完整文件集合、大小及哈希，拒绝缺失、修改、额外文件或链接；运行时生成的 Project/Cache 不参与复现依赖。清单中的场景必须与副本工程配置的启动场景一致。预检和严格加载共用已打开的工程、启动场景字节和已校验的引擎依赖记录。候选会话完成编译、反序列化、依赖与环境核对，并恢复选择及检查目标后，才通过工程打开共用的发布步骤替换当前文档和视图。编译或反序列化失败保留当前工程和对象；常规 UI 的修复工程模式保持原有行为。有未保存场景或源码时拒绝替换。失败/取消可能留下诊断目录，未返回成功的任务不应当作成功交付。
 
-manifest 标记 `view_schema: 7`，相机或视图快照合同改变时加一。`repro.open` 只接受当前 `view_schema` 和当前格式的场景；缺少标记、其他版本、带已删除选项（例如 `ssil`、`shadow_bias`、`direct_reference`）的视图，以及旧格式场景都拒绝。视图里的 World 设置与加载出的候选文档的 Environment 不一致时返回 `dependency_mismatch`；天空贴图和旋转角只由场景记录，视图快照不含这两项，核对前取自场景的 Environment。选择按导出时的 World 成员序号、检查目标按该 Entity 上的组件序号，在候选文档替换当前文档之前解析；序号越界返回 `dependency_mismatch`。视图版本或已删除选项不合格返回 `invalid_request`，旧格式场景在严格加载时失败，返回 `operation_failed`。任何验证失败都保留当前文档。
+manifest 标记 `view_schema: 8`，相机或视图快照合同改变时加一。`repro.open` 只接受当前 `view_schema` 和当前格式的场景；缺少标记、其他版本、带已删除选项（例如 `ssil`、`shadow_bias`、`direct_reference`、`probe_rays`）的视图，以及旧格式场景都拒绝。视图里的 World 设置与加载出的候选文档的 Environment 不一致时返回 `dependency_mismatch`；天空贴图和旋转角只由场景记录，视图快照不含这两项，核对前取自场景的 Environment。选择按导出时的 World 成员序号、检查目标按该 Entity 上的组件序号，在候选文档替换当前文档之前解析；序号越界返回 `dependency_mismatch`。视图版本或已删除选项不合格返回 `invalid_request`，旧格式场景在严格加载时失败，返回 `operation_failed`。任何验证失败都保留当前文档。
 
 ## 生命周期和扩展
 
@@ -386,4 +369,4 @@ manifest 标记 `view_schema: 7`，相机或视图快照合同改变时加一。
 
 ### World 配置与字段显示元数据
 
-`display_options` 每项包含 `scope: scene | view`。`op.call view.set` 保持单一批量入口：完整验证后，scene 部分经 Session 记一条历史，view 部分保存为当前视口偏好；重复候选不改 revision。`direct_candidates` 与天光键是 scene 项，写入 Environment 组件并随 Scene v10 保存；`spatial_light_sampling` 与探针显示是 view 项，对应 World Settings 的 Diagnostics。`render.compare` 的覆盖仅作用于临时帧，不写 World 或 Undo。`edit.undo/redo` 恢复 World 后，下次观察与渲染重新组合有效视图。`scene.set_properties` 使用嵌套字段名，inspection 同时返回 `label`、`category` 和 `description`，显示文本不参与字段身份。
+`display_options` 每项包含 `scope: scene | view`。`op.call view.set` 保持单一批量入口：完整验证后，scene 部分经 Session 记一条历史，view 部分保存为当前视口偏好；重复候选不改 revision。阴影、天空、体积雾、四层 GI、三级反射与后处理键是 scene 项，写入 Environment 组件并随 Scene v10 保存；`show_locators`、`direct_cluster_inspect` 与工作室 `cavity` 等是 view 项。`render.compare` 的覆盖仅作用于临时帧，不写 World 或 Undo。`edit.undo/redo` 恢复 World 后，下次观察与渲染重新组合有效视图。`scene.set_properties` 使用嵌套字段名，inspection 同时返回 `label`、`category` 和 `description`，显示文本不参与字段身份。

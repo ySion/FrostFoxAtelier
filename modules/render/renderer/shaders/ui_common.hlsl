@@ -1,3 +1,16 @@
+#ifndef ATELIER_SAFE_DESC_DEFINED
+#define ATELIER_SAFE_DESC_DEFINED 1
+uint atelier_safe_desc(uint idx) {
+    return (idx < 262144u) ? idx : 0u;
+}
+#endif
+
+cbuffer UiRootConstants : register(b0, space0) {
+    uint g_ui_instances_srv;
+    uint g_first_instance;
+    float2 g_target_size;
+};
+
 struct UiInstance {
     float4 bounds;
     float4 uv_bounds;
@@ -6,18 +19,18 @@ struct UiInstance {
     float4 radius; // top-left, top-right, bottom-right, bottom-left
     float4 image_background;
     float border_width;
-    uint shading; // ui_solid..ui_arc_sector (low 3 bits); textured kinds keep their ui_textures slot from bit 3.
+    uint shading; // ui_solid..ui_arc_sector (low 3 bits); textured kinds store global Bindless SRV index from bit 3.
     uint2 clip; // Half-open pixels: left | top << 16, right | bottom << 16.
 };
+
 static const uint ui_solid = 0, ui_coverage = 1, ui_image = 2, ui_capsule = 3, ui_node_shape = 4, ui_arc_sector = 5;
-StructuredBuffer<UiInstance> ui_instances;
-float2 target_size;
-uint first_instance;
+
 struct UiVertex {
     float4 position : SV_Position;
     float2 uv : TEXCOORD0;
     nointerpolation uint instance : TEXCOORD1;
 };
+
 float4 fit_radius(float4 r, float2 size) {
     float factor = 1;
     if (r.x + r.y > 0) factor = min(factor, size.x / (r.x + r.y));
@@ -26,6 +39,7 @@ float4 fit_radius(float4 r, float2 size) {
     if (r.y + r.z > 0) factor = min(factor, size.y / (r.y + r.z));
     return r * factor;
 }
+
 float sd_rounded_box_fitted(float2 p, float2 size, float4 fr) {
     float d = max(max(-p.x, -p.y), max(p.x - size.x, p.y - size.y));
     if (fr.x > 0 && p.x < fr.x && p.y < fr.x)
@@ -38,10 +52,12 @@ float sd_rounded_box_fitted(float2 p, float2 size, float4 fr) {
         d = max(d, length(p - float2(fr.w, size.y - fr.w)) - fr.w);
     return d;
 }
+
 float rounded_coverage(float2 p, float2 size, float4 r) {
     if (any(size <= 0)) return 0;
     return saturate(.5 - sd_rounded_box_fitted(p, size, r));
 }
+
 float4 shade_box(UiInstance item, float2 pixel, float4 fill) {
     float2 local = pixel - item.bounds.xy;
     float outer = all(item.radius == 0) ? 1 : rounded_coverage(local, item.bounds.zw, item.radius);
@@ -59,7 +75,6 @@ float sd_rounded_box(float2 p, float2 size, float4 r) {
     return sd_rounded_box_fitted(p, size, fit_radius(r, size));
 }
 
-// Exact 2D signed distance to the 8 SOP node silhouettes in local [0, size.x] x [0, size.y].
 float sd_node_silhouette(float2 p, float2 size, uint shape) {
     float2 half_s = size * 0.5;
     float2 q = p - half_s;
@@ -77,7 +92,6 @@ float sd_node_silhouette(float2 p, float2 size, uint shape) {
         return sd_rounded_box(p, size, float4(rt, rt, rb, rb));
     }
     if (shape == 3) {
-        // Trapezoid: wide top (r2), tapered bottom (r1).
         float cr = min(size.y * 0.06, 2.5);
         float hh = max(1.0, half_s.y - cr);
         float r2 = max(1.0, half_s.x - cr);
@@ -92,7 +106,6 @@ float sd_node_silhouette(float2 p, float2 size, uint shape) {
         return s * sqrt(min(dot(ca, ca), dot(cb, cb))) - cr;
     }
     if (shape == 4 || shape == 6) {
-        // Pointed Hexagon (4) & Milestone Diamond (6).
         float cr = min(size.y * 0.04, 1.5);
         float hh = max(1.0, half_s.y - cr);
         float hw = max(1.0, half_s.x - cr);
@@ -106,7 +119,6 @@ float sd_node_silhouette(float2 p, float2 size, uint shape) {
         float s = (a.y < hh && (a.x - hw) * hh + a.y * inset < 0.0) ? -1.0 : 1.0;
         return s * sqrt(min(dot(ca, ca), dot(cb, cb))) - cr;
     }
-    // shape == 5: Notched Swallowtail Ribbon (>====<).
     float hh = max(1.0, half_s.y);
     float hw = max(1.0, half_s.x);
     float inset = min(size.y * 0.36, hw * 0.36);
@@ -120,8 +132,6 @@ float sd_node_silhouette(float2 p, float2 size, uint shape) {
     return s * sqrt(min(dot(ca, ca), dot(cb, cb)));
 }
 
-// Signed perpendicular distance from p to the contour-matched internal divider at `offset` from left/right side.
-// Negative = closer to the node's outer edge than the divider; Positive = towards the node's center.
 float sd_node_divider(float2 p, float2 size, uint shape, bool right_side, float offset) {
     float ty = saturate(p.y / max(1.0, size.y));
     if (shape == 7) {
@@ -131,7 +141,6 @@ float sd_node_divider(float2 p, float2 size, uint shape, bool right_side, float 
         return r - length(q - float2(cx, 0.0));
     }
     if (shape == 0 || shape == 1) {
-        // Classic Houdini subtle forward-slash '/' slant across both left and right flag strips.
         float slant = size.y * 0.16;
         float inv_n = rsqrt(1.0 + 0.16 * 0.16);
         if (!right_side) {
@@ -186,14 +195,12 @@ float4 shade_node_shape(UiInstance item, float2 pixel, float4 fill) {
     }
     bool right_side = (slot == 2 || slot == 4);
     if (slot == 1 || slot == 2) {
-        // Contour-parallel flag fill slice [s0, s1], inset inside the node border.
         float d_in_body = d_body + item.border_width;
         float d_a = s0 > 0.0 ? -sd_node_divider(local, size, shape, right_side, s0) : -1e5;
         float d_b = sd_node_divider(local, size, shape, right_side, s1);
         float d = max(d_in_body, max(d_a, d_b));
         return fill * saturate(0.5 - d);
     }
-    // slot == 3 or 4: crisp 1px contour-parallel divider seam clipped inside the node body.
     float d_seam = abs(sd_node_divider(local, size, shape, right_side, s0)) - item.border_width * 0.5;
     float cov = saturate(0.5 - max(d_seam, d_body + 1.0));
     float4 seam = item.border_color.a > 0

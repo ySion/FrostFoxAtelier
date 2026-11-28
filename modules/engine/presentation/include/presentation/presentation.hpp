@@ -121,8 +121,8 @@ private:
 AENUM(
     Name = "world.LightKind",
     DESC =
-        "Point 点光、Rectangle 矩形面光或 Directional 平行光。不同种类使用不同的强度单位和形状参数；天光在 Environment 中设置。")
-enum class LightKind : std::uint32_t { point, rectangle, directional };
+        "Point 点光、Rectangle 矩形面光、Directional 平行光或 Spot 聚光灯。不同种类使用不同的强度单位和形状参数；天光在 Environment 中设置。")
+enum class LightKind : std::uint32_t { point, rectangle, directional, spot };
 
 ASTRUCT(Name = "world.LightSettings", Validate = "validate",
         DESC = "灯光的 Scene 作者参数。Color 与 Intensity 一起决定发光量，位置和朝向来自所属 Entity。")
@@ -136,22 +136,24 @@ public:
     AFIELD(HardMin = "0", DESC = "非负线性 RGB，逐通道乘以 Intensity。可以大于 1；它不是 sRGB 屏幕颜色。")
     math::Vector3 color{1.f, 1.f, 1.f};
 
-    // Reference-white intensity: point cd, rectangle cd/m^2, directional lux.
-    AFIELD(HardMin = "0",
-           DESC = "参考白色的发光强度，再由 Color 调制。Point 使用 cd；Rectangle 使用 cd/m²；Directional 使用 lux。")
+    // Reference-white intensity: point/spot cd, rectangle cd/m^2, directional lux.
+    AFIELD(
+        HardMin = "0",
+        DESC = "参考白色的发光强度，再由 Color 调制。Point 与 Spot 使用 cd；Rectangle 使用 cd/m²；Directional 使用 lux。")
     float intensity{1.f};
 
     AFIELD(
         HardMin = "0",
-        DESC = "Point 和 Rectangle 的作用距离，单位为世界 m，必须大于 0。Directional 忽略此值；Entity 缩放不会改变它。")
+        DESC =
+            "Point、Spot 和 Rectangle 的作用距离，单位为世界 m，必须大于 0。Directional 忽略此值；Entity 缩放不会改变它。")
     float range{10.f};
 
-    // Point: metres. Directional: angular radius in radians, below pi/2.
+    // Point/Spot: metres. Directional: angular radius in radians, below pi/2.
     // Rectangle emission size uses width/height instead.
     AFIELD(
         HardMin = "0",
         DESC =
-            "Point 的发光半径使用世界 m；Directional 的角半径使用 rad，必须小于 π/2。它影响软阴影；Rectangle 忽略此值。")
+            "Point 与 Spot 的发光半径使用世界 m；Directional 的角半径使用 rad，必须小于 π/2。它影响软阴影；Rectangle 忽略此值。")
     float source_radius{};
 
     AFIELD(HardMin = "0", DESC = "Rectangle 沿局部 X 方向的发光宽度，单位为世界 m，必须大于 0。不乘 Entity 的缩放。")
@@ -159,6 +161,14 @@ public:
 
     AFIELD(HardMin = "0", DESC = "Rectangle 沿局部 Y 方向的发光高度，单位为世界 m，必须大于 0。不乘 Entity 的缩放。")
     float height{1.f};
+
+    AFIELD(Label = "Spot inner (°)", HardMin = "0", HardMax = "89.9", Meta("ui.visible_when", "kind=spot"),
+           DESC = "Spot 聚光灯无角度衰减的内锥半角（度），必须小于或等于 Spot outer。")
+    float spot_inner_degrees{25.f};
+
+    AFIELD(Label = "Spot outer (°)", HardMin = "0.1", HardMax = "89.9", Meta("ui.visible_when", "kind=spot"),
+           DESC = "Spot 聚光灯截止外锥半角（度），范围 [0.1, 89.9]，且不小于 Spot inner。")
+    float spot_outer_degrees{40.f};
 
     AFIELD(DESC = "让 Rectangle 的两面都按同样的 Intensity 发光，不把每面的强度减半。其他灯光种类不使用此项。")
     bool two_sided{};
@@ -173,7 +183,7 @@ private:
 };
 
 ACLASS(Name = "world.LightComponent",
-       DESC = "让 Entity 提供 Point、Rectangle 或 Directional 光照。所属 Entity 必须有 Transform。")
+       DESC = "让 Entity 提供 Point、Rectangle、Directional 或 Spot 光照。所属 Entity 必须有 Transform。")
 class LightComponent : public world::SpatialComponent {
     AGENERATED_BODY(LightComponent)
 
@@ -207,66 +217,25 @@ private:
     [[nodiscard]] Result<void> validate() const;
 };
 
-AENUM(Name = "world.Antialiasing", DESC = "Off 关闭抗锯齿；SMAA 处理当前画面的边缘；TAA 和 SMAA T2x 还利用跨帧信息。")
-enum class Antialiasing : std::uint32_t { off, taa, smaa, smaa_t2x };
+AENUM(Name = "world.Antialiasing", DESC = "Off 关闭抗锯齿；SMAA 处理当前画面的边缘；TAA 利用跨帧时域超采样与抗锯齿。")
+enum class Antialiasing : std::uint32_t { off, smaa, taa };
 
-AENUM(Name = "world.ProbePlacement",
-      DESC = "Fixed 使用固定的世界坐标范围；Follow Focus 把范围作为相对于 lighting focus 的偏移，跟随时按整格移动。")
-enum class ProbePlacement : std::uint32_t { fixed, follow_focus };
+AENUM(Name = "world.GiQuality", DESC = "High 使用平衡的屏幕空间探针射线预算；Ultra 提升每探针追踪预算以降低深遮挡噪声。")
+enum class GiQuality : std::uint32_t { high, ultra };
 
-ASTRUCT(Name = "world.ProbeVolume",
-        DESC = "一个 DDGI 探针 Volume 的范围与密度。所有启用的 Volume 共用 4096 个探针和每帧更新预算。")
-struct ProbeVolume {
-    AGENERATED_BODY(ProbeVolume)
+AENUM(Name = "world.SkyMode",
+      DESC = "None 关闭天光；Physical Atmosphere 使用物理瑞利/米氏散射大气；HDRI Sky Map 使用等距柱状投影贴图或均匀天光。")
+enum class SkyMode : std::uint32_t { none, physical_atmosphere, hdri_sky_map };
 
-public:
-    AFIELD(DESC = "启用这个 DDGI Volume，让它参与探针更新与间接光采样。所有启用的 Volume 共用探针数量和每帧更新预算。")
-    bool enabled{};
-
-    AFIELD(
-        DESC =
-            "Fixed 使用固定的世界坐标范围；Follow Focus 把范围作为相对于 lighting focus 的偏移。跟随时按整格移动，保持探针间距。")
-    ProbePlacement placement{ProbePlacement::fixed};
-
-    AFIELD(
-        Label = "Min (m)", HardMin = "-100000", HardMax = "100000",
-        DESC =
-            "Volume 范围的最小 XYZ，单位 m。Fixed 使用世界坐标，Follow Focus 使用相对于 lighting focus 的偏移。每个分量必须小于对应的最大值。")
-    math::Vector3 minimum{-6.f, -1.f, -6.f};
-
-    AFIELD(
-        Label = "Max (m)", HardMin = "-100000", HardMax = "100000",
-        DESC =
-            "Volume 范围的最大 XYZ，单位 m。Fixed 使用世界坐标，Follow Focus 使用相对于 lighting focus 的偏移。每个分量必须大于对应的最小值。")
-    math::Vector3 maximum{6.f, 5.f, 6.f};
-
-    AFIELD(HardMin = "2", HardMax = "32",
-           DESC = "X 轴的探针数量。范围不变时，增加数量会缩小间距，同时增加存储和更新工作量。")
-    std::uint32_t count_x{8};
-
-    AFIELD(HardMin = "2", HardMax = "32",
-           DESC = "Y 轴的探针数量。范围不变时，增加数量会缩小间距，同时增加存储和更新工作量。")
-    std::uint32_t count_y{4};
-
-    AFIELD(HardMin = "2", HardMax = "32",
-           DESC = "Z 轴的探针数量。范围不变时，增加数量会缩小间距，同时增加存储和更新工作量。")
-    std::uint32_t count_z{8};
-
-    AFIELD(
-        Label = "Blend (cells)", HardMin = "0", HardMax = "2",
-        DESC =
-            "Volume 边缘的过渡宽度，以探针格子为单位。边缘贡献会平滑交给其他覆盖该处的 Volume；它不会补出没有探针覆盖的区域。")
-    float blend_cells{};
-
-    bool operator==(const ProbeVolume&) const = default;
-};
+AENUM(Name = "world.Tonemapper", DESC = "Khronos PBR Neutral 保留中灰与色相保真度；AgX 提供高光胶片式平滑退饱和。")
+enum class Tonemapper : std::uint32_t { pbr_neutral, agx };
 
 // Scene Lit settings of the whole World. At most one per World, disabled ones
 // included; without an active one the World uses SceneLightingSettings{}.
 ACLASS(
     Name = "world.EnvironmentComponent", Validate = "validate",
     DESC =
-        "World 的光照、天光、效果与 DDGI 设置。一个 World 至多一个，包括已停用的；没有生效的 Environment 时使用默认值。它不需要 Entity 的 Transform。")
+        "World 的直接光阴影、三层全局光照、反射、物理大气/体积雾与后处理设置。一个 World 至多一个，包括已停用的；没有生效的 Environment 时使用默认值。")
 class EnvironmentComponent : public world::Component {
     AGENERATED_BODY(EnvironmentComponent)
 
@@ -277,99 +246,101 @@ public:
             "Play 的主相机 Entity。未指定或目标不可用时场景黑屏，UI 不受影响。停用目标保留选择，不自动改选其他相机。")
     ReferenceSlot main_camera;
 
-    AFIELD(Category = "Lighting",
-           DESC = "控制 Scene Lit 的灯光阴影。灯光自身的 Cast Shadows 设置仍决定该光源是否投影。")
+    AFIELD(Category = "Direct Lighting",
+           DESC = "控制 Scene Lit 的三级直接光阴影（VSM 虚拟阴影图 + 半影硬光追 + 接触微阴影）。")
     bool shadows{true};
 
-    AFIELD(Label = "DDGI", Category = "Propagation",
-           DESC = "启用探针场提供的间接漫反射光。覆盖范围、密度和更新预算由 Volume 与 Propagation 参数决定。")
-    bool ddgi{true};
+    AFIELD(Label = "Contact shadow (m)", Category = "Direct Lighting", HardMin = "0", HardMax = "2",
+           DESC = "主平行光屏幕空间接触阴影最大追踪步长（m）；0 关闭屏幕接触阴影补充。")
+    float contact_shadow_length{.15f};
 
-    AFIELD(Label = "GTAO", Category = "Effects", DESC = "用屏幕上的几何信息估计附近遮挡，突出接触与凹角。")
-    bool gtao{true};
-
-    AFIELD(Label = "Reflections (SSSR)", Category = "Effects",
-           DESC = "启用屏幕空间反射，沿当前画面中的表面信息寻找反射命中。屏幕外或被遮住的表面信息有限。")
-    bool sssr{true};
-
-    AFIELD(Category = "Effects",
-           DESC = "让画面中的高亮部分向周围扩散，形成光晕。它改变显示效果，不会把光照写回 DDGI 探针。")
-    bool bloom{true};
-
-    AFIELD(Category = "Effects",
-           DESC = "选择抗锯齿方式。SMAA 处理当前画面的边缘；TAA 和 SMAA T2x 还利用跨帧信息；Off 关闭抗锯齿。")
-    Antialiasing antialiasing{Antialiasing::smaa};
-
-    AFIELD(Label = "Exposure (EV)", Category = "Lighting", HardMin = "-16", HardMax = "16",
-           DESC = "控制最终显示的曝光。每增加 1 EV，曝光倍率翻倍；不改变场景线性 HDR 历史中的光照能量。")
-    float exposure_ev{};
-
-    AFIELD(Category = "Lighting", HardMin = "1", HardMax = "32",
-           DESC = "每个接收点初始挑选的局部光候选数量。增加候选会增加直接光采样工作量；它不是场景允许存在的灯光数量。")
+    AFIELD(Category = "Direct Lighting", HardMin = "1", HardMax = "32",
+           DESC = "次级 GI 命中点直接评估的局部光最大候选预算，超出部分进入加权蓄水池无偏采样。")
     std::uint32_t direct_candidates{8};
 
-    AFIELD(Label = "AO radius (m)", Category = "Effects", HardMin = "0.001", HardMax = "100",
-           DESC = "GTAO 观察附近表面的半径，单位 m。应结合场景的实际尺度调整。")
-    float ao_radius{.35f};
+    AFIELD(Label = "Indirect lighting", Category = "Global Illumination",
+           DESC = "启用三层混合漫反射全局光照（GT-VBAO + 屏幕空间探针 + SHaRC/GI-1.2 多跳表面哈希辐射缓存）。")
+    bool indirect_lighting{true};
 
-    AFIELD(Label = "Trace distance (m)", Category = "Effects", HardMin = "0.001", HardMax = "10000",
-           DESC = "屏幕空间反射允许追踪的最大距离，单位 m。增加距离不能补出画面外缺失的表面信息。")
-    float reflection_distance{30.f};
+    AFIELD(Label = "GI quality", Category = "Global Illumination",
+           DESC = "控制 8×8 屏幕空间辐射探针的追踪采样档位（High / Ultra）。")
+    GiQuality gi_quality{GiQuality::high};
 
-    AFIELD(Label = "Max roughness", Category = "Effects", HardMin = "0", HardMax = "1",
-           DESC = "允许进行屏幕空间反射的最大表面粗糙度。超过此值的表面不执行该反射追踪。")
-    float reflection_roughness{.6f};
-
-    AFIELD(
-        Label = "Updates / frame", Category = "Propagation", HardMin = "1", HardMax = "4096",
-        DESC =
-            "每帧安排更新的探针数量，所有 Volume 共用，初始化也计入预算。增大可更快更新场中的照明，同时增加单帧工作量。")
-    std::uint32_t probe_update_budget{64};
-
-    AFIELD(Label = "Rays / probe", Category = "Propagation", HardMin = "1", HardMax = "256",
-           DESC = "每次更新一个探针所使用的照明射线数量。更多射线通常能降低采样噪声，但需要更多 GPU 工作。")
-    std::uint32_t probe_rays{128};
-
-    AFIELD(Label = "Feedback", Category = "Propagation", HardMin = "0", HardMax = "0.99",
-           DESC = "DDGI 将上一轮间接光送回探针场的运输系数。0 关闭这部分反馈；改变它会使旧探针照明失效并重新积累。")
-    float probe_bounce{.85f};
-
-    AFIELD(Category = "Propagation", HardMin = "0", HardMax = "8",
-           DESC = "最终合成时对 DDGI 间接漫反射应用的增益，只乘一次，不回写探针，也不补出缺失的空间覆盖。")
+    AFIELD(Label = "Indirect gain", Category = "Global Illumination", HardMin = "0", HardMax = "8",
+           DESC = "最终合成时对漫反射间接光应用的增益，只乘一次，不写回多跳辐射缓存。")
     float indirect_gain{1.f};
 
-    AFIELD(Label = "Sky", Category = "Sky", DESC = "启用天光。关闭时环境照明为零；颜色、强度、天空贴图和旋转都保留。")
-    bool sky_enabled{};
+    AFIELD(Label = "GT-VBAO", Category = "Global Illumination",
+           DESC = "启用有符号 32 扇区地平线比特掩码环境光遮蔽、弯曲法线锥与亚探针微反弹（GT-VBAO）。")
+    bool ssilvb{true};
+
+    AFIELD(Label = "AO radius (m)", Category = "Global Illumination", HardMin = "0.001", HardMax = "100",
+           DESC = "GT-VBAO 观察附近表面遮蔽与微反弹的世界空间半径（m）。")
+    float ao_radius{.35f};
+
+    AFIELD(Label = "Reflections", Category = "Reflections",
+           DESC = "启用三级清漆感知镜面反射（Hi-Z 屏幕步进 + 有界 VNDF 光追回退 + 粗糙表面弯曲法线锥探针评估）。")
+    bool reflections{true};
+
+    AFIELD(Label = "Trace distance (m)", Category = "Reflections", HardMin = "0.001", HardMax = "10000",
+           DESC = "镜面反射允许追踪的最大世界距离（m）。")
+    float reflection_distance{30.f};
+
+    AFIELD(Label = "Max roughness", Category = "Reflections", HardMin = "0", HardMax = "1",
+           DESC = "允许执行光线步进与光追反射的最大表面粗糙度；更粗糙表面走零射线预过滤探针路径。")
+    float reflection_roughness{.6f};
+
+    AFIELD(Label = "Sky mode", Category = "Sky & Fog",
+           DESC = "选择天空背景与远场环境辐射来源：关闭、物理大气散射或 HDRI 天空贴图（无贴图时使用均匀天光）。")
+    SkyMode sky_mode{SkyMode::none};
 
     AFIELD(
-        Label = "Sky color", Category = "Sky", HardMin = "0",
+        Label = "Sky color", Category = "Sky & Fog", HardMin = "0",
         DESC = "非负线性 RGB，逐通道乘以 Sky intensity；设了天空贴图时再乘贴图的值。可以大于 1；它不是 sRGB 屏幕颜色。")
     math::Vector3 sky_color{1.f, 1.f, 1.f};
 
     AFIELD(
-        Label = "Sky intensity", Category = "Sky", HardMin = "0",
+        Label = "Sky intensity", Category = "Sky & Fog", HardMin = "0",
         DESC =
-            "天光的辐亮度，单位 cd/m²。没有天空贴图时是均匀天空的辐亮度；有贴图时是贴图值为 1 处的辐亮度，实际辐亮度再乘贴图的值和 Sky color。它与 Sky color 每个通道的乘积不能超过 65504；贴图里比这更亮的值（比如太阳）由渲染器另外处理。")
+            "天光的辐亮度（cd/m²）。无贴图时为均匀天空辐亮度；有贴图时为贴图值为 1 处的基准辐亮度，与 Sky color 逐通道乘积不超过 65504。")
     float sky_intensity{.03f};
 
     AFIELD(
-        Label = "Sky rotation (°)", Category = "Sky", HardMin = "-180", HardMax = "180",
-        DESC =
-            "天空贴图绕世界 +Y 的偏航角，单位度，与 Transform 绕 +Y 的正旋转同向，可用来把贴图里的太阳对到 Directional 光的方向。没有贴图时不起作用。±180 是同一方向。")
+        Label = "Sky rotation (°)", Category = "Sky & Fog", HardMin = "-180", HardMax = "180",
+        DESC = "天空贴图绕世界 +Y 的偏航角（度），与 Transform 绕 +Y 的正旋转同向。")
     float sky_rotation{};
 
-    AFIELD(Label = "Volume 0", Category = "DDGI Volume",
-           DESC = "DDGI Volume 槽位 0，优先级最高，适合最精细的局部覆盖。")
-    ProbeVolume volume0{.enabled = true};
+    AFIELD(Label = "Volumetric fog", Category = "Sky & Fog",
+           DESC = "启用视锥体体素（160×90×64 Froxel）单次散射与时域积分体积雾。")
+    bool fog_enabled{};
 
-    AFIELD(Label = "Volume 1", Category = "DDGI Volume", DESC = "DDGI Volume 槽位 1。")
-    ProbeVolume volume1;
+    AFIELD(Label = "Fog density", Category = "Sky & Fog", HardMin = "0", HardMax = "10",
+           DESC = "海平面基准体积雾消光密度（1/m）。")
+    float fog_density{.01f};
 
-    AFIELD(Label = "Volume 2", Category = "DDGI Volume", DESC = "DDGI Volume 槽位 2。")
-    ProbeVolume volume2;
+    AFIELD(Label = "Fog height falloff", Category = "Sky & Fog", HardMin = "0.001", HardMax = "10",
+           DESC = "体积雾随世界高度 Y 指数衰减的系数。")
+    float fog_height_falloff{.2f};
 
-    AFIELD(Label = "Volume 3", Category = "DDGI Volume", DESC = "DDGI Volume 槽位 3，优先级最低，适合最粗的整体覆盖。")
-    ProbeVolume volume3;
+    AFIELD(Label = "Fog anisotropy", Category = "Sky & Fog", HardMin = "-0.95", HardMax = "0.95",
+           DESC = "Henyey-Greenstein 相位函数前向/后向散射各向异性参数 g。")
+    float fog_anisotropy{.3f};
+
+    AFIELD(Label = "Exposure (EV)", Category = "Post & Display", HardMin = "-16", HardMax = "16",
+           DESC = "控制最终显示的曝光。每增加 1 EV，曝光倍率翻倍；不改变场景线性 HDR 历史中的光照能量。")
+    float exposure_ev{};
+
+    AFIELD(Category = "Post & Display",
+           DESC = "启用物理软膝盖 Karis 抗萤火虫 6 级金字塔泛光（Bloom）。")
+    bool bloom{true};
+
+    AFIELD(Category = "Post & Display",
+           DESC = "选择 HDR 到显示空间的色调映射曲线：Khronos PBR Neutral 或 AgX。")
+    Tonemapper tonemapper{Tonemapper::agx};
+
+    AFIELD(Category = "Post & Display",
+           DESC = "选择抗锯齿方式：Off 关闭、SMAA 单帧形态学抗锯齿或 TAA 时域抗锯齿。")
+    Antialiasing antialiasing{Antialiasing::smaa};
 
 private:
     friend struct detail::Access;
@@ -951,6 +922,10 @@ private:
     mutable std::uint64_t lights_changed_{};
 
     mutable std::uint64_t layout_revision_{};
+
+    mutable std::vector<world::CapabilityMember> mesh_members_;
+
+    mutable std::vector<world::CapabilityMember> generator_members_;
 };
 
 }

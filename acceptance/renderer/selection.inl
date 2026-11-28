@@ -22,7 +22,7 @@ void selection_clipping_cases(render::Renderer& renderer, ui::PixelExtent extent
     frame.view.shading = render::Shading::flat;
     frame.view.wire_width = 1.25f;
     render::Capture capture;
-    take(prepared_render(renderer, frame, &capture));
+    accepted_render(renderer, frame, &capture);
     check(std::ranges::count_if(capture.depth, [](float z) { return z > 0; }) > 1000,
           "far clipping retains the visible part of crossing triangles");
     check(std::ranges::all_of(capture.depth,

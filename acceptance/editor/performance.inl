@@ -80,7 +80,7 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
     if (!(project_text && scene_text))
         return command_error("Invalid UTF-16 performance input path.");
     json::Builder report{json::Document::literal<R"({
-        "schema":"atelier.editor.render-performance.v7","status":"preparing",
+        "schema":"atelier.editor.render-performance.v8","status":"preparing",
         "wall_semantics":"Intervals between the frame timing ends of consecutive accepted Application steps; include skipped calls, waits and harness work between steps. GPU durations are not FPS.",
         "cpu_semantics":"CPU wall time in milliseconds of current accepted Application steps, read from the product's frame timing record of each step. frame is the whole step; app.* are host phases and app.scene contains app.scene.extract; render contains prepare, encode and frame; encode contains scene (materials, upload, draws, lit) and ui (upload); frame contains submit, present, wait and recycle. A phase sums every entry in the step and entries counts them; frame.unattributed is the frame minus its direct children. In studio modes only, render.encode.scene.draws divided by scene_draw_calls is the mean cost of one recorded scene draw; Scene Lit surface draws count in scene_draw_calls but are timed under render.encode.scene.lit. Do not sum parent and child stages. timing_sequence is the step's frame timing ordinal, separate from completed GPU sequence/frame_id.",
         "resource_semantics":"Current CPU logical Scene Lit bytes, tagged with observation frame; not completed-frame physical VRAM.",
@@ -497,13 +497,15 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
 
             std::array<float, editor::FramePerformance::total_pass> ms{};
 
-            std::array<std::uint32_t, 14> shadows{};
+            float union_ms{};
 
-            std::uint64_t probe_rays{};
+            std::array<std::uint32_t, 7> vsm{};
+
+            std::uint64_t gi_primary_rays{};
 
             std::uint64_t shadow_rays{};
 
-            std::array<std::uint64_t, 2> ddgi_visibility_rays{};
+            std::array<std::uint64_t, 2> gi_visibility_rays{};
 
             std::uint32_t reflection_work_items{};
         };
@@ -635,25 +637,23 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
                                s.scene_lit_direct_cluster_max_sources},
                               {}};
                 std::copy(s.scene_lit_gpu_ms.begin(), s.scene_lit_gpu_ms.end(), sample.ms.begin());
-                std::copy(s.scene_lit_ddgi_gpu_ms.begin(), s.scene_lit_ddgi_gpu_ms.end(), sample.ms.begin() + 8);
-                std::copy(s.scene_lit_ddgi_update_gpu_ms.begin(), s.scene_lit_ddgi_update_gpu_ms.end(),
+                std::copy(s.scene_lit_gi_gpu_ms.begin(), s.scene_lit_gi_gpu_ms.end(), sample.ms.begin() + 8);
+                std::copy(s.scene_lit_gi_update_gpu_ms.begin(), s.scene_lit_gi_update_gpu_ms.end(),
                           sample.ms.begin() + 10);
                 sample.ms[12] = s.scene_lit_direct_cluster_gpu_ms;
-                sample.ms[13] = s.scene_lit_shadow_cache_gpu_ms;
+                sample.ms[13] = s.scene_lit_vsm_gpu_ms;
                 sample.ms[14] = s.scene_lit_direct_shading_gpu_ms;
-                sample.probe_rays = s.scene_lit_probe_rays;
+                sample.union_ms = s.scene_lit_gpu_union_ms;
+                sample.gi_primary_rays = s.scene_lit_gi_primary_rays;
                 sample.shadow_rays = s.scene_lit_shadow_rays;
-                sample.ddgi_visibility_rays = s.scene_lit_ddgi_visibility_rays;
+                sample.gi_visibility_rays = s.scene_lit_gi_visibility_rays;
                 sample.reflection_work_items = s.scene_lit_reflection_work_items;
-                sample.shadows = {
-                    s.scene_lit_shadow_cache_faces,          s.scene_lit_shadow_cache_reused_faces,
-                    s.scene_lit_shadow_cache_static_updates, s.scene_lit_shadow_cache_dynamic_updates,
-                    s.scene_lit_shadow_cache_draws,          s.scene_lit_shadow_cache_resolution_downgrades,
-                    s.scene_lit_shadow_cache_dropped_lights, s.scene_lit_shadow_cache_near_plane_faces,
-                    s.scene_lit_shadow_cache_missing_taps,   s.scene_lit_shadow_cache_plane_fallbacks,
-                    s.scene_lit_shadow_cache_deferred_faces, s.scene_lit_shadow_cache_deferral_frames,
-                    s.scene_lit_shadow_cache_atlas_cells,    s.scene_lit_shadow_cache_pending_lights};
-                if (!(std::ranges::all_of(sample.ms, [](auto n) { return std::isfinite(n) && n >= 0; })))
+                sample.vsm = {s.scene_lit_vsm_allocated_pages, s.scene_lit_vsm_reused_pages,
+                              s.scene_lit_vsm_static_renders,  s.scene_lit_vsm_dynamic_renders,
+                              s.scene_lit_vsm_cow_copies,      s.scene_lit_vsm_draws,
+                              s.scene_lit_vsm_evictions};
+                if (!(std::isfinite(sample.union_ms) && sample.union_ms >= 0 &&
+                      std::ranges::all_of(sample.ms, [](auto n) { return std::isfinite(n) && n >= 0; })))
                     return command_error("Invalid completed GPU duration.");
                 samples.add(sample);
                 sequence = sample.sequence;
@@ -703,36 +703,30 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
                                 .transform_error(report_error));
             }
             for (const auto& sample : samples) {
-                totals.add(std::accumulate(sample.ms.begin(), sample.ms.begin() + 8, 0.));
+                const double linear_sum = std::accumulate(sample.ms.begin(), sample.ms.begin() + 8, 0.);
+                totals.add(sample.union_ms > 0.f ? double(sample.union_ms) : linear_sum);
                 const auto row = report.append_object(rows);
                 ATELIER_TRY(report.set(row, "sequence", sample.sequence).transform_error(report_error));
                 ATELIER_TRY(report.set(row, "frame_id", sample.frame).transform_error(report_error));
                 ATELIER_TRY(report.set(row, "observed_at_frame", sample.observed_frame).transform_error(report_error));
                 ATELIER_TRY(report.set(row, "pass_mask", sample.mask).transform_error(report_error));
+                ATELIER_TRY(report.set(row, "union_gpu_ms", sample.union_ms).transform_error(report_error));
                 ATELIER_TRY(report.numbers(row, "pass_ms", Span{sample.ms}).transform_error(report_error));
                 ATELIER_TRY(report.set(row, "logical_resource_bytes", sample.resources).transform_error(report_error));
-                ATELIER_TRY(report.set(row, "probe_rays", sample.probe_rays).transform_error(report_error));
+                ATELIER_TRY(report.set(row, "gi_primary_rays", sample.gi_primary_rays).transform_error(report_error));
                 ATELIER_TRY(report.set(row, "shadow_rays", sample.shadow_rays).transform_error(report_error));
-                ATELIER_TRY(report.numbers(row, "ddgi_visibility_rays", Span{sample.ddgi_visibility_rays})
+                ATELIER_TRY(report.numbers(row, "gi_visibility_rays", Span{sample.gi_visibility_rays})
                                 .transform_error(report_error));
                 ATELIER_TRY(report.set(row, "reflection_work_items", sample.reflection_work_items)
                                 .transform_error(report_error));
-                const auto shadow = report.object_validated(row, "shadow_cache");
-                ATELIER_TRY(report.set(shadow, "faces", sample.shadows[0]).transform_error(report_error));
-                ATELIER_TRY(report.set(shadow, "reused_faces", sample.shadows[1]).transform_error(report_error));
-                ATELIER_TRY(report.set(shadow, "static_updates", sample.shadows[2]).transform_error(report_error));
-                ATELIER_TRY(report.set(shadow, "dynamic_updates", sample.shadows[3]).transform_error(report_error));
-                ATELIER_TRY(report.set(shadow, "draws", sample.shadows[4]).transform_error(report_error));
-                ATELIER_TRY(
-                    report.set(shadow, "resolution_downgrades", sample.shadows[5]).transform_error(report_error));
-                ATELIER_TRY(report.set(shadow, "dropped_lights", sample.shadows[6]).transform_error(report_error));
-                ATELIER_TRY(report.set(shadow, "near_plane_faces", sample.shadows[7]).transform_error(report_error));
-                ATELIER_TRY(report.set(shadow, "missing_taps", sample.shadows[8]).transform_error(report_error));
-                ATELIER_TRY(report.set(shadow, "plane_fallbacks", sample.shadows[9]).transform_error(report_error));
-                ATELIER_TRY(report.set(shadow, "deferred_faces", sample.shadows[10]).transform_error(report_error));
-                ATELIER_TRY(report.set(shadow, "deferral_frames", sample.shadows[11]).transform_error(report_error));
-                ATELIER_TRY(report.set(shadow, "atlas_cells", sample.shadows[12]).transform_error(report_error));
-                ATELIER_TRY(report.set(shadow, "pending_lights", sample.shadows[13]).transform_error(report_error));
+                const auto vsm = report.object_validated(row, "vsm_cache");
+                ATELIER_TRY(report.set(vsm, "allocated_pages", sample.vsm[0]).transform_error(report_error));
+                ATELIER_TRY(report.set(vsm, "reused_pages", sample.vsm[1]).transform_error(report_error));
+                ATELIER_TRY(report.set(vsm, "static_renders", sample.vsm[2]).transform_error(report_error));
+                ATELIER_TRY(report.set(vsm, "dynamic_renders", sample.vsm[3]).transform_error(report_error));
+                ATELIER_TRY(report.set(vsm, "cow_copies", sample.vsm[4]).transform_error(report_error));
+                ATELIER_TRY(report.set(vsm, "draws", sample.vsm[5]).transform_error(report_error));
+                ATELIER_TRY(report.set(vsm, "evictions", sample.vsm[6]).transform_error(report_error));
                 const auto cluster = report.object_validated(row, "direct_cluster");
                 ATELIER_TRY(report.set(cluster, "cells", sample.clusters[0]).transform_error(report_error));
                 ATELIER_TRY(report.set(cluster, "overflows", sample.clusters[1]).transform_error(report_error));

@@ -175,10 +175,11 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
         const Span<const std::byte> bytes = result.files[*slot].bytes;
         ATELIER_TRY_BIND(decoded, decode_images(Span{&bytes, 1}, shared_images));
         auto loaded = decoded->front();
-        ATELIER_TRY(require(image_bytes + loaded->pixels().size() <= 768ull * 1024 * 1024,
-                            "Decoded OBJ textures exceed 768 MiB."));
-        image_bytes += loaded->pixels().size();
+        ATELIER_TRY(
+            require(image_bytes + loaded->byte_size() <= 768ull * 1024 * 1024, "Decoded OBJ textures exceed 768 MiB."));
+        image_bytes += loaded->byte_size();
         images.try_emplace(std::move(*key), loaded);
+        result.decoded_textures.add({result.files[*slot].relative, loaded});
         return loaded;
     };
     struct AuthorMaterial {

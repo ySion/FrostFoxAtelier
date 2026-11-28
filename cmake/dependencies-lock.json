@@ -14,31 +14,34 @@
     "url": "https://api.github.com/repos/facebook/zstd/releases/assets/230758919?download=1",
     "sha256": "eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3"
   },
-  "gfx": {
-    "version": "a8d9bd64ea7d95cfc015a047845bf709ac9f6582",
-    "url": "https://api.github.com/repos/gboisse/gfx/tarball/a8d9bd64ea7d95cfc015a047845bf709ac9f6582",
-    "sha256": "a30f5e25b820ee062ae4d0d3638579c2c5557ba6887fb882f8ec924263dfc68f",
-    "filename": "gfx-a8d9bd64.tar.gz"
+  "nri": {
+    "version": "192",
+    "repository": "NVIDIA-RTX/NRI",
+    "commit": "993db1a29f0c1e0d3e0c784d1666ef06f6403622",
+    "url": "https://codeload.github.com/NVIDIA-RTX/NRI/tar.gz/993db1a29f0c1e0d3e0c784d1666ef06f6403622",
+    "sha256": "5ef457890d361cd86b8545e9b63353bbaa30a0b5276c6ef32fe39af39fa07c72",
+    "filename": "nri-993db1a2.tar.gz"
   },
-  "gfx_dxc": {
+  "dxc": {
     "version": "1.9.2602",
     "url": "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2602/dxc_2026_02_20.zip",
     "sha256": "a1e89031421cf3c1fca6627766ab3020ca4f962ac7e2caa7fab2b33a8436151e",
     "filename": "dxc-1.9.2602.zip"
   },
-  "gfx_agility": {
-    "version": "1.619.1",
-    "url": "https://www.nuget.org/api/v2/package/Microsoft.Direct3D.D3D12/1.619.1",
-    "sha256": "9073a264301e93183844026239c9081717d52d13fb71aae68a0555c576b8de44",
-    "filename": "agility-1.619.1.nupkg"
+  "agility": {
+    "version": "1.620.2",
+    "url": "https://www.nuget.org/api/v2/package/Microsoft.Direct3D.D3D12/1.620.2",
+    "sha256": "70489669c2bbeaf318b62d72b0ac3e753d521387bfc848c9763791c4e920bfcc",
+    "filename": "agility-1.620.2.nupkg"
   },
-  "gfx_d3d12ma": {
-    "version": "3.0.1",
-    "url": "https://api.github.com/repos/GPUOpen-LibrariesAndSDKs/D3D12MemoryAllocator/tarball/v3.0.1",
-    "sha256": "3f223abeafd4328b9e11d43517030f84cdff9a4eec56d3f091533e14c8d0d779",
-    "filename": "d3d12ma-v3.0.1.tar.gz"
+  "d3d12ma": {
+    "version": "600949266be004553f74c9ef809384380a9d44cf",
+    "repository": "GPUOpen-LibrariesAndSDKs/D3D12MemoryAllocator",
+    "url": "https://codeload.github.com/GPUOpen-LibrariesAndSDKs/D3D12MemoryAllocator/tar.gz/600949266be004553f74c9ef809384380a9d44cf",
+    "sha256": "3d120fcf1b8d481b956eeae8377486fa1c0b5f726a78a2db1b566cf45ece6061",
+    "filename": "d3d12ma-60094926.tar.gz"
   },
-  "gfx_pix": {
+  "pix": {
     "version": "1.0.240308001",
     "url": "https://www.nuget.org/api/v2/package/WinPixEventRuntime/1.0.240308001",
     "sha256": "726acc93d6968e2146261a1e415521747d50ad69894c2b42b5d0d4c29fd66ec4",
@@ -63,5 +66,21 @@
     "url": "https://codeload.github.com/odygrd/quill/tar.gz/78c0696c5be589488d882c280796dfa06bdcd492",
     "sha256": "41a26da7c271b0ba583ebf1ac2b5e2efb49b883ed79a9eddd0eb7904e27df9d6",
     "filename": "quill-78c0696c.tar.gz"
+  },
+  "meshoptimizer": {
+    "version": "1.3",
+    "repository": "zeux/meshoptimizer",
+    "tag": "v1.3",
+    "url": "https://codeload.github.com/zeux/meshoptimizer/tar.gz/refs/tags/v1.3",
+    "sha256": "ca4f47d451201593904b9e3067fa54b65db94bc34ab5173864950862b748a145",
+    "filename": "meshoptimizer-v1.3.tar.gz"
+  },
+  "bc7enc_rdo": {
+    "version": "b9438627eef73a1157e84201b6fa6eb2ffd6d9f0",
+    "repository": "richgel999/bc7enc_rdo",
+    "commit": "b9438627eef73a1157e84201b6fa6eb2ffd6d9f0",
+    "url": "https://codeload.github.com/richgel999/bc7enc_rdo/tar.gz/b9438627eef73a1157e84201b6fa6eb2ffd6d9f0",
+    "sha256": "bbb33d1dbb6178a3a2c044956c3cc0b8ea9fc2f2903824379dd86f87d53b64c6",
+    "filename": "bc7enc_rdo-b9438627.tar.gz"
   }
 }

@@ -210,6 +210,10 @@ Result<void> Application::build_project(bool rebuild, bool interactive) {
     for (const auto& key : document_->dirty_materials()) {
         ATELIER_TRY(document_->save_material(*project_, key));
     }
+    for (const auto& key : document_->dirty_graphs()) {
+        if (!document_->is_scratch_graph(key) && project_->entry(key))
+            ATELIER_TRY(document_->save_graph(*project_, key));
+    }
     ATELIER_TRY_BIND(open_graphs, document_->snapshot_open_graphs());
     ATELIER_TRY_BIND(text, workspace_.scene_available ? document_->serialize() : Result<String>{pending_scene_});
     const bool dirty = workspace_.scene_available && document_->dirty();
@@ -296,6 +300,10 @@ Result<void> Application::run_project() {
         return failure("Finish the current field edit before running.");
     for (const auto& key : document_->dirty_materials()) {
         ATELIER_TRY(document_->save_material(*project_, key));
+    }
+    for (const auto& key : document_->dirty_graphs()) {
+        if (!document_->is_scratch_graph(key) && project_->entry(key))
+            ATELIER_TRY(document_->save_graph(*project_, key));
     }
     ATELIER_TRY(build_project());
     const auto source = document_->serialize();

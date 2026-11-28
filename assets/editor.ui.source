@@ -356,40 +356,35 @@ ui ResourceProperty(in Text title, in TextEditBinding value) {
         TextField value { edit: input.value; context: input.value; read_only: true; expand_width: true; height: 21; classes: "readonly-field"; }
     }
 }
-ui WorldPanel(in Text selected_volume, in Items<PropertyGroup> volume,
-              in Items<PropertyGroup> propagation, in Items<ResourceProperty> actual, in Text configured,
-              in Items<PropertyGroup> lighting, in Items<PropertyGroup> effects, in Items<PropertyGroup> diagnostics,
-              in bool editable, in TableBinding performance, in Text performance_status, in Text performance_resources,
-              in TextEditBinding main_camera, in ActionBinding clear_camera) {
+ui WorldPanel(in Items<PropertyGroup> lighting, in Items<PropertyGroup> gi_reflections,
+              in Items<PropertyGroup> post_display, in Items<PropertyGroup> diagnostics,
+              in Items<ResourceProperty> actual, in bool editable, in TableBinding performance,
+              in Text performance_status, in Text performance_resources, in TextEditBinding main_camera,
+              in ActionBinding clear_camera) {
     state double page = 0.0d;
     state bool show_actual = true;
     Column pane { expand_height: true; panel: true; classes: "parameter-pane";
         Row tabs { height: 26; gap: 2; padding_left: 4; padding_right: 4; classes: "subtab-bar";
             ChoiceButton lighting_tab { text: "Lighting"; expand_height: true; selected: state.page == 0.0d; selection_group: node.tabs; classes: "subtab-item"; on activate { state.page = 0.0d; } }
-            ChoiceButton ddgi_tab { text: "DDGI"; expand_height: true; selected: state.page == 1.0d; selection_group: node.tabs; classes: "subtab-item"; on activate { state.page = 1.0d; } }
-            ChoiceButton effects_tab { text: "Effects"; expand_height: true; selected: state.page == 2.0d; selection_group: node.tabs; classes: "subtab-item"; on activate { state.page = 2.0d; } }
+            ChoiceButton gi_tab { text: "GI & Refl"; expand_height: true; selected: state.page == 1.0d; selection_group: node.tabs; classes: "subtab-item"; on activate { state.page = 1.0d; } }
+            ChoiceButton post_tab { text: "Post"; expand_height: true; selected: state.page == 2.0d; selection_group: node.tabs; classes: "subtab-item"; on activate { state.page = 2.0d; } }
             ChoiceButton diagnostics_tab { text: "Diagnostics"; expand_height: true; selected: state.page == 3.0d; selection_group: node.tabs; classes: "subtab-item"; on activate { state.page = 3.0d; } }
             ChoiceButton performance_tab { text: "Performance"; expand_height: true; selected: state.page == 4.0d; selection_group: node.tabs; classes: "subtab-item"; on activate { state.page = 4.0d; } }
-        }
-        Row header { height: 28; align_center: true; gap: 5; padding_left: 6; padding_right: 6; collapsed: state.page != 1.0d && state.page != 3.0d;
-            Combo slot { text: input.selected_volume; height: 22; min_width: 100; classes: "parameter-menu"; }
-            Column space { expand_width: true; }
-            Combo setup { text: "Coverage"; enabled: input.editable; height: 22; content_width: 0; min_width: 88; classes: "parameter-menu"; collapsed: state.page != 1.0d; }
         }
         List scroll { expand_height: true; gap: 1; collapsed: state.page == 4.0d; classes: "parameter-list";
             Column lighting { gap: 1; collapsed: state.page != 0.0d;
                 Row camera { height: 26; padding_left: 8; padding_right: 6; gap: 6; align_center: true;
                     Text label { text: "Main camera"; single_line: true; classes: "field-label"; }
                     TextField value { edit: input.main_camera; context: input.main_camera; read_only: true; expand_width: true; height: 21; classes: "readonly-field"; }
-                    Button clear_camera { text: "Clear"; action: input.clear_camera; height: 21; width: 44; classes: "ghost-button"; }
+                    Button clear_camera { text: "Clear"; action: input.clear_camera; enabled: input.editable; height: 21; width: 44; classes: "ghost-button"; }
                 }
                 Repeat lighting_settings { items: input.lighting; }
             }
-            Column ddgi { gap: 1; collapsed: state.page != 1.0d; Repeat volume { items: input.volume; } Repeat propagation { items: input.propagation; } }
-            Column effects { gap: 1; collapsed: state.page != 2.0d; Repeat effect_settings { items: input.effects; } }
+            Column gi_reflections { gap: 1; collapsed: state.page != 1.0d; Repeat gi_settings { items: input.gi_reflections; } }
+            Column post_display { gap: 1; collapsed: state.page != 2.0d; Repeat post_settings { items: input.post_display; } }
             Column diagnostics { gap: 1; collapsed: state.page != 3.0d;
                 Repeat diagnostic_settings { items: input.diagnostics; }
-                Foldout actual_title { text: "Current layout (CPU)"; icon: "info"; selected: state.show_actual; height: 22; classes: "section";
+                Foldout actual_title { text: "Live GPU pipeline telemetry"; icon: "info"; selected: state.show_actual; height: 22; classes: "section";
                     on activate { state.show_actual = event.checked; }
                 }
                 Column actual { gap: 3; collapsed: !state.show_actual; classes: "section-body"; Repeat rows { items: input.actual; } }
@@ -406,11 +401,8 @@ ui WorldPanel(in Text selected_volume, in Items<PropertyGroup> volume,
                 Text performance_resources { text: input.performance_resources; single_line: true; expand_width: true; }
             }
             Row performance_note { height: 24; padding_left: 6; align_center: true;
-                Text performance_scope { text: "Scene Lit GPU only · subpasses included in parents"; single_line: true; expand_width: true; }
+                Text performance_scope { text: "Scene Lit GPU · union interval across graphics + async compute"; single_line: true; expand_width: true; }
             }
-        }
-        Row footer { height: 22; padding_left: 6; align_center: true; collapsed: state.page != 1.0d && state.page != 3.0d;
-            Text count { text: input.configured; single_line: true; expand_width: true; caption: true; }
         }
     }
 }

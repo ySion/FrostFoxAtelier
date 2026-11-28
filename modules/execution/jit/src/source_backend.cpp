@@ -2325,6 +2325,48 @@ private:
             checked_call(orientation ? sample_orientation_ : sample_texture_, {invocation_, slot, uv, result});
             return load_value(result, node.type);
         }
+        case Kind::normal_sample: {
+            auto* input = input_address(node.right);
+            auto* slot_address = ir_.CreateConstGEP1_64(ir_.getInt8Ty(), input, node.offset);
+            auto* slot = ir_.CreateAlignedLoad(ir_.getInt32Ty(), slot_address, llvm::Align(1));
+            auto* uv = input_address(node.left);
+            llvm::IRBuilder<> entry_ir(&entry_->getEntryBlock(), entry_->getEntryBlock().begin());
+            auto* raw = entry_ir.CreateAlloca(llvm::ArrayType::get(ir_.getFloatTy(), 4), nullptr, "normal.raw");
+            auto* orient = entry_ir.CreateAlloca(llvm::ArrayType::get(ir_.getFloatTy(), 2), nullptr, "normal.orient");
+            auto* result = entry_ir.CreateAlloca(llvm::ArrayType::get(ir_.getFloatTy(), 3), nullptr, "normal.result");
+            raw->setAlignment(llvm::Align(4));
+            orient->setAlignment(llvm::Align(4));
+            result->setAlignment(llvm::Align(4));
+            checked_call(sample_texture_, {invocation_, slot, uv, raw});
+            checked_call(sample_orientation_, {invocation_, slot, uv, orient});
+            auto* f_ty = ir_.getFloatTy();
+            auto* two = llvm::ConstantFP::get(f_ty, 2.0f);
+            auto* one = llvm::ConstantFP::get(f_ty, 1.0f);
+            auto* zero = llvm::ConstantFP::get(f_ty, 0.0f);
+            auto* rx = ir_.CreateAlignedLoad(f_ty, ir_.CreateConstInBoundsGEP2_32(raw->getAllocatedType(), raw, 0, 0),
+                                             llvm::Align(4));
+            auto* ry = ir_.CreateAlignedLoad(f_ty, ir_.CreateConstInBoundsGEP2_32(raw->getAllocatedType(), raw, 0, 1),
+                                             llvm::Align(4));
+            auto* ox = ir_.CreateAlignedLoad(
+                f_ty, ir_.CreateConstInBoundsGEP2_32(orient->getAllocatedType(), orient, 0, 0), llvm::Align(4));
+            auto* oy = ir_.CreateAlignedLoad(
+                f_ty, ir_.CreateConstInBoundsGEP2_32(orient->getAllocatedType(), orient, 0, 1), llvm::Align(4));
+            auto* ex = ir_.CreateFMul(ir_.CreateFSub(ir_.CreateFMul(rx, two), one), ox);
+            auto* ey = ir_.CreateFMul(ir_.CreateFSub(ir_.CreateFMul(ry, two), one), oy);
+            auto* len2 = ir_.CreateFAdd(ir_.CreateFMul(ex, ex), ir_.CreateFMul(ey, ey));
+            auto* z2_raw = ir_.CreateFSub(one, len2);
+            auto* z2_pos = ir_.CreateSelect(ir_.CreateFCmpOGT(z2_raw, zero), z2_raw, zero);
+            auto* z2_clamped = ir_.CreateSelect(ir_.CreateFCmpOLT(z2_pos, one), z2_pos, one);
+            auto* sqrt_fn = llvm::Intrinsic::getOrInsertDeclaration(entry_->getParent(), llvm::Intrinsic::sqrt, {f_ty});
+            auto* ez = ir_.CreateCall(sqrt_fn, {z2_clamped});
+            ir_.CreateAlignedStore(ex, ir_.CreateConstInBoundsGEP2_32(result->getAllocatedType(), result, 0, 0),
+                                   llvm::Align(4));
+            ir_.CreateAlignedStore(ey, ir_.CreateConstInBoundsGEP2_32(result->getAllocatedType(), result, 0, 1),
+                                   llvm::Align(4));
+            ir_.CreateAlignedStore(ez, ir_.CreateConstInBoundsGEP2_32(result->getAllocatedType(), result, 0, 2),
+                                   llvm::Align(4));
+            return load_value(result, node.type);
+        }
         case Kind::field:
             if (managed_value(node.type)) {
                 trace_event(DiagnosticCall::field_read);
@@ -5357,7 +5399,8 @@ atelier_compile_material(const char* name, const char* source, std::uint32_t siz
                          std::uint32_t output_type, std::uint32_t texture_input,
                          std::uint32_t (*sample)(void*, std::uint32_t, const float*, float*) noexcept,
                          std::uint32_t (*orientation)(void*, std::uint32_t, const float*, float*) noexcept,
-                         atelier::source::detail::MaterialCode** output, char* error, std::uint32_t capacity) noexcept {
+                         atelier::source::detail::MaterialCode** output, char* error, std::uint32_t capacity,
+                         std::uint32_t normal_texture_input) noexcept {
     atelier::source::detail::initialize_fatal_handlers();
     if (!error || !capacity)
         return 1;
@@ -5366,15 +5409,16 @@ atelier_compile_material(const char* name, const char* source, std::uint32_t siz
     using namespace atelier::source::detail;
     if (!name || !source || !environment || !capture_default || !output || !sample || !orientation ||
         context >= environment->value_count || output_type >= environment->value_count ||
-        texture_input >= environment->value_count)
+        texture_input >= environment->value_count ||
+        (normal_texture_input != UINT32_MAX && normal_texture_input >= environment->value_count))
         return compilation_failure(error, capacity, "Invalid material compiler input.");
     auto values = source_values(*environment);
     if (!values)
         return compilation_failure(error, capacity, llvm::toString(values.takeError()).c_str());
     for (auto& value : *values)
         value.sequence_view = nullptr;
-    auto material =
-        language::compile_material(name, std::string_view(source, size), *values, context, output_type, texture_input);
+    auto material = language::compile_material(name, std::string_view(source, size), *values, context, output_type,
+                                               texture_input, normal_texture_input);
     if (!material) {
         const auto& diagnostic = material.error();
         const auto display_name = diagnostic_source_name(name);
@@ -5438,7 +5482,7 @@ atelier_compile_material(const char* name, const char* source, std::uint32_t siz
     code->hlsl = language::material_hlsl(*material);
     code->textures = std::move(material->textures);
     for (const auto& input : code->textures)
-        code->texture_views.push_back({input.key.c_str(), input.slot, input.offset});
+        code->texture_views.push_back({input.key.c_str(), input.slot, input.offset, input.is_normal_map});
     code->parameters = material->parameters;
     code->resources = material->resources;
     *output = code.release();
@@ -5452,7 +5496,9 @@ atelier_material_code_view(atelier::source::detail::MaterialCode* code) noexcept
             code->hlsl.shade.c_str(),
             code->hlsl.footprint.c_str(),
             code->hlsl.coverage.c_str(),
+            code->hlsl.gi_hit.c_str(),
             code->hlsl.coverage_status,
+            code->hlsl.gi_hit_status,
             code->texture_views.data(),
             static_cast<std::uint32_t>(code->texture_views.size()),
             code->parameters,

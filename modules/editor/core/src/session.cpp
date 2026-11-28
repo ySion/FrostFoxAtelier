@@ -134,24 +134,8 @@ Result<void> Session::validate_name(std::wstring_view name) {
 
 namespace {
 // The EnvironmentComponent field names of a World Settings option (a view option
-// for which world_option holds), e.g. probe_volume_0_min_x -> volume0.minimum.x.
+// for which world_option holds), e.g. sky_color_x -> sky_color.x.
 Array<String> environment_field(StringView option) {
-    constexpr StringView volume = "probe_volume_";
-    if (option.starts_with(volume) && option.size() > volume.size() + 2) {
-        Array<String> names{
-            String::concat("volume", String::from_utf8(option.slice(volume.size(), 1)).value_or(String{}))};
-
-        const auto rest = option.slice(volume.size() + 2);
-        if (rest.starts_with("min_")) {
-            names.add("minimum"_s);
-            names.add(String::from_utf8(rest.slice(4)).value_or(String{}));
-        } else if (rest.starts_with("max_")) {
-            names.add("maximum"_s);
-            names.add(String::from_utf8(rest.slice(4)).value_or(String{}));
-        } else
-            names.add(String::from_utf8(rest).value_or(String{}));
-        return names;
-    }
     if (option.starts_with("sky_color_"))
         return {"sky_color"_s, String::from_utf8(option.slice(10)).value_or(String{})};
     return {String::from_utf8(option).value_or(String{})};
@@ -720,6 +704,12 @@ Result<world::Commit> Session::create_light(presentation::LightKind kind, math::
     ATELIER_TRY_BIND(light, world::create_component(runtime_, presentation_types_.light_component));
     auto configured = runtime_.with_native<presentation::LightComponent>(light->id(), [&](auto& value) -> Result<void> {
         value.settings.kind = kind;
+        if (kind == presentation::LightKind::spot) {
+            value.settings.intensity = 25.f;
+            value.settings.range = 14.f;
+            value.settings.spot_inner_degrees = 25.f;
+            value.settings.spot_outer_degrees = 40.f;
+        }
         return presentation::validate_light(runtime_, value.settings);
     });
     if (!configured)
@@ -731,6 +721,7 @@ Result<world::Commit> Session::create_light(presentation::LightKind kind, math::
         return std::unexpected(*attached->notification_error);
     const auto label = kind == presentation::LightKind::point       ? L"Point Light"
                        : kind == presentation::LightKind::rectangle ? L"Rectangle Light"
+                       : kind == presentation::LightKind::spot      ? L"Spot Light"
                                                                     : L"Directional Light";
     return attach_created(std::move(*entity), label);
 }

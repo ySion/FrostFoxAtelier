@@ -122,7 +122,7 @@ Details 使用共享 Table 的 Name / Type / Size 列，列头显示排序方向
 
 Import Mesh 导入 Wavefront OBJ 的位置、法线、UV、MTL 漫反射材质及依赖贴图。简单多边形（每面最多 64 个角点）按投影耳切三角化，保留原边界 mask；支持正/负索引，缺少法线时生成面法线，带贴图的面必须提供有效 UV。OBJ 的 V 轴转换到图片左上原点，超出 [0,1] 的 UV 保留并重复采样。单独 OBJ 保持 `Content/Meshes/<文件名>` 的位置；带依赖的模型使用 `Content/Meshes/<模型名>/` 独立目录，保持相对依赖关系。材质通过普通 MI 与网格默认表表达，没有组件颜色乘色路径。
 
-MTL 支持 `Kd`、`d`/`Tr`、`map_Kd` 与 `map_d`。WIC 解码 PNG/JPEG/BMP 等系统支持格式；颜色贴图按 sRGB 采样，遮罩按线性值读取。独立 Material 资源支持金属度/粗糙度、法线与 Y 轴约定、HDR 发光和 Mask，并由 Scene Lit 的阴影、反射与 DDGI 消费。OBJ/MTL 的具体映射、通道及着色范围见[材质系统](../renderer/materials.md)；本轮不包含高度贴图或半透明混合。带 `-s`/`-o` 等选项的 map 明确报错，动画仍未导入。
+MTL 支持 `Kd`、`d`/`Tr`、`map_Kd` 与 `map_d`。WIC 解码 PNG/JPEG/BMP 等系统支持格式；颜色贴图按 sRGB 采样，遮罩按线性值读取。独立 Material 资源支持金属度/粗糙度、法线与 Y 轴约定、HDR 发光和 Mask，并由 Scene Lit 的阴影、反射与四层全局光照消费。OBJ/MTL 的具体映射、通道及着色范围见[材质系统](../renderer/materials.md)；本轮不包含高度贴图或半透明混合。带 `-s`/`-o` 等选项的 map 明确报错，动画仍未导入。
 
 依赖只能位于 OBJ 所在目录及子目录；绝对路径、上级路径、逃逸链接、缺失文件与非法数据在发布前拒绝。单文件最多 128 MiB、整包最多 512 MiB、解码像素最多 768 MiB，图片单边最多 8192；最多 512 个依赖文件、1024 个命名材质、100 万个位置/法线/UV 和 100 万个三角形。导入验证和写盘使用相同字节快照，先检查现有目录；Import 不覆盖无关文件，Reimport 只替换已验证归属的内容。目录、几何和贴图在私有 Reader 上准备，写盘后的目录与资源校验全部通过才一起发布。写盘或发布失败时逆序恢复被替换文件的内容和时间戳，移除本次新建的文件与目录。首错保留错误码、消息和来源，回滚失败的路径与原因追加到该诊断。不承诺跨文件断电原子性。
 
@@ -375,7 +375,7 @@ File → Edit Editor UI Source 是引擎开发命令，用于修改编辑器自�
 
 ## Sponza 完整模型
 
-[Sponza](../../../examples/Content/Sponza/README.md) 与 Scene Lit Room、Physic、Dungeons 同属根目录的普通 [Examples 工程](../../../examples/README.md)，不随引擎部署。无参数启动为空文档；`--project ./examples` 打开工程配置指定的 Sponza，`--scene Content/...` 可明确选择其他场景，不必同时传相机参数。资源浏览器按 `Project / Content / 场景名` 展示目录，场景只保存到 Content。打开场景不自动改变视口模式或拟合 DDGI；每个场景保存自己的主相机，Play 使用该相机。需要固定编辑视图时，可选择 Main Camera 后用 View from Camera，或显式传入 `--material-camera` / `--scene-lit-camera`。
+[Sponza](../../../examples/Content/Sponza/README.md) 与 Scene Lit Room、Physic、Dungeons 同属根目录的普通 [Examples 工程](../../../examples/README.md)，不随引擎部署。无参数启动为空文档；`--project ./examples` 打开工程配置指定的 Sponza，`--scene Content/...` 可明确选择其他场景，不必同时传相机参数。资源浏览器按 `Project / Content / 场景名` 展示目录，场景只保存到 Content。打开场景不自动改变视口模式；每个场景保存自己的主相机，Play 使用该相机。需要固定编辑视图时，可选择 Main Camera 后用 View from Camera，或显式传入 `--material-camera` / `--scene-lit-camera`。
 
 `editor_log_smoke_acceptance` 打开 Examples 副本的启动场景并做一次添加/保存/撤销冒烟，见[验收入口](README.md#验收入口)。材质与视口显示模式的渲染代表见 [Renderer 验收](../renderer/acceptance.md)。
 

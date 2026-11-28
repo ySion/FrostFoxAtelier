@@ -1,36 +1,51 @@
 #pragma once
 
-#include "foundation/optional.hpp"
-#include "foundation/span.hpp"
 #include "foundation/string.hpp"
 
-#include <gfx.h>
-
 #include <array>
+#include <concepts>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <type_traits>
+
+struct HWND__;
 
 namespace atelier::rhi {
 
+using NativeWindow = HWND__*;
+
+struct BackendAccess;
+
 namespace detail {
-struct ContextState;
+struct DeviceState;
+
+struct SurfaceState;
+
+struct PipelineState;
 
 struct PreparationJob;
 
 class Preparer;
-}
+} // namespace detail
 
-enum class Validation { disabled, debug_layer, gpu };
+enum class Validation : std::uint8_t { disabled, debug_layer, gpu };
 
-enum class PipelineKind { vertex, mesh, compute };
+enum class QueueKind : std::uint8_t { graphics = 0, compute = 1, copy = 2 };
 
-enum class ErrorCode {
+enum class PipelineKind : std::uint8_t { vertex, mesh, compute };
+
+enum class ErrorCode : std::uint8_t {
     invalid_argument,
     unsupported,
     creation_failed,
     shader_failed,
+    out_of_memory,
+    device_lost,
     execution_failed,
     timeout,
     wrong_thread,
@@ -41,12 +56,24 @@ enum class ErrorCode {
 struct Error {
     Error() = default;
 
-    Error(ErrorCode error_code, GfxResult native = kGfxResult_NoError, Utf8Text text = {})
+    Error(ErrorCode error_code, std::int32_t native = 0, Utf8Text text = {})
         : code(error_code), native_result(native), message(std::move(text).into_string()) {}
+
+    template <class T>
+        requires(std::same_as<std::remove_cvref_t<T>, std::string> ||
+                 std::same_as<std::remove_cvref_t<T>, std::string_view>)
+    Error(ErrorCode error_code, std::int32_t native, T&& text)
+        : code(error_code), native_result(native),
+          message(String::from_utf8(StringView{std::string_view(text)}).value_or("RHI error"_s)) {}
+
+    template <std::same_as<const char*> P>
+    Error(ErrorCode error_code, std::int32_t native, P text)
+        : code(error_code), native_result(native),
+          message(text ? String::from_utf8(StringView{text}).value_or("RHI error"_s) : String{}) {}
 
     ErrorCode code = ErrorCode::execution_failed;
 
-    GfxResult native_result = kGfxResult_NoError;
+    std::int32_t native_result = 0;
 
     String message;
 };
@@ -54,33 +81,40 @@ struct Error {
 template <class T>
 using Result = std::expected<T, Error>;
 
-struct ContextOptions {
-    std::uint32_t width = 64;
-
-    std::uint32_t height = 32;
-
-    HWND window = nullptr;
-
+struct DeviceOptions {
     Validation validation = Validation::disabled;
 
     std::uint32_t wait_timeout_ms = 10000;
 
-    bool rgba8_window = false; // Explicit SDR RGBA8 target instead of display auto-selection.
-
-    // Window-only: one queued presentation, admitted with wait_frame before rendering.
-    bool frame_latency_waitable = false;
-
-    // Directory shared by processes for compiled shader stages; empty disables
-    // it. Cache failures only cost recompilation.
+    // Directory shared by processes for compiled DXIL stages; empty disables it.
     std::filesystem::path shader_cache{};
 };
 
-struct ContextInfo {
-    std::uint32_t frames_in_flight = 0;
+struct DeviceInfo {
+    std::string adapter_name;
+
+    std::uint64_t dedicated_video_memory = 0;
+
+    std::uint32_t frames_in_flight = 3;
 
     bool debug_layer = false;
 
     bool gpu_validation = false;
+
+    bool async_compute = false;
+
+    bool copy_queue = false;
+};
+
+struct SurfaceOptions {
+    std::uint32_t width = 64;
+
+    std::uint32_t height = 32;
+
+    bool srgb = true;
+
+    // One queued presentation, admitted with wait_frame before rendering.
+    bool frame_latency_waitable = false;
 };
 
 struct TargetInfo {
@@ -93,7 +127,15 @@ struct TargetInfo {
     bool drawable{};
 };
 
-using FrameCpuTimings = GfxFrameCpuTimings;
+struct FrameCpuTimings {
+    double submit_ms{};
+
+    double present_ms{};
+
+    double wait_ms{};
+
+    double recycle_ms{};
+};
 
 struct FrameInfo {
     TargetInfo rendered;
@@ -102,29 +144,11 @@ struct FrameInfo {
 
     bool occluded{};
 
-    FrameCpuTimings cpu; // This submission's CPU wall time; GPU samples may describe an older frame.
+    FrameCpuTimings cpu;
 };
 
-// Source strings are borrowed only during prepare/submit. For file programs, optional
-// absent stages retain gfx's file convention; any existing stage must compile.
-struct PipelineDesc {
-    PipelineKind kind = PipelineKind::compute;
-
-    GfxProgramDesc source;
-
-    const char* name = "pipeline";
-
-    const char* file_name = nullptr;
-
-    const char* file_path = nullptr;
-
-    const char* entry_point = "main";
-
-    const char* shader_model = "6_5";
-
-    GfxDrawState draw_state;
-};
-
+// Move-only handle to a compiled graphics, mesh, or compute PSO.
+// Retains the underlying execution domain until reset on the owner thread.
 class Pipeline {
 public:
     Pipeline() = default;
@@ -139,28 +163,26 @@ public:
 
     Pipeline& operator=(const Pipeline&) = delete;
 
-    [[nodiscard]] GfxProgram program() const noexcept;
-
-    [[nodiscard]] GfxKernel kernel() const noexcept;
-
-    [[nodiscard]] explicit operator bool() const noexcept;
-
-private:
-    friend class Context;
-
-    Pipeline(std::shared_ptr<detail::ContextState> state, GfxProgram program, GfxKernel kernel) noexcept;
+    [[nodiscard]] explicit operator bool() const noexcept { return pipeline_ != nullptr; }
 
     void reset() noexcept;
 
-    std::shared_ptr<detail::ContextState> state_;
+private:
+    friend class Device;
 
-    GfxProgram program_;
+    friend struct BackendAccess;
 
-    GfxKernel kernel_;
+    friend struct detail::DeviceState;
+
+    Pipeline(std::shared_ptr<detail::DeviceState> state, detail::PipelineState* pipeline) noexcept;
+
+    std::shared_ptr<detail::DeviceState> state_;
+
+    detail::PipelineState* pipeline_{};
 };
 
-// A pipeline being prepared on Context workers. Dropping it, or closing the
-// Context, cancels the work; it never holds the execution domain open.
+// Asynchronous PSO compilation job running on Device worker threads.
+// Never holds the execution domain open; dropping or closing cancels queued work.
 class PipelineJob {
 public:
     PipelineJob() = default;
@@ -175,11 +197,12 @@ public:
 
     PipelineJob& operator=(const PipelineJob&) = delete;
 
-    // False once taken or for a default-constructed job.
     [[nodiscard]] explicit operator bool() const noexcept { return job_ != nullptr; }
 
 private:
-    friend class Context;
+    friend class Device;
+
+    friend struct BackendAccess;
 
     void cancel() noexcept;
 
@@ -188,172 +211,92 @@ private:
     std::shared_ptr<detail::PreparationJob> job_;
 };
 
-// All operations and final destruction occur on the opening thread. Borrowed
-// gfx access is for ordinary resources, parameters and command encoding only;
-// frame/finish/destroy/reloadAll/native import/submission remain owner-only.
-class Context {
+// Lightweight per-HWND swapchain surface sharing a single process-wide Device.
+class WindowSurface {
 public:
-    Context() = default;
+    WindowSurface() noexcept;
 
-    ~Context();
+    ~WindowSurface();
 
-    Context(Context&& other) noexcept;
+    WindowSurface(WindowSurface&& other) noexcept;
 
-    Context& operator=(Context&& other) noexcept;
+    WindowSurface& operator=(WindowSurface&& other) noexcept;
 
-    Context(const Context&) = delete;
+    WindowSurface(const WindowSurface&) = delete;
 
-    Context& operator=(const Context&) = delete;
+    WindowSurface& operator=(const WindowSurface&) = delete;
 
-    [[nodiscard]] static Result<Context> open(const ContextOptions& options = {});
+    [[nodiscard]] static Result<WindowSurface> open(Device& device, NativeWindow window,
+                                                    const SurfaceOptions& options = {});
 
-    [[nodiscard]] GfxContext borrow() const noexcept;
-
-    [[nodiscard]] const ContextInfo& info() const noexcept;
-
-    // Compiles, reflects and creates the root signature and PSO on this thread.
-    // Under Validation::gpu it also records the pipeline once so GPU-based
-    // validation patches it here instead of at its first real use.
-    [[nodiscard]] Result<Pipeline> prepare(const PipelineDesc& desc);
-
-    // The same preparation as prepare, run on up to eight Context workers. The
-    // description is checked and copied before returning.
-    [[nodiscard]] Result<PipelineJob> submit(const PipelineDesc& desc);
-
-    // Empty while the job runs; then its Pipeline or its failure, exactly once.
-    // A job cancelled by close returns ErrorCode::closed.
-    [[nodiscard]] Optional<Result<Pipeline>> take(PipelineJob& job);
+    [[nodiscard]] explicit operator bool() const noexcept { return surface_ != nullptr; }
 
     [[nodiscard]] Result<TargetInfo> target() const;
 
-    // Owner-only, before recording the draw/execute callback. Synchronizes a
-    // positive window client size even while hidden; returns the actual target.
-    // A changed size drains pending work, but never presents or advances a frame.
-    [[nodiscard]] Result<TargetInfo> sync_window_target();
+    // Synchronizes positive client dimensions in-place via ResizeBuffers without presenting.
+    [[nodiscard]] Result<TargetInfo> sync_target();
 
-    // Owner-only, including before the first frame. Waits for presentation capacity
-    // or thread input, without dispatching messages. False means input/timeout,
-    // not permission to render. A true result stays latched until frame; repeated
-    // calls do not consume another signal. Non-waitable contexts return true.
-    // timeout_ms is finite; zero is a single readiness check, not a polling loop.
+    // Waits for frame-latency capacity or Win32 input without dispatching messages.
     [[nodiscard]] Result<bool> wait_frame(std::uint32_t timeout_ms);
 
-    // Details are published only after the entire frame succeeds. Positive DXGI
-    // occlusion status is successful execution but not an accepted visible frame.
-    // Requesting details also measures gfx frame stages; nullptr avoids clock reads.
-    // A waitable window context must already hold its wait_frame permission.
-    [[nodiscard]] Result<void> frame(bool vsync = false, FrameInfo* details = nullptr);
-
-    [[nodiscard]] Result<void> finish();
-
-    // Busy while Pipeline owners remain. Otherwise cancels queued preparation,
-    // waits for running preparation steps, then releases the domain. Failure
-    // retains the execution domain; close may drain submitted work but must
-    // never resubmit it.
     [[nodiscard]] Result<void> close();
 
 private:
-    explicit Context(std::shared_ptr<detail::ContextState> state) noexcept;
+    friend class Device;
 
-    [[nodiscard]] Result<void> admit(const String::ConcatPiece& operation) const;
+    friend struct BackendAccess;
 
-    [[nodiscard]] Result<std::shared_ptr<detail::PreparationJob>> job(const PipelineDesc& desc) const;
+    friend struct detail::DeviceState;
 
-    [[nodiscard]] Result<Pipeline> adopt(detail::PreparationJob& job);
+    WindowSurface(std::shared_ptr<detail::DeviceState> device, std::unique_ptr<detail::SurfaceState> surface) noexcept;
 
-    std::shared_ptr<detail::ContextState> state_;
+    std::shared_ptr<detail::DeviceState> device_;
+
+    std::unique_ptr<detail::SurfaceState> surface_;
 };
 
-struct RecordedBinding {
-    // Pointer fields are cleared after copying; opaque keys are diagnostic-only.
-    GfxObservedBinding detail;
-
-    std::array<char, 128> name{};
-
-    std::array<char, 128> resource_name{};
-};
-
-struct RecordedCommand {
-    std::array<char, 128> entry{};
-
-    std::uint64_t kernel_key{};
-
-    std::array<std::uint32_t, 3> groups{};
-
-    std::uint32_t first_binding{};
-
-    std::uint32_t binding_count{};
-
-    bool indirect{};
-};
-
-struct CommandTraceInfo {
-    std::uint64_t recording_sequence{};
-
-    bool entered{};
-
-    bool closed{};
-
-    bool truncated{};
-
-    bool unobserved_binding{};
-
-    bool interrupted{};
-};
-
-// One-shot CPU snapshot, allocated before recording, with no GPU/Runtime owners.
-// Storage is below 1 MiB (32 commands, 1024 bindings, bounded copied names).
-// Recording never allocates, waits or throws. Limits mark the snapshot incomplete.
-class CommandTrace {
+// Process-wide explicit GPU device (Graphics + Async Compute + Copy queues + SM 6.6 Bindless heap).
+// All state-mutating calls and final destruction occur on the opening owner thread.
+class Device {
 public:
-    CommandTrace();
+    Device() = default;
 
-    ~CommandTrace();
+    ~Device();
 
-    CommandTrace(CommandTrace&&) noexcept;
+    Device(Device&& other) noexcept;
 
-    CommandTrace& operator=(CommandTrace&&) noexcept;
+    Device& operator=(Device&& other) noexcept;
 
-    [[nodiscard]] const CommandTraceInfo& info() const noexcept;
+    Device(const Device&) = delete;
 
-    [[nodiscard]] Span<const RecordedCommand> commands() const noexcept;
+    Device& operator=(const Device&) = delete;
 
-    [[nodiscard]] Span<const RecordedBinding> bindings() const noexcept;
+    [[nodiscard]] static Result<Device> open(const DeviceOptions& options = {});
+
+    [[nodiscard]] explicit operator bool() const noexcept { return state_ != nullptr; }
+
+    [[nodiscard]] const DeviceInfo& info() const noexcept;
+
+    [[nodiscard]] std::uint32_t wait_timeout_ms() const noexcept;
+
+    // Drains all three queues within wait_timeout_ms and reclaims retired resources.
+    [[nodiscard]] Result<void> wait_idle();
+
+    // Busy while any WindowSurface or Pipeline remains alive.
+    [[nodiscard]] Result<void> close();
 
 private:
-    friend class CommandTraceScope;
+    friend class WindowSurface;
 
-    struct Storage;
+    friend class Pipeline;
 
-    std::unique_ptr<Storage> storage_;
+    friend struct BackendAccess;
 
-    static void observe(void*, const GfxComputeObservation&) noexcept;
-};
+    friend struct detail::DeviceState;
 
-// Owner-thread borrow, strictly inside one render attempt. Context and snapshot
-// must outlive the scope; neither may move while attached. No nested observers.
-// Destruction detaches even when command recording fails. Disabled callers do
-// not create a scope; gfx still pays observer checks, not a zero-cost guarantee.
-class CommandTraceScope {
-public:
-    CommandTraceScope(Context&, CommandTrace&) noexcept;
+    explicit Device(std::shared_ptr<detail::DeviceState> state) noexcept;
 
-    ~CommandTraceScope();
-
-    CommandTraceScope(const CommandTraceScope&) = delete;
-
-    CommandTraceScope& operator=(const CommandTraceScope&) = delete;
-
-    // Mark only after the whole observed command range succeeds. A normal
-    // early return without this call preserves the recorded prefix as interrupted.
-    void complete() noexcept { completed_ = true; }
-
-private:
-    GfxContext context_;
-
-    CommandTrace& trace_;
-
-    bool completed_{};
+    std::shared_ptr<detail::DeviceState> state_;
 };
 
 } // namespace atelier::rhi

@@ -5,22 +5,6 @@
 #include "runtime/runtime.hpp"
 
 namespace atelier::editor {
-enum class ProbeVolumeField {
-    enabled,
-    placement,
-    min_x,
-    min_y,
-    min_z,
-    max_x,
-    max_y,
-    max_z,
-    count_x,
-    count_y,
-    count_z,
-    blend_cells,
-    count
-};
-
 enum class ViewOption {
     shading,
     wireframe,
@@ -32,57 +16,41 @@ enum class ViewOption {
     background,
     reference_grid,
     origin_axes,
+    show_locators,
     grid_spacing,
     grid_plane,
     shadows,
-    ddgi,
-    gtao,
-    sssr,
-    bloom,
-    antialiasing,
-    exposure_ev,
+    contact_shadow_length,
     direct_candidates,
+    indirect_lighting,
+    gi_quality,
+    indirect_gain,
+    ssilvb,
     ao_radius,
+    reflections,
     reflection_distance,
     reflection_roughness,
-    probe_update_budget,
-    probe_rays,
-    probe_debug,
-    probe_bounce,
-    indirect_gain,
-    probe_feedback_visibility,
-    probe_visualization,
-    probe_volume,
-    probe_relocation,
-    probe_xray,
-    probe_radius,
-    probe_coverage,
-    probe_debug_volume,
-    spatial_light_sampling,
+    sky_mode,
+    sky_intensity,
+    sky_rotation,
+    sky_color_x,
+    sky_color_y,
+    sky_color_z,
+    fog_enabled,
+    fog_density,
+    fog_height_falloff,
+    fog_anisotropy,
+    exposure_ev,
+    bloom,
+    tonemapper,
+    antialiasing,
     direct_cluster_inspect,
-    probe_history,
-    probe_inspect,
-    probe_inspect_x,
-    probe_inspect_y,
-    probe_inspect_source,
     cavity,
     cavity_ridge,
     cavity_valley,
     cavity_radius,
-    volume_first,
-    volume_last = volume_first + 4 * static_cast<int>(ProbeVolumeField::count) - 1,
-    sky_enabled,
-    sky_intensity,
-    sky_color_x,
-    sky_color_y,
-    sky_color_z
+    last = cavity_radius
 };
-
-constexpr ViewOption probe_volume_option(unsigned slot, ProbeVolumeField field) noexcept {
-    return static_cast<ViewOption>(static_cast<unsigned>(ViewOption::volume_first) +
-                                   slot * static_cast<unsigned>(ProbeVolumeField::count) +
-                                   static_cast<unsigned>(field));
-}
 
 enum class ViewValueKind { boolean, number, integer, enumeration };
 
@@ -123,4 +91,4 @@ double view_value(const renderer::ViewSettings&, ViewOption) noexcept;
 Result<bool> set_view_option(renderer::ViewSettings&, ViewOption, double);
 
 Result<void> validate_view_options(const renderer::ViewSettings&, math::Vector3 focus = {});
-}
+} // namespace atelier::editor

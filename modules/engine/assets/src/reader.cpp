@@ -243,9 +243,33 @@ Result<Array<material::ImageRef>> Reader::prepare_images(Span<const Span<const s
 
 Reader::CachedMesh& Reader::retain_import(String key, const std::filesystem::path& relative, MeshImport& loaded) {
     CachedMesh cached{loaded.mesh, {}, std::move(loaded.notes)};
+    const auto base_dir = relative.parent_path();
     for (const auto& file : loaded.files)
         if (file.relative != relative.filename())
-            cached.dependencies.add(relative.parent_path() / file.relative);
+            cached.dependencies.add(base_dir / file.relative);
+    if (!loaded.decoded_textures.empty()) {
+        Array<std::pair<std::wstring, StringView>> uncached_textures;
+        for (const auto& entry : entries_) {
+            if (entry.kind == AssetKind::texture && !textures_.contains(entry.key))
+                uncached_textures.add({entry.path.lexically_normal().generic_wstring(), entry.key.view()});
+        }
+        if (!uncached_textures.empty()) {
+            for (const auto& dt : loaded.decoded_textures) {
+                if (!dt.image)
+                    continue;
+                const auto dep_norm = (base_dir / dt.relative).lexically_normal().generic_wstring();
+                for (auto& [ent_norm, ent_key] : uncached_textures) {
+                    if (ent_key.empty())
+                        continue;
+                    if (CompareStringOrdinal(dep_norm.c_str(), -1, ent_norm.c_str(), -1, TRUE) == CSTR_EQUAL) {
+                        textures_.try_emplace(String::from_utf8_validated(ent_key), dt.image);
+                        ent_key = {};
+                        break;
+                    }
+                }
+            }
+        }
+    }
     return *meshes_.try_emplace(std::move(key), std::move(cached)).value;
 }
 

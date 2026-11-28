@@ -129,6 +129,8 @@ inline constexpr ui::ControlKey display_wire_only = 1013;
 
 inline constexpr ui::ControlKey display_lit = 1014;
 
+inline constexpr ui::ControlKey display_locators = 1015;
+
 inline constexpr ui::ControlKey display_sop_points = 1160;
 
 inline constexpr ui::ControlKey display_sop_normals = 1161;
@@ -239,6 +241,8 @@ inline constexpr ui::ControlKey guide_grid = 770;
 inline constexpr ui::ControlKey guide_axes = 771;
 
 inline constexpr ui::ControlKey shading_scene_lit = 772;
+
+inline constexpr ui::ControlKey guide_locators = 773;
 
 inline constexpr ui::ControlKey scene_path = 642;
 

@@ -279,10 +279,12 @@ Result<ObjectRoot> Session::store_material(assets::Reader& reader, const assets:
             ATELIER_TRY_BIND(context_type, compiler.native_type<material::Context>());
             ATELIER_TRY_BIND(output_type, compiler.native_type<material::Output>());
             ATELIER_TRY_BIND(texture_type, compiler.native_type<material::TextureInput>());
+            ATELIER_TRY_BIND(normal_texture_type, compiler.native_type<material::NormalTextureInput>());
             auto program =
                 source::compile_material(compiler, *context_type, *output_type, *texture_type,
                                          StringView{document.source_file->path},
-                                         StringView{document.source_file->source});
+                                         StringView{document.source_file->source},
+                                         *normal_texture_type);
             if (!program)
                 document.error = std::move(program.error());
             else {

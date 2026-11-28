@@ -497,9 +497,12 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
             buffers.add(result.files[file].bytes);
         for (const auto file : image_files)
             image_sources.add(result.files[file].bytes);
-        // Decode to validate the same images and byte budget. Author MI values
-        // carry paths/keys, never decoded pixels or a second surface definition.
-        ATELIER_TRY(decode_images(image_sources, shared_images, maximum_decoded));
+        // Decode to validate the same images and byte budget, retaining ImageRefs on MeshImport
+        // so immediate project scene / import consumers reuse them without decoding a second time.
+        ATELIER_TRY_BIND(decoded_imgs, decode_images(image_sources, shared_images, maximum_decoded));
+        result.decoded_textures.reserve(image_files.size());
+        for (std::size_t i = 0; i < image_files.size(); ++i)
+            result.decoded_textures.add({result.files[image_files[i]].relative, (*decoded_imgs)[i]});
         const auto instance = [&](json::Value source_material,
                                   std::array<std::filesystem::path, imported_material_inputs.size()>& files)
             -> json::Result<MaterialInstanceAsset> {

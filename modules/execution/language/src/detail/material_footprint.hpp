@@ -104,6 +104,13 @@ ms_Dfloat ms_dlerp(ms_Dfloat a,ms_Dfloat b,ms_Dfloat t) {
 
 inline constexpr std::string_view material_footprint_sample_hlsl = R"hlsl(
 bool ms_finite2(float2 v) { return ms_finite(v.x) && ms_finite(v.y); }
+ms_Dfloat4 ms_dsample_value(uint environment,uint slot,ms_Dfloat2 uv) {
+    ms_Dfloat4 r;
+    r.d0=r.d1=float4(0.0,0.0,0.0,0.0);
+    if (!ms_finite2(uv.v)) { r.v=(float4)ms_unavailable(); return r; }
+    r.v=::atelier_material_sample_grad(environment,slot,uv.v,uv.d0,uv.d1);
+    return r;
+}
 ms_Dfloat4 ms_dsample(uint environment,uint slot,ms_Dfloat2 uv) {
     ms_Dfloat4 r;
     r.d0=r.d1=(float4)ms_unavailable();
@@ -116,12 +123,43 @@ ms_Dfloat4 ms_dsample(uint environment,uint slot,ms_Dfloat2 uv) {
     if (!ms_finite2(uv.d0) || !ms_finite2(uv.d1)) return r;
     precise float2 p0=uv.v+uv.d0, p1=uv.v+uv.d1;
     if (ms_finite2(p0)) {
-        precise float4 s=::atelier_material_sample_grad(environment,slot,p0,uv.d0,uv.d1);
+        precise float4 s=::atelier_material_sample_grad_offset(environment,slot,p0,uv.d0,uv.d1);
         r.d0=float4(ms_change_sub(s.x,r.v.x),ms_change_sub(s.y,r.v.y),ms_change_sub(s.z,r.v.z),ms_change_sub(s.w,r.v.w));
     }
     if (ms_finite2(p1)) {
-        precise float4 s=::atelier_material_sample_grad(environment,slot,p1,uv.d0,uv.d1);
+        precise float4 s=::atelier_material_sample_grad_offset(environment,slot,p1,uv.d0,uv.d1);
         r.d1=float4(ms_change_sub(s.x,r.v.x),ms_change_sub(s.y,r.v.y),ms_change_sub(s.z,r.v.z),ms_change_sub(s.w,r.v.w));
+    }
+    return r;
+}
+float3 ms_unpack_normal_sample(uint environment,uint slot,float2 uv,float4 raw) {
+    precise float2 orient=::atelier_material_sample_orientation(environment,slot,uv);
+    precise float ex=(raw.x*2.0-1.0)*orient.x;
+    precise float ey=(raw.y*2.0-1.0)*orient.y;
+    precise float ez=sqrt(clamp(1.0-ex*ex-ey*ey,0.0,1.0));
+    return float3(ex,ey,ez);
+}
+ms_Dfloat3 ms_dsample_normal_value(uint environment,uint slot,ms_Dfloat2 uv) {
+    ms_Dfloat3 r;
+    r.d0=r.d1=float3(0.0,0.0,0.0);
+    if (!ms_finite2(uv.v)) { r.v=(float3)ms_unavailable(); return r; }
+    r.v=ms_unpack_normal_sample(environment,slot,uv.v,::atelier_material_sample_grad(environment,slot,uv.v,uv.d0,uv.d1));
+    return r;
+}
+ms_Dfloat3 ms_dsample_normal(uint environment,uint slot,ms_Dfloat2 uv) {
+    ms_Dfloat3 r;
+    r.d0=r.d1=(float3)ms_unavailable();
+    if (!ms_finite2(uv.v)) { r.v=(float3)ms_unavailable(); return r; }
+    r.v=ms_unpack_normal_sample(environment,slot,uv.v,::atelier_material_sample_grad(environment,slot,uv.v,uv.d0,uv.d1));
+    if (!ms_finite2(uv.d0) || !ms_finite2(uv.d1)) return r;
+    precise float2 p0=uv.v+uv.d0, p1=uv.v+uv.d1;
+    if (ms_finite2(p0)) {
+        precise float3 s=ms_unpack_normal_sample(environment,slot,p0,::atelier_material_sample_grad_offset(environment,slot,p0,uv.d0,uv.d1));
+        r.d0=float3(ms_change_sub(s.x,r.v.x),ms_change_sub(s.y,r.v.y),ms_change_sub(s.z,r.v.z));
+    }
+    if (ms_finite2(p1)) {
+        precise float3 s=ms_unpack_normal_sample(environment,slot,p1,::atelier_material_sample_grad_offset(environment,slot,p1,uv.d0,uv.d1));
+        r.d1=float3(ms_change_sub(s.x,r.v.x),ms_change_sub(s.y,r.v.y),ms_change_sub(s.z,r.v.z));
     }
     return r;
 }

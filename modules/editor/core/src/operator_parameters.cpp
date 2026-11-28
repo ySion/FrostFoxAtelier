@@ -49,8 +49,6 @@ Result<void> register_editor_types(Runtime& runtime) {
     // The public menu name is a C++ keyword.
     definitions.back().enumeration->values[static_cast<unsigned>(MenuKind::delete_selection)].first = "delete"_s;
     definitions.add(reflection::Definition<MenuParameters>::build(runtime));
-    definitions.add(reflection::Definition<LightingFitMode>::build(runtime));
-    definitions.add(reflection::Definition<LightingFit>::build(runtime));
     definitions.add(reflection::Definition<ProjectBuildParameters>::build(runtime));
     definitions.add(reflection::Definition<MaterialEntriesJson>::build(runtime));
     definitions.add(reflection::Definition<NewMaterial>::build(runtime));

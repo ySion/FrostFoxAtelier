@@ -404,7 +404,7 @@ Result<void> run_project(RunOptions& options) {
         // The first complete material group is prepared before Begin can
         // start simulation. Headless execution has no GPU preparation gate.
         bool can_start = prepared && !started;
-        if (can_start && renderer) {
+        if (can_start && renderer && !options.preview_ui) {
             ATELIER_TRY_BIND(ready, prepare_scene());
             can_start = *ready;
         }
@@ -435,7 +435,7 @@ Result<void> run_project(RunOptions& options) {
         }
         // Begin/update may have authored a different request. Freeze it
         // now; pending preparation leaves the previous complete group live.
-        if (renderer && started)
+        if (renderer && started && !options.preview_ui)
             ATELIER_TRY(prepare_scene());
         else if (started && !options.preview_ui)
             ATELIER_TRY(document.sync_procedural_generators(&project));
@@ -462,11 +462,10 @@ Result<void> run_project(RunOptions& options) {
                 else {
                     focus = selected->position;
                     static_cast<rendering::SceneLightingSettings&>(view.lit) = *environment;
-                    const auto* invalid = rendering::scene_lighting_focus_error(view.lit, focus);
-                    if (!invalid)
-                        invalid = renderer::probe_focus_error(view.lit, focus);
-                    if (invalid)
-                        unavailable = String::from_utf8_validated(invalid);
+                    if (!math::is_finite(focus) || math::max_component(math::cwise_abs(focus)) > 100000.f)
+                        unavailable = "Invalid lighting focus"_s;
+                    else if (const auto* invalid = rendering::scene_lighting_error(view.lit))
+                        unavailable = String::from_utf8_validated(StringView{invalid});
                     else {
                         camera = *selected;
                         matrices = {projected->view, projected->projection, projected->far_depth};
@@ -507,25 +506,27 @@ Result<void> run_project(RunOptions& options) {
         }
         if (prepared && started) {
             if (renderer) {
-                const auto& group = *scene.draw();
+                const auto* group = options.preview_ui ? nullptr : scene.draw();
                 renderer::Frame rendered{
                     *prepared->drawing,
                     matrices,
-                    camera ? ui::Rect{0, 0, static_cast<float>(extent.width), static_cast<float>(extent.height)}
-                           : ui::Rect{},
-                    camera ? Span<const renderer::MeshInstance>{group.meshes}
-                           : Span<const renderer::MeshInstance>{},
+                    camera && group ? ui::Rect{0, 0, static_cast<float>(extent.width), static_cast<float>(extent.height)}
+                                    : ui::Rect{},
+                    camera && group ? Span<const renderer::MeshInstance>{group->meshes}
+                                    : Span<const renderer::MeshInstance>{},
                     view,
                     {},
-                    camera ? Span<const renderer::Light>{group.lights} : Span<const renderer::Light>{},
-                    group.identity,
+                    camera && group ? Span<const renderer::Light>{group->lights}
+                                    : Span<const renderer::Light>{},
+                    group ? group->identity : 0,
                     camera_cut,
                     rendering::sky_radiance(view.lit),
                     focus};
-                rendered.materials = camera ? group.materials.get() : nullptr;
+                rendered.materials = camera && group ? group->materials.get() : nullptr;
                 rendered.stop_requested = &stop_requested;
                 const auto lighting_start = RenderClock::Clock::now();
-                const bool lighting_active = target.drawable && camera && !group.meshes.empty() && view.lit.ddgi;
+                const bool lighting_active =
+                    target.drawable && camera && group && !group->meshes.empty() && view.lit.indirect_lighting;
                 rendered.render_delta_seconds = lighting_clock.delta(lighting_start, lighting_active);
                 if (first_render)
                     static_cast<void>(ATELIER_LOG(logging::Severity::info, "runner", "runner.first_render_begin",

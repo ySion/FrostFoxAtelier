@@ -56,8 +56,6 @@ public:
     // View preferences only; authored World settings remain unchanged.
     Result<void> configure_view(math::Vector3 eye, math::Vector3 target, renderer::Shading);
 
-    Result<renderer::ViewSettings> fitted_probe_view(bool follow_focus) const;
-
     Result<void> open_source(const std::filesystem::path&) override;
 
     Result<void> save_scene(const std::filesystem::path& relative = {}) override;
@@ -173,6 +171,8 @@ private:
 
     editor::Camera camera_;
 
+    std::optional<editor::Camera> saved_world_camera_;
+
     editor::ViewportTool viewport_tool_;
 
     Optional<editor::ViewportView>
@@ -269,6 +269,25 @@ private:
     Optional<MenuProjection> menu_projection_;
 
     std::shared_ptr<const ui::UiFrame> prepared_menu_frame_;
+
+    struct PlayIdleSnapshot {
+        MenuProjection projection{};
+
+        editor::CameraState camera{};
+
+        std::uint64_t surface_revision{};
+
+        bool matches(const PlayIdleSnapshot& other) const noexcept {
+            return projection == other.projection && surface_revision == other.surface_revision &&
+                   camera.view == other.camera.view && camera.target == other.camera.target &&
+                   camera.yaw == other.camera.yaw && camera.pitch == other.camera.pitch &&
+                   camera.distance == other.camera.distance && camera.roll == other.camera.roll &&
+                   camera.vertical_fov == other.camera.vertical_fov && camera.near_clip == other.camera.near_clip &&
+                   camera.far_clip == other.camera.far_clip;
+        }
+    };
+
+    std::optional<PlayIdleSnapshot> play_idle_snapshot_;
 
     bool menu_dirty_{};
 
@@ -457,8 +476,6 @@ private:
     void show_menu(editor::MenuKind) override;
 
     void toggle_view(editor::ViewToggleOption) override;
-
-    Result<void> fit_lighting(bool follow_focus) override;
 
     Result<void> rename_asset(StringView key, StringView name) override;
 

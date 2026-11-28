@@ -2,7 +2,7 @@
 
 面向 Windows x64 游戏的精简引擎工具包。C++ 与自有业务语言共享 Runtime 的类型、对象身份和生命周期；业务语言经 JIT 编译成本机代码后执行。
 
-硬件基线：CPU 为支持 FMA3 的 x64（源码 JIT 创建后端时检查，缺少时编译失败并写明原因）；GPU 需同时支持 Mesh Shader 与 DXR 1.1 inline RayQuery（DX12 Ultimate 一档，见 [RHI 图形验收](#rhi-图形验收)）。两者都不保留旧硬件回退路径。
+硬件基线：CPU 为支持 FMA3 的 x64（源码 JIT 创建后端时检查，缺少时编译失败并写明原因）；GPU 需同时支持 Mesh Shader、DXR 1.1 inline RayQuery、SV_Barycentrics、Enhanced Barriers 与 Shader Model 6.6（DX12 Ultimate 一档，见 [RHI 与 RDG 图形验收](#rhi-与-rdg-图形验收)）。两者都不保留旧硬件回退路径。
 
 项目协作入口为 [AGENTS.md](AGENTS.md)，工程约定见 [工程指南](docs/engineering.md)，共享术语见 [CONTEXT.md](CONTEXT.md)。以下概览描述当前源码树的能力；具体语法、合同和验收证据由对应模块文档维护。
 
@@ -14,7 +14,7 @@
 | --- | --- | --- |
 | Runtime | 原生与描述型类型、对象单继承、持有/观察引用、引用序列、值生命周期、宿主推进的非移动分步 GC | [运行时协议](docs/runtime-model.md) |
 | 源码与 JIT | bool、32 位整数运算与数值转换、复合赋值与三目 `?:`、const、for/parallel_for/break/continue/fail、跨文件与同模块函数、enum/struct 和原生派生 class、自动合成 `Array<源码 struct/enum>`、值与可写/只读引用调用、记录/String/Array 拥有型局部、显式 async/yield、兼容代码更新与旧版本保活 | [语言规范](LANGUAGE.md)、[执行结构](docs/runtime-structure.md)、[源码类型发布](docs/source-type-declarations.md) |
-| 可编程材质 | 自有语言纯值计算、具名纹理与 HLSL/CPU；MS→MI→MI、稀疏作者历史；纹理批次贯通光栅/阴影/DDGI、正式编辑与接受帧拾取 | [材质合同与边界](docs/modules/renderer/materials.md)、[Renderer 验收](docs/modules/renderer/acceptance.md)、[后续资产路线](docs/modules/resources/asset-system-plan.md) |
+| 可编程材质 | 自有语言纯值计算、OpenPBR v1.1 六类闭包输出与四路编译切片（CPU / coverage / footprint / gi_hit）、`.atx` BCn 压缩纹理管线；MS→MI→MI、稀疏作者历史；按 `.source` 原型分桶贯通 VisBuffer/阴影/GI、正式编辑与接受帧拾取 | [材质合同与边界](docs/modules/renderer/materials.md)、[Renderer 验收](docs/modules/renderer/acceptance.md)、[后续资产路线](docs/modules/resources/asset-system-plan.md) |
 | 数学基础值 | float/double 向量、四元数和矩阵；原生/反射/源码共享布局；直接数学 IR 与 O2 优化 | [数学合同](docs/math.md) |
 | Runtime / JIT 诊断 | 按需调用计数与计时、Runtime 资源快照与拥有值统计、源码故障与挂起位置、版本身份、IR 与 COFF 反汇编；开发版并行任务体误用检查 | [诊断接口与边界](docs/source-diagnostics.md)、[任务体禁入范围](docs/runtime-model.md#并行任务体禁入诊断) |
 | 进程日志与 Project Output | Quill 后台日志、结构化 JSONL、增量 Reader、独立健康/丢失状态、完整只读正文与原始源码定位；Editor / Runner 分别拥有 run | [日志合同与验收入口](docs/modules/logging/README.md) |
@@ -23,7 +23,7 @@
 | 程序化几何与节点图 | 分层属性的 Geometry 值（列写时复制）、挤出/扫掠/布尔/体采样/撒点/连通性/变换/Promote/Copy to Points 等 C++ 与 `.source` 操作、`.source` 多端口 `Spatial` BVH 并发查询与受控变长拓扑构建（L3）、实例按块发布；由 Runtime 对象构成的节点图、按内容键缓存的增量求值；编辑器的 `.procgraph` SOP 视口上下文、Houdini 式二维 Network 连线画布、Geometry Spreadsheet、Control 操作链，以及场景 `ProceduralGeneratorEntity` / `ProceduralGeneratorComponent` 与实例 Bake | [程序化模块](docs/modules/procedural/README.md) |
 | C++ 基础库与反射 | Array/String、共享不可变的 SharedArray、Span/StringView、原生 Map/Set 与 Hash/Equal、RingDeque 双端队列和 PriorityQueue 优先队列；反射薄宏及生成代码接入同一 Runtime；常开 CPU 帧阶段计时机制 | [基础库](docs/foundation.md)、[自动反射](docs/reflection.md) |
 | UI 布局、控件与样式 | 原生 Flex/Grid、列表可见范围索引与虚拟表格、Unicode 编辑、参数行与延迟悬浮说明、菜单/下拉/数值阶梯、SS 样式及接受帧文字快照 | [布局模块](docs/modules/ui-layout/README.md)、[UI 模块](docs/modules/ui/README.md)、[SS](docs/modules/ui/style-sheets.md) |
-| 场景编辑器与绘制 | Entity/Component/World 编辑、位置参数与撤销、独立菜单窗口、单宿主停靠及控件实验台；圆角、边框、RGBA 图片及相邻实例合批 | [编辑器模块](docs/modules/editor/README.md)、[RHI](docs/modules/rhi/README.md) |
+| 场景编辑器与绘制 | Entity/Component/World 编辑、位置参数与撤销、单进程单 `rhi::Device` 承载主窗口与轻量 `WindowSurface` 弹出菜单、线性 Arena RDG 与 GPU-driven Meshlet VisBuffer 渲染管线；圆角、边框、RGBA 图片及相邻实例合批 | [编辑器模块](docs/modules/editor/README.md)、[RHI](docs/modules/rhi/README.md)、[Renderer](docs/modules/renderer/contract.md) |
 
 源码类之间的继承、对象引用参数与返回、布局迁移，以及参数面板固定目标、可浮动的编辑器视图与布局文件保存等能力仍待后续增量。Runtime 中已有的对象或值能力不自动代表源码已开放对应语法，实际范围以 [LANGUAGE.md](LANGUAGE.md) 为准。
 
@@ -47,7 +47,7 @@ Scene View 在路径栏末尾提供两个紧凑图标菜单：显示菜单包含
 
 工作室 MatCap / Smooth / Flat 默认开启 Screen Cavity，通过几何凹凸增强表面分界；开关、Ridge、Valley 与像素半径属于视口显示设置，具体范围见[渲染合同](docs/modules/renderer/contract.md#工作室-cavity)。
 
-Scene Lit 消费同一 World 的真实光源与标准金属度/粗糙度材质，支持基础色、粗糙度、金属度、切线空间法线、HDR 自发光因子和 Opaque/Mask；六个贴图输入贯通光栅、射线命中与编辑深度，见[材质系统](docs/modules/renderer/materials.md)。直接光按屏幕 tile 与深度分层收集局部解析灯，在一个通道里逐盏确定求值并与间接光、自发光合成 HDR，方向光独立评估；投影光源的可见性来自阴影 atlas，没有随机采样、时间历史或降噪。发光网格只经 DDGI 照亮场景：探针射线命中发光面时记录其自发光，DDGI 关闭时发光网格不照亮其他表面。DDGI、GTAO 和随机屏幕反射分别稳定自己的信号，最终抗锯齿可选 Off / TAA / SMAA / SMAA T2x，默认 SMAA。**Window → World Settings** 编辑探针命中点的光源候选预算、四个 DDGI 体积、传播预算、曝光和 Bloom；作者值随 Scene 保存并参与撤销。Diagnostics 提供 DDGI 命中点空间选灯的对照开关、真实探针球、Volume 边界、重定位、更新年龄与接收面覆盖诊断，偏好留在视口，与 Control 共用入口。Control 的 `editor.inspect` 支持 `detail: summary`，观察相机、设置和最近接受帧时无需枚举整个场景。Point、Rectangle、Directional Light 沿 Create、Scene Outliner、Parameters 和场景保存的现有入口编辑；均匀天光是 World Settings 的 Sky 组，关闭时环境照明为零，Environment 还可以带一张天空贴图；Scene Lit 有天空贴图时背景显示天空，没有贴图、空场景或纯线框时为黑，工作室模式保留渐变偏好。[Scene Lit Room](examples/Content/Scene%20Lit%20Room/README.md) 是 Examples 工程中的普通场景，选择 Main Camera 后可用 View from Camera 对齐，并从显示菜单选择 Scene Lit。具体范围、默认值与边界见 [Scene Lit](docs/modules/renderer/scene-lit.md)；Renderer 端到端入口为 `renderer_acceptance_scene_lit`；各入口证明的内容与当前成本见[验收记录](docs/modules/renderer/acceptance.md)。
+Scene Lit 消费同一 World 的真实光源与 OpenPBR v1.1 材质（通过 `3×8B` Canonical Slab 承载标准 F82 金属/电介质、清漆层 Coat、天鹅绒 Fuzz、薄叶片双面透射 Foliage、薄膜干涉 Iridescence 与次表面散射 Subsurface 六类闭包，以及 `.atx` BC1/BC4/BC5/BC6H/BC7 纹理与 Toksvig 法线方差补偿），见[材质系统](docs/modules/renderer/materials.md)。直接光基于 `16×16×32` `2.5D Z-Bitmask` 保守分簇逐盏确定求值局部解析灯（点光与拟合 64×64 LTC 矩形面光）及方向光，配合三级阴影闭环（DXR 1.1 inline RayQuery / VSM 级联、Bend Studio 三段式屏幕接触阴影与确定性 Chan 2018 孔径微阴影），无直接光时间历史或随机噪声。全局光照采用三层架构（全分辨率时域 32 扇区 `ONB-GT-VBAO` 接触遮蔽与微反弹、`8×8` Screen Probes + `RAY_FLAG_FORCE_OPAQUE` 光追与按原型分桶的 `hlsl_gi_hit` 二次命中着色，以及基于 `NVIDIA SHaRC` + `AMD GI-1.2` 的多跳表面世界辐射度缓存）；发光网格经自发光通道与 GI 主射线照亮场景。反射按粗糙度三级分流（镜面追踪、有界 VNDF + `GI-1.2` 虚拟命中点视差双源重投影与保色相方差引导 A-Trous 滤波、预积分漫射回退）。全管线照明在光度预曝光（Pre-Exposure）空间下累积，最终抗锯齿与后处理提供 `Atelier TAAU`、Karis 防萤火虫 Bloom、`AgX`（默认）/ `Khronos PBR Neutral` 色调映射、Jiménez SMAA、静态 0.99-LSB IGN sRGB 量化，以及零重绘 `3×3` 射线—三角形精确求交 `UnjitterDepth CS`。**Window → World Settings** 编辑阴影、天空与体积雾、全局光照、三级镜面反射、曝光、色调映射、Bloom 与抗锯齿；作者值随 Scene 保存并参与撤销。Point、Spot、Rectangle、Directional Light 与可选 `SkyMap` 等距柱状 HDRI 沿现有入口编辑；[Scene Lit Room](examples/Content/Scene%20Lit%20Room/README.md) 是 Examples 工程中的普通场景。具体范围、默认值与边界见 [Scene Lit](docs/modules/renderer/scene-lit.md)；Renderer 端到端入口为 `renderer_acceptance_scene_lit`；各入口证明的内容见[验收记录](docs/modules/renderer/acceptance.md)。
 共享文本编辑已接入 Unicode、参数搜索、剪贴板与 IMM32。字段切换或目标失效时取消旧编辑上下文；本地文本历史和场景撤销按当前编辑状态路由。真实输入法的检查方式见[编辑器验收](docs/modules/editor/README.md#输入法验收)，当前输入合同见[UI 模块](docs/modules/ui/README.md#共享单行编辑)，当前作者层实现与范围见[声明式 UI](docs/modules/editor/declarative-ui.md)。普通 UI/窗口验收不替代真实系统 IME 验收。
 
 样式/绘制基础已扩展为 [SS（Style Sheets）](docs/modules/ui/style-sheets.md)：类名、角色、交互状态、token、局部作用域及属性覆盖共用最终样式；接受帧保有文字命中快照。GPU 支持独立圆角、向内边框、RGBA 图片与相邻实例合批。编辑器启动优先读取工作树中的 [assets/editor.ss](assets/editor.ss)（不存在时回退可执行文件旁部署的 `editor.ss`），并支持与 `.ui.source` 一致的保存热重载（失败保留已接受样式并在状态栏显示诊断）。Parameters 的查询、Position、组件分组和 Scene Outliner 现由 [editor.ui.source](assets/editor.ui.source) 声明，支持有类型的组件组合、文字输入、只读可复制字段、二维色盘、稳定 key 列表、条件挂载，以及保存后的源码 patch。Dev / Release 开发工作树构建读取这份文件，复用未改变的组件代码，保留兼容的 Instance / Runtime Context，只增删对应子实例；失败更新保留原界面。语义、性能与限制见[原生声明式 UI](docs/modules/editor/declarative-ui.md)。
@@ -68,7 +68,7 @@ Scene Outliner 展示 World → Entity 递归组合关系、实际 Entity 类型
 
 参数面板使用类型图标＋对象标题（非实体目标自动切换为只读可复制字段）及连续属性滚动区，名称右侧的放大镜按需展开 `SearchBox`。Entity 名称参与场景撤销；颜色参数弹窗与 Controls 的 Appearance 页提供二维 Saturation/Value 色盘、纵向 Hue 光谱条、HDR 强度滑条及 RGB/HSV 通道。7 DIP 紧凑滚动条支持拖动、按页和滚轮，鼠标指针随编辑/拖动用途变化。组合与边界见[参数面板](docs/modules/editor/README.md#参数面板组合)。
 
-工程使用文件夹作为入口：File 菜单创建/打开包含 Config、Content、Source、Cache 的工程，Ctrl+S 保存当前工作区文档；也可运行 `atelier_editor --project <目录> [--scene <Content 下相对路径>]`。格式、资源身份、OBJ 导入和支持范围见[工程工作流](docs/modules/editor/projects.md)。独立 Examples 工程中的 [Sponza](examples/Content/Sponza/README.md) 使用三盏真实灯光与覆盖完整模型的 DDGI 探针。Scene Lit、Smooth/Flat 共用网格材质槽与贴图覆盖；MatCap 保留自己的表面配色，同时遵循 Mask。
+工程使用文件夹作为入口：File 菜单创建/打开包含 Config、Content、Source、Cache 的工程，Ctrl+S 保存当前工作区文档；也可运行 `atelier_editor --project <目录> [--scene <Content 下相对路径>]`。格式、资源身份、OBJ 导入和支持范围见[工程工作流](docs/modules/editor/projects.md)。独立 Examples 工程中的 [Sponza](examples/Content/Sponza/README.md) 使用三盏真实灯光、HDRI 天空贴图与三层实时全局光照。Scene Lit、Smooth/Flat 共用网格材质槽与贴图覆盖；MatCap 保留自己的表面配色，同时遵循 Mask。
 
 编辑器的窗口验收只保留日志零错误冒烟 `editor_log_smoke_acceptance`，经验收脚本运行以取得窗口锁：
 
@@ -139,7 +139,7 @@ CMake 的 `acceptance_headless` 和 `acceptance_window` 是两类目标的清单
 
 唯一版本清单位于 [cmake/toolchain-lock.json](cmake/toolchain-lock.json)，版本升级同时更新锁文件并验证构建环境，不在文档中维护第二份版本表。
 
-通过归档下载的第三方依赖由 [cmake/dependencies-lock.json](cmake/dependencies-lock.json) 锁定版本、下载地址和 SHA-256。首次 CMake 配置取得 mimalloc、LLVM SDK 所需的 zlib/zstd，以及 gfx 和它使用的 DXC、Agility、D3D12MA、PIX 与编辑器 JSON 库。压缩包缓存于 `.tools/downloads/`，源码和构建结果位于各配置的 `out/` 下。Jolt 源码通过 Git 子模块保存在 `third_party/jolt/`，版本由主仓库记录的子模块提交固定。不要求编译 LLVM 或 compiler-rt 全量源码。
+通过归档下载的第三方依赖由 [cmake/dependencies-lock.json](cmake/dependencies-lock.json) 锁定版本、下载地址和 SHA-256。首次 CMake 配置取得 mimalloc、LLVM SDK 所需的 zlib/zstd，以及固定补丁版 NVIDIA NRI、DXC、Agility SDK、PIX、meshoptimizer、rgbcx/bc7enc_rdo 与编辑器 JSON 库。压缩包缓存于 `.tools/downloads/`，源码和构建结果位于各配置的 `out/` 下。Jolt 源码通过 Git 子模块保存在 `third_party/jolt/`，版本由主仓库记录的子模块提交固定。不要求编译 LLVM 或 compiler-rt 全量源码。
 
 原生代码使用 C++23，警告视为错误；编译使用 clang-cl，静态归档使用 llvm-lib，链接使用 lld-link。只维护 CMake 构建定义。IDE 应使用相同 preset 和准备好的工具链环境。
 
@@ -175,9 +175,9 @@ git -C third_party/jolt switch --detach $joltRevision
 
 检查上游构建选项/API 变化，重新配置并执行 dev/release 的 `physics_acceptance`，然后将子模块指针与必要的适配改动一同记录到项目提交。合并其他项目增量不会自动跟随 Jolt 上游最新提交；切换或拉取包含子模块版本更新的项目提交后，再执行 `git submodule update --init --recursive` 同步源码。
 
-## RHI 图形验收
+## RHI 与 RDG 图形验收
 
-RHI 采用固定 gfx 与局部补丁，提供 Compute、Mesh、Vertex 管线和有界执行域。单独构建并运行：`cmake --build --preset dev --target rhi_acceptance`，发布配置替换为 `release`；验收在 D3D12 debug/GBV 下用 Compute、Mesh、Vertex 管线各绘制并读回一次，确认管线保活其执行域且 debug 层零警告零错误。命令要求同时支持 Mesh Shader、DXR 1.1 inline RayQuery 和 SV_Barycentrics 的真实硬件（DX12 Ultimate 一档），不自动降级为软件或跳过场景。当前实测与边界见 [RHI 模块](docs/modules/rhi/README.md) 和 [验收证据](docs/modules/rhi/acceptance.md)。
+RHI（`atelier_rhi`）基于固定版本 NVIDIA NRI 与局部补丁（`third_party/nri/atelier.patch`），提供进程内唯一 `rhi::Device`、全局 SM 6.6 Bindless 描述符堆（`ResourceDescriptorHeap` + `SamplerDescriptorHeap` + 16-DWORD 根常量）、Graphics / Async Compute / Copy 三队列时间线及多窗口轻量 `rhi::WindowSurface`；`atelier_rdg` 在其上提供线性 Arena 编译期 Render Dependency Graph（死通道裁剪、D3D12 Enhanced Barriers、Placed Resource 瞬态别名池、区间并集 GPU 计时与 `rdg::TraceSnapshot`）。单独构建并运行：`cmake --build --preset dev --target rhi_acceptance`，发布配置替换为 `release`；验收在 D3D12 debug/GBV 下经 RDG 执行 Compute、Mesh、Vertex 管线并读回校验，确认管线保活执行域且 debug 层零警告零错误。命令要求同时支持 Mesh Shader、DXR 1.1 inline RayQuery、SV_Barycentrics、Enhanced Barriers 与 Shader Model 6.6 的真实硬件（DX12 Ultimate 一档），不自动降级为软件或跳过场景。当前实测与边界见 [RHI 模块](docs/modules/rhi/README.md) 和 [验收证据](docs/modules/rhi/acceptance.md)。
 
 构建输出同时部署锁定的 DXC、Agility 与 PIX DLL，并保留 `licenses/rhi`。`atelier_rhi` 不链接业务 Runtime/JIT；顶层 CMake 配置仍需要完整工具链。
 
@@ -367,4 +367,4 @@ Runtime、宿主回调和 DLL 须活到所有非终态帧清理完成。当前�
 
 现行源码语法见 [LANGUAGE.md](LANGUAGE.md)，长期方向与待定问题见[业务语言设计契约](docs/language-contract.md)；待定方案不代表已实现能力。
 
-World 配置通过 **Window → World Settings** 打开，光照、天光、DDGI 与效果写在 Environment 组件上，随当前 Scene 格式保存并支持同一场景撤销；诊断留在视口。Parameters 支持 AFIELD Label / Category 元数据和 Component / Category 分组；详情见[编辑器文档](docs/modules/editor/README.md)。
+World 配置通过 **Window → World Settings** 打开，光照、天空大气、四层全局光照、镜面反射与后处理写在 Environment 组件上，随当前 Scene 格式保存并支持同一场景撤销；视口诊断与定位符显隐留在视口。Parameters 支持 AFIELD Label / Category 元数据和 Component / Category 分组；详情见[编辑器文档](docs/modules/editor/README.md)。

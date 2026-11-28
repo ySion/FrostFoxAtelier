@@ -21,7 +21,7 @@
       "enabled": true,
       "path": "metallic",
       "type": "float",
-      "value": 1.0
+      "value": 0.0
     },
     {
       "enabled": true,

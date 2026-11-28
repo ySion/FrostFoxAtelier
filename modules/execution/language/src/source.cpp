@@ -700,7 +700,7 @@ private:
                     expr.kind == Kind::null_reference || expr.kind == Kind::create_reference ||
                     expr.kind == Kind::observe_reference || expr.kind == Kind::acquire_reference ||
                     expr.kind == Kind::sequence_mutation || expr.kind == Kind::texture_sample ||
-                    expr.kind == Kind::texture_orientation)
+                    expr.kind == Kind::normal_sample || expr.kind == Kind::texture_orientation)
                     function.parallel_safe = false;
                 else if (expr.kind == Kind::string_literal && !view_only_literals[e])
                     function.parallel_safe = false;
@@ -3982,21 +3982,41 @@ private:
 
     std::expected<NodeId, Diagnostic> material_sample(const Token& token) {
         const bool orientation = token.text == "sample_orientation";
+        const bool normal_map = token.text == "sample_normal";
         const auto label = "Material " + std::string(token.text);
         ATELIER_TRY(consume());
         ATELIER_TRY(expect("("));
         ATELIER_TRY_BIND(parsed_input, expression());
         const auto input = *parsed_input;
-        if (function_.expressions[input].type != environment_.texture_input)
-            return reject(token.position, label + " requires the registered TextureInput value, not a numeric slot.");
+        const auto in_type = function_.expressions[input].type;
+        const bool has_normal_type = environment_.normal_texture_input.kind == ValueType::record &&
+                                     environment_.normal_texture_input.type_index != UINT32_MAX;
+        if (normal_map) {
+            if (!has_normal_type || in_type != environment_.normal_texture_input)
+                return reject(token.position,
+                              label + " requires the registered NormalTextureInput value, not TextureInput or a numeric slot.");
+        } else if (orientation) {
+            if (in_type != environment_.texture_input && (!has_normal_type || in_type != environment_.normal_texture_input))
+                return reject(token.position,
+                              label + " requires a registered TextureInput or NormalTextureInput value, not a numeric slot.");
+        } else {
+            if (has_normal_type && in_type == environment_.normal_texture_input)
+                return reject(token.position,
+                              label + " cannot read NormalTextureInput; use sample_normal(input, uv) instead.");
+            if (in_type != environment_.texture_input)
+                return reject(token.position, label + " requires the registered TextureInput value, not a numeric slot.");
+        }
         ATELIER_TRY(expect(","));
         ATELIER_TRY_BIND(parsed_uv, expression());
         const auto uv = *parsed_uv;
         ATELIER_TRY(expect(")"));
         if (function_.expressions[uv].type != math_named_type("vector2"))
             return reject(token.position, label + " coordinates require vector2.");
-        return add(Expression{orientation ? Expression::Kind::texture_orientation : Expression::Kind::texture_sample,
-                              math_named_type(orientation ? "vector2" : "vector4"), token.position, uv, input});
+        const auto kind = orientation  ? Expression::Kind::texture_orientation
+                          : normal_map ? Expression::Kind::normal_sample
+                                       : Expression::Kind::texture_sample;
+        const auto ret_type = math_named_type(orientation ? "vector2" : (normal_map ? "vector3" : "vector4"));
+        return add(Expression{kind, ret_type, token.position, uv, input});
     }
 
     std::expected<NodeId, Diagnostic> scalar_cast(const Token& token) {
@@ -4055,7 +4075,8 @@ private:
         }
         if (token.kind != Token::Kind::identifier)
             return reject(token.position, "Expected an expression.");
-        if (environment_.material && (token.text == "sample" || token.text == "sample_orientation"))
+        if (environment_.material &&
+            (token.text == "sample" || token.text == "sample_normal" || token.text == "sample_orientation"))
             return material_sample(token);
         if (token.text == "float" || token.text == "double" || token.text == "int" || token.text == "uint")
             return scalar_cast(token);

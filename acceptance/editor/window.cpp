@@ -12,6 +12,7 @@
 #include "platform/utf.hpp"
 #include "foundation/sha256.hpp"
 #include <Windows.h>
+#include <objbase.h>
 #include <algorithm>
 #include <array>
 #include <cmath>

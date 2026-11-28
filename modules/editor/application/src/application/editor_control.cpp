@@ -26,10 +26,7 @@ namespace {
 using control::Failure;
 
 // Bumped whenever the frozen camera/view contract changes; repro.open accepts only this schema.
-constexpr unsigned repro_view_schema = 7;
-
-constexpr std::array<StringView, 3> removed_view_options{"direct_reference", "direct_clustered",
-                                                         "direct_shadow_cache"};
+constexpr unsigned repro_view_schema = 8;
 
 constexpr unsigned inspect_page_items = 256;
 
@@ -95,91 +92,10 @@ json::Result<void> numbers(json::Builder& result, json::Value node, StringView k
     return result.numbers(node, key, Span{values});
 }
 
-json::Result<json::Document>
-probe_volumes_json(const std::array<renderer::ProbeVolumeStats, renderer::probe_volume_limit>& volumes) {
-    json::Builder result(json::Kind::array);
-    for (std::size_t i = 0; i < volumes.size(); ++i) {
-        const auto& volume = volumes[i];
-        const auto item = result.append_object(result.root());
-        ATELIER_TRY(result.set(item, "slot", i));
-        ATELIER_TRY(result.set(item, "enabled", volume.enabled));
-        ATELIER_TRY(result.set(item, "rolling", volume.rolling));
-        ATELIER_TRY(numbers(result, item, "minimum", volume.minimum));
-        ATELIER_TRY(numbers(result, item, "maximum", volume.maximum));
-        ATELIER_TRY(numbers(result, item, "spacing", volume.spacing));
-        ATELIER_TRY(result.numbers(item, "counts", Span{volume.counts}));
-        ATELIER_TRY(result.set(item, "resident", volume.resident));
-        ATELIER_TRY(result.set(item, "updated", volume.updated));
-        ATELIER_TRY(result.set(item, "reset_probes", volume.reset_probes));
-    }
-    return result.finish();
-}
-
-json::Result<json::Document> probe_inspection_json(const std::shared_ptr<const renderer::ProbeInspection>& value) {
-    if (!value)
-        return json::Builder(json::Kind::null).finish();
-    const auto& v = *value;
-    const auto& r = v.receiver;
-    constexpr std::array modes{"live", "hold_irradiance", "hold_distance"};
-    const auto selection = v.requested_probe >= 0 ? (v.traced_probe == ~0u ? "explicit_out_of_range" : "explicit")
-                                                  : (v.traced_probe == ~0u ? "automatic_pending" : "automatic");
-    json::Builder result;
-    const auto root = result.root();
-    ATELIER_TRY(result.set(root, "sequence", v.sequence));
-    ATELIER_TRY(result.set(root, "frame_id", v.frame_id));
-    ATELIER_TRY(result.set(root, "scene_identity", v.scene_identity));
-    ATELIER_TRY(result.numbers(root, "pixel", Span{v.pixel}));
-    ATELIER_TRY(result.set(root, "history", StringView{modes[static_cast<unsigned>(v.history)]}));
-    ATELIER_TRY(result.set(root, "rays", v.rays));
-    ATELIER_TRY(result.set(root, "updates", v.updates));
-    ATELIER_TRY_BIND(volumes, probe_volumes_json(v.volumes));
-    result.set_validated(root, "volumes", volumes->root());
-    const auto receiver = result.object_validated(root, "receiver");
-    ATELIER_TRY(result.set(receiver, "status", r.identity[0]));
-    ATELIER_TRY(result.set(receiver, "volume", r.identity[1]));
-    ATELIER_TRY(result.set(receiver, "contributors", r.identity[2]));
-    ATELIER_TRY(result.numbers(receiver, "irradiance_coverage", Span{r.irradiance}));
-    ATELIER_TRY(result.set(receiver, "weight_sum", r.weights[0]));
-    ATELIER_TRY(result.set(receiver, "dominance", r.weights[1]));
-    ATELIER_TRY(result.numbers(receiver, "position_valid", Span{r.position}));
-    ATELIER_TRY_BIND(probes, result.array(root, "probes"));
-    for (const auto& p : v.probes) {
-        if (!p.identity[2])
-            continue;
-        const auto item = result.append_object(*probes);
-        ATELIER_TRY(result.set(item, "volume", p.identity[0]));
-        ATELIER_TRY(result.set(item, "probe", p.identity[1]));
-        ATELIER_TRY(result.set(item, "support_stage", p.identity[2]));
-        ATELIER_TRY(result.set(item, "age_frames", p.identity[3]));
-        ATELIER_TRY(result.numbers(item, "irradiance_observations", Span{p.irradiance}));
-        ATELIER_TRY(result.numbers(item, "spatial_facing_visibility_weight", Span{p.weights}));
-        ATELIER_TRY(result.numbers(item, "position_distance", Span{p.position}));
-        ATELIER_TRY(result.numbers(item, "transport_observations", Span{p.transport}));
-        ATELIER_TRY(result.numbers(item, "response_epoch_min_max_visits", Span{p.response}));
-    }
-    ATELIER_TRY(result.set(root, "requested_probe", static_cast<std::int64_t>(v.requested_probe)));
-    ATELIER_TRY(result.set(root, "probe_selection", StringView{selection}));
-    ATELIER_TRY(result.set(root, "traced_probe", v.traced_probe));
-    ATELIER_TRY_BIND(rays, result.array(root, "ray_samples"));
-    for (const auto& ray : v.ray_samples) {
-        if (!ray.identity[3])
-            continue;
-        const auto item = result.append_object(*rays);
-        ATELIER_TRY(result.numbers(item, "identity", Span{ray.identity}));
-        ATELIER_TRY(result.numbers(item, "direct_luminance", Span{ray.direct}));
-        ATELIER_TRY(result.numbers(item, "surface_roughness", Span{ray.surface}));
-        ATELIER_TRY(result.numbers(item, "sampling", Span{ray.sampling}));
-        ATELIER_TRY(result.numbers(item, "light_endpoint_distance", Span{ray.endpoint_distance}));
-        ATELIER_TRY(
-            result.numbers(item, "source_radius_range_area_min_distance_squared", Span{ray.source_parameters}));
-    }
-    return result.finish();
-}
-
 json::Result<json::Document> performance_json(const editor::FramePerformance& performance) {
     const auto& sample = performance.snapshot();
     constexpr std::array states{"unavailable", "waiting", "ready"};
-    constexpr std::array aa_names{"off", "taa", "smaa", "smaa_t2x"};
+    constexpr std::array aa_names{"off", "smaa", "taa"};
     json::Builder result;
     const auto root = result.root();
     ATELIER_TRY(result.set(root, "state", StringView{states[static_cast<unsigned>(sample.state)]}));
@@ -195,10 +111,12 @@ json::Result<json::Document> performance_json(const editor::FramePerformance& pe
     ATELIER_TRY(result.numbers(root, "extent", Span{extent}));
     ATELIER_TRY(result.numbers(root, "viewport", Span{viewport}));
     const auto configuration = result.object_validated(root, "configuration");
-    ATELIER_TRY(result.set(configuration, "antialiasing",
-                           StringView{aa_names[static_cast<unsigned>(sample.antialiasing)]}));
+    ATELIER_TRY(result.set(
+        configuration, "antialiasing",
+        StringView{aa_names[std::min<std::size_t>(static_cast<std::size_t>(sample.antialiasing),
+                                                  aa_names.size() - 1)]}));
     ATELIER_TRY(result.set(configuration, "direct_candidates", sample.direct_candidates));
-    ATELIER_TRY(result.set(configuration, "ddgi", sample.ddgi));
+    ATELIER_TRY(result.set(configuration, "indirect_lighting", sample.indirect_lighting));
     if (sample.resource_bytes) {
         ATELIER_TRY(result.set(root, "logical_resource_bytes", *sample.resource_bytes));
     } else {
@@ -208,7 +126,7 @@ json::Result<json::Document> performance_json(const editor::FramePerformance& pe
                          "Current logical Scene Lit allocation; excludes retired resources and physical residency");
     result.set_validated(
         root, "total_semantics",
-        "Sum of eight measured main intervals; excludes UI, guides, probe overlays, capture and CPU Present");
+        "True union GPU interval across graphics, async compute and copy queues; excludes UI, guides, capture and CPU Present");
     // One row of either section; values without an observation are null.
     const auto statistics = [&](json::Value row,
                                 const Optional<editor::FramePerformance::Timing>& timing) -> json::Result<void> {
@@ -477,7 +395,7 @@ const Array<Operation>& operations() {
          {{"sample_frames", arr}, {"timeout_ms", Argument::integer}},
          {}},
         {"render.trace",
-         "Observe one requested-view recording attempt; export actual post-chain commands and bindings without readback",
+         "Observe one requested-view recording attempt; export full RDG DAG passes, transient aliasing and cross-queue edges without readback",
          true,
          {{"scope", Argument::trace_scope}, {"timeout_ms", Argument::integer}},
          {}},
@@ -672,7 +590,7 @@ json::Result<void> append_operation(json::Builder& result, json::Value entries, 
             static constexpr StringView details[]{"full", "summary", "assets", "objects", "object"};
             static constexpr StringView views[]{"catalog", "library", "topology", "node", "full"};
             static constexpr StringView graph_scope[]{"graph"};
-            static constexpr StringView trace_scope[]{"scene_lit_post"};
+            static constexpr StringView trace_scope[]{"full", "scene_lit_post"};
             Span<const StringView> names = trace_scope;
             if (kind == Argument::detail)
                 names = details;
@@ -736,8 +654,6 @@ json::Result<json::Document> capabilities() {
         result.set_validated(schema, "category", option.category);
         result.set_validated(schema, "description", option.description);
     }
-    result.set_validated(root, "probe_volume_stats_semantics",
-                         "CPU accepted-frame layout and update schedule; not GPU completion or valid-support counts");
     result.set_validated(root, "coordinates",
                          "metres, left-handed +Y up, row-major matrices, row vectors; TRS rotation is quaternion xyzw");
     result.set_validated(
@@ -867,7 +783,7 @@ struct EditorControl::Impl {
 
         std::future<std::expected<json::Document, Failure>> writer;
 
-        std::unique_ptr<rhi::CommandTrace> trace;
+        std::unique_ptr<rdg::TraceSnapshot> trace;
 
         bool tracing{};
 
@@ -939,41 +855,25 @@ struct EditorControl::Impl {
         ATELIER_TRY(result.set(stats, "history_resets", s.scene_lit_history_resets));
         ATELIER_TRY(result.set(stats, "light_sources", s.scene_lit_light_sources));
         ATELIER_TRY(result.set(stats, "shadow_sources", s.scene_lit_shadow_sources));
-        const auto spatial = result.object_validated(stats, "spatial_light_sampling");
-        ATELIER_TRY(result.set(spatial, "retained_sources", s.scene_lit_spatial_sources));
-        ATELIER_TRY(result.set(spatial, "nonempty_cells", s.scene_lit_spatial_cells));
-        ATELIER_TRY(result.set(spatial, "resource_bytes", s.scene_lit_spatial_bytes));
-        ATELIER_TRY(result.set(spatial, "uploaded", s.scene_lit_spatial_changed));
-        ATELIER_TRY_BIND(volumes, probe_volumes_json(s.scene_lit_probe_volumes));
-        result.set_validated(stats, "probe_volumes", volumes->root());
-        result.set_validated(stats, "probe_volumes_source", "cpu_layout_and_schedule");
-        ATELIER_TRY_BIND(inspection, probe_inspection_json(s.scene_lit_probe_inspection));
-        result.set_validated(stats, "probe_inspection", inspection->root());
         const auto gpu = result.object_validated(root, "gpu_sample");
         ATELIER_TRY(result.set(gpu, "valid", s.scene_lit_gpu_timing_valid));
         ATELIER_TRY(result.set(gpu, "frame_id", s.scene_lit_gpu_sample_frame_id));
         ATELIER_TRY(result.set(gpu, "sequence", s.scene_lit_gpu_sample_sequence));
+        ATELIER_TRY(result.set(gpu, "union_ms", s.scene_lit_gpu_union_ms));
         ATELIER_TRY(result.numbers(gpu, "pass_ms", Span{s.scene_lit_gpu_ms}));
-        ATELIER_TRY(result.numbers(gpu, "ddgi_pass_ms", Span{s.scene_lit_ddgi_gpu_ms}));
-        ATELIER_TRY(result.numbers(gpu, "ddgi_update_pass_ms", Span{s.scene_lit_ddgi_update_gpu_ms}));
+        ATELIER_TRY(result.numbers(gpu, "gi_pass_ms", Span{s.scene_lit_gi_gpu_ms}));
+        ATELIER_TRY(result.numbers(gpu, "gi_update_pass_ms", Span{s.scene_lit_gi_update_gpu_ms}));
         ATELIER_TRY(result.set(gpu, "direct_cluster_ms", s.scene_lit_direct_cluster_gpu_ms));
         ATELIER_TRY(result.set(gpu, "direct_shading_ms", s.scene_lit_direct_shading_gpu_ms));
-        ATELIER_TRY(result.set(gpu, "shadow_cache_ms", s.scene_lit_shadow_cache_gpu_ms));
-        const auto shadow = result.object_validated(gpu, "shadow_cache");
-        ATELIER_TRY(result.set(shadow, "faces", s.scene_lit_shadow_cache_faces));
-        ATELIER_TRY(result.set(shadow, "reused_faces", s.scene_lit_shadow_cache_reused_faces));
-        ATELIER_TRY(result.set(shadow, "static_updates", s.scene_lit_shadow_cache_static_updates));
-        ATELIER_TRY(result.set(shadow, "dynamic_updates", s.scene_lit_shadow_cache_dynamic_updates));
-        ATELIER_TRY(result.set(shadow, "draws", s.scene_lit_shadow_cache_draws));
-        ATELIER_TRY(result.set(shadow, "resolution_downgrades", s.scene_lit_shadow_cache_resolution_downgrades));
-        ATELIER_TRY(result.set(shadow, "dropped_lights", s.scene_lit_shadow_cache_dropped_lights));
-        ATELIER_TRY(result.set(shadow, "near_plane_faces", s.scene_lit_shadow_cache_near_plane_faces));
-        ATELIER_TRY(result.set(shadow, "missing_taps", s.scene_lit_shadow_cache_missing_taps));
-        ATELIER_TRY(result.set(shadow, "plane_fallbacks", s.scene_lit_shadow_cache_plane_fallbacks));
-        ATELIER_TRY(result.set(shadow, "deferred_faces", s.scene_lit_shadow_cache_deferred_faces));
-        ATELIER_TRY(result.set(shadow, "deferral_frames", s.scene_lit_shadow_cache_deferral_frames));
-        ATELIER_TRY(result.set(shadow, "atlas_cells", s.scene_lit_shadow_cache_atlas_cells));
-        ATELIER_TRY(result.set(shadow, "pending_lights", s.scene_lit_shadow_cache_pending_lights));
+        ATELIER_TRY(result.set(gpu, "vsm_ms", s.scene_lit_vsm_gpu_ms));
+        const auto vsm = result.object_validated(gpu, "vsm_cache");
+        ATELIER_TRY(result.set(vsm, "allocated_pages", s.scene_lit_vsm_allocated_pages));
+        ATELIER_TRY(result.set(vsm, "reused_pages", s.scene_lit_vsm_reused_pages));
+        ATELIER_TRY(result.set(vsm, "static_renders", s.scene_lit_vsm_static_renders));
+        ATELIER_TRY(result.set(vsm, "dynamic_renders", s.scene_lit_vsm_dynamic_renders));
+        ATELIER_TRY(result.set(vsm, "cow_copies", s.scene_lit_vsm_cow_copies));
+        ATELIER_TRY(result.set(vsm, "draws", s.scene_lit_vsm_draws));
+        ATELIER_TRY(result.set(vsm, "evictions", s.scene_lit_vsm_evictions));
         const auto cluster = result.object_validated(gpu, "direct_cluster");
         ATELIER_TRY(result.set(cluster, "cells", s.scene_lit_direct_cluster_cells));
         ATELIER_TRY(result.set(cluster, "overflows", s.scene_lit_direct_cluster_overflows));
@@ -981,11 +881,12 @@ struct EditorControl::Impl {
         ATELIER_TRY(result.numbers(cluster, "receiver_histogram", Span{s.scene_lit_direct_receiver_histogram}));
         ATELIER_TRY(result.set(cluster, "receiver_max_sources", s.scene_lit_direct_receiver_max_sources));
         ATELIER_TRY(result.set(gpu, "pass_mask", s.scene_lit_gpu_pass_mask));
-        ATELIER_TRY(result.numbers(gpu, "ddgi_visibility_rays", Span{s.scene_lit_ddgi_visibility_rays}));
+        ATELIER_TRY(result.numbers(gpu, "gi_visibility_rays", Span{s.scene_lit_gi_visibility_rays}));
         ATELIER_TRY(result.set(gpu, "resource_bytes", s.scene_lit_resource_bytes));
         result.set_validated(gpu, "resource_bytes_source", "current_cpu_logical");
         ATELIER_TRY(result.set(gpu, "shadow_rays", s.scene_lit_shadow_rays));
-        ATELIER_TRY(result.set(gpu, "probe_rays", s.scene_lit_probe_rays));
+        ATELIER_TRY(result.set(gpu, "gi_primary_rays", s.scene_lit_gi_primary_rays));
+        ATELIER_TRY(result.set(gpu, "reflection_work_items", s.scene_lit_reflection_work_items));
         return result.finish();
     }
 
@@ -1153,11 +1054,6 @@ struct EditorControl::Impl {
                                                                 math::Vector3 focus) {
         ATELIER_TRY_BIND(items, patch.object_items());
         for (const auto& [name, value] : *items) {
-            if (std::ranges::find(removed_view_options, name) != removed_view_options.end())
-                return std::unexpected(Failure(
-                    "invalid_request",
-                    String::concat("Display option was removed: ", String::validated(name),
-                                   "; direct light always uses clustered light lists with cached shadows")));
             const auto* option = editor::view_option(name);
             if (!option)
                 return std::unexpected(
@@ -2478,13 +2374,16 @@ struct EditorControl::Impl {
 
     std::expected<json::Document, Failure> start_trace(const String& id,
                                                        const std::shared_ptr<control::Peer>& peer, json::Value args) {
+        StringView chosen_scope = "full";
         ATELIER_TRY_BIND(scope_arg, args.find("scope"));
         if (*scope_arg) {
             ATELIER_TRY_BIND(scope, (**scope_arg).string());
-            if (*scope != "scene_lit_post")
-                return std::unexpected(Failure("invalid_request", "Only scene_lit_post observation is supported"));
+            if (*scope != "full" && *scope != "scene_lit_post")
+                return std::unexpected(
+                    Failure("invalid_request", "Supported render.trace scopes are full and scene_lit_post"));
+            chosen_scope = *scope;
         }
-        if (app.workspace_.view.shading != renderer::Shading::scene_lit)
+        if (chosen_scope == "scene_lit_post" && app.workspace_.view.shading != renderer::Shading::scene_lit)
             return std::unexpected(Failure("not_ready", "Select Scene Lit before requesting a post-chain trace"));
         unsigned timeout = 120000;
         ATELIER_TRY_BIND(timeout_arg, args.find("timeout_ms"));
@@ -2492,7 +2391,8 @@ struct EditorControl::Impl {
             ATELIER_TRY_BIND(n, integer(**timeout_arg, 1, control::maximum_timeout_ms));
             timeout = *n;
         }
-        auto trace = std::make_unique<rhi::CommandTrace>();
+        auto trace = std::make_unique<rdg::TraceSnapshot>();
+        trace->requested_scope = std::string(chosen_scope.std_view());
         ATELIER_TRY_BIND(created, new_job(id, peer));
         auto& job = **created;
         job.kind = "render.trace";
@@ -2501,7 +2401,7 @@ struct EditorControl::Impl {
         job.deadline = job.started + std::chrono::milliseconds(timeout);
         json::Builder manifest(job.manifest);
         manifest.set_validated(manifest.root(), "kind", job.kind);
-        manifest.set_validated(manifest.root(), "scope", "scene_lit_post");
+        manifest.set_validated(manifest.root(), "scope", StringView{chosen_scope});
         ATELIER_TRY(manifest.set(manifest.root(), "document_generation", job.context.document));
         job.manifest = manifest.finish();
         json::Builder response;
@@ -3802,9 +3702,16 @@ bool EditorControl::wants_capture() {
     return job && job->rendering && !job->preparing && job->accepted + 1 == job->points[job->point_index];
 }
 
-rhi::CommandTrace* EditorControl::command_trace() const {
+rdg::TraceSnapshot* EditorControl::command_trace() const {
     const auto* job = impl_->active();
     return job && job->tracing ? job->trace.get() : nullptr;
+}
+
+std::string_view EditorControl::trace_scope() const {
+    const auto* job = impl_->active();
+    if (!job || !job->tracing || !job->trace || job->trace->requested_scope == "full")
+        return {};
+    return job->trace->requested_scope;
 }
 
 void EditorControl::traced(const renderer::Frame& frame, const renderer::Result<renderer::FrameResult>& result,

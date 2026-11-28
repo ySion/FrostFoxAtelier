@@ -114,6 +114,6 @@ std::expected<json::Document, control::Failure> write_samples(const std::filesys
                                                               json::Document, WriteState& work);
 
 // No GPU readback. The worker receives only owned CPU observations and metadata.
-std::expected<json::Document, control::Failure> write_trace(const std::filesystem::path&, rhi::CommandTrace,
+std::expected<json::Document, control::Failure> write_trace(const std::filesystem::path&, rdg::TraceSnapshot,
                                                             json::Document, WriteState& work);
 }
