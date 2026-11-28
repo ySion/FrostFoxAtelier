@@ -4,6 +4,7 @@
 #include "foundation/map.hpp"
 #include "foundation/optional.hpp"
 #include "foundation/span.hpp"
+#include "foundation/string.hpp"
 #include "ui/controls.hpp"
 #include <array>
 #include <memory>
@@ -74,7 +75,7 @@ inline constexpr ui::TableKey size_column = 3;
 class AssetBrowser {
 public:
     struct Item {
-        std::string key;
+        String key;
 
         std::filesystem::path path;
 
@@ -118,9 +119,11 @@ public:
 
     ui::ControlKey directory_control(const std::filesystem::path& path) const;
 
-    ui::TableKey row_key(std::string_view resource) const {
-        const auto key = "item:" + std::string(resource);
-        const auto* found = keys_.find(StringView{key});
+    ui::TableKey row_key(StringView resource) const {
+        if (!resource.is_valid_utf8())
+            return 0;
+        const auto key = String::concat("item:", String::validated(resource));
+        const auto* found = keys_.find(key.view());
         return found ? *found : 0;
     }
 
@@ -208,7 +211,7 @@ private:
 
     bool items_dirty_{true};
 
-    ui::ControlKey key_for(const std::string&);
+    ui::ControlKey key_for(String);
 
     void visit(Location, bool remember = true);
 

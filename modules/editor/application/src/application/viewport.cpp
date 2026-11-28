@@ -228,7 +228,7 @@ bool Application::network_input(const ui::Event& event, std::uint32_t native_key
         workspace_.network.set_cut_key(false);
     if (workspace_.menu || workspace_.dock.dragging() || !ui_.presented() || !pointer_ready())
         return false;
-    const std::string net_graph = workspace_.effective_network_graph(*document_, project_.get());
+    const String net_graph = workspace_.effective_network_graph(*document_, project_.get());
     if (net_graph.empty() || !document_->has_graph(net_graph))
         return false;
     const auto* canvas_box = ui_.presented()->find(editor::network_control::canvas);

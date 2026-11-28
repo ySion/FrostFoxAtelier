@@ -16,7 +16,7 @@
 #include <chrono>
 
 namespace {
-std::unexpected<atelier::Error> invalid_argument(std::string message) {
+std::unexpected<atelier::Error> invalid_argument(atelier::Utf8Text message) {
     return std::unexpected(atelier::Error{atelier::ErrorCode::argument_mismatch, std::move(message)});
 }
 
@@ -176,8 +176,9 @@ atelier::Result<atelier::Array<wchar_t*>> logging_arguments(int argc, wchar_t** 
         } else
             arguments.add(argv[i]);
     }
+    using namespace atelier::literals;
     options.process_name =
-        arguments.size() >= 2 && std::wstring_view(arguments[1]) == L"--run-project" ? "runner" : "editor";
+        arguments.size() >= 2 && std::wstring_view(arguments[1]) == L"--run-project" ? "runner"_s : "editor"_s;
     return arguments;
 }
 }

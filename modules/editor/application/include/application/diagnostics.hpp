@@ -1,5 +1,6 @@
 #pragma once
 #include "editor/session.hpp"
+#include "foundation/string.hpp"
 #include "logging/logging.hpp"
 #include "source/diagnostics.hpp"
 #include "ui/error.hpp"
@@ -17,24 +18,28 @@ Error renderer_error(const renderer::Error&);
 
 // Presentation of an existing failure only. Callers retain its original Error
 // and display prefix; invalid diagnostic bytes must not cause a second failure.
-std::wstring diagnostic_text(std::string_view message) noexcept;
+std::wstring diagnostic_text(StringView message) noexcept;
 
-std::string diagnostic_text(std::wstring_view message) noexcept;
+inline std::wstring diagnostic_text(const String& message) noexcept {
+    return diagnostic_text(message.view());
+}
+
+String diagnostic_text(std::wstring_view message) noexcept;
 
 // Borrows valid input unchanged, otherwise returns the static diagnostic placeholder.
-std::string_view diagnostic_utf8(std::string_view message) noexcept;
+StringView diagnostic_utf8(StringView message) noexcept;
 
 // These bridges own the domain payload, not the underlying diagnostic policy.
 // Draining is performed by the host exactly once at its existing boundary.
 logging::SourceLocation diagnostic_source(const SourceLocation&);
 
-Result<logging::Entry> error_diagnostic(const Error&, std::string_view event, const std::filesystem::path& root);
+Result<logging::Entry> error_diagnostic(const Error&, StringView event, const std::filesystem::path& root);
 
 Result<logging::Entry> world_diagnostic(const editor::Session&, const world::Diagnostic&,
-                                        const std::filesystem::path& root, std::string_view origin = "world");
+                                        const std::filesystem::path& root, StringView origin = "world");
 
 void report_world(const editor::Session&, Span<const world::Diagnostic>, const std::filesystem::path& root,
-                  std::string_view origin = "world") noexcept;
+                  StringView origin = "world") noexcept;
 
 void drain_world(editor::Session&, const std::filesystem::path& root, std::uint64_t& dropped) noexcept;
 

@@ -16,6 +16,7 @@
 #include "foundation/function_ref.hpp"
 #include "foundation/optional.hpp"
 #include "foundation/span.hpp"
+#include "foundation/string.hpp"
 #include "renderer/renderer.hpp"
 #include <chrono>
 #include <source_location>
@@ -75,7 +76,7 @@ public:
     }
 
     // Save the current authoring scene once, before closing a failed host command.
-    void preserve_failure(std::string_view reason) noexcept;
+    void preserve_failure(StringView reason) noexcept;
 
     Result<void> close();
 
@@ -121,7 +122,7 @@ private:
 
     SceneRecovery* recovery_{&owned_recovery_};
 
-    Result<void> dive_into_asset_node(std::string_view parent_graph, std::string_view node_name) override;
+    Result<void> dive_into_asset_node(StringView parent_graph, StringView node_name) override;
 
     Result<void> pop_graph_breadcrumb();
 
@@ -137,7 +138,7 @@ private:
 
     void forward_live() noexcept;
 
-    std::string pending_scene_;
+    String pending_scene_;
 
     std::filesystem::path play_snapshot_;
 
@@ -155,9 +156,9 @@ private:
 
     void consume_play_output() noexcept;
 
-    void notice(std::string_view, std::wstring_view, logging::Severity = logging::Severity::info) noexcept;
+    void notice(StringView, std::wstring_view, logging::Severity = logging::Severity::info) noexcept;
 
-    void report_error(const Error&, std::string_view event = "editor.operation_failed",
+    void report_error(const Error&, StringView event = "editor.operation_failed",
                       logging::Severity = logging::Severity::error) noexcept;
 
     void diagnostics() noexcept;
@@ -350,7 +351,7 @@ private:
     void request_menu(const ui::ContextMenuRequest&);
 
     void close_menu(bool restore_focus = true, std::source_location caller = std::source_location::current(),
-                    std::string_view input_event = {});
+                    StringView input_event = {});
 
     Result<void> update_menu();
 
@@ -378,7 +379,7 @@ private:
     Result<Optional<std::filesystem::path>> choose_path(editor::PathPurpose, const std::filesystem::path& initial,
                                                         std::wstring_view filename) override;
 
-    void asset_created(std::string_view key, bool inspect_material) override;
+    void asset_created(StringView key, bool inspect_material) override;
 
     Result<void> end_interaction() override;
 
@@ -427,7 +428,7 @@ private:
 
     Result<void> fit_lighting(bool follow_focus) override;
 
-    Result<void> rename_asset(std::string_view key, std::string_view name) override;
+    Result<void> rename_asset(StringView key, StringView name) override;
 
     Result<void> save_documents(const editor::Context&, bool all) override;
 
@@ -439,17 +440,17 @@ private:
 
     void stop_play(bool restart) override;
 
-    Result<std::string> import_asset(editor::ImportKind, const std::filesystem::path&) override;
+    Result<String> import_asset(editor::ImportKind, const std::filesystem::path&) override;
 
-    Result<void> reimport_asset(std::string_view key, const std::filesystem::path&) override;
+    Result<void> reimport_asset(StringView key, const std::filesystem::path&) override;
 
-    Result<void> open_graph_context(std::string_view key) override;
+    Result<void> open_graph_context(StringView key) override;
 
     void exit_graph_context() override;
 
-    void select_graph_node(std::string_view key, std::string_view node_name) override;
+    void select_graph_node(StringView key, StringView node_name) override;
 
-    void select_graph_nodes(std::string_view key, Span<const std::string> node_names) override;
+    void select_graph_nodes(StringView key, Span<const String> node_names) override;
 
     Result<void> action(const ui::Action&);
 
@@ -502,16 +503,16 @@ private:
         // Procedural resource providers borrow this address during loading and after adoption.
         std::unique_ptr<editor::Project> project;
 
-        std::string scene_text;
+        String scene_text;
 
         editor::ProjectDocument document;
     };
 
-    static Result<ProjectCandidate> prepare_project_scene(editor::Project, std::string, ProjectOpenPolicy);
+    static Result<ProjectCandidate> prepare_project_scene(editor::Project, String, ProjectOpenPolicy);
 
     Result<void> publish_project(ProjectCandidate);
 
-    void cancel_interaction(const ui::Reply&, std::string_view input_event = {},
+    void cancel_interaction(const ui::Reply&, StringView input_event = {},
                             std::source_location caller = std::source_location::current());
 
     void invalidate_surface();

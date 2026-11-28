@@ -6,6 +6,7 @@
 #include "foundation/map.hpp"
 #include "foundation/optional.hpp"
 #include "foundation/span.hpp"
+#include "foundation/string.hpp"
 #include "procedural/geometry.hpp"
 #include "ui_language/live_document.hpp"
 #include <array>
@@ -168,11 +169,11 @@ inline constexpr ui::ControlKey lock_toggle = popup_root + 536;
 // Selection follows the same named column across cooks. Membership is cached by immutable column identity.
 class GeometryGroupGuide final {
 public:
-    void select(procedural::Layer layer, std::string name);
+    void select(procedural::Layer layer, String name);
 
     bool resolve(const procedural::Geometry& geometry);
 
-    std::string_view name() const noexcept { return name_; }
+    StringView name() const noexcept { return name_.view(); }
 
     procedural::Layer layer() const noexcept { return layer_; }
 
@@ -181,7 +182,7 @@ public:
     Span<const std::uint32_t> samples() const noexcept { return samples_; }
 
 private:
-    std::string name_;
+    String name_;
 
     procedural::Layer layer_{procedural::Layer::primitive};
 
@@ -307,9 +308,9 @@ public:
     };
 
     struct PortRef {
-        std::string node;
+        String node;
 
-        std::string port;
+        String port;
 
         std::size_t index{};
 
@@ -335,13 +336,13 @@ public:
 
         std::size_t highlight{};
 
-        std::string auto_from_node;
+        String auto_from_node;
 
-        std::string auto_from_port;
+        String auto_from_port;
 
-        std::string auto_to_node;
+        String auto_to_node;
 
-        std::string auto_to_port;
+        String auto_to_port;
     };
 
     struct Popup {
@@ -351,9 +352,9 @@ public:
 
         float dip_y{24.f};
 
-        std::string target_name;
+        String target_name;
 
-        Array<std::string> target_nodes;
+        Array<String> target_nodes;
 
         std::wstring title_edit;
 
@@ -377,9 +378,9 @@ public:
 
         bool open_canvas_context{};
 
-        std::string context_node;
+        String context_node;
 
-        std::string dive_into_node;
+        String dive_into_node;
 
         std::array<float, 2> context_world_pos{};
 
@@ -400,7 +401,7 @@ public:
 
     std::array<float, 2> pan() const noexcept { return {pan_x_, pan_y_}; }
 
-    void sync_graph(std::string_view graph_key, Span<const GraphNodeView> nodes, ui_layout::Size canvas_dip,
+    void sync_graph(StringView graph_key, Span<const GraphNodeView> nodes, ui_layout::Size canvas_dip,
                     Span<const GraphNetworkBox> boxes = {}, Span<const GraphStickyNote> notes = {});
 
     void reset_zoom(ui_layout::Size canvas_dip);
@@ -408,7 +409,7 @@ public:
     void step_zoom(int delta_steps, float anchor_dip_x, float anchor_dip_y);
 
     void frame_nodes(Span<const GraphNodeView> nodes, ui_layout::Size canvas_dip,
-                     Span<const std::string> only_selected = {}, Span<const GraphNetworkBox> boxes = {},
+                     Span<const String> only_selected = {}, Span<const GraphNetworkBox> boxes = {},
                      Span<const GraphStickyNote> notes = {});
 
     std::array<float, 2> to_world(float dip_x, float dip_y) const noexcept;
@@ -433,8 +434,8 @@ public:
 
     const TabSearch& tab_search() const noexcept { return tab_search_; }
 
-    void open_tab_search(float dip_x, float dip_y, ui_layout::Size canvas_dip, std::string from_node = {},
-                         std::string from_port = {}, std::string to_node = {}, std::string to_port = {});
+    void open_tab_search(float dip_x, float dip_y, ui_layout::Size canvas_dip, String from_node = {},
+                         String from_port = {}, String to_node = {}, String to_port = {});
 
     void close_tab_search() noexcept;
 
@@ -446,37 +447,37 @@ public:
 
     Array<GraphNodeCatalogEntry> filter_catalog(Span<const GraphNodeCatalogEntry> catalog) const;
 
-    Result<std::string> commit_tab_pick(Session& session, std::string_view graph_key,
-                                        Span<const GraphNodeCatalogEntry> catalog, std::size_t pick_index,
-                                        std::string& primary_selected, Array<std::string>& selected_nodes,
-                                        bool set_display = false, Project* project = nullptr);
+    Result<String> commit_tab_pick(Session& session, StringView graph_key,
+                                   Span<const GraphNodeCatalogEntry> catalog, std::size_t pick_index,
+                                   String& primary_selected, Array<String>& selected_nodes,
+                                   bool set_display = false, Project* project = nullptr);
 
     const Popup& popup() const noexcept { return popup_; }
 
-    void open_node_popup(PopupKind kind, const GraphInspectView& view, std::string_view primary_selected,
-                         Span<const std::string> selected_nodes, ui_layout::Size canvas_dip,
+    void open_node_popup(PopupKind kind, const GraphInspectView& view, StringView primary_selected,
+                         Span<const String> selected_nodes, ui_layout::Size canvas_dip,
                          Optional<std::array<float, 2>> anchor_dip = {});
 
     void close_popup() noexcept { popup_ = {}; }
 
-    Result<bool> apply_action(Session& session, std::string_view graph_key, std::string& primary_selected,
-                              Array<std::string>& selected_nodes, ui_layout::Size canvas_dip,
+    Result<bool> apply_action(Session& session, StringView graph_key, String& primary_selected,
+                              Array<String>& selected_nodes, ui_layout::Size canvas_dip,
                               const ui::Action& action, std::wstring& out_status, bool read_only = false);
 
-    Result<InteractionOutcome> pointer_event(Session& session, std::string_view graph_key,
-                                             std::string& primary_selected, Array<std::string>& selected_nodes,
+    Result<InteractionOutcome> pointer_event(Session& session, StringView graph_key,
+                                             String& primary_selected, Array<String>& selected_nodes,
                                              ui::Rect canvas_px, float dpi_scale, const ui::Event& event,
                                              Project* project = nullptr, bool read_only = false);
 
-    Result<InteractionOutcome> key_event(Session& session, std::string_view graph_key, std::string& primary_selected,
-                                         Array<std::string>& selected_nodes, ui::Rect canvas_px, float dpi_scale,
+    Result<InteractionOutcome> key_event(Session& session, StringView graph_key, String& primary_selected,
+                                         Array<String>& selected_nodes, ui::Rect canvas_px, float dpi_scale,
                                          const ui::Event& event, std::uint32_t native_key, Project* project = nullptr,
                                          bool read_only = false);
 
     void append_canvas(ui_language::ControlOutput output, ui::ControlKey canvas_parent, ui_layout::Size canvas_dip,
                        const std::shared_ptr<const GraphInspectView>& topology,
-                       Span<const GraphNodeCatalogEntry> catalog, std::string_view primary_selected,
-                       Span<const std::string> selected_nodes, bool read_only = false);
+                       Span<const GraphNodeCatalogEntry> catalog, StringView primary_selected,
+                       Span<const String> selected_nodes, bool read_only = false);
 
     std::uint64_t idle_revision() const noexcept { return idle_projection_ ? idle_projection_->revision : 0; }
 
@@ -513,15 +514,15 @@ private:
 
         float zoom;
 
-        std::string primary;
+        String primary;
 
-        std::string note;
+        String note;
 
-        std::string box;
+        String box;
 
-        std::string hovered_node;
+        String hovered_node;
 
-        std::string air_node;
+        String air_node;
 
         Optional<PortRef> hovered_port;
 
@@ -541,7 +542,7 @@ private:
 
         IdleCanvasState state;
 
-        Array<std::string> selection;
+        Array<String> selection;
 
         Array<GraphNodeCatalogEntry> catalog;
 
@@ -597,9 +598,9 @@ private:
         bool framed{};
     };
 
-    ui::ControlKey node_base_key(std::string_view graph_key, std::string_view item_name, std::string_view prefix = {});
+    ui::ControlKey node_base_key(StringView graph_key, StringView item_name, StringView prefix = {});
 
-    std::string active_graph_;
+    String active_graph_;
 
     float pan_x_{160.f};
 
@@ -611,9 +612,9 @@ private:
 
     ui_layout::Size last_canvas_dip_{640.f, 360.f};
 
-    Map<std::string, SavedView> saved_views_;
+    Map<String, SavedView> saved_views_;
 
-    Map<std::string, ui::ControlKey> node_keys_;
+    Map<String, ui::ControlKey> node_keys_;
 
     ui::ControlKey next_node_key_{network_control::node_key_base};
 
@@ -635,23 +636,23 @@ private:
 
     float pan_start_y_{};
 
-    std::string pressed_node_;
+    String pressed_node_;
 
-    std::string selected_note_;
+    String selected_note_;
 
-    std::string selected_box_;
+    String selected_box_;
 
-    std::string active_annotation_;
+    String active_annotation_;
 
     std::array<float, 2> annotation_origin_pos_{};
 
     std::array<float, 2> annotation_origin_size_{};
 
-    Array<std::pair<std::string, std::array<float, 2>>> drag_origins_;
+    Array<std::pair<String, std::array<float, 2>>> drag_origins_;
 
-    Array<std::pair<std::string, std::array<float, 2>>> drag_note_origins_;
+    Array<std::pair<String, std::array<float, 2>>> drag_note_origins_;
 
-    Array<std::pair<std::string, std::array<float, 2>>> drag_box_origins_;
+    Array<std::pair<String, std::array<float, 2>>> drag_box_origins_;
 
     std::array<float, 2> drag_world_delta_{};
 
@@ -665,9 +666,9 @@ private:
 
     Optional<PortRef> hovered_port_;
 
-    std::string hovered_node_;
+    String hovered_node_;
 
-    std::string air_node_;
+    String air_node_;
 
     FlagZone hovered_flag_{FlagZone::none};
 
@@ -683,7 +684,7 @@ private:
 
     std::uint64_t last_click_tick_{};
 
-    std::string last_click_target_;
+    String last_click_target_;
 
     TabSearch tab_search_;
 

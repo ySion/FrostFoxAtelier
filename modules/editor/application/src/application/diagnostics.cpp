@@ -9,20 +9,22 @@
 
 namespace atelier::application {
 Error ui_error(const ui::Error& error) {
-    const auto detail = "UI error " + std::to_string(static_cast<unsigned>(error.code)) + " at control " +
-                        std::to_string(error.key) + " (native " + std::to_string(error.native_code) + ")";
+    const auto detail = String::concat("UI error ", static_cast<unsigned>(error.code), " at control ", error.key,
+                                       " (native ", error.native_code, ")");
+    const auto msg = String::validated(error.message);
     return {ErrorCode::invalid_definition, error.code == ui::ErrorCode::text_failed
-                                               ? std::string(error.message) + "; " + detail
-                                               : detail + ": " + std::string(error.message)};
+                                               ? String::concat(msg, "; ", detail)
+                                               : String::concat(detail, ": ", msg)};
 }
 
 Error renderer_error(const renderer::Error& error) {
     return {ErrorCode::invalid_storage,
-            error.cause.message + " (Renderer error " + std::to_string(static_cast<unsigned>(error.cause.code)) +
-                ", native " + std::to_string(error.cause.native_result) + (error.terminal ? ", terminal)." : ").")};
+            String::concat(error.cause.message, " (Renderer error ", static_cast<unsigned>(error.cause.code),
+                           ", native ", static_cast<int>(error.cause.native_result),
+                           String::validated(error.terminal ? ", terminal)." : ")."))};
 }
 
-std::wstring diagnostic_text(std::string_view message) noexcept {
+std::wstring diagnostic_text(StringView message) noexcept {
     auto text = platform::utf8_to_utf16(message).value_or(L"(诊断文本不是有效 UTF-8)");
     for (auto& ch : text)
         if (ch < 32 && ch != L'\n' && ch != L'\r' && ch != L'\t')
@@ -30,12 +32,12 @@ std::wstring diagnostic_text(std::string_view message) noexcept {
     return text;
 }
 
-std::string diagnostic_text(std::wstring_view message) noexcept {
-    return platform::utf16_to_utf8(message).value_or("(诊断文本不是有效 UTF-16)");
+String diagnostic_text(std::wstring_view message) noexcept {
+    return platform::utf16_to_utf8(message).value_or("(诊断文本不是有效 UTF-16)"_s);
 }
 
-std::string_view diagnostic_utf8(std::string_view message) noexcept {
-    return StringView{message}.is_valid_utf8() ? message : "(诊断文本不是有效 UTF-8)";
+StringView diagnostic_utf8(StringView message) noexcept {
+    return message.is_valid_utf8() ? message : "(诊断文本不是有效 UTF-8)";
 }
 
 namespace {
@@ -56,22 +58,26 @@ void error_source(logging::Entry& entry, const SourceLocation& source) {
 }
 
 void error_element(logging::Entry& entry, const ErrorElement& element) {
-    entry.fields.add({"error.element_layer", std::string(element.layer.view())});
+    entry.fields.add({"error.element_layer", String::from_utf8_validated(diagnostic_utf8(element.layer.view()))});
     entry.fields.add({"error.element_index", std::uint64_t{element.index}});
 }
 
-std::string path_field(Span<const std::string> fields) {
-    std::string result;
+String path_field(Span<const String> fields) {
+    String result;
     for (const auto& field : fields) {
-        result += '/';
-        for (const auto c : field) {
-            if (c == '~')
-                result += "~0";
-            else if (c == '/')
-                result += "~1";
-            else
-                result += c;
+        result.append_ascii('/');
+        const auto sv = field.view();
+        std::size_t plain = 0;
+        for (std::size_t i = 0; i < sv.size(); ++i) {
+            if (sv[i] == '~' || sv[i] == '/') {
+                if (i > plain)
+                    result.append_validated(sv.slice(plain, i - plain));
+                result.append_validated(sv[i] == '~' ? "~0" : "~1");
+                plain = i + 1;
+            }
         }
+        if (sv.size() > plain)
+            result.append_validated(sv.slice(plain));
     }
     return result;
 }
@@ -88,10 +94,10 @@ logging::SourceLocation diagnostic_source(const SourceLocation& value) {
     return result;
 }
 
-Result<logging::Entry> error_diagnostic(const Error& error, std::string_view event, const std::filesystem::path& root) {
+Result<logging::Entry> error_diagnostic(const Error& error, StringView event, const std::filesystem::path& root) {
     logging::Entry entry{.severity = logging::Severity::error,
-                         .category = "editor",
-                         .event_code = std::string(event),
+                         .category = "editor"_s,
+                         .event_code = String::from_utf8_validated(event),
                          .message = error.message};
     auto path = platform::utf16_to_utf8(root.generic_wstring());
     if (!path)
@@ -105,13 +111,13 @@ Result<logging::Entry> error_diagnostic(const Error& error, std::string_view eve
 }
 
 Result<logging::Entry> world_diagnostic(const editor::Session& session, const world::Diagnostic& item,
-                                        const std::filesystem::path& root, std::string_view origin) {
+                                        const std::filesystem::path& root, StringView origin) {
     logging::Entry entry;
     entry.severity = item.severity == world::Severity::error     ? logging::Severity::error
                      : item.severity == world::Severity::warning ? logging::Severity::warning
                                                                  : logging::Severity::info;
-    entry.category = "world";
-    entry.event_code = "world." + std::string(world::name(item.kind));
+    entry.category = "world"_s;
+    entry.event_code = String::concat("world.", String::validated(world::name(item.kind)));
     entry.message = item.message;
     if (item.source)
         entry.source = diagnostic_source(*item.source);
@@ -119,15 +125,16 @@ Result<logging::Entry> world_diagnostic(const editor::Session& session, const wo
     auto path = platform::utf16_to_utf8(root.generic_wstring());
     if (!path)
         return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-16 text."});
+    auto field_path = path_field(item.field);
     entry.fields = {{"document", document},
                     {"project_root", std::move(*path)},
-                    {"origin", std::string(origin)},
+                    {"origin", String::from_utf8_validated(origin)},
                     {"serial", item.serial},
-                    {"phase", std::string(world::name(item.phase))},
+                    {"phase", String::from_utf8_validated(world::name(item.phase))},
                     {"object", item.object.diagnostic_identity()},
                     {"entity", item.entity.diagnostic_identity()},
                     {"type", item.type},
-                    {"field_path", path_field(item.field)},
+                    {"field_path", field_path},
                     {"value", item.value},
                     {"repeats", std::uint64_t{item.repeats}}};
     if (item.error_code) {
@@ -141,19 +148,19 @@ Result<logging::Entry> world_diagnostic(const editor::Session& session, const wo
         entry.fields.add({"scene_local_id", *local});
     // Presentation repeat groups survive a resolved/recurrent value, but are
     // scoped to the actual document and object, never just rendered text.
-    const auto identity = std::to_string(document) + "/" + std::string(origin) + "/" +
-                          item.object.diagnostic_identity() + "/" + std::string(world::name(item.phase)) + "/" +
-                          std::string(world::name(item.kind)) + "/" + path_field(item.field);
+    auto identity = String::concat(document, "/", String::validated(origin), "/", item.object.diagnostic_identity(),
+                                   "/", String::validated(world::name(item.phase)), "/",
+                                   String::validated(world::name(item.kind)), "/", field_path);
     const bool consumer =
         item.phase == world::DiagnosticPhase::presentation || item.phase == world::DiagnosticPhase::lighting ||
         item.phase == world::DiagnosticPhase::physics || item.phase == world::DiagnosticPhase::command;
     if (origin == "world" && consumer && identity.size() <= 256)
-        entry.repeat = logging::Repeat{identity, item.repeats};
+        entry.repeat = logging::Repeat{std::move(identity), item.repeats};
     return entry;
 }
 
 void report_world(const editor::Session& session, Span<const world::Diagnostic> items,
-                  const std::filesystem::path& root, std::string_view origin) noexcept {
+                  const std::filesystem::path& root, StringView origin) noexcept {
     for (const auto& item : items) {
         auto entry = world_diagnostic(session, item, root, origin);
         if (!entry) {
@@ -170,9 +177,9 @@ void drain_world(editor::Session& session, const std::filesystem::path& root, st
     const auto total = session.world().dropped_diagnostics();
     if (total != dropped) {
         logging::Entry entry{.severity = logging::Severity::warning,
-                             .category = "world",
-                             .event_code = "world.diagnostics_dropped",
-                             .message = "World diagnostics exceeded their retention capacity."};
+                             .category = "world"_s,
+                             .event_code = "world.diagnostics_dropped"_s,
+                             .message = "World diagnostics exceeded their retention capacity."_s};
         entry.fields = {{"document", session.presentation().identity()},
                         {"dropped_total", total},
                         {"dropped_delta", total - dropped}};
@@ -187,7 +194,7 @@ void report_load(const editor::Session& session, const std::filesystem::path& ro
         bridge_failed();
         return;
     }
-    logging::Entry entry{.category = "world", .event_code = "world.scene_loaded", .message = "Scene loaded."};
+    logging::Entry entry{.category = "world"_s, .event_code = "world.scene_loaded"_s, .message = "Scene loaded."_s};
     entry.fields = {{"document", session.presentation().identity()},
                     {"placeholders", std::uint64_t{session.placeholder_count()}},
                     {"issues", std::uint64_t{session.load_issues().size()}},
@@ -205,9 +212,9 @@ void report_source_capture(const source::DiagnosticReport& report, const std::fi
                                   "coroutine_allocate", "coroutine_free",    "source_call",       "debug_hook"};
     static_assert(counters.size() == static_cast<std::size_t>(source::DiagnosticCall::count));
     logging::Entry entry{.severity = report.error ? logging::Severity::error : logging::Severity::info,
-                         .category = "source",
-                         .event_code = "source.capture",
-                         .message = report.error ? report.error->message : "Explicit Source diagnostic capture."};
+                         .category = "source"_s,
+                         .event_code = "source.capture"_s,
+                         .message = report.error ? report.error->message : "Explicit Source diagnostic capture."_s};
     auto path = platform::utf16_to_utf8(root.generic_wstring());
     const auto ordinal = static_cast<std::size_t>(report.status);
     if (!path || ordinal >= status.size()) {
@@ -219,7 +226,7 @@ void report_source_capture(const source::DiagnosticReport& report, const std::fi
                     {"entry", report.entry},
                     {"project_root", std::move(*path)},
                     {"source_name", report.source_name},
-                    {"status", std::string(status[ordinal])},
+                    {"status", String::from_utf8_validated(status[ordinal])},
                     {"resumes", report.resumes},
                     {"peak_owned_values", report.peak_owned_values},
                     {"remaining_owned_values", std::uint64_t{report.remaining_owned_values}},
@@ -227,14 +234,15 @@ void report_source_capture(const source::DiagnosticReport& report, const std::fi
                     {"timing", report.timing},
                     {"active_time_ns", std::int64_t{report.active_time.count()}}};
     for (std::size_t i = 0; i < counters.size(); ++i)
-        entry.fields.add({std::string("counter.") + counters[i], report.calls.values[i]});
+        entry.fields.add({String::concat("counter.", String::validated(counters[i])), report.calls.values[i]});
     const auto resources = [&](const char* prefix, const source::DiagnosticResources& value) {
-        entry.fields.add({std::string(prefix) + ".objects", std::uint64_t{value.objects}});
-        entry.fields.add({std::string(prefix) + ".roots", std::uint64_t{value.roots}});
+        const auto p = String::validated(prefix);
+        entry.fields.add({String::concat(p, ".objects"), std::uint64_t{value.objects}});
+        entry.fields.add({String::concat(p, ".roots"), std::uint64_t{value.roots}});
         entry.fields.add(
-            {std::string(prefix) + ".pending_reclamation", std::uint64_t{value.pending_reclamation}});
+            {String::concat(p, ".pending_reclamation"), std::uint64_t{value.pending_reclamation}});
         entry.fields.add(
-            {std::string(prefix) + ".collection_phase", static_cast<std::uint64_t>(value.collection_phase)});
+            {String::concat(p, ".collection_phase"), static_cast<std::uint64_t>(value.collection_phase)});
     };
     resources("before", report.before);
     resources("after", report.after);

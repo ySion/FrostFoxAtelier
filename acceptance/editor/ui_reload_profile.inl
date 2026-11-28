@@ -102,14 +102,14 @@ atelier::Result<void> profile_editor_ui_reload(Application& app, const std::file
     using Clock = timing::Clock;
     auto& workspace = Access::workspace(app);
     ATELIER_TRY_BIND(path, workspace.ui_source());
-    ATELIER_TRY_BIND(bytes, assets::read_file(*path, 1024 * 1024));
+    ATELIER_TRY_BIND(bytes, assets::read_utf8_file(*path, 1024 * 1024));
     const auto& original = *bytes;
-    constexpr std::string_view function = "double shelf_expanded_height() { return 56.0d; }";
+    constexpr StringView function = "double shelf_expanded_height() { return 56.0d; }";
     const auto at = original.find(function);
-    if (!(at != original.npos && original.find(function, at + 1) == original.npos))
+    if (!(at != String::npos && original.find(function, at + 1) == String::npos))
         return command_error("ToolShelf height fixture no longer matches the editor source.");
     auto taller = original;
-    taller.replace(at + function.find("56"), 2, "57");
+    static_cast<void>(taller.replace(at + function.find("56"), 2, "57"));
     ATELIER_TRY(prepare_output(output));
     const auto author = output / "editor.ui.source";
     ATELIER_TRY(editor::write_file(author, original, editor::WriteMode::create));
@@ -130,7 +130,7 @@ atelier::Result<void> profile_editor_ui_reload(Application& app, const std::file
         if (app.frame_record().structure_errors)
             return command_error("Invalid editor frame timing.");
         if (!workspace.ui_error().empty())
-            return command_error(std::string(workspace.ui_error()));
+            return command_error(String::from_utf8_validated(workspace.ui_error()));
         const auto gap = [](Clock::time_point now, Clock::time_point& last) {
             if (now == Clock::time_point{})
                 return Clock::duration{};
@@ -163,7 +163,7 @@ atelier::Result<void> profile_editor_ui_reload(Application& app, const std::file
     };
     ATELIER_TRY_BIND(initial_height, height_px());
     if (!has_height(*initial_height, 56))
-        return command_error("Unexpected initial ToolShelf height in pixels: " + std::to_string(*initial_height));
+        return command_error(String::concat("Unexpected initial ToolShelf height in pixels: ", *initial_height));
     using Profile = ui_language::LiveDocument::Profile;
     std::ofstream samples(output / "reloads.csv", std::ios::noreplace),
         frames(output / "steps.csv", std::ios::noreplace);
@@ -181,7 +181,7 @@ atelier::Result<void> profile_editor_ui_reload(Application& app, const std::file
     for (const auto* phase : timing::catalog())
         if (phase->parent() == &timing::frame || phase == &renderer::phases::present) {
             phases.add(phase);
-            frames << ',' << phase->key() << "_ms";
+            frames << ',' << phase->key().std_view() << "_ms";
         }
     frames << '\n';
     const auto ms = [](Clock::duration duration) {
@@ -216,7 +216,8 @@ atelier::Result<void> profile_editor_ui_reload(Application& app, const std::file
         const auto height = expanded_edit ? 57.f : 56.f;
         auto next = expanded_edit ? taller : original;
         if (comment)
-            next.insert(at + function.find("return") + std::string_view("return").size(), "\t/* tool shelf */\n    ");
+            static_cast<void>(
+                next.insert(at + function.find("return") + StringView{"return"}.size(), "\t/* tool shelf */\n    "));
         const auto revision = workspace.ui_revision() + 1;
         ATELIER_TRY_BIND(old_height, height_px());
         Array<Step> steps;
@@ -314,8 +315,8 @@ atelier::Result<void> profile_editor_ui_reload(Application& app, const std::file
             const auto decision = expected == Decision::compiled        ? "compiled"
                                   : expected == Decision::reused_source ? "reused_source"
                                                                         : "reused_dependencies";
-            components << trial << ',' << edit << ',' << revision << ',' << component.name << ',' << decision << ','
-                       << component.total_ns << ',' << component.request_ns << ',' << source.frontend_ns << ','
+            components << trial << ',' << edit << ',' << revision << ',' << component.name.c_str() << ',' << decision
+                       << ',' << component.total_ns << ',' << component.request_ns << ',' << source.frontend_ns << ','
                        << component.select_ns << ',' << source.native_compile_ns << ',' << source.ir_ns << ','
                        << source.optimize_ns << ',' << source.first_lookup_ns << ',' << source.object_ns << ','
                        << component.publish_ns << ',' << component.bind_ns << '\n';
@@ -381,10 +382,10 @@ atelier::Result<void> profile_editor_ui_reload(Application& app, const std::file
     if (!interaction.good())
         return command_error("Cannot write UI input sample.", ErrorCode::invalid_storage);
     ATELIER_TRY(click_shelf());
-    const auto wait_height = [&](float height, std::uint64_t revision, const char* timeout) -> Result<void> {
+    const auto wait_height = [&](float height, std::uint64_t revision, Utf8Text timeout) -> Result<void> {
         for (;;) {
             if (Clock::now() >= until)
-                return command_error(timeout);
+                return command_error(std::move(timeout));
             ATELIER_TRY(step());
             ATELIER_TRY_BIND(current, height_px());
             if (workspace.ui_revision() == revision && has_height(*current, height))
@@ -398,11 +399,11 @@ atelier::Result<void> profile_editor_ui_reload(Application& app, const std::file
     // foldout handler before timing events, then restore the exact authored body.
     auto edited_group = original;
     const auto group_at = original.find("ui PropertyGroup(");
-    constexpr std::string_view handler = "state.expanded = event.checked;";
+    constexpr StringView handler = "state.expanded = event.checked;";
     const auto handler_at = original.find(handler, group_at);
-    if (!(group_at != original.npos && handler_at != original.npos && handler_at < original.find("\nui ", group_at)))
+    if (!(group_at != String::npos && handler_at != String::npos && handler_at < original.find("\nui ", group_at)))
         return command_error("PropertyGroup event fixture no longer matches the editor source.");
-    edited_group.replace(handler_at, handler.size(), "state.expanded = !event.checked;");
+    static_cast<void>(edited_group.replace(handler_at, handler.size(), "state.expanded = !event.checked;"));
     const auto* event_reload = workspace.profile_ui_reloads(Profile::frame);
     for (const auto* text : {&std::as_const(edited_group), &original}) {
         const auto revision = workspace.ui_revision() + 1;

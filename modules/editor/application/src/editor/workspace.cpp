@@ -16,14 +16,14 @@ namespace {
 Error tree_error(const ui::Error& error) {
     return {error.code == ui::ErrorCode::capacity_exceeded ? ErrorCode::capacity_exceeded
                                                            : ErrorCode::invalid_definition,
-            std::string(error.message)};
+            String::from_utf8_validated(error.message)};
 }
 
 Result<const FieldInfo*> property_field(const TypeInfo& owner, FieldId id) {
     const auto field = std::ranges::find(owner.fields, id, &FieldInfo::id);
     if (field == owner.fields.end())
-        return std::unexpected(
-            Error{ErrorCode::invalid_member, "Property path contains an unknown field on " + owner.name});
+        return std::unexpected(Error{
+            ErrorCode::invalid_member, String::concat("Property path contains an unknown field on ", owner.name)});
     return &*field;
 }
 
@@ -35,8 +35,11 @@ struct CavityOption {
 
 struct ViewToggleBinding {
     ui::ControlKey key;
+
     ViewOption option;
+
     double on{1};
+
     double off{};
 };
 
@@ -85,7 +88,8 @@ Result<void> Workspace::initialize() {
     ATELIER_TRY_BIND(builtins, OperatorRegistry::builtins());
     const auto require_operator = [&](const OperatorCall& call) -> atelier::Result<void> {
         if (!builtins->find(call.id))
-            return std::unexpected(Error{ErrorCode::invalid_definition, "Unknown built-in operator: " + call.id});
+            return std::unexpected(
+                Error{ErrorCode::invalid_definition, String::concat("Unknown built-in operator: ", call.id)});
         return {};
     };
     for (const auto& item : menu_bindings)
@@ -122,8 +126,8 @@ ui::ControlKey region_tab(RegionKind region) noexcept {
     return at == region_tabs.end() ? ui::ControlKey{} : at->second;
 }
 
-ObjectId Workspace::inspected_graph_object(const Session& session, std::string_view graph_key) const noexcept {
-    const std::string resolved = graph_key.empty() ? current_network_graph(session) : std::string(graph_key);
+ObjectId Workspace::inspected_graph_object(const Session& session, StringView graph_key) const noexcept {
+    const String resolved = graph_key.empty() ? current_network_graph(session) : String::from_utf8_validated(graph_key);
     if (resolved.empty() || !session.has_graph(resolved))
         return {};
     if (!selected_graph_node.empty())
@@ -132,7 +136,7 @@ ObjectId Workspace::inspected_graph_object(const Session& session, std::string_v
     return session.loaded_graph(resolved);
 }
 
-std::string Workspace::default_selected_graph_node(const Session& session, std::string_view graph_key) const {
+String Workspace::default_selected_graph_node(const Session& session, StringView graph_key) const {
     const auto* doc = session.graph_document(graph_key);
     if (!doc)
         return {};
@@ -141,10 +145,10 @@ std::string Workspace::default_selected_graph_node(const Session& session, std::
             if (listed->display() != ObjectId{})
                 if (const auto disp_name = session.graph_node_name(listed->display()))
                     return *disp_name;
-    return doc->nodes.empty() ? std::string{} : doc->nodes.back().name;
+    return doc->nodes.empty() ? String{} : doc->nodes.back().name;
 }
 
-bool Workspace::is_network_graph_locked(const Session& session, std::string_view net_graph) const {
+bool Workspace::is_network_graph_locked(const Session& session, StringView net_graph) const {
     if (net_graph.empty() || session.is_scratch_graph(net_graph))
         return false;
     if (const bool* it = network_lock_overrides.find(net_graph))
@@ -154,7 +158,7 @@ bool Workspace::is_network_graph_locked(const Session& session, std::string_view
     return active_graph.empty();
 }
 
-std::string Workspace::selected_generator_graph(const Session& session) const {
+String Workspace::selected_generator_graph(const Session& session) const {
     const auto sel = session.selection();
     const ObjectId candidate = sel.object != ObjectId{} ? sel.object : sel.entity;
     if (candidate == ObjectId{})
@@ -168,10 +172,10 @@ std::string Workspace::selected_generator_graph(const Session& session) const {
     return src->source;
 }
 
-std::string Workspace::current_network_graph(const Session& session) const {
+String Workspace::current_network_graph(const Session& session) const {
     if (!active_graph.empty() && session.has_graph(active_graph))
         return active_graph;
-    const std::string world_root =
+    const String world_root =
         (network_pinned && !pinned_graph.empty()) ? pinned_graph : selected_generator_graph(session);
     if (!graph_breadcrumbs.empty() && !dived_network_graph.empty() &&
         graph_breadcrumbs.front().graph_key == world_root && session.has_graph(dived_network_graph))
@@ -181,10 +185,10 @@ std::string Workspace::current_network_graph(const Session& session) const {
     return {};
 }
 
-std::string Workspace::effective_network_graph(Session& session, Project* project) {
+String Workspace::effective_network_graph(Session& session, Project* project) {
     if (!active_graph.empty() && session.has_graph(active_graph))
         return active_graph;
-    const std::string world_root =
+    const String world_root =
         (network_pinned && !pinned_graph.empty()) ? pinned_graph : selected_generator_graph(session);
     if (!graph_breadcrumbs.empty()) {
         if (graph_breadcrumbs.front().graph_key != world_root || dived_network_graph.empty()) {
@@ -223,7 +227,7 @@ std::string Workspace::effective_network_graph(Session& session, Project* projec
         else
             failed_auto_open_graph_.clear();
     }
-    return session.has_graph(key) ? key : std::string{};
+    return session.has_graph(key) ? key : String{};
 }
 
 std::wstring Workspace::graph_path_title(const Project* project) const {
@@ -235,10 +239,10 @@ std::wstring Workspace::graph_path_title(const Project* project) const {
 }
 
 std::wstring Workspace::network_path_title(const Session& session, const Project* project,
-                                           std::string_view net_graph) const {
+                                           StringView net_graph) const {
     if (net_graph.empty())
         return L"World  ▸  (Select Generator Entity or Open .procgraph)";
-    const auto graph_stem = [&](std::string_view key) {
+    const auto graph_stem = [&](StringView key) {
         if (const auto* entry = project ? project->entry(key) : nullptr)
             return entry->path.stem().wstring();
         return platform::utf8_to_utf16_validated(key);
@@ -283,7 +287,7 @@ Context Workspace::operator_context(Session& session, Project* project, bool int
     const auto selection = session.selection();
     SelectionContext selection_context{
         selection.entity, selection.object, Array<ObjectId>{session.selected_entities()}};
-    const std::string net_graph = current_network_graph(session);
+    const String net_graph = current_network_graph(session);
     const bool graph_focus =
         (!active_graph.empty() && !inspecting_asset &&
          (region == RegionKind::parameters || region == RegionKind::network)) ||
@@ -293,7 +297,7 @@ Context Workspace::operator_context(Session& session, Project* project, bool int
         if (const auto graph_object = inspected_graph_object(session, net_graph); graph_object != ObjectId{})
             selection_context = {ObjectId{}, graph_object, {}};
     }
-    std::string asset;
+    String asset;
     if (inspecting_asset && (region == RegionKind::parameters || region == RegionKind::assets))
         asset = material_inspection;
     else if (region == RegionKind::parameters && !graph_focus) {
@@ -314,7 +318,7 @@ Context Workspace::operator_context(Session& session, Project* project, bool int
             if (auto key = material::material_key(session.world().runtime(), object))
                 asset = std::move(*key);
     }
-    Array<std::string> locked;
+    Array<String> locked;
     for (const auto& gkey : session.open_graphs())
         if (is_network_graph_locked(session, gkey))
             locked.add(gkey);
@@ -371,7 +375,7 @@ Result<void> Workspace::reset_layout() {
                                                     {control::output_tab, control::assets_tab, tabs},
                                                     {spreadsheet_control::tab, control::assets_tab, tabs}};
     if (const auto reset = dock.reset(placements); !reset)
-        return std::unexpected(Error{ErrorCode::capacity_exceeded, std::string(reset.error().message)});
+        return std::unexpected(Error{ErrorCode::capacity_exceeded, String::from_utf8_validated(reset.error().message)});
     lighting.cancel();
     dock.select(control::entities_tab);
     dock.select(control::assets_tab);
@@ -458,7 +462,7 @@ void Workspace::reconcile_rebuild(Session& document, Project* project) {
                 break;
         }
         if (valid_depth < graph_breadcrumbs.size()) {
-            const std::string fallback_graph =
+            const String fallback_graph =
                 valid_depth > 0 ? graph_breadcrumbs[valid_depth - 1].graph_key : graph_breadcrumbs.front().graph_key;
             graph_breadcrumbs.truncate(valid_depth);
             if (!active_graph.empty()) {
@@ -468,20 +472,20 @@ void Workspace::reconcile_rebuild(Session& document, Project* project) {
                     active_graph.clear();
             } else {
                 dived_network_graph =
-                    (valid_depth > 0 && document.has_graph(fallback_graph)) ? fallback_graph : std::string{};
+                    (valid_depth > 0 && document.has_graph(fallback_graph)) ? fallback_graph : String{};
             }
         }
     }
 
-    const std::string target_graph = !active_graph.empty() ? active_graph : current_network_graph(document);
+    const String target_graph = !active_graph.empty() ? active_graph : current_network_graph(document);
     if (!target_graph.empty() && !document.has_graph(target_graph) && project && project->entry(target_graph))
         static_cast<void>(document.open_graph(*project, target_graph));
 
     if (!target_graph.empty() && document.has_graph(target_graph)) {
         selected_graph_nodes.remove_if(
-            [&](const std::string& name) { return document.graph_node(target_graph, name) == nullptr; });
+            [&](const String& name) { return document.graph_node(target_graph, name) == nullptr; });
         if (!selected_graph_node.empty() && document.graph_node(target_graph, selected_graph_node) == nullptr)
-            selected_graph_node = selected_graph_nodes.empty() ? std::string{} : selected_graph_nodes.back();
+            selected_graph_node = selected_graph_nodes.empty() ? String{} : selected_graph_nodes.back();
     } else {
         selected_graph_nodes.clear();
         selected_graph_node.clear();
@@ -541,7 +545,7 @@ Result<void> Workspace::commit_ui_controls() {
     return {};
 }
 
-bool Workspace::reject_ui_controls(std::string message) {
+bool Workspace::reject_ui_controls(String message) {
     pending_live_.reset();
     return ui_document_ && ui_document_->reject_controls(std::move(message));
 }
@@ -821,9 +825,9 @@ Result<ui::ControlKey> Workspace::bind_operator(OperatorCall call) {
         });
 }
 
-Result<ui::ControlKey> Workspace::bind_graph_param(std::string_view graph_key, std::string_view node_name,
-                                                   std::string_view param_path, Binding::Kind kind, std::size_t lane,
-                                                   ObjectId object, ObjectId component, Span<const FieldId> path) {
+Result<ui::ControlKey> Workspace::bind_graph_param(StringView graph_key, StringView node_name, StringView param_path,
+                                                   Binding::Kind kind, std::size_t lane, ObjectId object,
+                                                   ObjectId component, Span<const FieldId> path) {
     return bind_row(
         0,
         [&](const Binding& item) {
@@ -834,10 +838,10 @@ Result<ui::ControlKey> Workspace::bind_graph_param(std::string_view graph_key, s
         [&](ui::ControlKey key) {
             Binding item{key, object, Array<FieldId>{path}, kind};
             item.component = component;
-            item.slot = graph_key;
+            item.slot = String::from_utf8_validated(graph_key);
             item.index = lane;
-            item.material_path = param_path;
-            item.node_name = node_name;
+            item.material_path = String::from_utf8_validated(param_path);
+            item.node_name = String::from_utf8_validated(node_name);
             return item;
         });
 }
@@ -1062,107 +1066,113 @@ Optional<std::pair<double, double>> slider_range(const FieldRange& range) {
     return std::pair{scalar_number(*low), scalar_number(*high)};
 }
 
-std::string range_note(const FieldRange& range) {
+String range_note(const FieldRange& range) {
     const auto text = [](const Scalar& value) {
         char buffer[32];
         const auto written = std::to_chars(buffer, buffer + sizeof(buffer), scalar_number(value));
-        return std::string(buffer, written.ptr);
+        return String::from_utf8_validated({buffer, static_cast<std::size_t>(written.ptr - buffer)});
     };
-    std::string note;
-    const auto add = [&](const std::string& part) { note += (note.empty() ? "" : "，") + part; };
+    String note;
+    const auto add = [&](const String& part) {
+        if (!note.empty())
+            note.append_validated("，");
+        note.append(part);
+    };
     if (range.ui_min || range.ui_max)
-        add("范围 " + (range.ui_min ? text(*range.ui_min) : "-∞") + " – " + (range.ui_max ? text(*range.ui_max) : "∞"));
+        add(String::concat("范围 ", range.ui_min ? text(*range.ui_min) : "-∞"_s, " – ",
+                           range.ui_max ? text(*range.ui_max) : "∞"_s));
     const bool lock_min = range.hard_min && range.hard_min == range.ui_min;
     const bool lock_max = range.hard_max && range.hard_max == range.ui_max;
     if (lock_min && lock_max)
-        add("上下限锁定");
+        add("上下限锁定"_s);
     else if (lock_min)
-        add("下限锁定");
+        add("下限锁定"_s);
     else if (lock_max)
-        add("上限锁定");
+        add("上限锁定"_s);
     if (range.hard_min && !lock_min)
-        add("硬下限 " + text(*range.hard_min));
+        add(String::concat("硬下限 ", text(*range.hard_min)));
     if (range.hard_max && !lock_max)
-        add("硬上限 " + text(*range.hard_max));
+        add(String::concat("硬上限 ", text(*range.hard_max)));
     return note;
 }
 
-std::string described(std::string description, const FieldRange& range) {
-    if (auto note = range_note(range); !note.empty())
-        description += (description.empty() ? "" : "\n") + note;
+String described(String description, const FieldRange& range) {
+    if (auto note = range_note(range); !note.empty()) {
+        if (!description.empty())
+            description.append_ascii('\n');
+        description.append(note);
+    }
     return description;
 }
 
-std::string_view trim_ascii(std::string_view text) noexcept {
-    while (!text.empty() && (text.front() == ' ' || text.front() == '\t'))
-        text.remove_prefix(1);
-    while (!text.empty() && (text.back() == ' ' || text.back() == '\t'))
-        text.remove_suffix(1);
-    return text;
+StringView trim_ascii(StringView text) noexcept {
+    return text.trim(" \t");
 }
 
-std::string property_condition_token(const Runtime& runtime, const Property& prop) {
+String property_condition_token(const Runtime& runtime, const Property& prop) {
     if (prop.is_string)
         return prop.string_value;
     return std::visit(
-        [&](const auto& v) -> std::string {
+        [&](const auto& v) -> String {
             using T = std::decay_t<decltype(v)>;
             if constexpr (std::same_as<T, bool>) {
-                return v ? "true" : "false";
+                return v ? "true"_s : "false"_s;
             } else if constexpr (std::same_as<T, EnumValue>) {
                 if (const auto info = runtime.describe(v.type); info && (*info)->enumeration) {
                     for (const auto& [name, bits] : (*info)->enumeration->values)
                         if (bits == v.bits)
                             return name;
                 }
-                return std::to_string(v.bits);
+                return String::from_number(v.bits);
             } else {
                 char buffer[32];
                 const auto written = std::to_chars(buffer, buffer + sizeof(buffer), v);
-                return written.ec == std::errc{} ? std::string(buffer, written.ptr) : std::string{};
+                return written.ec == std::errc{}
+                           ? String::from_utf8_validated({buffer, static_cast<std::size_t>(written.ptr - buffer)})
+                           : String{};
             }
         },
         prop.value);
 }
 
 bool property_visible_when(const Runtime& runtime, Span<const Property> schema, const Property& current) {
-    const auto meta = std::ranges::find(current.metadata, std::string_view{"ui.visible_when"},
-                                        &std::pair<std::string, std::string>::first);
+    const auto meta =
+        std::ranges::find(current.metadata, StringView{"ui.visible_when"}, &std::pair<String, String>::first);
     if (meta == current.metadata.end() || meta->second.empty())
         return true;
-    std::string_view remaining = meta->second;
+    StringView remaining = meta->second;
     while (!remaining.empty()) {
         const auto semi = remaining.find(';');
-        const std::string_view clause = trim_ascii(remaining.substr(0, semi));
-        remaining = semi == std::string_view::npos ? std::string_view{} : remaining.substr(semi + 1);
+        const StringView clause = trim_ascii(remaining.slice(0, semi));
+        remaining = semi == StringView::npos ? StringView{} : remaining.slice(semi + 1);
         if (clause.empty())
             continue;
         bool negate = false;
         auto op = clause.find("!=");
         std::size_t op_len = 2;
-        if (op == std::string_view::npos) {
+        if (op == StringView::npos) {
             op = clause.find("==");
-            if (op == std::string_view::npos) {
+            if (op == StringView::npos) {
                 op = clause.find('=');
                 op_len = 1;
             }
         } else {
             negate = true;
         }
-        if (op == std::string_view::npos)
+        if (op == StringView::npos)
             continue;
-        const std::string_view key = trim_ascii(clause.substr(0, op));
-        std::string_view rhs = trim_ascii(clause.substr(op + op_len));
+        const StringView key = trim_ascii(clause.slice(0, op));
+        StringView rhs = trim_ascii(clause.slice(op + op_len));
         if (key.empty())
             continue;
         const Property* target = nullptr;
         if (const auto direct = std::ranges::find(schema, key, &Property::name); direct != schema.end()) {
             target = &*direct;
         } else {
-            std::string_view prefix = current.name;
-            for (auto dot = prefix.rfind('.'); dot != std::string_view::npos; dot = prefix.rfind('.')) {
-                prefix = prefix.substr(0, dot);
-                const std::string qualified = std::string(prefix) + "." + std::string(key);
+            StringView prefix = current.name;
+            for (auto dot = prefix.rfind('.'); dot != StringView::npos; dot = prefix.rfind('.')) {
+                prefix = prefix.slice(0, dot);
+                const auto qualified = String::concat(String::validated(prefix), ".", String::validated(key));
                 if (const auto nested = std::ranges::find(schema, qualified, &Property::name); nested != schema.end()) {
                     target = &*nested;
                     break;
@@ -1171,17 +1181,17 @@ bool property_visible_when(const Runtime& runtime, Span<const Property> schema, 
         }
         if (!target)
             continue;
-        const std::string actual = property_condition_token(runtime, *target);
+        const String actual = property_condition_token(runtime, *target);
         bool matched = false;
         while (true) {
             const auto pipe = rhs.find('|');
-            if (actual == trim_ascii(rhs.substr(0, pipe))) {
+            if (actual == trim_ascii(rhs.slice(0, pipe))) {
                 matched = true;
                 break;
             }
-            if (pipe == std::string_view::npos)
+            if (pipe == StringView::npos)
                 break;
-            rhs.remove_prefix(pipe + 1);
+            rhs = rhs.slice(pipe + 1);
         }
         if (negate ? matched : !matched)
             return false;
@@ -1207,7 +1217,9 @@ ui::ControlIcon light_icon(presentation::LightKind kind) {
 // the icon so rows can show only the name.
 struct EntityRowAppearance {
     ui::ControlIcon icon;
+
     bool mesh;
+
     bool retained;
 };
 
@@ -1241,9 +1253,9 @@ Result<EntityRowAppearance> entity_row_appearance(const Session& session, Object
     return row;
 }
 
-std::wstring parameter_label(std::string_view path) {
-    if (const auto dot = path.rfind('.'); dot != path.npos)
-        path = path.substr(dot + 1);
+std::wstring parameter_label(StringView path) {
+    if (const auto dot = path.rfind('.'); dot != StringView::npos)
+        path = path.slice(dot + 1);
     std::wstring label;
     bool start = true;
     for (const char c : path) {
@@ -1258,7 +1270,7 @@ std::wstring parameter_label(std::string_view path) {
     return label;
 }
 
-std::string_view call_string_arg(const OperatorCall& call, std::string_view key) noexcept {
+StringView call_string_arg(const OperatorCall& call, StringView key) noexcept {
     if (const auto field = call.args.root().find(key); field && *field)
         if (const auto text = (*field)->string())
             return *text;
@@ -1278,7 +1290,7 @@ ui_language::TooltipBinding describe_operator_tooltip(PropertyHelpCache& cache, 
                                                       const Context& target, const Result<void>& polled) {
     std::wstring title = info ? info->title : platform::utf8_to_utf16_validated(call.id);
     std::wstring identity = L"Operator · " + platform::utf8_to_utf16_validated(call.id);
-    std::string desc = info ? info->description : std::string{};
+    StringView desc = info ? info->description.view() : StringView{};
 
     if (call.id == "tool.settings") {
         if (const auto tool = call_string_arg(call, "tool"); !tool.empty()) {
@@ -1427,9 +1439,12 @@ ui_language::TooltipBinding describe_operator_tooltip(PropertyHelpCache& cache, 
         title += L" [" + std::wstring(key_hint) + L"]";
 
     if (!polled && !polled.error().message.empty()) {
-        if (!desc.empty())
-            desc += "\n";
-        desc += "当前不可用：" + polled.error().message;
+        auto full_desc = String::from_utf8_validated(desc);
+        if (!full_desc.empty())
+            full_desc.append_ascii('\n');
+        full_desc.append_validated("当前不可用：");
+        full_desc.append(polled.error().message);
+        return cache.get(key, sanitize_single_line(title), sanitize_single_line(identity), full_desc);
     }
     return cache.get(key, sanitize_single_line(title), sanitize_single_line(identity), desc);
 }
@@ -1484,8 +1499,9 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
     if (!ui_document_) {
         auto recovery = ui_checkpoint_;
         if (!recovery) {
-            auto bundled = asset_directory().and_then(
-                [](const auto& directory) { return assets::read_file(directory / "editor.ui.source", 1024 * 1024); });
+            auto bundled = asset_directory().and_then([](const auto& directory) {
+                return assets::read_utf8_file(directory / "editor.ui.source", 1024 * 1024);
+            });
             if (bundled)
                 recovery = std::move(*bundled);
         }
@@ -1510,7 +1526,8 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
         set_single_graph_selection({});
     } else if (!active_graph.empty() && !selected_graph_node.empty() &&
                !session.graph_node(active_graph, selected_graph_node)) {
-        set_single_graph_selection(default_selected_graph_node(session, active_graph));
+        const auto default_sel = default_selected_graph_node(session, active_graph);
+        set_single_graph_selection(default_sel);
     }
     Set<ObjectId> live;
     live.reserve(members.size() + components.size() + graph_objects.size() + 1);
@@ -1593,7 +1610,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
         }
         status_text = L"UI: " + diagnostic;
     }
-    const std::string net_graph =
+    const String net_graph =
         dock.visible(network_control::tab) ? effective_network_graph(session, project) : current_network_graph(session);
     if (net_graph != last_network_graph_) {
         last_network_graph_ = net_graph;
@@ -1609,7 +1626,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
             target.region = *call.context.region;
         if (call.id.starts_with("asset.")) {
             const auto& selected = assets.selected();
-            call.context.asset = call.context.asset.value_or(selected ? selected->key : std::string{});
+            call.context.asset = call.context.asset.value_or(selected ? selected->key : String{});
             target.asset = *call.context.asset;
         }
         const auto* info = operators.find(call.id);
@@ -1668,7 +1685,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
             ATELIER_TRY_ASSIGN(shelf_items_[index], allocate_binding_key());
         const auto title = definition.shelf_title.empty() ? definition.title : definition.shelf_title;
         const auto kind_field = *definition.call.args.root().find("kind");
-        const auto kind = kind_field ? *kind_field->string() : std::string_view{};
+        const auto kind = kind_field ? *kind_field->string() : StringView{};
         const auto icon = kind == "point"                  ? ui::ControlIcon::point_light
                           : kind == "rectangle"            ? ui::ControlIcon::area_light
                           : kind == "directional"          ? ui::ControlIcon::sun_light
@@ -1707,9 +1724,9 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
         const auto chrome = result.controls();
         const auto at = std::ranges::find(chrome, key, &ui::Control::key);
         if (at == chrome.end() || at->layout.height.rule != ui_layout::SizeRule::fixed) {
-            constexpr auto message = "Editor chrome bands require fixed heights for the dock host.";
             retry = true;
-            return std::unexpected(atelier::Error{atelier::ErrorCode::invalid_definition, message});
+            return std::unexpected(atelier::Error{
+                atelier::ErrorCode::invalid_definition, "Editor chrome bands require fixed heights for the dock host."});
         }
         chrome_height += at->layout.height.value;
     }
@@ -1720,7 +1737,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
         for (const auto& tab : pane.tabs) {
             std::wstring style = L"dock-tab";
             for (const auto& name : tab.view->classes)
-                style += L" " + std::wstring(name.begin(), name.end());
+                style += L" " + platform::utf8_to_utf16_validated(name);
             tabs->add({tab.wrapper,
                        {tab.view->title, tab.view == pane.active, std::move(style), tab.view->key,
                         double(ui::ControlIcon::close)},
@@ -2160,7 +2177,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                                            spreadsheet.follow_selected() && inspecting_network &&
                                            !selected_graph_node.empty();
             if (in_sop || follow_world_node) {
-                const std::string& sheet_graph = in_sop ? active_graph : net_graph;
+                const String& sheet_graph = in_sop ? active_graph : net_graph;
                 const ObjectId target_node = spreadsheet.follow_selected() && !selected_graph_node.empty()
                                                  ? session.graph_node_id(sheet_graph, selected_graph_node)
                                                  : ObjectId{};
@@ -2171,16 +2188,20 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     target_label = platform::utf8_to_utf16_validated(selected_graph_node);
                     geom = eval->inspected_output;
                     generation = eval->generation;
-                    if (eval->inspected_error)
-                        error_text = application::diagnostic_text(format_error(*eval->inspected_error));
+                    if (eval->inspected_error) {
+                        const auto err = format_error(*eval->inspected_error);
+                        error_text = application::diagnostic_text(err);
+                    }
                 } else {
                     target_label = eval->display_name.empty()
                                        ? L"(no display)"
                                        : platform::utf8_to_utf16_validated(eval->display_name) + L" [D]";
                     geom = eval->preview_output.get();
                     generation = eval->generation;
-                    if (eval->display_error)
-                        error_text = application::diagnostic_text(format_error(*eval->display_error));
+                    if (eval->display_error) {
+                        const auto err = format_error(*eval->display_error);
+                        error_text = application::diagnostic_text(err);
+                    }
                 }
             } else if (const ObjectId gen_comp = active_procedural_generator(session).value_or(ObjectId{});
                        gen_comp != ObjectId{}) {
@@ -2209,10 +2230,9 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
             Array<GraphNodeCatalogEntry> catalog;
             if (graph_doc) {
                 // Prune any node names removed via Undo or external Control calls.
-                selected_graph_nodes.remove_if(
-                    [&](const std::string& n) { return !session.graph_node(net_graph, n); });
+                selected_graph_nodes.remove_if([&](const String& n) { return !session.graph_node(net_graph, n); });
                 if (!selected_graph_node.empty() && !session.graph_node(net_graph, selected_graph_node))
-                    selected_graph_node = selected_graph_nodes.empty() ? std::string{} : selected_graph_nodes.back();
+                    selected_graph_node = selected_graph_nodes.empty() ? String{} : selected_graph_nodes.back();
 
                 const ObjectId sel_node =
                     !selected_graph_node.empty() ? session.graph_node_id(net_graph, selected_graph_node) : ObjectId{};
@@ -2227,21 +2247,22 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     tab_items->reserve(matches.size());
                     for (std::size_t i = 0; i < matches.size(); ++i) {
                         const bool is_asset = !matches[i].asset_key.empty();
-                        std::string short_name =
-                            is_asset && !matches[i].display_label.empty() ? matches[i].display_label : matches[i].name;
+                        StringView short_name = is_asset && !matches[i].display_label.empty()
+                                                    ? matches[i].display_label.view()
+                                                    : matches[i].name.view();
                         if (!is_asset)
-                            if (const auto dot = short_name.find_last_of('.'); dot != short_name.npos)
-                                short_name = short_name.substr(dot + 1);
+                            if (const auto dot = short_name.rfind('.'); dot != StringView::npos)
+                                short_name = short_name.slice(dot + 1);
                         const auto short_w = platform::utf8_to_utf16_validated(short_name);
                         const auto pick_key = network_control::tab_pick_first + i;
                         const std::wstring identity =
                             is_asset ? (L"Digital Asset · " + platform::utf8_to_utf16_validated(matches[i].asset_key))
                                      : (platform::utf8_to_utf16_validated(matches[i].name) +
                                         (matches[i].native ? L" · C++ SOP" : L" · Source SOP"));
-                        auto pick_help =
-                            property_help_.get(pick_key, short_w, identity,
-                                               matches[i].description.empty() ? "在画布光标位置创建此程序化几何节点。"
-                                                                              : matches[i].description);
+                        auto pick_help = property_help_.get(
+                            pick_key, short_w, identity,
+                            matches[i].description.empty() ? StringView{"在画布光标位置创建此程序化几何节点。"}
+                                                           : matches[i].description.view());
                         const bool active_row = i == std::min(network.tab_search().highlight, matches.size() - 1);
                         tab_items->add(
                             {network_control::tab_item_first + i,
@@ -2266,7 +2287,8 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     cook_summary =
                         std::format(L"Cook Error · '{}'", platform::utf8_to_utf16_validated(eval->display_name));
                     cook_summary_style = L"network-cook-error";
-                    net_status = L"Cook error: " + application::diagnostic_text(format_error(*eval->display_error));
+                    const auto disp_err = format_error(*eval->display_error);
+                    net_status = L"Cook error: " + application::diagnostic_text(disp_err);
                 } else if (const auto* shown = eval->preview_output.get()) {
                     const std::size_t pts = shown->count(procedural::Layer::point);
                     const std::size_t prims = shown->count(procedural::Layer::primitive);
@@ -2555,9 +2577,9 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
             scene_tree_.pending = *staged;
             continue;
         }
-        const auto short_type = [](std::string_view name) {
-            if (const auto dot = name.find_last_of('.'); dot != name.npos)
-                name = name.substr(dot + 1);
+        const auto short_type = [](StringView name) {
+            if (const auto dot = name.rfind('.'); dot != StringView::npos)
+                name = name.slice(dot + 1);
             return platform::utf8_to_utf16_validated(name);
         };
         // Placeholders show the saved type they stand in for.
@@ -2685,7 +2707,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
         const ObjectId param_object =
             (in_graph || in_world_net) ? inspected_graph_object(session, net_graph) : inspected;
         const bool param_is_graph = (in_graph || in_world_net) && param_object != ObjectId{};
-        const auto param_node_name = param_is_graph ? session.graph_node_name(param_object) : Optional<std::string>{};
+        const auto param_node_name = param_is_graph ? session.graph_node_name(param_object) : Optional<String>{};
         const auto lowercase = [](std::wstring value) {
             for (auto& c : value)
                 c = static_cast<wchar_t>(std::towlower(c));
@@ -2694,21 +2716,21 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
         const auto folded = parameter_search_visible ? lowercase(query) : std::wstring{};
         const bool show_position = !param_is_graph && !parameter_by_category_ && material_object == ObjectId{} &&
                                    transform && (inspected == selected || inspected == *transform);
-        using CategoryBuckets = Array<std::pair<std::string, std::shared_ptr<Array<ui_language::Item>>>>;
-        const auto bucket_rows = [](CategoryBuckets& buckets, std::string_view category) {
+        using CategoryBuckets = Array<std::pair<String, std::shared_ptr<Array<ui_language::Item>>>>;
+        const auto bucket_rows = [](CategoryBuckets& buckets, StringView category) {
             auto at = std::ranges::find_if(buckets, [&](const auto& group) { return group.first == category; });
             if (at == buckets.end())
-                return buckets.emplace(std::string(category), std::make_shared<Array<ui_language::Item>>()).second;
+                return buckets
+                    .emplace(String::from_utf8_validated(category), std::make_shared<Array<ui_language::Item>>())
+                    .second;
             return at->second;
         };
         auto groups = std::make_shared<Array<ui_language::Item>>();
         CategoryBuckets category_rows;
-        const auto category_properties = [&](std::string_view category) {
-            return bucket_rows(category_rows, category);
-        };
+        const auto category_properties = [&](StringView category) { return bucket_rows(category_rows, category); };
         const bool param_graph_locked = param_is_graph && is_network_graph_locked(session, net_graph);
         const auto format_enum_choice = [&](const EnumValue& enumeration,
-                                            std::string& description) -> atelier::Result<std::wstring> {
+                                            String& description) -> atelier::Result<std::wstring> {
             std::wstring choice;
             ATELIER_TRY_BIND(enum_type, runtime.describe(enumeration.type));
             const auto& enum_info = *(*enum_type)->enumeration;
@@ -2722,8 +2744,8 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     choice = enum_label(i);
                     if (i < enum_info.metadata.size() && !enum_info.metadata[i].description.empty()) {
                         if (!description.empty())
-                            description += "\n";
-                        description += enum_info.metadata[i].description;
+                            description.append_ascii('\n');
+                        description.append(enum_info.metadata[i].description);
                     }
                     break;
                 }
@@ -2753,12 +2775,12 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
             return choice;
         };
         const auto append_promoted_parameter_rows =
-            [&](ObjectId owner_object, std::string_view graph_key, std::string_view node_name,
-                ObjectId generator_component, Span<const GraphPromotedParameterView> params, bool as_overrides,
-                bool editable, std::string_view default_group_title) -> atelier::Result<void> {
+            [&](ObjectId owner_object, StringView graph_key, StringView node_name, ObjectId generator_component,
+                Span<const GraphPromotedParameterView> params, bool as_overrides, bool editable,
+                StringView default_group_title) -> atelier::Result<void> {
             CategoryBuckets local_groups;
-            const auto target_rows = [&](std::string_view cat) {
-                const std::string_view resolved_cat = cat.empty() ? default_group_title : cat;
+            const auto target_rows = [&](StringView cat) {
+                const StringView resolved_cat = cat.empty() ? default_group_title : cat;
                 return (parameter_by_category_ && material_object == ObjectId{})
                            ? category_properties(resolved_cat)
                            : bucket_rows(local_groups, resolved_cat);
@@ -2766,8 +2788,9 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
             for (const auto& pv : params) {
                 const std::wstring caption =
                     pv.label.empty() ? parameter_label(pv.name) : platform::utf8_to_utf16_validated(pv.label);
-                if (lowercase(caption + L" " + platform::utf8_to_utf16_validated(pv.name + " " + pv.category))
-                        .find(folded) == std::wstring::npos)
+                const auto pv_search = String::concat(pv.name, " ", pv.category);
+                if (lowercase(caption + L" " + platform::utf8_to_utf16_validated(pv_search)).find(folded) ==
+                    std::wstring::npos)
                     continue;
                 auto rows = target_rows(pv.category);
                 ui::ControlKey row_key{};
@@ -2832,15 +2855,15 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     row.inherit = {ov_key, editable};
                 }
                 ATELIER_TRY_BIND(value_type, runtime.describe(pv.value_type));
-                std::string desc = pv.description;
+                String desc = pv.description;
                 if (!as_overrides && !pv.targets.empty()) {
                     if (!desc.empty())
-                        desc += "\n";
-                    desc += "Targets: ";
+                        desc.append_ascii('\n');
+                    desc.append_validated("Targets: ");
                     for (std::size_t t = 0; t < pv.targets.size(); ++t) {
                         if (t > 0)
-                            desc += ", ";
-                        desc += pv.targets[t];
+                            desc.append_validated(", ");
+                        desc.append(pv.targets[t]);
                     }
                 }
                 if (pv.is_vector) {
@@ -2871,11 +2894,12 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     row.enabled = editable;
                     row.change = {first_key, editable};
                     row.target = first_key;
+                    const auto help_desc = described(desc, pv.properties.front().range);
                     row.help =
                         property_help_.get(row_key, row.title,
                                            L"Digital Asset Parameter · " + platform::utf8_to_utf16_validated(pv.name) +
                                                L" : " + platform::utf8_to_utf16_validated((*value_type)->name),
-                                           described(desc, pv.properties.front().range));
+                                           help_desc);
                 } else if (pv.properties.front().is_string) {
                     ui::ControlKey tkey{};
                     ATELIER_TRY_ASSIGN(tkey,
@@ -2932,11 +2956,12 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     row.change = {fkey, editable};
                     row.choice = std::move(choice);
                     row.target = fkey;
+                    const auto help_desc = described(desc, prop.range);
                     row.help =
                         property_help_.get(row_key, row.title,
                                            L"Digital Asset Parameter · " + platform::utf8_to_utf16_validated(pv.name) +
                                                L" : " + platform::utf8_to_utf16_validated((*value_type)->name),
-                                           described(desc, prop.range));
+                                           help_desc);
                 }
                 rows->add(std::move(row).item());
             }
@@ -2960,12 +2985,12 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
         };
         const auto append_properties = [&](ObjectId object, TypeId type,
                                            const ParameterMaterials& materials) -> atelier::Result<void> {
-            const auto asset_name = [&](const std::string& key) {
+            const auto asset_name = [&](const String& key) {
                 if (const auto* entry = project ? project->entry(key) : nullptr)
                     return entry->path.stem().wstring();
                 return platform::utf8_to_utf16_validated(key);
             };
-            const auto property_caption = [&](std::string_view name, std::string_view declared) {
+            const auto property_caption = [&](StringView name, StringView declared) {
                 return declared.empty() ? parameter_label(name) : platform::utf8_to_utf16_validated(declared);
             };
             const auto property_key = [&](Span<const FieldId> path, Binding::Kind kind = Binding::Kind::field) {
@@ -2984,7 +3009,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     return !prop.category.empty() && property_visible_when(runtime, *schema, prop);
                 });
             CategoryBuckets node_category_rows;
-            const auto node_category_properties = [&](std::string_view category) {
+            const auto node_category_properties = [&](StringView category) {
                 return bucket_rows(node_category_rows, category);
             };
             ATELIER_TRY_BIND(is_light, runtime.is_a(type, session.presentation_types().light_component));
@@ -3031,11 +3056,11 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                 }
                 const bool is_vec_prop = property.path.size() > 1 &&
                                          (parent->math.vector() || parent->math.shape == math::Shape::quaternion);
-                Optional<std::string> controlling_param;
+                Optional<String> controlling_param;
                 bool any_lane_controlled = false;
                 if (is_sop_node) {
                     if (is_vec_prop) {
-                        const auto vec_name = property.name.substr(0, property.name.rfind('.'));
+                        const auto vec_name = property.name.view().slice(0, property.name.view().rfind('.'));
                         controlling_param = session.graph_controlling_parameter(net_graph, *param_node_name, vec_name);
                         any_lane_controlled = controlling_param.has_value();
                         const auto count = parent->math.components();
@@ -3070,12 +3095,12 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     continue;
                 }
                 if (parameter_by_category_ && material_object == ObjectId{}) {
-                    const std::string_view category =
-                        property.category.empty() ? std::string_view{"General"} : std::string_view{property.category};
+                    const StringView category =
+                        property.category.empty() ? StringView{"General"} : property.category.view();
                     properties = category_properties(category);
                 } else if (node_categorized) {
-                    const std::string_view category =
-                        property.category.empty() ? std::string_view{"General"} : std::string_view{property.category};
+                    const StringView category =
+                        property.category.empty() ? StringView{"General"} : property.category.view();
                     properties = node_category_properties(category);
                 }
                 const bool can_edit_object = session.is_graph_object(object)
@@ -3096,7 +3121,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                 }
                 if (is_vec_prop) {
                     const auto count = parent->math.components();
-                    const auto name = property.name.substr(0, property.name.rfind('.'));
+                    const auto name = property.name.view().slice(0, property.name.view().rfind('.'));
                     const auto prefix = Span{property.path}.first(property.path.size() - 1);
                     const bool spatial_position = std::ranges::equal(property.path, session.types().position_fields[0]);
                     const bool spatial_rotation = std::ranges::equal(property.path, session.types().rotation_fields[0]);
@@ -3107,11 +3132,12 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                         euler = euler_degrees(trs->rotation);
                     }
                     Array<ui::NumberField> tuple;
-                    std::string lane_binding_note;
-                    bool matches =
-                        group_matches || lowercase(platform::utf8_to_utf16_validated(name + " " + property.label + " " +
-                                                                                     property.category))
-                                                 .find(folded) != std::wstring::npos;
+                    String lane_binding_note;
+                    const auto vec_search =
+                        String::concat(String::validated(name), " ", property.label, " ", property.category);
+                    bool matches = group_matches ||
+                                   lowercase(platform::utf8_to_utf16_validated(vec_search)).find(folded) !=
+                                       std::wstring::npos;
                     for (std::size_t lane = 0; lane < count && index + lane < schema->size(); ++lane) {
                         const auto& field = (*schema)[index + lane];
                         if (field.path.size() != property.path.size() ||
@@ -3124,11 +3150,13 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                         const auto lane_ctrl =
                             (is_sop_node && !controlling_param)
                                 ? session.graph_controlling_parameter(net_graph, *param_node_name, field.name)
-                                : Optional<std::string>{};
+                                : Optional<String>{};
                         if (lane_ctrl) {
                             if (!lane_binding_note.empty())
-                                lane_binding_note += ", ";
-                            lane_binding_note += std::string(1, "xyzw"[lane]) + "↗" + *lane_ctrl;
+                                lane_binding_note.append_validated(", ");
+                            lane_binding_note.append_ascii("xyzw"[lane]);
+                            lane_binding_note.append_validated("↗");
+                            lane_binding_note.append(*lane_ctrl);
                         }
                         const auto value =
                             spatial_rotation ? double(euler[lane])
@@ -3209,11 +3237,12 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                             std::ranges::find(bindings_, row.pick.target, &Binding::key)->color_maximum =
                                 row.edit.fields.front().maximum;
                         }
+                        const auto help_desc = described(property.description, property.range);
                         row.help = property_help_.get(row.key, row.title,
                                                       type_name + L"." + platform::utf8_to_utf16_validated(name) +
                                                           L" : " + platform::utf8_to_utf16_validated(parent->name) +
                                                           (spatial_rotation ? L" · Euler (°)" : L""),
-                                                      described(property.description, property.range));
+                                                      help_desc);
                         properties->add(std::move(row).item());
                     }
                     continue;
@@ -3227,7 +3256,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                                                                      Binding::Kind::graph_param_context, 0, object, {},
                                                                      property.path));
                 if (light && property.name.starts_with("settings.")) {
-                    const auto field = std::string_view(property.name).substr(9);
+                    const auto field = property.name.view().slice(9);
                     if (field == "kind")
                         caption = L"Light Type";
                     else if (field == "intensity")
@@ -3248,10 +3277,10 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     else if (field == "casts_shadow")
                         caption = L"Cast Shadows";
                 }
+                const auto prop_search = String::concat(property.name, " ", property.category);
                 if (!group_matches &&
-                    lowercase(caption + L" " +
-                              platform::utf8_to_utf16_validated(property.name + " " + property.category))
-                            .find(folded) == std::wstring::npos)
+                    lowercase(caption + L" " + platform::utf8_to_utf16_validated(prop_search)).find(folded) ==
+                        std::wstring::npos)
                     continue;
                 if (property.is_string) {
                     ATELIER_TRY_BIND(text_key, property_key(property.path, Binding::Kind::text_field));
@@ -3296,7 +3325,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     ATELIER_TRY_BIND(slider_key, property_key(property.path, Binding::Kind::slider));
                     edit.fields.front().slider = ui::SliderRange{*slider_key, slider->first, slider->second};
                 }
-                std::string description = property.description;
+                String description = property.description;
                 std::wstring choice;
                 if (enumeration)
                     ATELIER_TRY_ASSIGN(choice, format_enum_choice(*enumeration, description));
@@ -3317,11 +3346,12 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                 row.choice = std::move(choice);
                 row.target = *key;
                 ATELIER_TRY_BIND(value_type, runtime.describe(property.type));
+                const auto help_desc = described(description, property.range);
                 row.help = property_help_.get(row.key, row.title,
                                               platform::utf8_to_utf16_validated(type_desc->name) + L"." +
                                                   platform::utf8_to_utf16_validated(property.name) + L" : " +
                                                   platform::utf8_to_utf16_validated((*value_type)->name),
-                                              described(description, property.range));
+                                              help_desc);
                 properties->add(std::move(row).item());
             }
             properties =
@@ -3329,7 +3359,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     ? category_properties("Material")
                     : component_properties;
             const auto selector = [&](ui::ControlKey key, std::wstring caption, std::wstring choice,
-                                      std::string_view description) {
+                                      StringView description) {
                 if (!group_matches && lowercase(caption + L" " + choice).find(folded) == std::wstring::npos)
                     return;
                 PropertyRow row;
@@ -3343,7 +3373,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                 row.help = property_help_.get(key, row.title, L"Resource binding", description);
                 properties->add(std::move(row).item());
             };
-            const auto mark_unavailable = [&](assets::AssetKind kind, std::string_view key, std::wstring& name) {
+            const auto mark_unavailable = [&](assets::AssetKind kind, StringView key, std::wstring& name) {
                 if (const auto* item = session.unavailable(kind, key))
                     name.insert(0, item->kind == world::DiagnosticKind::unreadable_resource ? L"(unreadable) "
                                                                                             : L"(missing) ");
@@ -3414,8 +3444,8 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     }
             } else if (materials.generator) {
                 std::wstring choice = L"Default Grid";
-                if (const auto at = std::ranges::find(materials.bindings, std::string_view{"default"},
-                                                      &presentation::MaterialBinding::slot);
+                if (const auto at =
+                        std::ranges::find(materials.bindings, StringView{"default"}, &presentation::MaterialBinding::slot);
                     at != materials.bindings.end()) {
                     ATELIER_TRY_ASSIGN(choice, material_choice_label(at->resource.id()));
                 }
@@ -3439,9 +3469,9 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                      {*title, double(object == selected ? ui::ControlIcon::object : ui::ControlIcon::component),
                       ui_language::ItemList{std::move(component_properties)}}});
             }
-            const auto append_promoted_diagnostic = [&](std::string_view graph_key, std::string_view node_name,
-                                                        ObjectId generator_component, std::string_view group_title,
-                                                        std::string_view message) -> atelier::Result<void> {
+            const auto append_promoted_diagnostic = [&](StringView graph_key, StringView node_name,
+                                                        ObjectId generator_component, StringView group_title,
+                                                        StringView message) -> atelier::Result<void> {
                 auto diag_rows = std::make_shared<Array<ui_language::Item>>();
                 ui::ControlKey rkey{};
                 ATELIER_TRY_ASSIGN(rkey, bind_graph_param(graph_key, node_name, "$diagnostic",
@@ -3508,9 +3538,12 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
             auto saved_rows =
                 categorized ? category_properties("Saved Data") : std::make_shared<Array<ui_language::Item>>();
             for (const auto& entry : saved->entries) {
-                std::string path;
-                for (const auto& part : entry.path)
-                    path += (path.empty() ? "" : ".") + part;
+                String path;
+                for (const auto& part : entry.path) {
+                    if (!path.empty())
+                        path.append_ascii('.');
+                    path.append(part);
+                }
                 const auto caption = platform::utf8_to_utf16_validated(path);
                 if (!group_matches && lowercase(caption).find(folded) == std::wstring::npos)
                     continue;
@@ -3539,7 +3572,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
             return {};
         };
         const auto append_material = [&](ObjectId object, ObjectId component = ObjectId{},
-                                         std::string_view slot = std::string_view{}) -> atelier::Result<void> {
+                                         StringView slot = {}) -> atelier::Result<void> {
             ATELIER_TRY_BIND(material, session.inspect_material(object));
             const auto title = (material->source  ? L"Material Source"
                                 : material->scene ? L"Scene Material Instance"
@@ -3547,7 +3580,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                                (slot.empty() ? std::wstring{} : L" · " + platform::utf8_to_utf16_validated(slot));
             const bool editable = !material->source && !session.world().running();
             auto rows = std::make_shared<Array<ui_language::Item>>();
-            const auto key = [&](std::string_view path, Binding::Kind kind, std::size_t lane = 0) {
+            const auto key = [&](StringView path, Binding::Kind kind, std::size_t lane = 0) {
                 return bind_material(object, path, kind, component, slot, lane);
             };
             const auto lane_value = [](const material::LocalValue& value, std::size_t lane) {
@@ -3907,13 +3940,14 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                         return row.call.id == call.id && row.call.args == call.args;
                     });
                 if (definition == std::end(menu_bindings))
-                    return std::unexpected(atelier::Error{atelier::ErrorCode::invalid_definition,
-                                                          "Missing operator menu presentation: " + call.id});
+                    return std::unexpected(atelier::Error{
+                        atelier::ErrorCode::invalid_definition,
+                        String::concat("Missing operator menu presentation: ", call.id)});
                 if (definition->asset_kind &&
                     (!assets.selected() || assets.selected()->kind != *definition->asset_kind))
-                    call.context.asset = std::string{};
+                    call.context.asset = String{};
                 if (call.id == "scene.rename" && context.region == RegionKind::assets)
-                    call.id = "asset.rename";
+                    call.id = "asset.rename"_s;
                 const auto key_text = shortcut(call, context.region);
                 ATELIER_TRY_BIND(binding, action(std::move(call)));
                 ATELIER_TRY_BIND(selected, bindings_[binding_cursor_ - 1].call->state(operators, context));
@@ -4090,7 +4124,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                 }
                 return {};
             };
-            const auto net_op = [&](std::string id, json::Document args = {}) {
+            const auto net_op = [&](Utf8Text id, json::Document args = {}) {
                 return bind_operator(
                     {std::move(id), std::move(args), {.selection = {}, .region = RegionKind::network}});
             };
@@ -4239,7 +4273,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     const auto& call = binding(item.key)->call->request;
                     const auto args = call.args.root();
                     const auto setting_field = *args.find("setting");
-                    const auto setting = setting_field ? *setting_field->string() : std::string_view{};
+                    const auto setting = setting_field ? *setting_field->string() : StringView{};
                     const auto grid = *args.find("grid_spacing");
                     const auto rotation = *args.find("rotation_step");
                     const auto destination = *args.find("to");
@@ -4267,7 +4301,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
             } else if (control::is_path(source->key)) {
                 items.add(
                     {control::world_context, L"World", true, active_graph.empty() && selected == ObjectId{}, {}});
-                Array<std::string> graphs = session.open_graphs();
+                Array<String> graphs = session.open_graphs();
                 if (project)
                     for (const auto& entry : project->entries())
                         if (entry.kind == assets::AssetKind::procedural_graph &&
@@ -4332,7 +4366,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     first_gen = false;
                 }
 
-                Array<std::string> graphs = session.open_graphs();
+                Array<String> graphs = session.open_graphs();
                 if (project)
                     for (const auto& entry : project->entries())
                         if (entry.kind == assets::AssetKind::procedural_graph &&
@@ -4507,8 +4541,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     {
                         json::Builder args;
                         static_cast<void>(
-                            args.set(args.root(), "node",
-                                     is_disp ? std::string_view{} : std::string_view{network_context_node}));
+                            args.set(args.root(), "node", is_disp ? StringView{} : network_context_node.view()));
                         ATELIER_TRY_BIND(set_display_key, net_op("graph.set_display", args.finish()));
                         items.add({*set_display_key,
                                    is_disp ? L"Clear Display Flag" : L"Set Display Flag",
@@ -4520,8 +4553,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     {
                         json::Builder args;
                         static_cast<void>(
-                            args.set(args.root(), "node",
-                                     is_tmpl ? std::string_view{} : std::string_view{network_context_node}));
+                            args.set(args.root(), "node", is_tmpl ? StringView{} : network_context_node.view()));
                         ATELIER_TRY_BIND(set_template_key, net_op("graph.set_template", args.finish()));
                         items.add({*set_template_key,
                                    is_tmpl ? L"Clear Template Flag" : L"Set Template Flag",
@@ -4617,7 +4649,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                                                        ? platform::utf8_to_utf16_validated(enum_info.metadata[i].label)
                                                        : parameter_label(member.first);
                         bool checked = false;
-                        Optional<std::string_view> exact_name;
+                        Optional<StringView> exact_name;
                         std::uint32_t next_bits = member.second;
                         if (enum_info.flags) {
                             checked = member.second == 0 ? enumeration.bits == 0
@@ -4625,13 +4657,13 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                             next_bits = member.second == 0 ? 0u
                                         : checked          ? (enumeration.bits & ~member.second)
                                                            : (enumeration.bits | member.second);
-                            const auto exact = std::ranges::find(enum_info.values, next_bits,
-                                                                 &std::pair<std::string, std::uint32_t>::second);
+                            const auto exact =
+                                std::ranges::find(enum_info.values, next_bits, &std::pair<String, std::uint32_t>::second);
                             if (exact != enum_info.values.end())
-                                exact_name = exact->first;
+                                exact_name = exact->first.view();
                         } else {
                             checked = member.second == enumeration.bits;
-                            exact_name = member.first;
+                            exact_name = member.first.view();
                         }
                         ATELIER_TRY_BIND(choice_key, bind_operator(build_call(exact_name, next_bits)));
                         ui::MenuItem item{*choice_key, title, available, checked, {}};
@@ -4657,7 +4689,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                             ATELIER_TRY_BIND(type, runtime.type_of(target_object));
                             json::Builder args;
                             auto argument = args.root();
-                            std::string_view name;
+                            StringView name;
                             for (std::size_t i = 0; i < target_path.size(); ++i) {
                                 ATELIER_TRY_BIND(info, runtime.describe(*type));
                                 ATELIER_TRY_BIND(field, property_field(**info, target_path[i]));
@@ -4674,7 +4706,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                             const bool available = operators.find(base_call.id)->poll(ctx).has_value();
                             ATELIER_TRY(append_enum_choices(
                                 *enumeration, available,
-                                [&](Optional<std::string_view> exact_name, std::uint32_t next_bits) {
+                                [&](Optional<StringView> exact_name, std::uint32_t next_bits) {
                                     if (exact_name)
                                         args.set_validated(argument, name, *exact_name);
                                     else if (auto added =
@@ -4688,9 +4720,9 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                         }
                 } else {
                     const ObjectId target_comp = target_ptr->component;
-                    const std::string target_slot = target_ptr->slot;
-                    const std::string target_node = target_ptr->node_name;
-                    const std::string target_param = target_ptr->material_path;
+                    const String target_slot = target_ptr->slot;
+                    const String target_node = target_ptr->node_name;
+                    const String target_param = target_ptr->material_path;
                     const bool is_gen_comp = target_comp != ObjectId{};
                     const auto params = is_gen_comp ? session.generator_promoted_parameters(target_comp, project)
                                         : target_node.empty()
@@ -4719,16 +4751,16 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                                 }
                                 ATELIER_TRY(append_enum_choices(
                                     *enumeration, available,
-                                    [&](Optional<std::string_view> exact_name, std::uint32_t next_bits) {
-                                        std::string val_json;
+                                    [&](Optional<StringView> exact_name, std::uint32_t next_bits) {
+                                        String val_json;
                                         if (exact_name) {
                                             json::Builder jb;
                                             jb.set_validated(jb.root(), *exact_name);
                                             const auto doc_val = jb.finish();
                                             const auto bytes = json::write(doc_val.root());
-                                            val_json.assign(bytes.data(), bytes.size());
+                                            val_json = String::from_utf8_validated({bytes.data(), bytes.size()});
                                         } else {
-                                            val_json = std::to_string(next_bits);
+                                            val_json = String::from_number(next_bits);
                                         }
                                         json::Builder args;
                                         static_cast<void>(args.set(args.root(), "parameter", target_param));
@@ -4759,10 +4791,10 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                                        target_ptr->kind == Binding::Kind::graph_node_asset_slot))) {
                 const bool is_node_slot = target_ptr->kind == Binding::Kind::graph_node_asset_slot;
                 const ObjectId target_object = target_ptr->object;
-                const std::string target_slot = target_ptr->slot;
-                const std::string target_node = target_ptr->node_name;
-                const auto collect_procgraph_choices = [&](std::string_view exclude_key) {
-                    Array<std::pair<std::string, std::wstring>> choices;
+                const String target_slot = target_ptr->slot;
+                const String target_node = target_ptr->node_name;
+                const auto collect_procgraph_choices = [&](StringView exclude_key) {
+                    Array<std::pair<String, std::wstring>> choices;
                     if (project) {
                         for (const auto& entry : project->entries())
                             if (entry.kind == assets::AssetKind::procedural_graph && entry.key != exclude_key)
@@ -4771,7 +4803,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     for (const auto& open_key : session.open_graphs()) {
                         if (open_key == exclude_key || session.is_scratch_graph(open_key))
                             continue;
-                        if (std::ranges::find(choices, open_key, &std::pair<std::string, std::wstring>::first) ==
+                        if (std::ranges::find(choices, open_key, &std::pair<String, std::wstring>::first) ==
                             choices.end())
                             choices.emplace(open_key, platform::utf8_to_utf16_validated(open_key));
                     }
@@ -4834,7 +4866,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                 } else {
                     const bool can_edit = !session.world().running() && !is_network_graph_locked(session, target_slot);
                     const auto* gnode = session.graph_node(target_slot, target_node);
-                    const std::string current_asset = gnode ? gnode->asset_key : std::string{};
+                    const String current_asset = gnode ? gnode->asset_key : String{};
                     {
                         json::Builder clear_args;
                         static_cast<void>(clear_args.set(clear_args.root(), "asset", target_slot));
@@ -4879,7 +4911,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                 const SelectionContext gen_sel{owner_entity, target->object,
                                                owner_entity == ObjectId{} ? Array<ObjectId>{}
                                                                           : Array<ObjectId>{owner_entity}};
-                const auto assign_graph = [&](std::string_view asset) {
+                const auto assign_graph = [&](StringView asset) {
                     json::Builder args;
                     args.set_validated(args.root(), "asset", asset);
                     return bind_operator({"procedural.assign_graph",
@@ -4909,7 +4941,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                                                           json::Document{},
                                                           {.selection = gen_sel, .region = RegionKind::parameters}}));
                 items.add({*bake_key, L"Bake Instances to Entities", can_edit && has_instances, false, {}});
-                Array<std::pair<std::string, std::wstring>> choices;
+                Array<std::pair<String, std::wstring>> choices;
                 if (project) {
                     for (const auto& entry : project->entries())
                         if (entry.kind == assets::AssetKind::procedural_graph)
@@ -4918,8 +4950,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                 for (const auto& open_key : session.open_graphs()) {
                     if (session.is_scratch_graph(open_key))
                         continue;
-                    if (std::ranges::find(choices, open_key, &std::pair<std::string, std::wstring>::first) ==
-                        choices.end())
+                    if (std::ranges::find(choices, open_key, &std::pair<String, std::wstring>::first) == choices.end())
                         choices.emplace(open_key, platform::utf8_to_utf16_validated(open_key));
                 }
                 for (std::size_t i = 0; i < choices.size(); ++i) {
@@ -5003,7 +5034,8 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
             } else if (source->key == source_control::files) {
                 items = source_editor.menu_items();
             } else if (source->key == control::add_component) {
-                ATELIER_TRY(append_operator(items, {transform ? "scene.transform_remove" : "scene.transform_add"}));
+                ATELIER_TRY(append_operator(
+                    items, {transform ? Utf8Text{"scene.transform_remove"} : Utf8Text{"scene.transform_add"}}));
                 ATELIER_TRY_ASSIGN(component_choices, session.component_types());
                 for (std::size_t i = 0; i < component_choices.size(); ++i)
                     items.add({control::component_choice_first + i,
@@ -5051,7 +5083,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                     items.add({control::display_sop_info, L"Geometry Info HUD", true, sop_show_info, {}});
                     if (menu_geom) {
                         Array<ui::MenuItem> groups;
-                        const auto add_group = [&](procedural::Layer layer, std::string_view name,
+                        const auto add_group = [&](procedural::Layer layer, StringView name,
                                                    std::wstring title) -> atelier::Result<void> {
                             ATELIER_TRY_BIND(key, bind_row(
                                                       binding_cursor_,
@@ -5062,7 +5094,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                                                       },
                                                       [&](ui::ControlKey id) {
                                                           Binding row{id, {}, {}, Binding::Kind::group_guide};
-                                                          row.slot = name;
+                                                          row.slot = String::from_utf8_validated(name);
                                                           row.index = static_cast<std::size_t>(layer);
                                                           return row;
                                                       }));
@@ -5080,8 +5112,8 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                                  attr.layer == procedural::Layer::primitive) &&
                                 std::holds_alternative<SharedArray<bool>>(attr.data))
                                 ATELIER_TRY(add_group(
-                                    attr.layer, attr.name.view().std_view(),
-                                    platform::utf8_to_utf16_validated(attr.name.view().std_view()) +
+                                    attr.layer, attr.name,
+                                    platform::utf8_to_utf16_validated(attr.name) +
                                         (attr.layer == procedural::Layer::point ? L"  (points)" : L"  (primitives)")));
                         }
                         if (groups.size() > 1 || !sop_group.name().empty())
@@ -5145,28 +5177,28 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                 if (ctx_ptr && ctx_ptr->kind == Binding::Kind::graph_param_context && !ctx_ptr->slot.empty()) {
                     const ObjectId ctx_object = ctx_ptr->object;
                     const ObjectId ctx_comp = ctx_ptr->component;
-                    const std::string ctx_slot = ctx_ptr->slot;
-                    const std::string ctx_node = ctx_ptr->node_name;
-                    const std::string ctx_param = ctx_ptr->material_path;
+                    const String ctx_slot = ctx_ptr->slot;
+                    const String ctx_node = ctx_ptr->node_name;
+                    const String ctx_param = ctx_ptr->material_path;
                     const Array<FieldId> ctx_path = ctx_ptr->path;
                     const bool can_edit_param =
                         !session.world().running() && !is_network_graph_locked(session, ctx_slot);
                     bool need_sep = !items.empty();
                     if (ctx_comp == ObjectId{} && !ctx_node.empty() && !ctx_path.empty()) {
                         // Single-node SOP field promotion / multi-target binding / unbind:
-                        Array<std::string> candidate_paths;
+                        Array<String> candidate_paths;
                         if (const auto* num_b = binding(source->context_target);
                             source->kind == ControlKind::number && num_b && num_b->kind == Binding::Kind::field &&
                             num_b->object == ctx_object && num_b->path.size() > ctx_path.size()) {
                             ATELIER_TRY_BIND(cur_t, runtime.type_of(num_b->object));
-                            std::string full_p;
+                            String full_p;
                             for (const auto fid : num_b->path) {
                                 ATELIER_TRY_BIND(inf, runtime.describe(*cur_t));
                                 const auto fit = std::ranges::find((*inf)->fields, fid, &FieldInfo::id);
                                 if (fit == (*inf)->fields.end())
                                     break;
                                 if (!full_p.empty())
-                                    full_p.push_back('.');
+                                    full_p.append_ascii('.');
                                 full_p.append(fit->name);
                                 *cur_t = fit->value.type;
                             }
@@ -5190,7 +5222,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                                 ATELIER_TRY_BIND(vec_desc, runtime.describe(*cur_t));
                                 if ((*vec_desc)->math.vector() || (*vec_desc)->math.shape == math::Shape::quaternion) {
                                     for (const auto& lf : (*vec_desc)->fields)
-                                        candidate_paths.add(ctx_param + "." + lf.name);
+                                        candidate_paths.add(String::concat(ctx_param, ".", lf.name));
                                 }
                             }
                         }
@@ -5227,7 +5259,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
                                 }
                             } else if (gnode && gdoc &&
                                        !session.graph_overlapping_parameter(ctx_slot, ctx_node, fpath)) {
-                                const std::string target_full = ctx_node + "." + fpath;
+                                const auto target_full = String::concat(ctx_node, ".", fpath);
                                 const auto resolved = resolve_graph_parameter_target(runtime, *gdoc, target_full);
                                 if (!resolved)
                                     continue;
@@ -5499,10 +5531,9 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
     }
     if (ui_document_->candidate_failed()) {
         retry = true;
-        return std::unexpected(atelier::Error{atelier::ErrorCode::invalid_definition, std::string(ui_error())});
+        return std::unexpected(atelier::Error{atelier::ErrorCode::invalid_definition, ui_document_->diagnostic()});
     }
-    const auto set_help = [&](ui::Control& ctrl, std::wstring_view title, std::wstring_view identity,
-                              std::string_view desc) {
+    const auto set_help = [&](ui::Control& ctrl, std::wstring_view title, std::wstring_view identity, StringView desc) {
         if (!ctrl.tooltip)
             ctrl.tooltip = property_help_.get(ctrl.key, title, identity, desc);
     };
@@ -5684,7 +5715,7 @@ Result<void> Workspace::build_controls(ui::ControlList& result, Session& session
             set_help(ctrl, L"Accept Color", L"Color Picker", "关闭拾色器并确认当前颜色修改。");
             break;
         default: {
-            const auto has_class = [&](std::string_view cls) {
+            const auto has_class = [&](StringView cls) {
                 return std::ranges::find(ctrl.classes, cls) != ctrl.classes.end();
             };
             if (has_class("dock-add"))

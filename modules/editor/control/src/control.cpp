@@ -12,6 +12,7 @@
 #include <array>
 #include <fstream>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <utility>
 
@@ -35,11 +36,11 @@ struct Handle {
     Handle& operator=(const Handle&) = delete;
 };
 
-std::expected<void, Failure> check(bool ok, std::string_view operation) {
+std::expected<void, Failure> check(bool ok, StringView operation) {
     if (!ok) {
         const auto error = GetLastError();
         return std::unexpected(
-            Failure("transport_error", std::string(operation) + " (Windows " + std::to_string(error) + ")"));
+            Failure("transport_error", String::concat(String::validated(operation), " (Windows ", error, ")")));
     }
     return {};
 }
@@ -48,13 +49,13 @@ std::unexpected<Failure> disconnected() {
     return std::unexpected(Failure("disconnected", "Control peer disconnected"));
 }
 
-std::string hex(Span<const unsigned char> bytes) {
+String hex(Span<const unsigned char> bytes) {
     constexpr char digits[] = "0123456789abcdef";
-    std::string result;
+    String result;
     result.reserve(bytes.size() * 2);
     for (auto value : bytes) {
-        result += digits[value >> 4];
-        result += digits[value & 15];
+        result.append_ascii(digits[value >> 4]);
+        result.append_ascii(digits[value & 15]);
     }
     return result;
 }
@@ -121,7 +122,7 @@ std::expected<void, Failure> wait_io(HANDLE pipe, OVERLAPPED& operation, HANDLE 
         CancelIoEx(pipe, &operation);
         WaitForSingleObject(operation.hEvent, INFINITE); // Retire OVERLAPPED before its stack storage.
         return std::unexpected(
-            Failure(waited == WAIT_TIMEOUT ? "timeout" : "disconnected", "Control I/O cancelled or timed out"));
+            Failure(waited == WAIT_TIMEOUT ? "timeout"_s : "disconnected"_s, "Control I/O cancelled or timed out"));
     }
     return {};
 }
@@ -162,9 +163,10 @@ std::expected<json::Document, Failure> receive(HANDLE pipe, HANDLE stop, DWORD t
     ATELIER_TRY(transfer(pipe, &bytes, sizeof(bytes), false, stop, timeout));
     if (!bytes || bytes > maximum_message)
         return std::unexpected(Failure("invalid_frame", "Control message exceeds its size limit"));
-    std::string text(bytes, '\0');
+    Array<char> text;
+    text.resize_uninitialized(bytes);
     ATELIER_TRY(transfer(pipe, text.data(), bytes, false, stop, timeout));
-    return parse(text);
+    return parse(StringView{text.data(), text.size()});
 }
 
 std::expected<void, Failure> send(HANDLE pipe, json::Value value, HANDLE stop, DWORD timeout) {
@@ -186,25 +188,27 @@ std::expected<std::filesystem::path, Failure> default_directory() {
     return std::filesystem::path(value) / L"FrostFoxAtelier/Control";
 }
 
-std::expected<std::string, Failure> unique_id() {
+std::expected<String, Failure> unique_id() {
     GUID value{};
     if (FAILED(CoCreateGuid(&value)))
         return std::unexpected(Failure("storage_error", "Cannot allocate control identity"));
     return hex({reinterpret_cast<const unsigned char*>(&value), sizeof(value)});
 }
 
-json::Result<json::Document> failure(std::string_view code, std::string_view message) {
+json::Document failure(Utf8Text code, Utf8Text message) {
+    const auto code_str = std::move(code).into_string();
+    const auto msg_str = std::move(message).into_string();
     json::Builder builder;
     builder.set_validated(builder.root(), "status", "error");
     const auto detail = builder.object_validated(builder.root(), "error");
-    ATELIER_TRY(builder.set(detail, "code", code));
-    ATELIER_TRY(builder.set(detail, "message", message));
+    builder.set_validated(detail, "code", code_str);
+    builder.set_validated(detail, "message", msg_str);
     return builder.finish();
 }
 
-json::Result<json::Document> parse(std::string_view text) {
+json::Result<json::Document> parse(StringView text) {
     if (text.size() > maximum_message)
-        return std::unexpected(json::Error{json::Fault::range, "Message exceeds 4 MiB", {}, {}});
+        return std::unexpected(json::Error{json::Fault::range, String::literal<"Message exceeds 4 MiB">(), {}, {}});
     return json::Document::parse(text, {32, json::DepthPolicy::containers, true});
 }
 
@@ -228,7 +232,9 @@ struct Server::Impl {
     json::Document identity;
 
     Handle pipe;
+
     Handle stop;
+
     Handle connect_event;
 
     std::mutex mutex;
@@ -244,7 +250,7 @@ struct Server::Impl {
         if (error)
             return std::unexpected(Failure("storage_error", platform::error_message(error)));
         ATELIER_TRY_BIND(instance, unique_id());
-        const auto pipe_text = "\\\\.\\pipe\\FrostFoxAtelier.Control." + *instance;
+        const auto pipe_text = String::concat("\\\\.\\pipe\\FrostFoxAtelier.Control.", *instance);
         const auto pipe_name = platform::utf8_to_utf16_validated(pipe_text);
         std::wstring executable(32768, L'\0');
         const auto count = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
@@ -285,7 +291,8 @@ struct Server::Impl {
                                       65536, 65536, 0, &security.attributes);
         ATELIER_TRY(check(pipe.value != INVALID_HANDLE_VALUE, "Create control pipe"));
         worker = std::thread([this] { serve(); });
-        descriptor_path = *native / (*instance + ".json");
+        const auto descriptor_name = String::concat(*instance, ".json");
+        descriptor_path = *native / platform::utf8_to_utf16_validated(descriptor_name);
         std::ofstream descriptor(descriptor_path, std::ios::binary | std::ios::trunc);
         const auto bytes = json::write(identity.root(), {.pretty = true});
         descriptor.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
@@ -356,8 +363,8 @@ struct Server::Impl {
                 const auto& error = received.error();
                 if (error.code != "invalid_request")
                     return std::unexpected(std::move(received.error()));
-                ATELIER_TRY_BIND(rejected, failure(error.code, error.message));
-                ATELIER_TRY(send(pipe.value, rejected->root(), stop.value, 5000));
+                const auto rejected = failure(error.code, error.message);
+                ATELIER_TRY(send(pipe.value, rejected.root(), stop.value, 5000));
                 continue;
             }
             auto request = std::make_shared<Pending>();
@@ -373,7 +380,7 @@ struct Server::Impl {
                 const auto& error = ready.error();
                 if (error.code == "timeout") {
                     // The complete frame has an identity. Report the deadline if the client is still listening.
-                    json::Builder reply(*failure(error.code, error.message));
+                    json::Builder reply(failure(error.code, error.message));
                     identify(reply, request->request.root());
                     (void)send(pipe.value, reply.root(), stop.value, 5000);
                 }
@@ -430,7 +437,7 @@ void Server::poll(Handler handler) {
     }
     if (!request)
         return;
-    auto result = [&]() -> json::Result<json::Document> {
+    auto result = [&]() -> json::Document {
         if (!request->peer->connected.load() || std::chrono::steady_clock::now() >= request->deadline)
             return failure("cancelled", "Request expired before execution");
         auto handled = handler(request->request.root(), request->peer);
@@ -438,16 +445,12 @@ void Server::poll(Handler handler) {
             return failure(handled.error().code, handled.error().message);
         return std::move(*handled);
     }();
-    // A handler may report an invalid raw key in its diagnostic path. That path
-    // cannot itself be emitted as JSON text; keep the protocol response valid.
-    if (!result)
-        result = failure("internal_error", "Response diagnostic contains invalid UTF-8");
-    json::Builder response(*result);
+    json::Builder response(result);
     impl_->identify(response, request->request.root());
     if (json::write(response.root()).size() > maximum_message) {
         const auto token = *response.root().find("state_token");
         const auto rejected = failure("result_too_large", "Result exceeds the 4 MiB protocol limit");
-        json::Builder limited(*rejected);
+        json::Builder limited(rejected);
         impl_->identify(limited, request->request.root());
         if (!*limited.root().find("request_id"))
             (void)limited.set_null(limited.root(), "request_id");
@@ -516,7 +519,7 @@ struct Client::Impl {
             if (reply.size() == 2 && reply.string({"status"}) == "error" &&
                 reply.string({"error", "code"}) == "invalid_request") {
                 if (const auto message = reply.string({"error", "message"}))
-                    return std::unexpected(Failure("invalid_request", std::string(*message)));
+                    return std::unexpected(Failure("invalid_request", String::from_utf8_validated(*message)));
             }
             return std::unexpected(
                 Failure("protocol_mismatch", "Response belongs to a different request or editor instance"));
@@ -578,13 +581,15 @@ std::expected<json::Document, Failure> discover(const std::filesystem::path& dir
         if (size > 65536)
             continue;
         std::ifstream stream(item.path(), std::ios::binary);
-        std::string bytes(static_cast<std::size_t>(size), '\0');
+        Array<char> bytes;
+        bytes.resize_uninitialized(static_cast<std::size_t>(size));
         if (!stream.read(bytes.data(), static_cast<std::streamsize>(bytes.size())) ||
             stream.peek() != std::char_traits<char>::eof())
             continue;
         // Discovery has no depth limit. Malformed or interrupted records are skipped.
         const auto value = json::Document::parse(
-            bytes, {std::numeric_limits<std::size_t>::max(), json::DepthPolicy::containers, true});
+            StringView{bytes.data(), bytes.size()},
+            {std::numeric_limits<std::size_t>::max(), json::DepthPolicy::containers, true});
         if (value && live(value->root()))
             result.append(result.root(), value->root());
     }

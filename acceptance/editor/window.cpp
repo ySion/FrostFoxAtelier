@@ -23,18 +23,21 @@
 
 namespace {
 using atelier::application::Application;
+
 using atelier::Error;
+
 using atelier::ErrorCode;
+
 using atelier::Result;
 
-std::unexpected<Error> command_error(std::string message, ErrorCode code = ErrorCode::invalid_definition) {
-    return std::unexpected(Error{code, std::move(message)});
+std::unexpected<Error> command_error(atelier::Utf8Text message, ErrorCode code = ErrorCode::invalid_definition) {
+    return std::unexpected(Error{code, std::move(message).into_string()});
 }
 
-Result<void> advance(Application& app, const char* closed, atelier::renderer::Capture* image = nullptr) {
+Result<void> advance(Application& app, atelier::Utf8Text closed, atelier::renderer::Capture* image = nullptr) {
     ATELIER_TRY_BIND(running, app.step(image));
     if (!*running)
-        return command_error(closed);
+        return command_error(std::move(closed));
     return {};
 }
 
@@ -56,7 +59,7 @@ struct ImageApartment {
 
     Result<void> ready() const {
         if (FAILED(status))
-            return command_error("Cannot initialize image encoder: " + std::to_string(status),
+            return command_error(atelier::String::concat("Cannot initialize image encoder: ", status),
                                  ErrorCode::invalid_storage);
         return {};
     }
@@ -76,8 +79,8 @@ struct EditorAcceptanceAccess {
         app.document_->mark_saved();
     }
 
-    static Result<void> invoke(Application& app, std::string id, json::Document args = {}) {
-        return app.run_operator({std::move(id), std::move(args)}, true);
+    static Result<void> invoke(Application& app, Utf8Text id, json::Document args = {}) {
+        return app.run_operator({std::move(id).into_string(), std::move(args)}, true);
     }
 
     static Result<bool> view_preparing(Application& app) {

@@ -8,11 +8,11 @@
 #include "editor/operator_parameters.hpp"
 #include "editor/properties.hpp"
 #include "editor/session.hpp"
+#include "foundation/string.hpp"
 #include "renderer/view_settings.hpp"
 #include <functional>
 #include <memory>
 #include <string>
-#include <string_view>
 #include <utility>
 
 // Every editor action is an operator: menus, buttons, shortcuts and Control call
@@ -36,7 +36,7 @@ inline constexpr bool atelier::enable_enum_flags<atelier::editor::OperatorFlag> 
 
 namespace atelier::editor {
 
-Span<const std::string_view> region_names() noexcept; // Indexed by RegionKind.
+Span<const StringView> region_names() noexcept; // Indexed by RegionKind.
 
 struct SelectionContext {
     ObjectId active; // Active Entity.
@@ -63,17 +63,17 @@ struct Context {
 
     RegionKind region{};
 
-    std::string asset; // Material or procedural graph asset key while Parameters/SOP context inspects it.
+    String asset; // Material or procedural graph asset key while Parameters/SOP context inspects it.
 
-    std::string active_graph; // Non-empty when Scene View is isolated inside a SOP .procgraph context.
+    String active_graph; // Non-empty when Scene View is isolated inside a SOP .procgraph context.
 
-    std::string network_graph; // Graph currently shown in Network pane (Isolated SOP, Pinned, or World Entity follow).
+    String network_graph; // Graph currently shown in Network pane (Isolated SOP, Pinned, or World Entity follow).
 
-    std::string selected_graph_node; // Selected node name in active_graph / network_graph; empty selects Graph root.
+    String selected_graph_node; // Selected node name in active_graph / network_graph; empty selects Graph root.
 
-    Array<std::string> selected_graph_nodes; // Multi-node selection in active_graph Network View.
+    Array<String> selected_graph_nodes; // Multi-node selection in active_graph Network View.
 
-    Array<std::string> locked_graphs; // Open .procgraph keys currently in Locked Preview.
+    Array<String> locked_graphs; // Open .procgraph keys currently in Locked Preview.
 
     HistoryState source_history; // The Code page's active document; both false without one.
 
@@ -107,9 +107,9 @@ struct Context {
 
     CameraView camera_view{CameraView::perspective};
 
-    [[nodiscard]] std::string focused_graph() const;
+    [[nodiscard]] String focused_graph() const;
 
-    [[nodiscard]] bool is_graph_locked(std::string_view key) const noexcept;
+    [[nodiscard]] bool is_graph_locked(StringView key) const noexcept;
 };
 
 // Control replaces fields for one call; the document selection does not change.
@@ -118,7 +118,7 @@ struct ContextOverride {
 
     Optional<RegionKind> region;
 
-    Optional<std::string> asset{};
+    Optional<String> asset{};
 
     bool operator==(const ContextOverride&) const = default;
 };
@@ -170,7 +170,7 @@ public:
                                                                 std::wstring_view filename = {}) = 0;
 
     // A successfully published resource becomes the browser's active resource.
-    virtual void asset_created(std::string_view key, bool inspect_material) = 0;
+    virtual void asset_created(StringView key, bool inspect_material) = 0;
 
     // Ends gestures and captures before an operator runs.
     virtual Result<void> end_interaction() = 0;
@@ -222,7 +222,7 @@ public:
 
     virtual Result<void> fit_lighting(bool follow_focus) = 0;
 
-    virtual Result<void> rename_asset(std::string_view key, std::string_view name) = 0;
+    virtual Result<void> rename_asset(StringView key, StringView name) = 0;
 
     virtual Result<void> save_scene(const std::filesystem::path&) = 0;
 
@@ -240,22 +240,22 @@ public:
 
     virtual void stop_play(bool restart) = 0;
 
-    virtual Result<std::string> import_asset(ImportKind, const std::filesystem::path&) = 0;
+    virtual Result<String> import_asset(ImportKind, const std::filesystem::path&) = 0;
 
-    virtual Result<void> reimport_asset(std::string_view key, const std::filesystem::path&) = 0;
+    virtual Result<void> reimport_asset(StringView key, const std::filesystem::path&) = 0;
 
-    virtual Result<void> open_graph_context(std::string_view key) = 0;
+    virtual Result<void> open_graph_context(StringView key) = 0;
 
     virtual void exit_graph_context() = 0;
 
-    virtual Result<void> dive_into_asset_node(std::string_view, std::string_view) {
+    virtual Result<void> dive_into_asset_node(StringView, StringView) {
         return std::unexpected(Error{ErrorCode::unsupported_operation, "Dive-in requires an editor workspace."});
     }
 
-    virtual void select_graph_node(std::string_view key, std::string_view node_name) = 0;
+    virtual void select_graph_node(StringView key, StringView node_name) = 0;
 
-    virtual void select_graph_nodes(std::string_view key, Span<const std::string> node_names) {
-        select_graph_node(key, node_names.empty() ? std::string_view{} : std::string_view{node_names.back()});
+    virtual void select_graph_nodes(StringView key, Span<const String> node_names) {
+        select_graph_node(key, node_names.empty() ? StringView{} : node_names.back().view());
     }
 
 private:
@@ -274,11 +274,11 @@ struct OperatorParameters {
 enum class OperatorKind { query, direct, interactive };
 
 struct OperatorInfo {
-    std::string id; // "<domain>.<action>", lowercase.
+    String id; // "<domain>.<action>", lowercase.
 
     std::wstring title;
 
-    std::string description;
+    String description;
 
     OperatorFlag flags{};
 
@@ -288,12 +288,12 @@ struct OperatorInfo {
     std::function<Result<void>(OperatorHost&, const Context&, const OperatorParameters&, ValueOutput)> execute;
 
     // Runtime name of the parameter record, published in the document; empty for none.
-    std::string parameters{};
+    String parameters{};
 
     // Patch-style operators start from the current state, so arguments name only the leaves they change.
     std::function<Result<void>(const Context&, ValueOutput parameters)> seed{};
 
-    std::string result{}; // Optional result record name; encoded before its Runtime can be replaced.
+    String result{}; // Optional result record name; encoded before its Runtime can be replaced.
 
     std::function<Optional<bool>(const Context&, ValueInput)> state{};
 
@@ -302,14 +302,39 @@ struct OperatorInfo {
     // A direct operator can require human interaction for particular decoded arguments.
     std::function<bool(ValueInput)> requires_interaction{};
 
-    std::string interaction{}; // Discovery and refusal guidance for that condition.
+    String interaction{}; // Discovery and refusal guidance for that condition.
+
+    OperatorInfo() = default;
+
+    OperatorInfo(Utf8Text operator_id, std::wstring operator_title, Utf8Text operator_description,
+                 OperatorFlag operator_flags, std::function<Result<void>(const Context&)> operator_poll,
+                 std::function<Result<void>(OperatorHost&, const Context&, const OperatorParameters&, ValueOutput)>
+                     operator_execute,
+                 Utf8Text operator_parameters = {},
+                 std::function<Result<void>(const Context&, ValueOutput parameters)> operator_seed = {},
+                 Utf8Text operator_result = {}, std::function<Optional<bool>(const Context&, ValueInput)> operator_state = {},
+                 OperatorKind operator_kind = OperatorKind::direct,
+                 std::function<bool(ValueInput)> operator_requires_interaction = {}, Utf8Text operator_interaction = {})
+        : id(std::move(operator_id).into_string()),
+          title(std::move(operator_title)),
+          description(std::move(operator_description).into_string()),
+          flags(operator_flags),
+          poll(std::move(operator_poll)),
+          execute(std::move(operator_execute)),
+          parameters(std::move(operator_parameters).into_string()),
+          seed(std::move(operator_seed)),
+          result(std::move(operator_result).into_string()),
+          state(std::move(operator_state)),
+          kind(operator_kind),
+          requires_interaction(std::move(operator_requires_interaction)),
+          interaction(std::move(operator_interaction).into_string()) {}
 };
 
 class OperatorRegistry {
 public:
     [[nodiscard]] static Result<OperatorRegistry> builtins();
 
-    const OperatorInfo* find(std::string_view id) const noexcept;
+    const OperatorInfo* find(StringView id) const noexcept;
 
     Span<const OperatorInfo> all() const noexcept { return operators_; }
 
@@ -320,11 +345,18 @@ private:
 };
 
 struct OperatorCall {
-    std::string id;
+    String id;
 
     json::Document args{};
 
     ContextOverride context{};
+
+    OperatorCall() = default;
+
+    OperatorCall(Utf8Text operator_id, json::Document operator_args = {}, ContextOverride operator_context = {})
+        : id(std::move(operator_id).into_string()),
+          args(std::move(operator_args)),
+          context(std::move(operator_context)) {}
 
     bool operator==(const OperatorCall&) const = default;
 };
@@ -361,7 +393,7 @@ enum class OperatorStatus { finished, cancelled, failed, interaction_required };
 struct OperatorReport {
     OperatorStatus status{};
 
-    std::string message; // Poll or admission reason; execution failures retain their original Error.
+    String message; // Poll or admission reason; execution failures retain their original Error.
 
     json::Document result{};
 };

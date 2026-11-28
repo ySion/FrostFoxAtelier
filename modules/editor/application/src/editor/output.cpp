@@ -37,8 +37,12 @@ std::wstring visible_text(std::wstring_view input, bool one_line = false) {
     return result;
 }
 
-std::wstring visible_text(std::string_view text, bool one_line = false) {
+std::wstring visible_text(StringView text, bool one_line = false) {
     return visible_text(platform::utf8_to_utf16_validated(text), one_line);
+}
+
+std::wstring visible_text(const String& text, bool one_line = false) {
+    return visible_text(text.view(), one_line);
 }
 
 std::wstring short_text(std::wstring text, std::size_t limit = 256) {
@@ -89,7 +93,7 @@ std::wstring submission_name(logging::SubmitStatus status) {
 struct Output::Stream {
     std::filesystem::path directory;
 
-    std::string directory_text;
+    String directory_text;
 
     std::unique_ptr<logging::Reader> reader;
 
@@ -98,7 +102,7 @@ struct Output::Stream {
     Optional<logging::PublishedHealth> health;
 
     struct RawTail {
-        std::string bytes;
+        Array<char> bytes;
 
         std::uint64_t offset{};
     };
@@ -108,8 +112,7 @@ struct Output::Stream {
 
 Output::Output() {
     static std::atomic<std::uint64_t> sessions{};
-    memory_run_ = "memory-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(now_ns()) + "-" +
-                  std::to_string(++sessions);
+    memory_run_ = String::concat("memory-", GetCurrentProcessId(), "-", now_ns(), "-", ++sessions);
     body_ = std::make_shared<ui::CodeDocument>();
     if (const auto* run = logging::current_run()) {
         // Mode is chosen once, not silently switched on each log operation.
@@ -134,7 +137,7 @@ logging::Result<Output::Stream*> Output::add_run(std::filesystem::path directory
     auto text = platform::utf16_to_utf8(directory.generic_wstring());
     if (!text) {
         attachment_error_ = L"Cannot attach run: invalid UTF-16 directory.";
-        return std::unexpected(logging::Error{logging::ErrorCode::io_failed, "Invalid UTF-16 text."});
+        return std::unexpected(logging::Error{logging::ErrorCode::io_failed, "Invalid UTF-16 text."_s});
     }
     auto stream = std::make_unique<Stream>();
     stream->directory = std::move(directory);
@@ -182,12 +185,8 @@ bool Output::accept_owned(logging::Record record) {
         record.producer_sequence = ++sequence_;
         record.record_sequence = record.producer_sequence;
     }
-    if (record.run_id.size() > 256 || record.run_id.find('\0') != std::string::npos || !record.process_id ||
+    if (record.run_id.size() > 256 || record.run_id.contains('\0') || !record.process_id ||
         !record.producer_id || !record.producer_sequence) {
-        ++statistics_.invalid_owned;
-        return false;
-    }
-    if (!StringView(record.run_id).is_valid_utf8()) {
         ++statistics_.invalid_owned;
         return false;
     }
@@ -241,16 +240,16 @@ logging::SubmitResult Output::submit_owned(logging::Entry entry) {
         ++statistics_.invalid_owned;
         record.entry = {
             .severity = logging::Severity::error,
-            .category = "editor.output",
-            .event_code = "output.unprojectable",
+            .category = "editor.output"_s,
+            .event_code = "output.unprojectable"_s,
             .message =
-                "A user message was rejected and cannot be displayed: invalid Unicode/schema or body exceeds 128 KiB. No truncation or retry was performed."};
+                "A user message was rejected and cannot be displayed: invalid Unicode/schema or body exceeds 128 KiB. No truncation or retry was performed."_s};
     }
     retain(std::move(record), host_->directory, receipt.status);
     return receipt;
 }
 
-void Output::capture_raw(Stream& stream, bool standard_error, std::string_view bytes, std::uint64_t offset,
+void Output::capture_raw(Stream& stream, bool standard_error, Span<const char> bytes, std::uint64_t offset,
                          bool ended) {
     auto& tail = stream.raw[standard_error ? 1 : 0];
     // A retention gap must not splice an old prefix into an unrelated character.
@@ -261,9 +260,10 @@ void Output::capture_raw(Stream& stream, bool standard_error, std::string_view b
     tail.bytes.append(bytes);
     std::size_t consumed{};
     constexpr char hex[] = "0123456789abcdef";
+    const StringView tail_view{tail.bytes.data(), tail.bytes.size()};
     while (consumed < tail.bytes.size()) {
         const auto begin = consumed;
-        std::string message;
+        String message;
         while (consumed < tail.bytes.size() && consumed - begin < 16 * 1024) {
             const auto c = static_cast<unsigned char>(tail.bytes[consumed]);
             const std::size_t count = c < 0x80                 ? 1
@@ -271,33 +271,32 @@ void Output::capture_raw(Stream& stream, bool standard_error, std::string_view b
                                       : c >= 0xe0 && c <= 0xef ? 3
                                       : c >= 0xf0 && c <= 0xf4 ? 4
                                                                : 1;
-            const auto remaining = std::string_view(tail.bytes).substr(consumed);
+            const auto remaining = tail_view.slice(consumed);
             if (count > remaining.size() && !ended)
                 break;
-            if (count <= remaining.size() && StringView(remaining.substr(0, count)).is_valid_utf8()) {
+            if (count <= remaining.size() && remaining.slice(0, count).is_valid_utf8()) {
                 if (c == '\\')
-                    message += '\\';
-                message.append(remaining.substr(0, count));
+                    message.append_ascii('\\');
+                message.append_validated(remaining.slice(0, count));
                 consumed += count;
             } else {
-                message += "\\x";
-                message += hex[c >> 4];
-                message += hex[c & 15];
+                const char esc[4]{'\\', 'x', hex[c >> 4], hex[c & 15]};
+                message.append_validated(StringView{esc, 4});
                 ++consumed;
             }
         }
         if (consumed == begin)
             break;
-        logging::Entry entry{.category = "process.raw",
-                             .event_code = standard_error ? "raw.stderr" : "raw.stdout",
+        logging::Entry entry{.category = "process.raw"_s,
+                             .event_code = standard_error ? "raw.stderr"_s : "raw.stdout"_s,
                              .message = std::move(message)};
         entry.fields = {{"directory", stream.directory_text},
                         {"offset", tail.offset + begin},
                         {"bytes", static_cast<std::uint64_t>(consumed - begin)},
-                        {"encoding", std::string("utf8-escaped")}};
+                        {"encoding", "utf8-escaped"}};
         static_cast<void>(submit_owned(std::move(entry)));
     }
-    tail.bytes.erase(0, consumed);
+    tail.bytes.remove_at(0, consumed);
     tail.offset += consumed;
 }
 
@@ -353,7 +352,7 @@ void Output::rebuild() const {
                       {4, L"Source", widths_[3], 80, ui::TextAlign::left, false},
                       {5, L"Run / delivery", widths_[4], 80, ui::TextAlign::left, false}};
     rows_.clear();
-    using Group = std::tuple<std::string, std::uint32_t, std::string, std::string, std::string>;
+    using Group = std::tuple<String, std::uint32_t, String, String, String>;
     Map<Group, std::size_t> groups;
     for (const auto& value : records_) {
         const auto& record = value.record;
@@ -386,7 +385,7 @@ void Output::rebuild() const {
         auto bytes = std::min(entry.message.size(), std::size_t{4 * 256});
         while (bytes < entry.message.size() && (static_cast<unsigned char>(entry.message[bytes]) & 0xc0) == 0x80)
             --bytes;
-        auto message = short_text(visible_text(std::string_view(entry.message).substr(0, bytes), true));
+        auto message = short_text(visible_text(entry.message.view().slice(0, bytes), true));
         if (row.count > 1)
             message += L" (×" + std::to_wstring(row.count) + L")";
         auto source = visible_text(entry.source.file, true);

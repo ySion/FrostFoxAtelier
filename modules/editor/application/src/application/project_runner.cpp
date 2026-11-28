@@ -68,7 +68,8 @@ Result<std::uint64_t> number(std::wstring_view text) {
 
 void report_performance(const editor::FramePerformance& performance, std::uint64_t frames) noexcept {
     const auto& cpu = performance.snapshot().cpu;
-    logging::Entry entry{.category = "runner", .event_code = "runner.performance", .message = "Run frame performance."};
+    logging::Entry entry{
+        .category = "runner"_s, .event_code = "runner.performance"_s, .message = "Run frame performance."_s};
     entry.fields = {{"frames", frames},
                     {"samples", std::uint64_t{cpu.samples}},
                     {"structure_errors", performance.structure_errors()}};
@@ -82,7 +83,7 @@ void report_performance(const editor::FramePerformance& performance, std::uint64
     static_cast<void>(logging::submit(std::move(entry)));
     for (const auto* marker : timing::catalog())
         if (const auto& phase = cpu.phases[marker->index()]; phase && marker->parent() == &timing::frame) {
-            const std::array fields{logging::Field{"phase", std::string(marker->key())},
+            const std::array fields{logging::Field{"phase", String::from_utf8_validated(marker->key())},
                                     logging::Field{"mean_ms", phase->mean}};
             static_cast<void>(ATELIER_LOG_WITH(logging::Severity::info, "runner", "runner.performance_phase",
                                                logging::native::Context{fields}, "Run phase {} mean {} ms",
@@ -159,10 +160,10 @@ Result<RunOptions> parse_options(Span<wchar_t*> args) {
     return options;
 }
 
-void report_failure(const Error& error, std::string_view event, const std::filesystem::path& project) {
+void report_failure(const Error& error, StringView event, const std::filesystem::path& project) {
     auto entry = error_diagnostic(error, event, project);
     if (entry) {
-        entry->category = "runner";
+        entry->category = "runner"_s;
         if (logging::submit(std::move(*entry)).status == logging::SubmitStatus::accepted)
             return;
     }
@@ -196,7 +197,7 @@ Result<void> run_project(RunOptions& options) {
         ATELIER_TRY_BIND(scene, options.scene_snapshot.empty() ? project.resolve(project.startup_scene())
                                                                : Result<std::filesystem::path>{options.scene_snapshot});
         ATELIER_TRY_BIND(bytes, assets::read_file(*scene));
-        loaded = editor::load_project_scene(project, *bytes);
+        loaded = editor::load_project_scene(project, as_chars(*bytes));
     }
     if (!loaded.session)
         return std::unexpected(std::move(*loaded.error));
@@ -298,13 +299,13 @@ Result<void> run_project(RunOptions& options) {
     bool started{};
     bool first_render{true};
     Optional<atelier::presentation::CameraSnapshot> accepted_camera;
-    std::string camera_error;
+    String camera_error;
     auto previous = std::chrono::steady_clock::now();
-    std::string ui_error;
+    String ui_error;
     RenderClock lighting_clock;
     LitFallback lit_fallback;
-    std::string render_failure;
-    std::string material_failure;
+    String render_failure;
+    String material_failure;
     const auto prepare_scene = [&]() -> Result<bool> {
         timing::Scope snapshot{phases::scene};
         ATELIER_TRY(document.sync_procedural_generators(&project));
@@ -314,7 +315,7 @@ Result<void> run_project(RunOptions& options) {
         const auto progress = scene.prepare(*renderer);
         if (!progress && progress.error().terminal)
             return std::unexpected(renderer_error(progress.error()));
-        const auto failure = progress ? std::string{} : progress.error().cause.message;
+        const auto failure = progress ? String{} : progress.error().cause.message;
         if (failure != material_failure) {
             material_failure = failure;
             if (!failure.empty())
@@ -444,7 +445,7 @@ Result<void> run_project(RunOptions& options) {
         renderer::Camera matrices;
         renderer::ViewSettings view;
         math::Vector3 focus{};
-        std::string unavailable;
+        String unavailable;
         if (!options.preview_ui) {
             timing::Scope snapshot{phases::scene};
             auto selected = document.presentation().main_camera();
@@ -465,7 +466,7 @@ Result<void> run_project(RunOptions& options) {
                     if (!invalid)
                         invalid = renderer::probe_focus_error(view.lit, focus);
                     if (invalid)
-                        unavailable = invalid;
+                        unavailable = String::from_utf8_validated(invalid);
                     else {
                         camera = *selected;
                         matrices = {projected->view, projected->projection, projected->far_depth};
@@ -499,7 +500,7 @@ Result<void> run_project(RunOptions& options) {
                                                ui_revision));
         }
         if (project_ui.diagnostic() != ui_error) {
-            ui_error = project_ui.diagnostic();
+            ui_error = String::from_utf8_validated(project_ui.diagnostic());
             if (!ui_error.empty())
                 static_cast<void>(
                     ATELIER_LOG(logging::Severity::error, "runner", "runner.ui_failed", "Project UI: {}", ui_error));

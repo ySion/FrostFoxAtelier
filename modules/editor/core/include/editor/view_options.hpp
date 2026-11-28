@@ -1,8 +1,8 @@
 #pragma once
 #include "foundation/span.hpp"
+#include "foundation/string.hpp"
 #include "renderer/view_settings.hpp"
 #include "runtime/runtime.hpp"
-#include <string_view>
 
 namespace atelier::editor {
 enum class ProbeVolumeField {
@@ -89,7 +89,7 @@ enum class ViewValueKind { boolean, number, integer, enumeration };
 struct ViewOptionInfo {
     ViewOption option;
 
-    std::string_view name;
+    StringView name;
 
     ViewValueKind kind;
 
@@ -97,22 +97,22 @@ struct ViewOptionInfo {
 
     double maximum{};
 
-    Span<const std::string_view> choices{};
+    Span<const StringView> choices{};
 
     // Presentation and Control documentation share this table. These strings
     // describe the option; they are not part of its persisted name or value.
-    std::string_view label;
+    StringView label;
 
-    std::string_view category;
+    StringView category;
 
-    std::string_view description;
+    StringView description;
 };
 
 Span<const ViewOptionInfo> view_options() noexcept;
 
 const ViewOptionInfo* view_option(ViewOption) noexcept;
 
-const ViewOptionInfo* view_option(std::string_view) noexcept;
+const ViewOptionInfo* view_option(StringView) noexcept;
 
 bool world_option(ViewOption) noexcept;
 

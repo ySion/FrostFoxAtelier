@@ -175,7 +175,7 @@ std::wstring format_geometry_info_hud(std::wstring_view title, const procedural:
         for (std::size_t i = 0; i < shown; ++i) {
             if (i > 0)
                 out += L", ";
-            out += platform::utf8_to_utf16_validated(attrs[i].name.view().std_view());
+            out += platform::utf8_to_utf16_validated(attrs[i].name.view());
         }
         if (attrs.size() > shown)
             out += std::format(L" (+{})", attrs.size() - shown);
@@ -714,7 +714,7 @@ Result<void> ProceduralPreview::refresh(editor::Session& session, editor::Projec
         for (std::size_t r = 0; r < refs.size(); ++r) {
             if (!refs[r].mesh)
                 continue;
-            const auto key_sv = refs[r].key.view().std_view();
+            const auto key_sv = refs[r].key.view();
             if (!key_sv.empty()) {
                 if (auto resolved_asset = reader.mesh(key_sv)) {
                     Array<editor::MissingResource> ignored_missing;

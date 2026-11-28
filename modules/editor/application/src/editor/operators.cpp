@@ -9,9 +9,9 @@
 #include <new>
 
 namespace atelier::editor {
-std::string Context::focused_graph() const {
+String Context::focused_graph() const {
     if (!asset.empty())
-        return document.has_graph(asset) ? asset : std::string{};
+        return document.has_graph(asset) ? asset : String{};
     if (region == RegionKind::network && !network_graph.empty() && document.has_graph(network_graph))
         return network_graph;
     if (region == RegionKind::parameters && selection.object != ObjectId{}) {
@@ -24,7 +24,7 @@ std::string Context::focused_graph() const {
     return {};
 }
 
-bool Context::is_graph_locked(std::string_view key) const noexcept {
+bool Context::is_graph_locked(StringView key) const noexcept {
     return !key.empty() && std::ranges::find(locked_graphs, key) != locked_graphs.end();
 }
 
@@ -62,25 +62,28 @@ public:
 }
 
 namespace {
-Error invalid(std::string message) {
-    return Error{ErrorCode::invalid_definition, std::move(message)};
+Error invalid(Utf8Text message) {
+    return Error{ErrorCode::invalid_definition, std::move(message).into_string()};
 }
 
 // The caller sent an operator call this registry cannot accept.
-Error rejected(std::string message) {
-    return Error{ErrorCode::argument_mismatch, std::move(message)};
+Error rejected(Utf8Text message) {
+    return Error{ErrorCode::argument_mismatch, std::move(message).into_string()};
 }
 
 // Default-constructed record, resolved by name in this document's Runtime.
-Result<std::unique_ptr<detail::OperatorValue>> parameters(Runtime& runtime, std::string_view name) {
+Result<std::unique_ptr<detail::OperatorValue>> parameters(Runtime& runtime, StringView name) {
+    const auto safe_name = name.is_valid_utf8() ? name : StringView{"(invalid UTF-8)"};
     const auto type = runtime.find_type(name);
     if (!type)
-        return std::unexpected(invalid("This document does not publish operator record " + std::string(name)));
+        return std::unexpected(
+            invalid(String::concat("This document does not publish operator record ", String::validated(safe_name))));
     const auto info = runtime.describe(*type);
     if (!info)
         return std::unexpected(info.error());
     if ((*info)->kind != TypeKind::record)
-        return std::unexpected(invalid("Operator parameters and results must be records: " + std::string(name)));
+        return std::unexpected(invalid(
+            String::concat("Operator parameters and results must be records: ", String::validated(safe_name))));
     auto value = std::make_unique<detail::OperatorValue>(runtime, *type, **info);
     ATELIER_TRY(runtime.initialize_value(*type, value->bytes));
     value->initialized = true;
@@ -91,18 +94,18 @@ Result<std::unique_ptr<detail::OperatorValue>> parameters(Runtime& runtime, std:
     return value;
 }
 
-bool valid_id(std::string_view id) {
+bool valid_id(StringView id) {
     const auto dot = id.find('.');
-    if (dot == std::string_view::npos || id.find('.', dot + 1) != std::string_view::npos)
+    if (dot == StringView::npos || id.find('.', dot + 1) != StringView::npos)
         return false;
-    const auto part = [](std::string_view text) {
+    const auto part = [](StringView text) {
         return !text.empty() && std::islower(static_cast<unsigned char>(text.front())) &&
                std::ranges::all_of(text, [](char c) {
                    return std::islower(static_cast<unsigned char>(c)) || std::isdigit(static_cast<unsigned char>(c)) ||
                           c == '_';
                });
     };
-    return part(id.substr(0, dot)) && part(id.substr(dot + 1));
+    return part(id.slice(0, dot)) && part(id.slice(dot + 1));
 }
 
 Result<void> admit(const Context& context, const ContextOverride& changes) {
@@ -145,12 +148,12 @@ Result<void> admit(const Context& context, const ContextOverride& changes) {
     return {};
 }
 
-std::string history_violation(const OperatorInfo& info, std::uint64_t recorded, std::size_t undo, std::size_t redo,
-                              std::uint64_t recorded_after, std::size_t undo_after, std::size_t redo_after) {
+String history_violation(const OperatorInfo& info, std::uint64_t recorded, std::size_t undo, std::size_t redo,
+                         std::uint64_t recorded_after, std::size_t undo_after, std::size_t redo_after) {
     const auto entries = recorded_after - recorded;
     const bool unchanged = entries == 0 && undo_after == undo && redo_after == redo;
     bool valid = unchanged;
-    std::string_view flag = "none";
+    StringView flag = "none";
     if (has_any(info.flags, OperatorFlag::replaces_document))
         return {};
     if (has_any(info.flags, OperatorFlag::undo)) {
@@ -163,51 +166,55 @@ std::string history_violation(const OperatorInfo& info, std::uint64_t recorded, 
     }
     if (valid)
         return {};
-    return "Operator " + info.id + " (" + std::string(flag) +
-           ") broke its history contract: " + std::to_string(entries) + " entries recorded, undo " +
-           std::to_string(undo) + "->" + std::to_string(undo_after) + ", redo " + std::to_string(redo) + "->" +
-           std::to_string(redo_after) + ".";
+    const auto tail = String::concat(", redo ", redo, "->", redo_after, ".");
+    return String::concat("Operator ", info.id, " (", String::validated(flag),
+                          ") broke its history contract: ", entries, " entries recorded, undo ", undo, "->", undo_after,
+                          tail);
 }
 }
 
-Span<const std::string_view> region_names() noexcept {
-    static constexpr std::array<std::string_view, 12> names{"none",       "viewport", "scene_tree", "structure",
-                                                            "parameters", "assets",   "code",       "output",
-                                                            "world",      "controls", "network",    "spreadsheet"};
+Span<const StringView> region_names() noexcept {
+    static constexpr std::array<StringView, 12> names{"none",       "viewport", "scene_tree", "structure",
+                                                      "parameters", "assets",   "code",       "output",
+                                                      "world",      "controls", "network",    "spreadsheet"};
     return names;
 }
 
 Result<void> OperatorRegistry::validate() const {
-    Set<std::string_view> ids;
+    Set<StringView> ids;
     ids.reserve(operators_.size());
     for (const auto& info : operators_) {
         if (!valid_id(info.id))
-            return std::unexpected(invalid("Operator ID must be lowercase <domain>.<action>: " + info.id));
-        if (!ids.add(info.id))
-            return std::unexpected(invalid("Operator is already registered: " + info.id));
+            return std::unexpected(
+                invalid(String::concat("Operator ID must be lowercase <domain>.<action>: ", info.id)));
+        if (!ids.add(info.id.view()))
+            return std::unexpected(invalid(String::concat("Operator is already registered: ", info.id)));
         if (!info.poll || !info.execute)
-            return std::unexpected(invalid("Operator needs poll and execute: " + info.id));
+            return std::unexpected(invalid(String::concat("Operator needs poll and execute: ", info.id)));
         if (info.seed && info.parameters.empty())
-            return std::unexpected(invalid("Only an operator with parameters can seed them: " + info.id));
+            return std::unexpected(
+                invalid(String::concat("Only an operator with parameters can seed them: ", info.id)));
         if (info.kind == OperatorKind::query)
-            return std::unexpected(invalid("Queries use state, schema or inspection, not execute: " + info.id));
+            return std::unexpected(
+                invalid(String::concat("Queries use state, schema or inspection, not execute: ", info.id)));
         if (info.requires_interaction && (info.kind != OperatorKind::direct || info.parameters.empty() ||
                                           info.parameters == "@context.object" || info.interaction.empty()))
-            return std::unexpected(
-                invalid("Conditional interaction needs a direct operator, record and guidance: " + info.id));
+            return std::unexpected(invalid(
+                String::concat("Conditional interaction needs a direct operator, record and guidance: ", info.id)));
         if (!info.requires_interaction && !info.interaction.empty())
-            return std::unexpected(invalid("Interaction guidance needs a parameter condition: " + info.id));
+            return std::unexpected(
+                invalid(String::concat("Interaction guidance needs a parameter condition: ", info.id)));
         const auto exclusive = int(has_any(info.flags, OperatorFlag::undo)) +
                                int(has_any(info.flags, OperatorFlag::history)) +
                                int(has_any(info.flags, OperatorFlag::replaces_document));
         if (exclusive > 1)
-            return std::unexpected(invalid("Operator history flags are exclusive: " + info.id));
+            return std::unexpected(invalid(String::concat("Operator history flags are exclusive: ", info.id)));
     }
     return {};
 }
 
-const OperatorInfo* OperatorRegistry::find(std::string_view id) const noexcept {
-    const auto found = std::ranges::find(operators_, id, &OperatorInfo::id);
+const OperatorInfo* OperatorRegistry::find(StringView id) const noexcept {
+    const auto found = std::ranges::find_if(operators_, [&](const OperatorInfo& info) { return info.id == id; });
     return found == operators_.end() ? nullptr : &*found;
 }
 
@@ -218,7 +225,7 @@ OperatorBinding::~OperatorBinding() = default;
 Result<Optional<bool>> OperatorBinding::state(const OperatorRegistry& registry, const Context& context) {
     const auto* info = registry.find(request.id);
     if (!info)
-        return std::unexpected(rejected("Unknown operator: " + request.id));
+        return std::unexpected(rejected(String::concat("Unknown operator: ", request.id)));
     if (!info->state)
         return Optional<bool>{};
     if (info->parameters.empty())
@@ -243,14 +250,14 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
     host.begin_operator();
     const auto* info = registry.find(request.id);
     if (!info)
-        return std::unexpected(rejected("Unknown operator: " + request.id));
+        return std::unexpected(rejected(String::concat("Unknown operator: ", request.id)));
     const auto args = request.args.root();
     const auto members = args.object_items();
     if (!members)
         return std::unexpected(rejected("Operator arguments must be an object."));
     if (info->parameters.empty() && !members->empty())
-        return std::unexpected(
-            rejected("Unknown argument for " + request.id + ": " + std::string((*members)[0].first)));
+        return std::unexpected(rejected(
+            String::concat("Unknown argument for ", request.id, ": ", String::validated((*members)[0].first))));
     ATELIER_TRY(admit(base, request.context));
     Context context = base;
     if (request.context.selection)
@@ -314,9 +321,11 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
     const OperatorParameters decoded{value ? ValueInput{value->type, value->bytes.data()} : ValueInput{}, patch};
     if (!context.interactive && (info->kind == OperatorKind::interactive ||
                                  (info->requires_interaction && info->requires_interaction(decoded.value))))
-        return OperatorReport{OperatorStatus::interaction_required,
-                              "Operator " + info->id + " requires human interaction." +
-                                  (info->interaction.empty() ? "" : " " + info->interaction)};
+        return OperatorReport{
+            OperatorStatus::interaction_required,
+            info->interaction.empty()
+                ? String::concat("Operator ", info->id, " requires human interaction.")
+                : String::concat("Operator ", info->id, " requires human interaction. ", info->interaction)};
     std::unique_ptr<detail::OperatorValue> output;
     if (!info->result.empty()) {
         ATELIER_TRY_BIND(made, parameters(runtime, info->result));
@@ -347,7 +356,7 @@ Result<OperatorReport> call(const OperatorRegistry& registry, OperatorHost& host
 }
 
 namespace {
-json::Result<void> scalar_json(Runtime& runtime, json::Builder& builder, json::Value object, std::string_view key,
+json::Result<void> scalar_json(Runtime& runtime, json::Builder& builder, json::Value object, StringView key,
                                const Scalar& value) {
     return std::visit(
         [&](const auto& leaf) -> json::Result<void> {
@@ -402,8 +411,8 @@ Result<void> record_schema(const detail::OperatorValue& value, TypeId record, Ar
                 ATELIER_TRY_BIND(read, runtime.read(value.type, value.bytes, path));
                 current = *read;
             } else if ((*leaf)->kind != TypeKind::record && (*leaf)->kind != TypeKind::string) {
-                return std::unexpected(
-                    invalid("Operator parameters hold records, strings, scalars and enums only: " + field.name));
+                return std::unexpected(invalid(String::concat(
+                    "Operator parameters hold records, strings, scalars and enums only: ", field.name)));
             }
         }
         const auto emitted = [&]() -> json::Result<void> {
@@ -430,7 +439,7 @@ Result<void> record_schema(const detail::OperatorValue& value, TypeId record, Ar
             case TypeKind::string:
                 builder.set_validated(schema, "type", "string");
                 if (defaults)
-                    builder.set_validated(schema, "default", std::string_view{text.c_str(), text.size()});
+                    builder.set_validated(schema, "default", text.view());
                 break;
             case TypeKind::scalar:
             case TypeKind::enumeration: {
@@ -473,7 +482,7 @@ Result<void> record_schema(const detail::OperatorValue& value, TypeId record, Ar
     return {};
 }
 
-Result<json::Document> schema(Runtime& runtime, std::string_view record, bool defaults, bool seeded) {
+Result<json::Document> schema(Runtime& runtime, StringView record, bool defaults, bool seeded) {
     json::Builder builder;
     const auto root = builder.root();
     if (record.empty()) {

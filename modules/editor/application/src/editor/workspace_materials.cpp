@@ -5,8 +5,8 @@ namespace {
 constexpr ui::ControlKey choices = 1ULL << 38;
 }
 
-Result<ui::ControlKey> Workspace::bind_material(ObjectId object, std::string_view path, Binding::Kind kind,
-                                                ObjectId component, std::string_view slot, std::size_t index) {
+Result<ui::ControlKey> Workspace::bind_material(ObjectId object, StringView path, Binding::Kind kind,
+                                                ObjectId component, StringView slot, std::size_t index) {
     return bind_row(
         0,
         [&](const Binding& value) {
@@ -14,7 +14,15 @@ Result<ui::ControlKey> Workspace::bind_material(ObjectId object, std::string_vie
                    value.index == index && value.material_path == path;
         },
         [&](ui::ControlKey key) {
-            return Binding{key, object, {}, kind, component, std::string(slot), index, 0, std::string(path)};
+            return Binding{key,
+                           object,
+                           {},
+                           kind,
+                           component,
+                           String::from_utf8_validated(slot),
+                           index,
+                           0,
+                           String::from_utf8_validated(path)};
         });
 }
 
@@ -38,7 +46,7 @@ Result<Array<ui::MenuItem>> Workspace::material_menu(const Binding& target, cons
         }
         result.add(std::move(item));
     };
-    std::string current;
+    String current;
     if (!target.material_path.empty()) {
         ATELIER_TRY_BIND(view, session.inspect_material(target.object));
         if (view->source)

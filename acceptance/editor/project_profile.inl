@@ -7,16 +7,19 @@ constexpr std::array<timing::Marker*, 1> profile_markers{&profile_calibration};
 // body has been active for 120 frames (at most 1800 frames), and reports the physics
 // phases of frames that end with and without active bodies, the SceneSnapshot refresh after each frame,
 // the Play start and each of the first five frames.
-Result<void> profile_physics_cpu(const std::filesystem::path& root, std::string_view scene,
+Result<void> profile_physics_cpu(const std::filesystem::path& root, StringView scene,
                                  const std::filesystem::path& output) {
     ATELIER_TRY_BIND(exists, acceptance::file_exists(output));
     if (!output.is_absolute() || *exists)
         return std::unexpected(Error{ErrorCode::argument_mismatch, "Choose a new absolute physics profile file."});
+    const auto scene_utf16 = platform::utf8_to_utf16(scene);
+    if (!scene_utf16)
+        return std::unexpected(Error{ErrorCode::argument_mismatch, "Invalid UTF-8 physics profile scene path."});
     application::install_frame_timing(profile_markers);
     timing::Recorder recorder;
     ATELIER_TRY_BIND(opened, editor::Project::open(root));
     auto& project = *opened;
-    ATELIER_TRY_BIND(source, project.read_scene(scene));
+    ATELIER_TRY_BIND(source, project.read_scene(*scene_utf16));
     ATELIER_TRY_BIND(loaded, editor::Session::deserialize(*source, project));
     auto& play = *loaded;
     {
@@ -107,16 +110,19 @@ Result<void> profile_physics_cpu(const std::filesystem::path& root, std::string_
     }
     ATELIER_TRY(changed(play->stop()));
     const auto bytes = json::write(report.root(), {.pretty = true, .trailing_lf = true});
-    return editor::write_file(output, {bytes.data(), bytes.size()}, editor::WriteMode::create);
+    return editor::write_file(output, StringView{bytes.data(), bytes.size()}, editor::WriteMode::create);
 }
 
 // Loads the real project through Session and measures existing CPU consumers.
 // No window, graphics device or author edits; only the Play stages use a second World.
-Result<void> profile_scene_cpu(const std::filesystem::path& root, std::string_view scene,
+Result<void> profile_scene_cpu(const std::filesystem::path& root, StringView scene,
                                const std::filesystem::path& output, const std::filesystem::path& camera_report) {
     ATELIER_TRY_BIND(exists, acceptance::file_exists(output));
     if (!output.is_absolute() || *exists)
         return std::unexpected(Error{ErrorCode::argument_mismatch, "Choose a new absolute CPU profile file."});
+    const auto scene_utf16 = platform::utf8_to_utf16(scene);
+    if (!scene_utf16)
+        return std::unexpected(Error{ErrorCode::argument_mismatch, "Invalid UTF-8 CPU profile scene path."});
     application::install_frame_timing(profile_markers);
     timing::Recorder recorder;
     const auto milliseconds = [](std::chrono::nanoseconds value) {
@@ -132,9 +138,9 @@ Result<void> profile_scene_cpu(const std::filesystem::path& root, std::string_vi
     };
     ATELIER_TRY_BIND(opened, editor::Project::open(root));
     auto& project = *opened;
-    ATELIER_TRY_BIND(path, project.resolve(scene));
+    ATELIER_TRY_BIND(path, project.resolve(*scene_utf16));
     ATELIER_TRY_BIND(bytes_read, assets::read_file(*path));
-    const auto& source = *bytes_read;
+    const auto source = as_chars(*bytes_read);
     ATELIER_TRY_BIND(loaded, editor::Session::deserialize(source, project));
     auto& document = *loaded;
     const auto original = take(document->serialize());
@@ -199,7 +205,8 @@ Result<void> profile_scene_cpu(const std::filesystem::path& root, std::string_vi
         "Independent CPU calls, including temporary destruction, in one loaded project; each sample is one frame-timing Recorder frame. No GPU, Present or FPS estimate. Workspace stages include DSL commit without an accepted UI frame; ui_docked adds headless Session set_controls, prepare and accept."));
     if (!camera_report.empty()) {
         // Consume the accepted product matrices, including its actual aspect.
-        const auto reference = take(assets::json_format::parse(take(assets::read_file(camera_report))));
+        const auto cam_bytes = take(assets::read_file(camera_report));
+        const auto reference = take(assets::json_format::parse(as_chars(cam_bytes)));
         const auto viewport = take(reference.root().path({"viewport", "receiver_pixel_extent"}));
         const auto camera = take(reference.root().at("camera"));
         const auto width = take(take(viewport.at(0)).f32());
@@ -242,7 +249,7 @@ Result<void> profile_scene_cpu(const std::filesystem::path& root, std::string_vi
 #endif
     const auto stages = take(report.object(report.root(), "stages"));
     // An optional inspector receives each sample's frame record, warmup included.
-    const auto measure = [&](std::string_view name, auto&& operation, auto&&... inspect) -> Result<void> {
+    const auto measure = [&](StringView name, auto&& operation, auto&&... inspect) -> Result<void> {
         Array<double> samples;
         samples.reserve(121);
         for (unsigned i = 0; i < 141; ++i) {
@@ -344,7 +351,7 @@ Result<void> profile_scene_cpu(const std::filesystem::path& root, std::string_vi
                                     });
             !measured)
             return std::unexpected(std::move(measured).error());
-        const auto once = [&](std::string_view name, auto&& operation) -> Result<void> {
+        const auto once = [&](StringView name, auto&& operation) -> Result<void> {
             ATELIER_TRY_BIND(elapsed, sample(operation));
             take(report.set(take(report.object(stages, name)), "single_ms", *elapsed));
             std::printf("Scene CPU %.*s: %.3f ms single\n", static_cast<int>(name.size()), name.data(), *elapsed);
@@ -419,7 +426,8 @@ Result<void> profile_scene_cpu(const std::filesystem::path& root, std::string_vi
         const std::array fonts{(directory / "fonts/SarasaUiSC-Regular.ttf").wstring()};
         ui::Session surface;
         take(surface.initialize(fonts));
-        const auto theme = ui::StyleSheet::parse(take(assets::read_file(directory / "editor.ss")));
+        const auto theme_bytes = take(assets::read_file(directory / "editor.ss"));
+        const auto theme = ui::StyleSheet::parse(as_chars(theme_bytes));
         require(theme && surface.set_style_sheet(*theme) && surface.set_surface({{1779, 1154}, 1, 1}),
                 "CPU profile UI surface failed.");
         std::size_t controls{};
@@ -465,10 +473,11 @@ Result<void> profile_scene_cpu(const std::filesystem::path& root, std::string_vi
                         "Frame root time divided by sequential empty scopes, including loop overhead."));
         std::printf("Scene CPU timing scope: %.1f ns median\n", samples[15]);
     }
-    require(take(document->serialize()) == original && take(assets::read_file(*path)) == source && !document->dirty() &&
-                document->undo_count() == 0 && document->redo_count() == 0,
+    const auto disk_scene_bytes = take(assets::read_file(*path));
+    require(take(document->serialize()) == original && as_chars(disk_scene_bytes) == source &&
+                !document->dirty() && document->undo_count() == 0 && document->redo_count() == 0,
             "CPU profile changed the document or source Scene.");
     take(report.set(report.root(), "status", "pass"));
     const auto bytes = json::write(report.root(), {.pretty = true, .trailing_lf = true});
-    return editor::write_file(output, {bytes.data(), bytes.size()}, editor::WriteMode::create);
+    return editor::write_file(output, StringView{bytes.data(), bytes.size()}, editor::WriteMode::create);
 }

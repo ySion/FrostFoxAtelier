@@ -9,6 +9,7 @@
 #include "foundation/result.hpp"
 #include "foundation/set.hpp"
 #include "foundation/span.hpp"
+#include "foundation/string.hpp"
 #include "renderer/renderer.hpp"
 #include "logging/logging.hpp"
 #include <algorithm>
@@ -326,9 +327,9 @@ public:
 
     renderer::Result<renderer::Preparation> prepare(renderer::Renderer& renderer) {
         if (!picking_)
-            return std::unexpected(
-                renderer::Error{{.code = rhi::ErrorCode::invalid_argument,
-                                 .message = "Refresh the scene before preparing its material group."}});
+            return std::unexpected(renderer::Error{rhi::Error{
+                rhi::ErrorCode::invalid_argument, kGfxResult_NoError,
+                "Refresh the scene before preparing its material group."}});
         if (adopted_ && adopted_->request == request_)
             return renderer::Preparation{0, 0, true};
         if (!pending_ || pending_->request != request_) {
@@ -393,9 +394,9 @@ public:
         if (accepted_material_ == identity)
             return;
         accepted_material_ = identity;
-        logging::Entry entry{.category = "material",
-                             .event_code = "material.view_accepted",
-                             .message = "Material group reached an accepted view."};
+        logging::Entry entry{.category = "material"_s,
+                             .event_code = "material.view_accepted"_s,
+                             .message = "Material group reached an accepted view."_s};
         entry.fields = {{"document", draw.picking->scene_identity},
                         {"draw_request", adopted_->request},
                         {"request_generation", draw.material_request},
@@ -502,11 +503,11 @@ private:
 
     Optional<Prepared> adopted_;
 
-    void material_event(std::string_view code, const renderer::Error* error = nullptr) const noexcept {
+    void material_event(StringView code, const renderer::Error* error = nullptr) const noexcept {
         logging::Entry entry{.severity = error ? logging::Severity::error : logging::Severity::info,
-                             .category = "material",
-                             .event_code = std::string(code),
-                             .message = error ? error->cause.message : "Material preparation transition."};
+                             .category = "material"_s,
+                             .event_code = String::from_utf8_validated(code),
+                             .message = error ? error->cause.message : "Material preparation transition."_s};
         entry.fields = {{"document", picking_->scene_identity},
                         {"draw_request", pending_->request},
                         {"surfaces", std::uint64_t{surfaces_.size()}}};

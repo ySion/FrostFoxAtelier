@@ -7,6 +7,7 @@
 #include "foundation/map.hpp"
 #include "foundation/scope_exit.hpp"
 #include "foundation/set.hpp"
+#include "platform/utf.hpp"
 #include "procedural/bvh.hpp"
 #include "procedural/evaluator.hpp"
 #include "procedural/graph.hpp"
@@ -16,36 +17,39 @@
 #include "source/snapshot.hpp"
 #include <algorithm>
 #include <bit>
-#include <cctype>
 #include <cmath>
-#include <cstdio>
-#include <format>
 #include <limits>
 #include <numeric>
 
 namespace atelier::editor {
+using namespace atelier::literals;
+
 namespace {
 
-auto graph_error(std::string message, ErrorCode code = ErrorCode::argument_mismatch) {
+auto graph_error(Utf8Text message, ErrorCode code = ErrorCode::argument_mismatch) {
     return std::unexpected(Error{code, std::move(message)});
 }
 
-std::string default_node_stem(std::string_view type_name) {
-    if (const auto dot = type_name.find_last_of('.'); dot != std::string_view::npos)
-        type_name = type_name.substr(dot + 1);
-    std::string stem;
+String lossy_utf8(StringView text) {
+    return String::from_utf8(text).value_or("<invalid utf-8>"_s);
+}
+
+String default_node_stem(StringView type_name) {
+    if (const auto dot = type_name.rfind('.'); dot != StringView::npos)
+        type_name = type_name.slice(dot + 1);
+    String stem;
     for (std::size_t i = 0; i < type_name.size(); ++i) {
         const char c = type_name[i];
         if (c >= 'A' && c <= 'Z') {
             if (i > 0 && type_name[i - 1] >= 'a' && type_name[i - 1] <= 'z')
-                stem.push_back('_');
-            stem.push_back(static_cast<char>(c - 'A' + 'a'));
+                stem.append_ascii('_');
+            stem.append_ascii(static_cast<char>(c - 'A' + 'a'));
         } else if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_') {
-            stem.push_back(c);
+            stem.append_ascii(c);
         }
     }
-    if (stem.empty() || (stem.front() >= '0' && stem.front() <= '9'))
-        stem.insert(stem.begin(), 'n');
+    if (stem.empty() || (stem[0] >= '0' && stem[0] <= '9'))
+        stem = String::concat("n", stem);
     return stem;
 }
 
@@ -103,24 +107,23 @@ public:
         ++epoch_;
     }
 
-    [[nodiscard]] Result<assets::MeshAsset> resolve_mesh_asset(std::string_view key) const {
+    [[nodiscard]] Result<assets::MeshAsset> resolve_mesh_asset(StringView key) const {
         assets::Reader& active = temporary_reader_ ? *temporary_reader_ : project_ ? project_->assets() : builtin_;
         const std::uint64_t rev = active.revision();
         if (cached_revision_ != rev) {
             cached_.clear();
             cached_revision_ = rev;
         }
-        const StringView lookup{key};
-        if (const auto* cached = cached_.find(lookup))
+        if (const auto* cached = cached_.find(key))
             return *cached;
         ATELIER_TRY_BIND(resolved, active.mesh(key));
         // Successful reads identify a built-in mesh or a validated catalog entry.
-        cached_.try_emplace(String::from_utf8_validated(lookup), *resolved);
+        cached_.try_emplace(String::from_utf8_validated(key), *resolved);
         return *resolved;
     }
 
     [[nodiscard]] Result<geometry::MeshRef> mesh(StringView key) const noexcept override {
-        ATELIER_TRY_BIND(resolved, resolve_mesh_asset(key.std_view()));
+        ATELIER_TRY_BIND(resolved, resolve_mesh_asset(key));
         return std::move(resolved->mesh);
     }
 
@@ -209,7 +212,7 @@ struct GraphFreezeChange {
 
 struct GraphAppearanceChange {
     struct Entry {
-        std::string name;
+        String name;
 
         GraphNodeShape before_shape{GraphNodeShape::auto_role};
 
@@ -219,9 +222,9 @@ struct GraphAppearanceChange {
 
         Optional<std::uint32_t> after_color{};
 
-        std::string before_comment{};
+        String before_comment{};
 
-        std::string after_comment{};
+        String after_comment{};
     };
 
     Array<Entry> entries;
@@ -238,12 +241,12 @@ struct GraphAnnotationChange {
 };
 
 struct GraphRenameChange {
-    std::string before;
+    String before;
 
-    std::string after;
+    String after;
 
     struct Retained {
-        std::string owner; // Empty for graph settings. Node names are recorded before the rename.
+        String owner; // Empty for graph settings. Node names are recorded before the rename.
 
         json::Document before;
 
@@ -259,7 +262,7 @@ struct GraphRenameChange {
 
 struct GraphMoveChange {
     struct Move {
-        std::string name;
+        String name;
 
         std::array<float, 2> before{};
 
@@ -301,7 +304,7 @@ struct GraphNodesChange {
     };
 
     struct RetainedNodeKept {
-        std::string owner;
+        String owner;
 
         json::Document before;
 
@@ -354,15 +357,15 @@ struct GraphParameterSchemaChange {
 };
 
 struct GraphAssetOverrideChange {
-    std::string node_name;
+    String node_name;
 
     json::Document before_overrides;
 
     json::Document after_overrides;
 
-    std::string before_asset{};
+    String before_asset{};
 
-    std::string after_asset{};
+    String after_asset{};
 
     bool asset_changed{};
 
@@ -402,7 +405,7 @@ using GraphChange = std::variant<GraphScalarChange, GraphPropertyChange, GraphDi
                                  GraphRenameChange, GraphMoveChange, GraphConnectionChange, GraphNodesChange,
                                  GraphParameterSchemaChange, GraphAssetOverrideChange, GraphExtractChange>;
 
-void erase_kept_input(json::Document& kept, std::string_view port) {
+void erase_kept_input(json::Document& kept, StringView port) {
     json::Builder next_kept(kept);
     if (const auto kept_inputs = *next_kept.root().find("inputs");
         kept_inputs && kept_inputs->kind() == json::Kind::object) {
@@ -425,17 +428,17 @@ void sort_graph_boxes(Array<GraphNetworkBox>& boxes) {
     std::ranges::sort(boxes, {}, &GraphNetworkBox::name);
 }
 
-GraphNode* find_node(GraphDocument& doc, std::string_view name) noexcept {
+GraphNode* find_node(GraphDocument& doc, StringView name) noexcept {
     const auto at = std::ranges::lower_bound(doc.nodes, name, {}, &GraphNode::name);
     return at != doc.nodes.end() && at->name == name ? &*at : nullptr;
 }
 
-GraphStickyNote* find_note(GraphDocument& doc, std::string_view name) noexcept {
+GraphStickyNote* find_note(GraphDocument& doc, StringView name) noexcept {
     const auto at = std::ranges::lower_bound(doc.notes, name, {}, &GraphStickyNote::name);
     return at != doc.notes.end() && at->name == name ? &*at : nullptr;
 }
 
-GraphNetworkBox* find_box(GraphDocument& doc, std::string_view name) noexcept {
+GraphNetworkBox* find_box(GraphDocument& doc, StringView name) noexcept {
     const auto at = std::ranges::lower_bound(doc.boxes, name, {}, &GraphNetworkBox::name);
     return at != doc.boxes.end() && at->name == name ? &*at : nullptr;
 }
@@ -452,22 +455,22 @@ const GraphNode* find_node_by_id(const GraphDocument& doc, ObjectId id) noexcept
     return at == doc.nodes.end() ? nullptr : &*at;
 }
 
-std::string resolve_root_error_node(const GraphDocument& doc, const procedural::NodeStatus& st, ObjectId self_id,
-                                    std::string_view fallback_name = {}) {
+String resolve_root_error_node(const GraphDocument& doc, const procedural::NodeStatus& st, ObjectId self_id,
+                               const String& fallback_name = {}) {
     const ObjectId cause = st.root_node != ObjectId{} ? st.root_node : self_id;
     if (const auto* cause_node = find_node_by_id(doc, cause))
         return cause_node->name;
     if (!fallback_name.empty())
-        return std::string(fallback_name);
+        return fallback_name;
     if (const auto* self_node = find_node_by_id(doc, self_id))
         return self_node->name;
     return {};
 }
 
-Result<Array<std::string>> format_live_port_endpoints(Runtime& runtime, const GraphDocument& doc,
-                                                      Span<const procedural::Input> node_inputs,
-                                                      std::uint32_t port_index) {
-    Array<std::string> out;
+Result<Array<String>> format_live_port_endpoints(Runtime& runtime, const GraphDocument& doc,
+                                                 Span<const procedural::Input> node_inputs,
+                                                 std::uint32_t port_index) {
+    Array<String> out;
     for (const auto& in : node_inputs) {
         if (in.input != port_index)
             continue;
@@ -476,13 +479,13 @@ Result<Array<std::string>> format_live_port_endpoints(Runtime& runtime, const Gr
             continue;
         ATELIER_TRY_BIND(src_ports, procedural::ports(runtime, in.from));
         if (in.output < src_ports->outputs.size())
-            out.add(src->name + "." + src_ports->outputs[in.output]);
+            out.add(String::concat(src->name, ".", src_ports->outputs[in.output]));
     }
     return out;
 }
 
 template <class Pred>
-bool kept_port_has_match(const json::Document& kept, std::string_view port_filter, Pred&& matches) {
+bool kept_port_has_match(const json::Document& kept, StringView port_filter, Pred&& matches) {
     const auto cur_inputs = *kept.root().find("inputs");
     if (!cur_inputs || cur_inputs->kind() != json::Kind::object)
         return false;
@@ -509,7 +512,7 @@ bool kept_port_has_match(const json::Document& kept, std::string_view port_filte
 
 // Known ports keep their full ordered input list only while some endpoints are unresolved.
 template <class Edit>
-void edit_kept_port(json::Document& kept, std::string_view port, bool multiple, Span<const std::string> live_after,
+void edit_kept_port(json::Document& kept, StringView port, bool multiple, Span<const String> live_after,
                     Edit edit) {
     const auto inputs = *kept.root().find("inputs");
     if (!inputs)
@@ -518,12 +521,12 @@ void edit_kept_port(json::Document& kept, std::string_view port, bool multiple, 
     if (!value)
         return;
     const bool array = value->kind() == json::Kind::array;
-    Array<std::string> items;
+    Array<String> items;
     if (array) {
         for (const auto item : *value->array())
-            items.emplace(*item.string());
+            items.add(String::from_utf8_validated(*item.string()));
     } else {
-        items.emplace(*value->string());
+        items.add(String::from_utf8_validated(*value->string()));
     }
     if (!edit(items, array))
         return;
@@ -541,19 +544,19 @@ void edit_kept_port(json::Document& kept, std::string_view port, bool multiple, 
 }
 
 template <class Pred>
-void filter_kept_port_endpoints(json::Document& kept, std::string_view port, bool multiple,
-                                Span<const std::string> live_after, Pred should_remove) {
+void filter_kept_port_endpoints(json::Document& kept, StringView port, bool multiple,
+                                Span<const String> live_after, Pred should_remove) {
     edit_kept_port(kept, port, multiple, live_after,
                    [&](auto& items, bool) { return items.remove_if(should_remove) != 0; });
 }
 
-void append_kept_port_endpoint(json::Document& kept, std::string_view port, bool multiple, std::string_view endpoint,
-                               Span<const std::string> live_after) {
+void append_kept_port_endpoint(json::Document& kept, StringView port, bool multiple, const String& endpoint,
+                               Span<const String> live_after) {
     edit_kept_port(kept, port, multiple, live_after, [&](auto& items, bool array) {
         if (multiple && array) {
             // connect() appends even if this endpoint already had an unresolved slot on disk.
-            items.remove_if([&](std::string_view s) { return s == endpoint; });
-            items.emplace(endpoint);
+            items.remove_if([&](const String& s) { return s == endpoint; });
+            items.add(endpoint);
         } else {
             items.clear();
         }
@@ -561,30 +564,30 @@ void append_kept_port_endpoint(json::Document& kept, std::string_view port, bool
     });
 }
 
-void replace_kept_port_endpoint(json::Document& kept, std::string_view port, bool multiple,
-                                std::string_view old_endpoint, std::string_view new_endpoint, bool already_live,
-                                Span<const std::string> live_after) {
+void replace_kept_port_endpoint(json::Document& kept, StringView port, bool multiple,
+                                const String& old_endpoint, const String& new_endpoint, bool already_live,
+                                Span<const String> live_after) {
     edit_kept_port(kept, port, multiple, live_after, [&](auto& items, bool array) {
         if (!multiple || !array) {
             items.clear();
             return true;
         }
         if (!already_live) {
-            items.remove_if([&](std::string_view s) { return s == new_endpoint; });
+            items.remove_if([&](const String& s) { return s == new_endpoint; });
             if (auto slot = std::ranges::find(items, old_endpoint); slot != items.end())
                 *slot = new_endpoint;
         }
-        items.remove_if([&](std::string_view s) { return s == old_endpoint; });
+        items.remove_if([&](const String& s) { return s == old_endpoint; });
         return true;
     });
 }
 
-std::string format_number(double v) {
+String format_number(double v) {
     if (!std::isfinite(v))
-        return std::isnan(v) ? "nan" : (v < 0 ? "-inf" : "inf");
+        return std::isnan(v) ? "nan"_s : (v < 0 ? "-inf"_s : "inf"_s);
     if (std::abs(v) < 1e-9)
         v = 0.0;
-    return std::format("{:.4g}", v);
+    return String::from_float_general(v, 4);
 }
 
 template <class T>
@@ -624,13 +627,13 @@ void summarize_numeric_lanes(Span<const T> values, std::uint32_t lanes, auto&& l
             if (lanes == 1) {
                 out.sample_values.add(format_number(static_cast<double>(lane_at(values[i], 0))));
             } else {
-                std::string tuple = "[";
+                String tuple = "["_s;
                 for (std::uint32_t c = 0; c < lanes; ++c) {
                     if (c)
-                        tuple += ", ";
+                        tuple.append_literal<", ">();
                     tuple += format_number(static_cast<double>(lane_at(values[i], c)));
                 }
-                tuple += "]";
+                tuple.append_literal<"]">();
                 out.sample_values.add(std::move(tuple));
             }
         }
@@ -662,17 +665,17 @@ void detach_asset_node_subgraph(Runtime& runtime, ObjectId node_id) noexcept {
 }
 
 struct CachedPromotedParam {
-    std::string name;
+    String name;
 
     ResolvedPromotedSchema schema;
 
-    std::variant<Array<Scalar>, std::string> default_value;
+    std::variant<Array<Scalar>, String> default_value;
 };
 
 struct BoundAssetInstance {
     Runtime* owner_runtime{};
 
-    std::string asset_key;
+    String asset_key;
 
     std::uint64_t source_epoch{};
 
@@ -704,13 +707,13 @@ struct BoundAssetInstance {
 } // namespace
 
 struct Session::OpenGraph {
-    std::string key;
+    String key;
 
     bool scratch{};
 
     GraphDocument document;
 
-    std::string saved_text;
+    String saved_text;
 
     using Step = std::variant<GraphChange, Array<GraphChange>>;
 
@@ -839,7 +842,7 @@ struct Session::GeneratorRuntimeCache {
     struct PrivateInstance {
         Runtime* owner_runtime{};
 
-        std::string graph_key;
+        String graph_key;
 
         std::uint64_t source_epoch{};
 
@@ -868,7 +871,7 @@ struct Session::GeneratorRuntimeCache {
     };
 
     struct Entry {
-        std::string graph_key;
+        String graph_key;
 
         float chunk_size{};
 
@@ -888,7 +891,7 @@ struct Session::GeneratorRuntimeCache {
 
     assets::Reader* fallback_reader{};
 
-    Map<std::string, GraphSlot> graph_slots;
+    Map<String, GraphSlot> graph_slots;
 
     Map<ObjectId, Entry> entries;
 
@@ -970,9 +973,9 @@ struct Session::AssetSchemaCache {
         }
     };
 
-    Map<std::string, Entry> schemas;
+    Map<String, Entry> schemas;
 
-    Set<std::string> resolving;
+    Set<String> resolving;
 
     bool catalog_valid{};
 
@@ -1169,9 +1172,9 @@ Optional<GraphTopologyHealth> compute_topology_health(const procedural::Geometry
 
 Optional<GraphSpacingStats> compute_spacing_stats(const procedural::Geometry& geometry) {
     Array<math::Vector3> pts;
-    std::string domain;
+    String domain;
     if (geometry.count(procedural::Layer::instance) >= 2) {
-        domain = "instance";
+        domain = "instance"_s;
         const auto& transforms = geometry.instance_transforms();
         pts.reserve(transforms.size());
         for (const auto& m : transforms) {
@@ -1180,7 +1183,7 @@ Optional<GraphSpacingStats> compute_spacing_stats(const procedural::Geometry& ge
                 pts.add(p);
         }
     } else if (geometry.count(procedural::Layer::primitive) == 0 && geometry.count(procedural::Layer::point) >= 2) {
-        domain = "point";
+        domain = "point"_s;
         const auto& positions = geometry.positions();
         pts.reserve(positions.size());
         for (const auto& p : positions) {
@@ -1429,14 +1432,14 @@ Optional<GraphInstanceOverlapStats> compute_instance_overlaps(Span<const math::B
 
 Optional<GraphSurfaceClearanceStats> compute_surface_clearance(const procedural::Geometry& geometry,
                                                                const procedural::Bvh& ref_bvh,
-                                                               std::string_view reference_name) {
+                                                               StringView reference_name) {
     Array<math::Vector3> anchors;
-    std::string domain;
+    String domain;
     const auto refs = geometry.references();
     const auto& inst_indices = geometry.instance_references();
     const auto& inst_transforms = geometry.instance_transforms();
     if (!inst_indices.empty()) {
-        domain = "instance";
+        domain = "instance"_s;
         anchors.reserve(inst_indices.size());
         for (std::size_t i = 0; i < inst_indices.size(); ++i) {
             const auto ref_idx = inst_indices[i];
@@ -1452,7 +1455,7 @@ Optional<GraphSurfaceClearanceStats> compute_surface_clearance(const procedural:
                 anchors.add(anchor);
         }
     } else if (geometry.count(procedural::Layer::point) > 0) {
-        domain = "point";
+        domain = "point"_s;
         const auto& positions = geometry.positions();
         anchors.reserve(positions.size());
         for (const auto& p : positions) {
@@ -1472,7 +1475,7 @@ Optional<GraphSurfaceClearanceStats> compute_surface_clearance(const procedural:
     constexpr double ground_tol = 0.05;
 
     GraphSurfaceClearanceStats stats;
-    stats.reference_node = std::string(reference_name);
+    stats.reference_node = lossy_utf8(reference_name);
     stats.domain = std::move(domain);
     stats.tested_count = q_count;
     Array<double> gaps;
@@ -1518,7 +1521,7 @@ Optional<GraphSurfaceClearanceStats> compute_surface_clearance(const procedural:
 
 GraphGeometrySummary summarize_geometry_impl(const procedural::Geometry* geometry, std::size_t max_samples,
                                              bool include_spatial, const procedural::Bvh* reference_bvh,
-                                             std::string_view reference_name) {
+                                             StringView reference_name) {
     GraphGeometrySummary summary;
     if (!geometry)
         return summary;
@@ -1579,45 +1582,45 @@ GraphGeometrySummary summarize_geometry_impl(const procedural::Geometry* geometr
         summary.bounds_max = high;
     }
     for (std::size_t i = 0; i < refs.size(); ++i)
-        summary.instance_references.emplace(std::string(refs[i].key.view().std_view()), ref_counts[i]);
+        summary.instance_references.emplace(refs[i].key, ref_counts[i]);
 
     for (const auto& attr : geometry->attributes()) {
         GraphAttributeStats stats;
-        stats.name = std::string(attr.name.view().std_view());
+        stats.name = attr.name;
         std::visit(
             [&](const auto& col) {
                 using Shared = std::decay_t<decltype(col)>;
                 using T = typename Shared::Value;
                 const Span<const T> values = col.array();
                 if constexpr (std::same_as<T, bool>) {
-                    stats.type = "bool";
+                    stats.type = "bool"_s;
                     summarize_numeric_lanes(
                         values, 1, [](bool v, std::uint32_t) { return v ? 1.0 : 0.0; }, stats, max_samples);
                 } else if constexpr (std::same_as<T, std::int32_t>) {
-                    stats.type = "int";
+                    stats.type = "int"_s;
                     summarize_numeric_lanes(
                         values, 1, [](std::int32_t v, std::uint32_t) { return v; }, stats, max_samples);
                 } else if constexpr (std::same_as<T, std::uint32_t>) {
-                    stats.type = "uint";
+                    stats.type = "uint"_s;
                     summarize_numeric_lanes(
                         values, 1, [](std::uint32_t v, std::uint32_t) { return v; }, stats, max_samples);
                 } else if constexpr (std::same_as<T, float>) {
-                    stats.type = "float";
+                    stats.type = "float"_s;
                     summarize_numeric_lanes(values, 1, [](float v, std::uint32_t) { return v; }, stats, max_samples);
                 } else if constexpr (std::same_as<T, math::Vector2>) {
-                    stats.type = "vector2";
+                    stats.type = "vector2"_s;
                     summarize_numeric_lanes(
                         values, 2, [](const math::Vector2& v, std::uint32_t c) { return v[c]; }, stats, max_samples);
                 } else if constexpr (std::same_as<T, math::Vector3>) {
-                    stats.type = "vector3";
+                    stats.type = "vector3"_s;
                     summarize_numeric_lanes(
                         values, 3, [](const math::Vector3& v, std::uint32_t c) { return v[c]; }, stats, max_samples);
                 } else if constexpr (std::same_as<T, math::Vector4>) {
-                    stats.type = "vector4";
+                    stats.type = "vector4"_s;
                     summarize_numeric_lanes(
                         values, 4, [](const math::Vector4& v, std::uint32_t c) { return v[c]; }, stats, max_samples);
                 } else if constexpr (std::same_as<T, math::Quaternion>) {
-                    stats.type = "quaternion";
+                    stats.type = "quaternion"_s;
                     summarize_numeric_lanes(
                         values, 4,
                         [](const math::Quaternion& q, std::uint32_t c) {
@@ -1625,15 +1628,15 @@ GraphGeometrySummary summarize_geometry_impl(const procedural::Geometry* geometr
                         },
                         stats, max_samples);
                 } else if constexpr (std::same_as<T, math::Matrix4>) {
-                    stats.type = "matrix4";
+                    stats.type = "matrix4"_s;
                     summarize_numeric_lanes(
                         values, 16, [](const math::Matrix4& m, std::uint32_t c) { return m[c]; }, stats, max_samples);
                 } else if constexpr (std::same_as<T, String>) {
-                    stats.type = "string";
+                    stats.type = "string"_s;
                     stats.components = 0;
                     stats.count = values.size();
                     for (std::size_t i = 0; i < std::min(values.size(), max_samples); ++i)
-                        stats.sample_values.emplace(values[i].view().std_view());
+                        stats.sample_values.add(values[i]);
                 }
             },
             attr.data);
@@ -1658,7 +1661,7 @@ GraphGeometrySummary summarize_geometry_impl(const procedural::Geometry* geometr
 
 GraphGeometrySummary summarize_geometry(const procedural::Geometry* geometry, std::size_t max_samples,
                                         bool include_spatial, const procedural::Geometry* reference_surface,
-                                        std::string_view reference_name) {
+                                        StringView reference_name) {
     std::shared_ptr<const procedural::Bvh> ref_bvh;
     if (include_spatial && reference_surface) {
         if (auto acquired = procedural::Bvh::acquire(*reference_surface))
@@ -1690,7 +1693,7 @@ std::shared_ptr<procedural::CachePool> Session::ensure_procedural_cache_pool() {
     return procedural_cache_pool_;
 }
 
-Result<const GraphDocument*> Session::resolve_target_graph_document(std::string_view asset_key,
+Result<const GraphDocument*> Session::resolve_target_graph_document(StringView asset_key,
                                                                     Project* project) const {
     if (asset_key.empty())
         return static_cast<const GraphDocument*>(nullptr);
@@ -1706,7 +1709,10 @@ Result<const GraphDocument*> Session::resolve_target_graph_document(std::string_
         auto* cached = asset_schema_cache_->schemas.find(asset_key);
         if (!cached || cached->project != project || cached->project_revision != proj_rev ||
             cached->code_version != code_version) {
-            if (!asset_schema_cache_->resolving.add(asset_key))
+            auto key_str = String::from_utf8(asset_key);
+            if (!key_str)
+                return graph_error("Invalid UTF-8 procedural graph key.", ErrorCode::invalid_storage);
+            if (!asset_schema_cache_->resolving.add(*key_str))
                 return static_cast<const GraphDocument*>(nullptr);
             ScopeExit guard{[&]() noexcept { asset_schema_cache_->resolving.remove(asset_key); }};
 
@@ -1719,7 +1725,7 @@ Result<const GraphDocument*> Session::resolve_target_graph_document(std::string_
             if (!parsed)
                 return std::unexpected(parsed.error());
             AssetSchemaCache::Entry entry{&world_.runtime(), project, proj_rev, code_version, std::move(*parsed)};
-            cached = asset_schema_cache_->schemas.insert_or_assign(asset_key, std::move(entry)).value;
+            cached = asset_schema_cache_->schemas.insert_or_assign(std::move(*key_str), std::move(entry)).value;
         }
         return &cached->document;
     }
@@ -1736,10 +1742,10 @@ Result<const GraphDocument*> Session::resolve_target_graph_document(std::string_
 }
 
 AssetPortResolver Session::make_asset_port_resolver(Project* project) const {
-    return [this, project](std::string_view asset_key) -> Result<procedural::Ports> {
+    return [this, project](StringView asset_key) -> Result<procedural::Ports> {
         ATELIER_TRY_BIND(doc, resolve_target_graph_document(asset_key, project));
         if (!*doc)
-            return graph_error("No graph available to resolve '" + std::string(asset_key) + "'.",
+            return graph_error(String::concat("No graph available to resolve '", lossy_utf8(asset_key), "'."),
                                ErrorCode::invalid_storage);
         return extract_graph_ports(world_.runtime(), **doc);
     };
@@ -1762,11 +1768,11 @@ Result<const source::Program*> Session::procedural_source_program() {
     }
     ATELIER_TRY_BIND(engine_files, source::engine_sources(source::default_engine_root()));
     source::SourceSnapshot snapshot;
-    snapshot.name = "engine";
+    snapshot.name = "engine"_s;
     snapshot.version = 14695981039346656037ULL;
     for (auto& file : *engine_files) {
         snapshot.version = source::content_hash(file.path, source::content_hash(file.source, snapshot.version));
-        snapshot.files.push_back(std::move(file));
+        snapshot.files.add(std::move(file));
     }
     ATELIER_TRY_BIND(program, source::Program::create(runtime_));
     ATELIER_TRY_BIND(request, (*program)->request(snapshot));
@@ -1795,7 +1801,7 @@ Result<void> Session::remember_graph_scalar_edit(ObjectRoot target, Array<world:
                     continue;
                 auto names = field->names;
                 if (node)
-                    names.insert(0, "properties");
+                    names.insert(0, "properties"_s);
                 repaired |= detail::erase_path(next, next.root(), names);
             }
             if (repaired)
@@ -1837,33 +1843,37 @@ Result<Optional<GraphNodeCatalogEntry>> describe_sop(Runtime& runtime, TypeId ty
     auto schema = procedural::node_interface(runtime, type);
     if (!schema)
         return Optional<GraphNodeCatalogEntry>{};
-    std::string help;
+    String help;
     for (const auto& port : schema->port_descriptions) {
         if (!help.empty())
-            help += '\n';
-        help += std::format("{} {} · {}", port.output ? "output" : "input", port.port, port.description);
+            help.append_ascii('\n');
+        help += String::concat(port.output ? "output"_s : "input"_s, " ", port.port, " · ", port.description);
     }
     for (const auto& rule : schema->attributes) {
         if (!help.empty())
-            help += '\n';
-        help += std::format("{} {}.{} · {} · {}", procedural::access_name(rule.access),
-                            rule.layer.empty() ? (rule.layer_selector.empty() ? "<column>" : "$" + rule.layer_selector)
-                                               : rule.layer,
-                            rule.selector.empty() ? rule.name : "$" + rule.selector, rule.type, rule.missing);
+            help.append_ascii('\n');
+        const String layer_text =
+            rule.layer.empty()
+                ? (rule.layer_selector.empty() ? "<column>"_s : String::concat("$", rule.layer_selector))
+                : rule.layer;
+        const String attr_text = rule.selector.empty() ? rule.name : String::concat("$", rule.selector);
+        help += String::concat(String::validated(procedural::access_name(rule.access)), " ", layer_text, ".", attr_text,
+                               " · ", rule.type, " · ", String::validated(rule.missing));
         if (!rule.when.field.empty())
-            help += std::format(" · when {}{}{}", rule.when.field, rule.when.exclude ? "!=" : "=", rule.when.value);
+            help += String::concat(" · when ", String::validated(rule.when.field), rule.when.exclude ? "!="_s : "="_s,
+                                   String::validated(rule.when.value));
         if (!rule.unless_present.empty())
-            help += std::format(" · unless {}", rule.unless_present);
+            help += String::concat(" · unless ", String::validated(rule.unless_present));
         if (!rule.needs_present.empty())
-            help += std::format(" · requires {}", rule.needs_present);
+            help += String::concat(" · requires ", String::validated(rule.needs_present));
         if (!rule.purpose.empty())
-            help += std::format(" · {}", rule.purpose);
+            help += String::concat(" · ", rule.purpose);
     }
     auto& ports = schema->ports;
     return Optional<GraphNodeCatalogEntry>{GraphNodeCatalogEntry{
         type,
-        std::string((*info)->name),
-        std::string((*info)->description),
+        (*info)->name,
+        (*info)->description,
         (*info)->native_storage,
         {},
         {},
@@ -1878,21 +1888,27 @@ GraphNodeCatalogEntry describe_graph_asset(const assets::ProjectEntry& entry, Ty
     GraphPortInfo ports;
     if (auto resolved = resolve(entry.key))
         ports = {std::move(resolved->inputs), std::move(resolved->multiple), std::move(resolved->outputs)};
-    auto label = entry.path.stem().string();
+    String label = platform::utf16_to_utf8(entry.path.stem().wstring()).value_or(String{});
     if (label.empty())
         label = entry.key;
-    return {asset_node,       "asset:" + entry.key, "Digital Asset · " + entry.path.generic_string(), false, entry.key,
-            std::move(label), std::move(ports)};
+    const String generic_path = platform::utf16_to_utf8(entry.path.generic_wstring()).value_or(entry.key);
+    return {asset_node,
+            String::concat("asset:", entry.key),
+            String::concat("Digital Asset · ", generic_path),
+            false,
+            entry.key,
+            std::move(label),
+            std::move(ports)};
 }
 } // namespace
 
-Result<Optional<GraphNodeCatalogEntry>> Session::procedural_node_type(std::string_view name, Project* project) {
+Result<Optional<GraphNodeCatalogEntry>> Session::procedural_node_type(StringView name, Project* project) {
     if (world_.closed())
         return graph_error("Procedural node catalog requires an open Session.", ErrorCode::invalid_definition);
     ATELIER_TRY(procedural_source_program());
     ATELIER_TRY_BIND(asset_node, runtime_.native_type<procedural::AssetNode>());
     if (name.starts_with("asset:")) {
-        const auto* entry = project ? project->entry(name.substr(6)) : nullptr;
+        const auto* entry = project ? project->entry(name.slice(6)) : nullptr;
         if (!entry || entry->kind != assets::AssetKind::procedural_graph)
             return Optional<GraphNodeCatalogEntry>{};
         return Optional<GraphNodeCatalogEntry>{
@@ -1906,7 +1922,7 @@ Result<Optional<GraphNodeCatalogEntry>> Session::procedural_node_type(std::strin
 }
 
 Result<Array<GraphNodeCatalogEntry>> Session::procedural_node_types(Project* project,
-                                                                    std::string_view exclude_graph_key) {
+                                                                    StringView exclude_graph_key) {
     if (world_.closed())
         return graph_error("Procedural node catalog requires an open Session.", ErrorCode::invalid_definition);
     ATELIER_TRY(procedural_source_program());
@@ -1968,7 +1984,7 @@ Result<Array<GraphNodeCatalogEntry>> Session::procedural_node_types(Project* pro
     return filtered;
 }
 
-Result<ObjectId> Session::open_graph(Project& project, std::string_view key) {
+Result<ObjectId> Session::open_graph(Project& project, StringView key) {
     if (world_.closed())
         return graph_error("Opening a procedural graph requires a live Session.", ErrorCode::invalid_definition);
     if (const auto* existing = graphs_.find(key))
@@ -1986,39 +2002,42 @@ Result<ObjectId> Session::open_graph(Project& project, std::string_view key) {
         world_.report(issue);
     const auto id = open->document.graph.id();
     unavailable_.remove(std::pair{assets::AssetKind::procedural_graph, open->key});
-    std::string graph_key = open->key;
+    String graph_key = open->key;
     graphs_.try_emplace(std::move(graph_key), std::move(open));
     ++revision_;
     return id;
 }
 
-Result<ObjectId> Session::create_scratch_graph(std::string_view key) {
+Result<ObjectId> Session::create_scratch_graph(StringView key) {
     if (world_.closed() || key.empty())
         return graph_error("Creating a scratch graph requires a live Session and non-empty key.",
                            ErrorCode::invalid_definition);
     if (const auto* existing = graphs_.find(key))
         return (*existing)->document.graph.id();
+    auto key_str = String::from_utf8(key);
+    if (!key_str)
+        return graph_error("Scratch graph key must be valid UTF-8.", ErrorCode::invalid_definition);
     ATELIER_TRY(procedural_source_program());
     ATELIER_TRY_BIND(graph_type, runtime_.native_type<procedural::Graph>());
     ATELIER_TRY_BIND(graph_root, runtime_.create(*graph_type));
     std::unique_ptr<OpenGraph, OpenGraphDeleter> open(new OpenGraph());
-    open->key = std::string(key);
+    open->key = std::move(*key_str);
     open->scratch = true;
     open->document.graph = std::move(*graph_root);
     ATELIER_TRY_BIND(canonical, editor::save_graph(runtime_, open->document));
     open->saved_text = std::move(*canonical);
     const auto id = open->document.graph.id();
-    std::string graph_key = open->key;
+    String graph_key = open->key;
     graphs_.try_emplace(std::move(graph_key), std::move(open));
     ++revision_;
     return id;
 }
 
-bool Session::has_graph(std::string_view key) const noexcept {
+bool Session::has_graph(StringView key) const noexcept {
     return graphs_.contains(key);
 }
 
-bool Session::is_scratch_graph(std::string_view key) const noexcept {
+bool Session::is_scratch_graph(StringView key) const noexcept {
     if (key == "scratch" || key.starts_with("scratch/"))
         return true;
     const auto* at = graphs_.find(key);
@@ -2061,7 +2080,7 @@ Result<void> Session::restore_open_graphs(Project* project, Span<const OpenGraph
         return {};
     ATELIER_TRY(procedural_source_program());
     const auto fallback_resolver = make_asset_port_resolver(project);
-    const AssetPortResolver snapshot_resolver = [&](std::string_view asset_key) -> Result<procedural::Ports> {
+    const AssetPortResolver snapshot_resolver = [&](StringView asset_key) -> Result<procedural::Ports> {
         const auto in_snap = std::ranges::find(snapshots, asset_key, &OpenGraphSnapshot::key);
         if (in_snap != snapshots.end()) {
             ATELIER_TRY_BIND(temp, load_graph(runtime_, in_snap->text, {}));
@@ -2084,7 +2103,7 @@ Result<void> Session::restore_open_graphs(Project* project, Span<const OpenGraph
         }
         for (const auto& issue : open->document.issues)
             world_.report(issue);
-        std::string graph_key = open->key;
+        String graph_key = open->key;
         graphs_.insert_or_assign(std::move(graph_key), std::move(open));
     }
     if (generator_cache_)
@@ -2093,16 +2112,16 @@ Result<void> Session::restore_open_graphs(Project* project, Span<const OpenGraph
     return {};
 }
 
-Result<Optional<std::string>> Session::procedural_graph_snapshot(std::string_view key) const {
+Result<Optional<String>> Session::procedural_graph_snapshot(StringView key) const {
     const auto* at = graphs_.find(key);
     if (!at || !*at || (*at)->scratch)
-        return Optional<std::string>{};
+        return Optional<String>{};
     const auto& open = **at;
     auto& runtime = world_.runtime();
     const auto& author = open.document;
     ATELIER_TRY_BIND(encoded, editor::save_graph(runtime, author));
     if (!generator_cache_)
-        return Optional<std::string>{std::move(*encoded)};
+        return Optional<String>{std::move(*encoded)};
 
     bool any_referencing = false;
     const source::Program* bound_program = nullptr;
@@ -2114,7 +2133,7 @@ Result<Optional<std::string>> Session::procedural_graph_snapshot(std::string_vie
         }
     }
     if (!any_referencing)
-        return Optional<std::string>{std::move(*encoded)};
+        return Optional<String>{std::move(*encoded)};
     const auto* slot = generator_cache_->graph_slots.find(open.key);
     if (!bound_program && slot)
         bound_program = slot->bound_program;
@@ -2129,7 +2148,7 @@ Result<Optional<std::string>> Session::procedural_graph_snapshot(std::string_vie
             freezes.add(item.node.id());
     }
     if (freezes.empty())
-        return Optional<std::string>{std::move(*encoded)};
+        return Optional<String>{std::move(*encoded)};
 
     // Load precisely what the bundle will reopen. An independent evaluator keeps the author and
     // its frozen outputs intact, including when a generator overrides the authored seed.
@@ -2184,15 +2203,15 @@ Result<Optional<std::string>> Session::procedural_graph_snapshot(std::string_vie
                     std::ranges::is_permutation((*cooked)->dependencies, (*snapshot)->dependencies))
                     continue;
             }
-            return graph_error("Graph '" + std::string(key) + "': frozen node '" + original->name +
-                               "' differs from its authored replay. Unfreeze it before exporting.");
+            return graph_error(String::concat("Graph '", open.key, "': frozen node '", original->name,
+                                              "' differs from its authored replay. Unfreeze it before exporting."));
         }
     }
-    return Optional<std::string>{std::move(*encoded)};
+    return Optional<String>{std::move(*encoded)};
 }
 
 Result<ObjectId> Session::resolve_procedural_generator(ObjectId target, bool required) const {
-    const auto missing = [required](const char* message) -> Result<ObjectId> {
+    const auto missing = [required](Utf8Text message) -> Result<ObjectId> {
         if (required)
             return graph_error(message, ErrorCode::invalid_definition);
         return ObjectId{};
@@ -2253,7 +2272,7 @@ Result<void> Session::publish_procedural_mesh(assets::Reader& reader, const asse
     return sync_procedural_generators(nullptr);
 }
 
-ObjectId Session::loaded_graph(std::string_view key) const noexcept {
+ObjectId Session::loaded_graph(StringView key) const noexcept {
     const auto* at = graphs_.find(key);
     return at && *at ? (*at)->document.graph.id() : ObjectId{};
 }
@@ -2281,8 +2300,8 @@ Array<ObjectId> Session::graph_objects() const {
     return result;
 }
 
-Array<std::string> Session::open_graphs() const {
-    Array<std::string> result;
+Array<String> Session::open_graphs() const {
+    Array<String> result;
     result.reserve(graphs_.size());
     for (const auto& [key, open] : graphs_)
         if (open)
@@ -2291,7 +2310,7 @@ Array<std::string> Session::open_graphs() const {
     return result;
 }
 
-Optional<std::string> Session::graph_of_object(ObjectId object) const {
+Optional<String> Session::graph_of_object(ObjectId object) const {
     if (object == ObjectId{})
         return {};
     for (const auto& [key, open] : graphs_)
@@ -2300,7 +2319,7 @@ Optional<std::string> Session::graph_of_object(ObjectId object) const {
     return {};
 }
 
-Optional<std::string> Session::graph_node_name(ObjectId object) const {
+Optional<String> Session::graph_node_name(ObjectId object) const {
     if (object == ObjectId{})
         return {};
     for (const auto& [_, open] : graphs_) {
@@ -2312,22 +2331,22 @@ Optional<std::string> Session::graph_node_name(ObjectId object) const {
     return {};
 }
 
-const GraphNode* Session::graph_node(std::string_view key, std::string_view name) const noexcept {
+const GraphNode* Session::graph_node(StringView key, StringView name) const noexcept {
     const auto* at = graphs_.find(key);
     return at && *at ? find_node((*at)->document, name) : nullptr;
 }
 
-ObjectId Session::graph_node_id(std::string_view key, std::string_view name) const noexcept {
+ObjectId Session::graph_node_id(StringView key, StringView name) const noexcept {
     const auto* found = graph_node(key, name);
     return found && found->node.registered() ? found->node.id() : ObjectId{};
 }
 
-const GraphDocument* Session::graph_document(std::string_view key) const noexcept {
+const GraphDocument* Session::graph_document(StringView key) const noexcept {
     const auto* at = graphs_.find(key);
     return at && *at ? &(*at)->document : nullptr;
 }
 
-bool Session::graph_dirty(std::string_view key) const {
+bool Session::graph_dirty(StringView key) const {
     const auto* at = graphs_.find(key);
     if (!at || !*at)
         return false;
@@ -2344,8 +2363,8 @@ bool Session::graph_dirty(std::string_view key) const {
     return open.dirty_cached;
 }
 
-Array<std::string> Session::dirty_graphs() const {
-    Array<std::string> result;
+Array<String> Session::dirty_graphs() const {
+    Array<String> result;
     for (const auto& [key, open] : graphs_) {
         if (open && !open->scratch && graph_dirty(key))
             result.add(key);
@@ -2354,12 +2373,12 @@ Array<std::string> Session::dirty_graphs() const {
     return result;
 }
 
-bool Session::graph_can_undo(std::string_view key, bool redo) const {
+bool Session::graph_can_undo(StringView key, bool redo) const {
     const auto* at = graphs_.find(key);
     return at && *at && (redo ? (*at)->cursor < (*at)->history.size() : (*at)->cursor > 0);
 }
 
-Result<void> Session::save_graph(Project& project, std::string_view key) {
+Result<void> Session::save_graph(Project& project, StringView key) {
     if (editing())
         return graph_error("Finish the active field edit before saving.", ErrorCode::invalid_definition);
     auto* at = graphs_.find(key);
@@ -2376,14 +2395,15 @@ Result<void> Session::save_graph(Project& project, std::string_view key) {
     return {};
 }
 
-Result<Session::OpenGraph*> Session::editable_graph(std::string_view key, bool need_program) {
+Result<Session::OpenGraph*> Session::editable_graph(StringView key, bool need_program) {
     if (world_.running() || world_.closed())
         return graph_error("Graph editing requires an open, stopped Session.", ErrorCode::invalid_definition);
     if (need_program)
         ATELIER_TRY(procedural_source_program());
     auto* at = graphs_.find(key);
     if (!at || !*at)
-        return graph_error("Procedural graph is not open: " + std::string(key), ErrorCode::invalid_definition);
+        return graph_error(String::concat("Procedural graph is not open: ", lossy_utf8(key)),
+                           ErrorCode::invalid_definition);
     return at->get();
 }
 
@@ -2634,7 +2654,8 @@ Result<void> Session::OpenGraph::replay(Session& session, Span<GraphChange> chan
         if (auto applied = replay(session, at(i), redo); !applied) {
             while (i > 0) {
                 if (auto restored = replay(session, at(--i), !redo); !restored) {
-                    applied.error().message += " (restoring graph history: " + restored.error().message + ")";
+                    applied.error().message = String::concat(applied.error().message, " (restoring graph history: ",
+                                                             restored.error().message, ")");
                     break;
                 }
             }
@@ -2644,7 +2665,7 @@ Result<void> Session::OpenGraph::replay(Session& session, Span<GraphChange> chan
     return {};
 }
 
-Result<void> Session::graph_undo(std::string_view key, bool redo) {
+Result<void> Session::graph_undo(StringView key, bool redo) {
     ATELIER_TRY_BIND(open_ptr, editable_graph(key));
     ATELIER_TRY(cancel_edit());
     auto& open = **open_ptr;
@@ -2666,59 +2687,69 @@ Result<void> Session::graph_undo(std::string_view key, bool redo) {
     return {};
 }
 
-Result<std::string> Session::add_graph_node_impl(std::string_view key, std::string_view type_name,
-                                                 std::string_view desired_name, std::array<float, 2> position,
-                                                 std::string_view from_node, std::string_view from_port,
-                                                 std::string_view to_node, std::string_view to_port, bool set_display,
-                                                 Project* project) {
+Result<String> Session::add_graph_node_impl(StringView key, StringView type_name, StringView desired_name,
+                                            std::array<float, 2> position, StringView from_node, StringView from_port,
+                                            StringView to_node, StringView to_port, bool set_display,
+                                            Project* project) {
     if (!std::isfinite(position[0]) || !std::isfinite(position[1]))
         return graph_error("Node position must be finite.");
     ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
     auto& open = **open_ptr;
     Project* active_project = project ? project : open.resources.project();
-    std::string asset_key;
-    std::string stem_source;
-    std::string resolved_type_name(type_name);
-    if (resolved_type_name.starts_with("asset:")) {
-        asset_key = resolved_type_name.substr(6);
-        if (asset_key.empty())
+    String asset_key;
+    String stem_source;
+    String resolved_type_name;
+    if (type_name.starts_with("asset:")) {
+        const StringView raw_asset = type_name.slice(6);
+        if (raw_asset.empty())
             return graph_error("AssetNode requires a non-empty .procgraph asset key.");
+        auto ak = String::from_utf8(raw_asset);
+        if (!ak)
+            return graph_error("AssetNode asset key must be valid UTF-8.");
+        asset_key = std::move(*ak);
         if (!open.scratch && is_scratch_graph(asset_key))
             return graph_error("A persistent .procgraph asset cannot reference a scratch graph.");
         if (!open.scratch && asset_key == open.key)
             return graph_error("A .procgraph asset cannot instantiate itself.");
-        resolved_type_name = "procedural.AssetNode";
+        resolved_type_name = "procedural.AssetNode"_s;
         if (active_project) {
             if (const auto* asset_entry = active_project->entry(asset_key))
-                stem_source = asset_entry->path.stem().string();
+                stem_source = platform::utf16_to_utf8(asset_entry->path.stem().wstring()).value_or(String{});
         }
         if (stem_source.empty())
-            stem_source = "asset";
+            stem_source = "asset"_s;
+    } else {
+        auto rt = String::from_utf8(type_name);
+        if (!rt)
+            return graph_error(String::concat("Unknown procedural node type: ", lossy_utf8(type_name)));
+        resolved_type_name = std::move(*rt);
     }
     auto type = runtime_.find_type(resolved_type_name);
-    if (!type && resolved_type_name.find('.') == std::string::npos) {
-        resolved_type_name = "procedural." + resolved_type_name;
+    if (!type && !resolved_type_name.contains('.')) {
+        resolved_type_name = String::concat("procedural.", resolved_type_name);
         type = runtime_.find_type(resolved_type_name);
     }
     if (!type)
-        return graph_error("Unknown procedural node type: " + std::string(type_name));
+        return graph_error(String::concat("Unknown procedural node type: ", lossy_utf8(type_name)));
     ATELIER_TRY(procedural::ports(runtime_, *type));
 
-    std::string name(desired_name);
-    if (name.empty()) {
-        std::string stem = default_node_stem(stem_source.empty() ? resolved_type_name : stem_source);
+    String name;
+    if (desired_name.empty()) {
+        String stem = default_node_stem(stem_source.empty() ? resolved_type_name.view() : stem_source.view());
         if (stem.size() > 118)
-            stem.resize(118);
+            stem = String::from_utf8_validated(stem.view().first(118));
         for (std::uint32_t index = 1;; ++index) {
-            name = stem + std::to_string(index);
+            name = String::concat(stem, String::from_number(index));
             if (!find_node(open.document, name))
                 break;
         }
     } else {
-        if (!valid_graph_identifier(name))
-            return graph_error("Invalid node name '" + name + "': expected [A-Za-z_][A-Za-z0-9_]*.");
+        if (!valid_graph_identifier(desired_name))
+            return graph_error(
+                String::concat("Invalid node name '", lossy_utf8(desired_name), "': expected [A-Za-z_][A-Za-z0-9_]*."));
+        name = String::from_utf8_validated(desired_name);
         if (find_node(open.document, name))
-            return graph_error("A node named '" + name + "' already exists in this graph.");
+            return graph_error(String::concat("A node named '", name, "' already exists in this graph."));
     }
 
     ATELIER_TRY(cancel_edit());
@@ -2756,7 +2787,7 @@ Result<std::string> Session::add_graph_node_impl(std::string_view key, std::stri
 
     bool connected_to_dst = false;
     std::uint32_t dst_in_idx = 0;
-    std::string dst_port_name;
+    String dst_port_name;
     bool dst_port_multi = false;
     Array<procedural::Input> dst_after_snapshot;
     if (!to_node.empty() && !new_ports->outputs.empty()) {
@@ -2803,8 +2834,8 @@ Result<std::string> Session::add_graph_node_impl(std::string_view key, std::stri
             auto before_dst_kept = dst_mut->kept;
             ATELIER_TRY_BIND(dst_live_after,
                              format_live_port_endpoints(runtime_, open.document, dst_after_snapshot, dst_in_idx));
-            append_kept_port_endpoint(dst_mut->kept, dst_port_name, dst_port_multi, name + "." + new_ports->outputs[0],
-                                      *dst_live_after);
+            append_kept_port_endpoint(dst_mut->kept, dst_port_name, dst_port_multi,
+                                      String::concat(name, ".", new_ports->outputs[0]), *dst_live_after);
             if (dst_mut->kept != before_dst_kept)
                 retained_node_kept.add({dst_mut->name, std::move(before_dst_kept), dst_mut->kept});
         }
@@ -2826,33 +2857,31 @@ Result<std::string> Session::add_graph_node_impl(std::string_view key, std::stri
     return name;
 }
 
-Result<std::string> Session::graph_add_node(std::string_view key, std::string_view type_name,
-                                            std::string_view desired_name, std::array<float, 2> position,
-                                            Project* project) {
+Result<String> Session::graph_add_node(StringView key, StringView type_name, StringView desired_name,
+                                       std::array<float, 2> position, Project* project) {
     return add_graph_node_impl(key, type_name, desired_name, position, {}, {}, {}, {}, false, project);
 }
 
-Result<std::string> Session::graph_place_node(std::string_view key, std::string_view type_name,
-                                              std::array<float, 2> position, std::string_view from_node,
-                                              std::string_view from_port, std::string_view to_node,
-                                              std::string_view to_port, bool set_display, Project* project) {
+Result<String> Session::graph_place_node(StringView key, StringView type_name, std::array<float, 2> position,
+                                         StringView from_node, StringView from_port, StringView to_node,
+                                         StringView to_port, bool set_display, Project* project) {
     return add_graph_node_impl(key, type_name, {}, position, from_node, from_port, to_node, to_port, set_display,
                                project);
 }
 
-Result<void> Session::graph_remove_nodes(std::string_view key, Span<const std::string> names) {
+Result<void> Session::graph_remove_nodes(StringView key, Span<const String> names) {
     ATELIER_TRY_BIND(open_ptr, editable_graph(key));
     if (names.empty())
         return {};
     auto& open = **open_ptr;
-    Array<std::string> unique_names;
+    Array<String> unique_names;
     Set<ObjectId> removed_ids;
     for (const auto& name : names) {
         if (std::ranges::find(unique_names, name) != unique_names.end())
             continue;
         const auto* item = find_node(open.document, name);
         if (!item)
-            return graph_error("No node named '" + name + "' in this graph.");
+            return graph_error(String::concat("No node named '", name, "' in this graph."));
         unique_names.add(name);
         if (item->node.registered())
             removed_ids.add(item->node.id());
@@ -2873,11 +2902,11 @@ Result<void> Session::graph_remove_nodes(std::string_view key, Span<const std::s
     {
         auto next_params = open.document.parameters;
         for (auto& param : next_params) {
-            param.targets.remove_if([&](std::string_view target) {
+            param.targets.remove_if([&](const String& target) {
                 const auto dot = target.find('.');
-                if (dot == std::string_view::npos)
+                if (dot == String::npos)
                     return false;
-                return std::ranges::find(unique_names, target.substr(0, dot)) != unique_names.end();
+                return std::ranges::find(unique_names, target.view().slice(0, dot)) != unique_names.end();
             });
         }
         next_params.remove_if([](const GraphPromotedParameter& p) { return p.targets.empty(); });
@@ -2919,11 +2948,11 @@ Result<void> Session::graph_remove_nodes(std::string_view key, Span<const std::s
     });
 
     ATELIER_TRY_BIND(listed_after, procedural::contents(runtime_, graph));
-    const auto uses_removed_node = [&](std::string_view ep) noexcept {
+    const auto uses_removed_node = [&](const String& ep) noexcept {
         const auto dot = ep.find('.');
-        if (dot == std::string_view::npos)
+        if (dot == String::npos)
             return false;
-        const auto upstream = ep.substr(0, dot);
+        const auto upstream = ep.view().slice(0, dot);
         return std::ranges::find(unique_names, upstream) != unique_names.end();
     };
     for (auto& surv : open.document.nodes) {
@@ -2931,9 +2960,9 @@ Result<void> Session::graph_remove_nodes(std::string_view key, Span<const std::s
         if (!cur_inputs || cur_inputs->kind() != json::Kind::object)
             continue;
         auto before_surv_kept = surv.kept;
-        Array<std::string> kept_ports;
+        Array<String> kept_ports;
         for (const auto& [pname, _] : *cur_inputs->object_items())
-            kept_ports.emplace(pname);
+            kept_ports.add(String::from_utf8_validated(pname));
         if (surv.node.registered()) {
             ATELIER_TRY_BIND(surv_ports, procedural::ports(runtime_, surv.node.id()));
             ATELIER_TRY_BIND(surv_in, procedural::inputs(runtime_, *listed_after, surv.node.id()));
@@ -2961,47 +2990,47 @@ Result<void> Session::graph_remove_nodes(std::string_view key, Span<const std::s
     return {};
 }
 
-Result<Array<std::string>>
-Session::graph_duplicate_nodes(std::string_view key, Span<const std::string> names, std::array<float, 2> offset) {
+Result<Array<String>>
+Session::graph_duplicate_nodes(StringView key, Span<const String> names, std::array<float, 2> offset) {
     if (!std::isfinite(offset[0]) || !std::isfinite(offset[1]))
         return graph_error("Duplicate offset must be finite.");
     ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
     if (names.empty())
-        return Array<std::string>{};
+        return Array<String>{};
     auto& open = **open_ptr;
-    Array<std::string> unique_names;
+    Array<String> unique_names;
     for (const auto& name : names) {
         if (std::ranges::find(unique_names, name) != unique_names.end())
             continue;
         if (!find_node(open.document, name))
-            return graph_error("No node named '" + name + "' in this graph.");
+            return graph_error(String::concat("No node named '", name, "' in this graph."));
         unique_names.add(name);
     }
     if (unique_names.empty())
-        return Array<std::string>{};
+        return Array<String>{};
 
     ATELIER_TRY(cancel_edit());
     const ObjectId graph = open.document.graph.id();
     ATELIER_TRY_BIND(before_contents, procedural::contents(runtime_, graph));
 
-    Array<std::string> created_names;
+    Array<String> created_names;
     created_names.reserve(unique_names.size());
     Map<StringView, std::size_t> copy_name_indices;
     copy_name_indices.reserve(unique_names.size());
     for (const auto& src_name : unique_names) {
-        std::string stem = src_name;
+        StringView stem = src_name.view();
         while (stem.size() > 1 && stem.back() >= '0' && stem.back() <= '9')
-            stem.pop_back();
+            stem.remove_suffix(1);
         if (stem.size() > 118)
-            stem.resize(118);
-        std::string candidate;
+            stem = stem.first(118);
+        String candidate;
         for (std::uint32_t idx = 1;; ++idx) {
-            candidate = stem + std::to_string(idx);
+            candidate = String::concat(String::validated(stem), String::from_number(idx));
             if (!find_node(open.document, candidate) &&
                 std::ranges::find(created_names, candidate) == created_names.end())
                 break;
         }
-        copy_name_indices.try_emplace(StringView{src_name}, created_names.size());
+        copy_name_indices.try_emplace(src_name.view(), created_names.size());
         created_names.add(std::move(candidate));
     }
 
@@ -3033,9 +3062,10 @@ Session::graph_duplicate_nodes(std::string_view key, Span<const std::string> nam
             const auto remap_endpoint = [&](json::Value endpoint) {
                 if (const auto text = endpoint.string()) {
                     const auto dot = text->find('.');
-                    if (dot != text->npos) {
-                        if (const auto* index = copy_name_indices.find(StringView{text->substr(0, dot)})) {
-                            next.set_validated(endpoint, std::string(created_names[*index]).append(text->substr(dot)));
+                    if (dot != StringView::npos) {
+                        if (const auto* index = copy_name_indices.find(text->slice(0, dot))) {
+                            next.set_validated(
+                                endpoint, String::concat(created_names[*index], String::validated(text->slice(dot))));
                             changed = true;
                         }
                     }
@@ -3120,20 +3150,22 @@ Session::graph_duplicate_nodes(std::string_view key, Span<const std::string> nam
     return created_names;
 }
 
-Result<void> Session::graph_rename_node(std::string_view key, std::string_view old_name, std::string_view new_name) {
+Result<void> Session::graph_rename_node(StringView key, StringView old_name, StringView new_name) {
     ATELIER_TRY_BIND(open_ptr, editable_graph(key));
     if (!valid_graph_identifier(new_name))
-        return graph_error("Invalid node name '" + std::string(new_name) + "': expected [A-Za-z_][A-Za-z0-9_]*.");
+        return graph_error(
+            String::concat("Invalid node name '", lossy_utf8(new_name), "': expected [A-Za-z_][A-Za-z0-9_]*."));
     auto& open = **open_ptr;
     auto* item = find_node(open.document, old_name);
     if (!item)
-        return graph_error("No node named '" + std::string(old_name) + "' in this graph.");
+        return graph_error(String::concat("No node named '", lossy_utf8(old_name), "' in this graph."));
     if (old_name == new_name)
         return {};
     if (find_node(open.document, new_name))
-        return graph_error("A node named '" + std::string(new_name) + "' already exists in this graph.");
+        return graph_error(String::concat("A node named '", lossy_utf8(new_name), "' already exists in this graph."));
     ATELIER_TRY(cancel_edit());
-    GraphRenameChange change{std::string(old_name), std::string(new_name), {}};
+    const String new_name_str = String::from_utf8_validated(new_name);
+    GraphRenameChange change{item->name, new_name_str, {}};
     // Unresolved multi-input ports retain their entire ordered endpoint list, including live edges.
     for (auto& node : open.document.nodes) {
         if (!node.kept.root().find("inputs")->has_value())
@@ -3144,8 +3176,8 @@ Result<void> Session::graph_rename_node(std::string_view key, std::string_view o
         const auto rename_endpoint = [&](json::Value endpoint) {
             const auto text = *endpoint.string();
             const auto dot = text.find('.');
-            if (dot != text.npos && text.substr(0, dot) == old_name) {
-                next.set_validated(endpoint, std::string(new_name).append(text.substr(dot)));
+            if (dot != StringView::npos && text.slice(0, dot) == old_name) {
+                next.set_validated(endpoint, String::concat(new_name_str, String::validated(text.slice(dot))));
                 changed = true;
             }
         };
@@ -3178,22 +3210,22 @@ Result<void> Session::graph_rename_node(std::string_view key, std::string_view o
     for (auto& param : open.document.parameters) {
         for (auto& target : param.targets) {
             const auto dot = target.find('.');
-            if (dot != std::string::npos && std::string_view(target).substr(0, dot) == old_name)
-                target = std::string(new_name) + target.substr(dot);
+            if (dot != String::npos && target.view().slice(0, dot) == old_name)
+                target = String::concat(new_name_str, String::validated(target.view().slice(dot)));
         }
     }
     change.after_parameters = open.document.parameters;
-    item->name = std::string(new_name);
+    item->name = new_name_str;
     sort_graph_nodes(open.document.nodes);
     open.push_change(std::move(change));
     ++revision_;
     return {};
 }
 
-Result<void> Session::graph_move_canvas_items(std::string_view key,
-                                              Span<const std::pair<std::string, std::array<float, 2>>> node_moves,
-                                              Span<const std::pair<std::string, std::array<float, 2>>> note_moves,
-                                              Span<const std::pair<std::string, std::array<float, 2>>> box_moves) {
+Result<void> Session::graph_move_canvas_items(StringView key,
+                                              Span<const std::pair<String, std::array<float, 2>>> node_moves,
+                                              Span<const std::pair<String, std::array<float, 2>>> note_moves,
+                                              Span<const std::pair<String, std::array<float, 2>>> box_moves) {
     ATELIER_TRY_BIND(open_ptr, editable_graph(key));
     auto& open = **open_ptr;
     GraphMoveChange change;
@@ -3202,7 +3234,7 @@ Result<void> Session::graph_move_canvas_items(std::string_view key,
             return graph_error("Node position must be finite.");
         const auto* item = find_node(open.document, name);
         if (!item)
-            return graph_error("No node named '" + name + "' in this graph.");
+            return graph_error(String::concat("No node named '", name, "' in this graph."));
         if (item->position != next_pos)
             change.moves.add({name, item->position, next_pos});
     }
@@ -3211,7 +3243,7 @@ Result<void> Session::graph_move_canvas_items(std::string_view key,
             return graph_error("Sticky note position must be finite.");
         const auto* item = find_note(open.document, name);
         if (!item)
-            return graph_error("No sticky note named '" + name + "' in this graph.");
+            return graph_error(String::concat("No sticky note named '", name, "' in this graph."));
         if (item->position != next_pos)
             change.note_moves.add({name, item->position, next_pos});
     }
@@ -3220,7 +3252,7 @@ Result<void> Session::graph_move_canvas_items(std::string_view key,
             return graph_error("Network box position must be finite.");
         const auto* item = find_box(open.document, name);
         if (!item)
-            return graph_error("No network box named '" + name + "' in this graph.");
+            return graph_error(String::concat("No network box named '", name, "' in this graph."));
         if (item->position != next_pos)
             change.box_moves.add({name, item->position, next_pos});
     }
@@ -3238,8 +3270,8 @@ Result<void> Session::graph_move_canvas_items(std::string_view key,
     return {};
 }
 
-Result<void> Session::graph_move_nodes(std::string_view key,
-                                       Span<const std::pair<std::string, std::array<float, 2>>> moves,
+Result<void> Session::graph_move_nodes(StringView key,
+                                       Span<const std::pair<String, std::array<float, 2>>> moves,
                                        bool amend_creation) {
     if (amend_creation && !moves.empty()) {
         ATELIER_TRY_BIND(open_ptr, editable_graph(key));
@@ -3271,7 +3303,7 @@ Result<void> Session::graph_move_nodes(std::string_view key,
     return graph_move_canvas_items(key, moves, {}, {});
 }
 
-Result<void> Session::graph_auto_layout(std::string_view key) {
+Result<void> Session::graph_auto_layout(StringView key) {
     ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
     auto& open = **open_ptr;
     const std::size_t n = open.document.nodes.size();
@@ -3324,7 +3356,7 @@ Result<void> Session::graph_auto_layout(std::string_view key) {
     order_x.resize(n, 0.f);
     constexpr float x_pitch = 196.f;
     constexpr float y_pitch = 96.f;
-    Array<std::pair<std::string, std::array<float, 2>>> moves;
+    Array<std::pair<String, std::array<float, 2>>> moves;
     moves.reserve(n);
 
     for (std::size_t r = 0; r <= max_rank; ++r) {
@@ -3366,36 +3398,37 @@ Result<void> Session::graph_auto_layout(std::string_view key) {
     return graph_move_nodes(key, moves);
 }
 
-Result<void> Session::graph_connect(std::string_view key, std::string_view from_node, std::string_view from_port,
-                                    std::string_view to_node, std::string_view to_port) {
+Result<void> Session::graph_connect(StringView key, StringView from_node, StringView from_port,
+                                    StringView to_node, StringView to_port) {
     ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
     auto& open = **open_ptr;
     const auto* src = find_node(open.document, from_node);
     auto* dst = find_node(open.document, to_node);
     if (!src || !src->node.registered())
-        return graph_error("Upstream node '" + std::string(from_node) + "' is missing or unresolved.");
+        return graph_error(String::concat("Upstream node '", lossy_utf8(from_node), "' is missing or unresolved."));
     if (!dst || !dst->node.registered())
-        return graph_error("Downstream node '" + std::string(to_node) + "' is missing or unresolved.");
+        return graph_error(String::concat("Downstream node '", lossy_utf8(to_node), "' is missing or unresolved."));
 
     ATELIER_TRY_BIND(src_ports, procedural::ports(runtime_, src->node.id()));
     ATELIER_TRY_BIND(dst_ports, procedural::ports(runtime_, dst->node.id()));
     if (src_ports->outputs.empty())
-        return graph_error("Node '" + src->name + "' has no output ports.");
+        return graph_error(String::concat("Node '", src->name, "' has no output ports."));
     if (dst_ports->inputs.empty())
-        return graph_error("Node '" + dst->name + "' has no input ports.");
+        return graph_error(String::concat("Node '", dst->name, "' has no input ports."));
 
     std::uint32_t out_idx = 0;
     if (!from_port.empty()) {
         const auto found = std::ranges::find(src_ports->outputs, from_port);
         if (found == src_ports->outputs.end())
-            return graph_error("Node '" + src->name + "' has no output port '" + std::string(from_port) + "'.");
+            return graph_error(
+                String::concat("Node '", src->name, "' has no output port '", lossy_utf8(from_port), "'."));
         out_idx = static_cast<std::uint32_t>(found - src_ports->outputs.begin());
     }
     std::uint32_t in_idx = 0;
     if (!to_port.empty()) {
         const auto found = std::ranges::find(dst_ports->inputs, to_port);
         if (found == dst_ports->inputs.end())
-            return graph_error("Node '" + dst->name + "' has no input port '" + std::string(to_port) + "'.");
+            return graph_error(String::concat("Node '", dst->name, "' has no input port '", lossy_utf8(to_port), "'."));
         in_idx = static_cast<std::uint32_t>(found - dst_ports->inputs.begin());
     }
 
@@ -3416,7 +3449,7 @@ Result<void> Session::graph_connect(std::string_view key, std::string_view from_
     if (const auto inputs = *dst->kept.root().find("inputs"); inputs && *inputs->find(dst_ports->inputs[in_idx])) {
         ATELIER_TRY_BIND(live_after, format_live_port_endpoints(runtime_, open.document, *after_inputs, in_idx));
         append_kept_port_endpoint(dst->kept, dst_ports->inputs[in_idx], dst_ports->multiple[in_idx],
-                                  src->name + "." + src_ports->outputs[out_idx], *live_after);
+                                  String::concat(src->name, ".", src_ports->outputs[out_idx]), *live_after);
     }
 
     open.push_change(GraphConnectionChange{
@@ -3425,30 +3458,30 @@ Result<void> Session::graph_connect(std::string_view key, std::string_view from_
     return {};
 }
 
-Result<void> Session::graph_disconnect(std::string_view key, std::string_view to_node, std::string_view to_port,
-                                       std::string_view from_node, std::string_view from_port) {
+Result<void> Session::graph_disconnect(StringView key, StringView to_node, StringView to_port,
+                                       StringView from_node, StringView from_port) {
     ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
     auto& open = **open_ptr;
     auto* dst = find_node(open.document, to_node);
     if (!dst || !dst->node.registered())
-        return graph_error("Downstream node '" + std::string(to_node) + "' is missing or unresolved.");
+        return graph_error(String::concat("Downstream node '", lossy_utf8(to_node), "' is missing or unresolved."));
 
     ATELIER_TRY_BIND(dst_ports, procedural::ports(runtime_, dst->node.id()));
     Optional<std::uint32_t> in_idx;
     if (!to_port.empty()) {
         const auto found = std::ranges::find(dst_ports->inputs, to_port);
         if (found == dst_ports->inputs.end())
-            return graph_error("Node '" + dst->name + "' has no input port '" + std::string(to_port) + "'.");
+            return graph_error(String::concat("Node '", dst->name, "' has no input port '", lossy_utf8(to_port), "'."));
         in_idx = static_cast<std::uint32_t>(found - dst_ports->inputs.begin());
     }
 
-    const auto kept_endpoint_matches = [&](std::string_view ep) noexcept {
+    const auto kept_endpoint_matches = [&](StringView ep) noexcept {
         if (from_node.empty())
             return true;
         const auto dot = ep.find('.');
-        if (dot == std::string_view::npos || ep.substr(0, dot) != from_node)
+        if (dot == StringView::npos || ep.slice(0, dot) != from_node)
             return false;
-        return from_port.empty() || ep.substr(dot + 1) == from_port;
+        return from_port.empty() || ep.slice(dot + 1) == from_port;
     };
 
     Optional<ObjectId> filter_from;
@@ -3463,8 +3496,8 @@ Result<void> Session::graph_disconnect(std::string_view key, std::string_view to
                 const auto found = std::ranges::find(src_ports->outputs, from_port);
                 if (found == src_ports->outputs.end()) {
                     if (!kept_port_has_match(dst->kept, to_port, kept_endpoint_matches))
-                        return graph_error("Node '" + src->name + "' has no output port '" + std::string(from_port) +
-                                           "'.");
+                        return graph_error(String::concat("Node '", src->name, "' has no output port '",
+                                                          lossy_utf8(from_port), "'."));
                     matches_kept_only = true;
                 } else {
                     filter_out = static_cast<std::uint32_t>(found - src_ports->outputs.begin());
@@ -3473,7 +3506,7 @@ Result<void> Session::graph_disconnect(std::string_view key, std::string_view to
         } else if (kept_port_has_match(dst->kept, to_port, kept_endpoint_matches)) {
             matches_kept_only = true;
         } else {
-            return graph_error("Upstream node '" + std::string(from_node) + "' is missing or unresolved.");
+            return graph_error(String::concat("Upstream node '", lossy_utf8(from_node), "' is missing or unresolved."));
         }
     }
 
@@ -3507,9 +3540,9 @@ Result<void> Session::graph_disconnect(std::string_view key, std::string_view to
         } else {
             const auto cur_inputs = *dst->kept.root().find("inputs");
             if (cur_inputs && cur_inputs->kind() == json::Kind::object) {
-                Array<std::string> kept_ports;
+                Array<String> kept_ports;
                 for (const auto& [pname, _] : *cur_inputs->object_items())
-                    kept_ports.emplace(pname);
+                    kept_ports.add(String::from_utf8_validated(pname));
                 for (const auto& pname : kept_ports) {
                     const auto p_it = std::ranges::find(dst_ports->inputs, pname);
                     if (p_it != dst_ports->inputs.end()) {
@@ -3535,7 +3568,7 @@ Result<void> Session::graph_disconnect(std::string_view key, std::string_view to
     return {};
 }
 
-Result<void> Session::graph_disconnect_edges(std::string_view key, Span<const GraphConnectionView> edges) {
+Result<void> Session::graph_disconnect_edges(StringView key, Span<const GraphConnectionView> edges) {
     if (edges.empty())
         return {};
     ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
@@ -3553,7 +3586,7 @@ Result<void> Session::graph_disconnect_edges(std::string_view key, Span<const Gr
 
         std::uint32_t in_idx{};
 
-        std::string endpoint;
+        String endpoint;
     };
     Array<ResolvedCut> cuts;
     cuts.reserve(edges.size());
@@ -3569,7 +3602,8 @@ Result<void> Session::graph_disconnect_edges(std::string_view key, Span<const Gr
         if (out_it == src_ports->outputs.end() || in_it == dst_ports->inputs.end())
             continue;
         cuts.add({src->node.id(), static_cast<std::uint32_t>(out_it - src_ports->outputs.begin()), dst->node.id(),
-                  static_cast<std::uint32_t>(in_it - dst_ports->inputs.begin()), src->name + "." + *out_it});
+                  static_cast<std::uint32_t>(in_it - dst_ports->inputs.begin()),
+                  String::concat(src->name, ".", *out_it)});
     }
     if (cuts.empty())
         return {};
@@ -3603,7 +3637,7 @@ Result<void> Session::graph_disconnect_edges(std::string_view key, Span<const Gr
                     continue;
                 ATELIER_TRY_BIND(live_after, format_live_port_endpoints(runtime_, open.document, remaining, p_idx));
                 filter_kept_port_endpoints(dst.kept, dst_ports->inputs[p_idx], dst_ports->multiple[p_idx], *live_after,
-                                           [&](std::string_view ep) {
+                                           [&](const String& ep) {
                                                return std::ranges::any_of(cuts, [&](const ResolvedCut& c) {
                                                    return c.to == to_id && c.in_idx == p_idx && c.endpoint == ep;
                                                });
@@ -3622,8 +3656,8 @@ Result<void> Session::graph_disconnect_edges(std::string_view key, Span<const Gr
     return {};
 }
 
-Result<void> Session::graph_rewire(std::string_view key, const GraphConnectionView& remove_edge,
-                                   std::string_view new_to_node, std::string_view new_to_port) {
+Result<void> Session::graph_rewire(StringView key, const GraphConnectionView& remove_edge,
+                                   StringView new_to_node, StringView new_to_port) {
     if (remove_edge.to_node == new_to_node && remove_edge.to_port == new_to_port)
         return {};
     ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
@@ -3676,12 +3710,12 @@ Result<void> Session::graph_rewire(std::string_view key, const GraphConnectionVi
 
     const auto old_before_kept = old_dst->kept;
     const auto new_before_kept = new_dst->kept;
-    const std::string moved_ep = src->name + "." + src_ports->outputs[out_idx];
+    const String moved_ep = String::concat(src->name, ".", src_ports->outputs[out_idx]);
 
     ATELIER_TRY_BIND(old_after, procedural::inputs(runtime_, *listed, old_dst->node.id()));
     ATELIER_TRY_BIND(old_live_after, format_live_port_endpoints(runtime_, open.document, *old_after, old_in_idx));
     filter_kept_port_endpoints(old_dst->kept, old_ports->inputs[old_in_idx], old_ports->multiple[old_in_idx],
-                               *old_live_after, [&](std::string_view ep) { return ep == moved_ep; });
+                               *old_live_after, [&](const String& ep) { return ep == moved_ep; });
 
     GraphConnectionChange change;
     if (old_dst == new_dst) {
@@ -3707,7 +3741,7 @@ Result<void> Session::graph_rewire(std::string_view key, const GraphConnectionVi
     return {};
 }
 
-Result<void> Session::graph_splice_node(std::string_view key, std::string_view node_name, std::array<float, 2> position,
+Result<void> Session::graph_splice_node(StringView key, StringView node_name, std::array<float, 2> position,
                                         const GraphConnectionView& wire) {
     if (!std::isfinite(position[0]) || !std::isfinite(position[1]))
         return graph_error("Node position must be finite.");
@@ -3787,8 +3821,8 @@ Result<void> Session::graph_splice_node(std::string_view key, std::string_view n
         return std::unexpected(r2.error());
     }
 
-    const std::string src_ep = src->name + "." + src_ports->outputs[out_idx];
-    const std::string mid_ep = mid->name + "." + mid_ports->outputs[0];
+    const String src_ep = String::concat(src->name, ".", src_ports->outputs[out_idx]);
+    const String mid_ep = String::concat(mid->name, ".", mid_ports->outputs[0]);
     ATELIER_TRY_BIND(mid_live_after, format_live_port_endpoints(runtime_, open.document, mid_after, 0));
     ATELIER_TRY_BIND(dst_live_after, format_live_port_endpoints(runtime_, open.document, dst_after, in_idx));
 
@@ -3811,14 +3845,14 @@ Result<void> Session::graph_splice_node(std::string_view key, std::string_view n
     return {};
 }
 
-Result<void> Session::graph_set_display(std::string_view key, std::string_view node_name) {
+Result<void> Session::graph_set_display(StringView key, StringView node_name) {
     ATELIER_TRY_BIND(open_ptr, editable_graph(key));
     auto& open = **open_ptr;
     ObjectId target{};
     if (!node_name.empty()) {
         const auto* item = find_node(open.document, node_name);
         if (!item || !item->node.registered())
-            return graph_error("Display target '" + std::string(node_name) + "' is missing or unresolved.");
+            return graph_error(String::concat("Display target '", lossy_utf8(node_name), "' is missing or unresolved."));
         target = item->node.id();
     }
     ATELIER_TRY(cancel_edit());
@@ -3837,14 +3871,15 @@ Result<void> Session::graph_set_display(std::string_view key, std::string_view n
     return {};
 }
 
-Result<void> Session::graph_set_template(std::string_view key, std::string_view node_name) {
+Result<void> Session::graph_set_template(StringView key, StringView node_name) {
     ATELIER_TRY_BIND(open_ptr, editable_graph(key));
     auto& open = **open_ptr;
     ObjectId target{};
     if (!node_name.empty()) {
         const auto* item = find_node(open.document, node_name);
         if (!item || !item->node.registered())
-            return graph_error("Template target '" + std::string(node_name) + "' is missing or unresolved.");
+            return graph_error(
+                String::concat("Template target '", lossy_utf8(node_name), "' is missing or unresolved."));
         target = item->node.id();
     }
     ATELIER_TRY(cancel_edit());
@@ -3862,12 +3897,12 @@ Result<void> Session::graph_set_template(std::string_view key, std::string_view 
     return {};
 }
 
-Result<void> Session::graph_set_bypass(std::string_view key, std::string_view node_name, bool bypassed) {
+Result<void> Session::graph_set_bypass(StringView key, StringView node_name, bool bypassed) {
     ATELIER_TRY_BIND(open_ptr, editable_graph(key));
     auto& open = **open_ptr;
     auto* item = find_node(open.document, node_name);
     if (!item || !item->node.registered())
-        return graph_error("Bypass target '" + std::string(node_name) + "' is missing or unresolved.");
+        return graph_error(String::concat("Bypass target '", lossy_utf8(node_name), "' is missing or unresolved."));
     ATELIER_TRY_BIND(before, procedural::bypassed(runtime_, item->node.id()));
     if (*before == bypassed)
         return {};
@@ -3878,13 +3913,12 @@ Result<void> Session::graph_set_bypass(std::string_view key, std::string_view no
     return {};
 }
 
-Result<void> Session::graph_set_frozen(std::string_view key, std::string_view node_name, bool frozen,
-                                       Project* project) {
+Result<void> Session::graph_set_frozen(StringView key, StringView node_name, bool frozen, Project* project) {
     ATELIER_TRY_BIND(open_ptr, editable_graph(key, frozen));
     auto& open = **open_ptr;
     auto* item = find_node(open.document, node_name);
     if (!item || !item->node.registered())
-        return graph_error("Freeze target '" + std::string(node_name) + "' is missing or unresolved.");
+        return graph_error(String::concat("Freeze target '", lossy_utf8(node_name), "' is missing or unresolved."));
     ATELIER_TRY_BIND(before, procedural::frozen(runtime_, item->node.id()));
     if (*before == frozen)
         return {};
@@ -3901,33 +3935,31 @@ Result<void> Session::graph_set_frozen(std::string_view key, std::string_view no
     return {};
 }
 
-Result<void> Session::graph_set_node_appearance(std::string_view key, Span<const std::string> names,
+Result<void> Session::graph_set_node_appearance(StringView key, Span<const String> names,
                                                 Optional<GraphNodeShape> shape,
                                                 Optional<Optional<std::uint32_t>> color,
-                                                Optional<std::string> comment) {
+                                                Optional<String> comment) {
     ATELIER_TRY_BIND(open_ptr, editable_graph(key));
     if (names.empty())
         return {};
     if (shape && static_cast<std::uint8_t>(*shape) > static_cast<std::uint8_t>(GraphNodeShape::circle))
         return graph_error("Invalid node shape preset.");
-    if (comment && !StringView(*comment).is_valid_utf8())
-        return graph_error("Node comment must be valid UTF-8.");
     auto& open = **open_ptr;
     GraphAppearanceChange change;
-    Array<std::string> seen;
+    Array<String> seen;
     for (const auto& name : names) {
         if (std::ranges::find(seen, name) != seen.end())
             continue;
         seen.add(name);
         const auto* item = find_node(open.document, name);
         if (!item)
-            return graph_error("No node named '" + name + "' in this graph.");
+            return graph_error(String::concat("No node named '", name, "' in this graph."));
         const GraphNodeShape next_shape = shape.value_or(item->shape);
         Optional<std::uint32_t> next_color = item->color;
         if (color) {
             next_color = *color ? Optional<std::uint32_t>{**color & 0xffffffu} : Optional<std::uint32_t>{};
         }
-        const std::string next_comment = comment.value_or(item->comment);
+        const String next_comment = comment.value_or(item->comment);
         if (next_shape != item->shape || next_color != item->color || next_comment != item->comment) {
             change.entries.add(
                 {name, item->shape, next_shape, item->color, next_color, item->comment, next_comment});
@@ -3947,25 +3979,26 @@ Result<void> Session::graph_set_node_appearance(std::string_view key, Span<const
     return {};
 }
 
-Result<std::string> Session::graph_add_note(std::string_view key, std::array<float, 2> position,
-                                            std::array<float, 2> size, std::string_view title, std::string_view text,
-                                            std::uint32_t color) {
+Result<String> Session::graph_add_note(StringView key, std::array<float, 2> position, std::array<float, 2> size,
+                                       StringView title, StringView text, std::uint32_t color) {
     ATELIER_TRY_BIND(open_ptr, editable_graph(key));
     if (!std::isfinite(position[0]) || !std::isfinite(position[1]) || !std::isfinite(size[0]) ||
         !std::isfinite(size[1]) || size[0] <= 0.f || size[1] <= 0.f)
         return graph_error("Sticky note position and size must be finite and positive.");
-    if (!StringView(title).is_valid_utf8() || !StringView(text).is_valid_utf8())
+    auto title_str = String::from_utf8(title);
+    auto text_str = String::from_utf8(text);
+    if (!title_str || !text_str)
         return graph_error("Sticky note text must be valid UTF-8.");
     auto& open = **open_ptr;
-    std::string name;
+    String name;
     for (std::uint32_t idx = 1;; ++idx) {
-        name = "note" + std::to_string(idx);
+        name = String::concat("note", String::from_number(idx));
         if (!find_note(open.document, name))
             break;
     }
     ATELIER_TRY(cancel_edit());
     GraphAnnotationChange change{open.document.notes, open.document.notes, open.document.boxes, open.document.boxes};
-    change.after_notes.add({name, position, size, std::string(title), std::string(text), color & 0xffffffu});
+    change.after_notes.add({name, position, size, std::move(*title_str), std::move(*text_str), color & 0xffffffu});
     sort_graph_notes(change.after_notes);
     open.document.notes = change.after_notes;
     open.push_change(std::move(change));
@@ -3973,15 +4006,14 @@ Result<std::string> Session::graph_add_note(std::string_view key, std::array<flo
     return name;
 }
 
-Result<void> Session::graph_update_note(std::string_view key, std::string_view name,
-                                        Optional<std::array<float, 2>> position,
-                                        Optional<std::array<float, 2>> size, Optional<std::string> title,
-                                        Optional<std::string> text, Optional<std::uint32_t> color) {
+Result<void> Session::graph_update_note(StringView key, StringView name, Optional<std::array<float, 2>> position,
+                                        Optional<std::array<float, 2>> size, Optional<String> title,
+                                        Optional<String> text, Optional<std::uint32_t> color) {
     ATELIER_TRY_BIND(open_ptr, editable_graph(key));
     auto& open = **open_ptr;
     const auto* existing = find_note(open.document, name);
     if (!existing)
-        return graph_error("No sticky note named '" + std::string(name) + "' in this graph.");
+        return graph_error(String::concat("No sticky note named '", lossy_utf8(name), "' in this graph."));
     GraphStickyNote updated = *existing;
     if (position) {
         if (!std::isfinite((*position)[0]) || !std::isfinite((*position)[1]))
@@ -3993,16 +4025,10 @@ Result<void> Session::graph_update_note(std::string_view key, std::string_view n
             return graph_error("Sticky note size must be finite and positive.");
         updated.size = *size;
     }
-    if (title) {
-        if (!StringView(*title).is_valid_utf8())
-            return graph_error("Sticky note title must be valid UTF-8.");
+    if (title)
         updated.title = *title;
-    }
-    if (text) {
-        if (!StringView(*text).is_valid_utf8())
-            return graph_error("Sticky note text must be valid UTF-8.");
+    if (text)
         updated.text = *text;
-    }
     if (color)
         updated.color = *color & 0xffffffu;
     if (updated == *existing)
@@ -4019,7 +4045,7 @@ Result<void> Session::graph_update_note(std::string_view key, std::string_view n
     return {};
 }
 
-Result<void> Session::graph_remove_notes(std::string_view key, Span<const std::string> names) {
+Result<void> Session::graph_remove_notes(StringView key, Span<const String> names) {
     ATELIER_TRY_BIND(open_ptr, editable_graph(key));
     if (names.empty())
         return {};
@@ -4036,24 +4062,25 @@ Result<void> Session::graph_remove_notes(std::string_view key, Span<const std::s
     return {};
 }
 
-Result<std::string> Session::graph_add_box(std::string_view key, std::array<float, 2> position,
-                                           std::array<float, 2> size, std::string_view title, std::uint32_t color) {
+Result<String> Session::graph_add_box(StringView key, std::array<float, 2> position, std::array<float, 2> size,
+                                      StringView title, std::uint32_t color) {
     ATELIER_TRY_BIND(open_ptr, editable_graph(key));
     if (!std::isfinite(position[0]) || !std::isfinite(position[1]) || !std::isfinite(size[0]) ||
         !std::isfinite(size[1]) || size[0] <= 0.f || size[1] <= 0.f)
         return graph_error("Network box position and size must be finite and positive.");
-    if (!StringView(title).is_valid_utf8())
+    auto title_str = String::from_utf8(title);
+    if (!title_str)
         return graph_error("Network box title must be valid UTF-8.");
     auto& open = **open_ptr;
-    std::string name;
+    String name;
     for (std::uint32_t idx = 1;; ++idx) {
-        name = "box_frame" + std::to_string(idx);
+        name = String::concat("box_frame", String::from_number(idx));
         if (!find_box(open.document, name))
             break;
     }
     ATELIER_TRY(cancel_edit());
     GraphAnnotationChange change{open.document.notes, open.document.notes, open.document.boxes, open.document.boxes};
-    change.after_boxes.add({name, position, size, std::string(title), color & 0xffffffu});
+    change.after_boxes.add({name, position, size, std::move(*title_str), color & 0xffffffu});
     sort_graph_boxes(change.after_boxes);
     open.document.boxes = change.after_boxes;
     open.push_change(std::move(change));
@@ -4061,15 +4088,14 @@ Result<std::string> Session::graph_add_box(std::string_view key, std::array<floa
     return name;
 }
 
-Result<void> Session::graph_update_box(std::string_view key, std::string_view name,
-                                       Optional<std::array<float, 2>> position,
-                                       Optional<std::array<float, 2>> size, Optional<std::string> title,
+Result<void> Session::graph_update_box(StringView key, StringView name, Optional<std::array<float, 2>> position,
+                                       Optional<std::array<float, 2>> size, Optional<String> title,
                                        Optional<std::uint32_t> color) {
     ATELIER_TRY_BIND(open_ptr, editable_graph(key));
     auto& open = **open_ptr;
     const auto* existing = find_box(open.document, name);
     if (!existing)
-        return graph_error("No network box named '" + std::string(name) + "' in this graph.");
+        return graph_error(String::concat("No network box named '", lossy_utf8(name), "' in this graph."));
     GraphNetworkBox updated = *existing;
     if (position) {
         if (!std::isfinite((*position)[0]) || !std::isfinite((*position)[1]))
@@ -4081,11 +4107,8 @@ Result<void> Session::graph_update_box(std::string_view key, std::string_view na
             return graph_error("Network box size must be finite and positive.");
         updated.size = *size;
     }
-    if (title) {
-        if (!StringView(*title).is_valid_utf8())
-            return graph_error("Network box title must be valid UTF-8.");
+    if (title)
         updated.title = *title;
-    }
     if (color)
         updated.color = *color & 0xffffffu;
     if (updated == *existing)
@@ -4102,7 +4125,7 @@ Result<void> Session::graph_update_box(std::string_view key, std::string_view na
     return {};
 }
 
-Result<void> Session::graph_remove_boxes(std::string_view key, Span<const std::string> names) {
+Result<void> Session::graph_remove_boxes(StringView key, Span<const String> names) {
     ATELIER_TRY_BIND(open_ptr, editable_graph(key));
     if (names.empty())
         return {};
@@ -4149,9 +4172,9 @@ Result<Scalar> decode_scalar_or_enum_json(Runtime& runtime, TypeId leaf_type, co
         const auto& enumeration = *(*info)->enumeration;
         if (val.kind() == json::Kind::string) {
             const auto name = *val.string();
-            const auto en = std::ranges::find(enumeration.values, name, &std::pair<std::string, std::uint32_t>::first);
+            const auto en = std::ranges::find(enumeration.values, name, &std::pair<String, std::uint32_t>::first);
             if (en == enumeration.values.end())
-                return graph_error("Unknown enumerator '" + std::string(name) + "'.");
+                return graph_error(String::concat("Unknown enumerator '", String::validated(name), "'."));
             return Scalar{EnumValue{leaf_type, en->second}};
         }
         if (enumeration.flags) {
@@ -4263,7 +4286,7 @@ Result<json::Document> encode_parameter_scalars_json(Runtime& runtime, bool is_v
                         return graph_error("Missing enumeration metadata.");
                     const auto& enumeration = *(*info)->enumeration;
                     const auto en =
-                        std::ranges::find(enumeration.values, v.bits, &std::pair<std::string, std::uint32_t>::second);
+                        std::ranges::find(enumeration.values, v.bits, &std::pair<String, std::uint32_t>::second);
                     if (en != enumeration.values.end()) {
                         out.set_validated(dst, en->first);
                     } else if (enumeration.flags && detail::valid_enum_bits(enumeration, v.bits)) {
@@ -4288,7 +4311,7 @@ Result<json::Document> encode_parameter_scalars_json(Runtime& runtime, bool is_v
     return out.finish();
 }
 
-Result<std::variant<Array<Scalar>, std::string>>
+Result<std::variant<Array<Scalar>, String>>
 decode_promoted_value_json(Runtime& runtime, const ResolvedPromotedSchema& schema,
                            Span<const Scalar> fallback_scalars, json::Value val, bool tolerant_clamp,
                            bool* was_clamped = nullptr) {
@@ -4297,7 +4320,7 @@ decode_promoted_value_json(Runtime& runtime, const ResolvedPromotedSchema& schem
     if (!schema.primary.is_vector && schema.primary.leaves.front().kind == TypeKind::string) {
         if (val.kind() != json::Kind::string)
             return graph_error("Expected string value for parameter.");
-        return std::string(*val.string());
+        return String::from_utf8_validated(*val.string());
     }
     if (!schema.primary.is_vector) {
         ATELIER_TRY_BIND(s, decode_scalar_or_enum_json(runtime, schema.primary.leaves.front().type,
@@ -4324,7 +4347,7 @@ decode_promoted_value_json(Runtime& runtime, const ResolvedPromotedSchema& schem
             const auto found = std::ranges::find_if(schema.primary.leaves,
                                                     [&](const detail::ScalarField& f) { return f.names.back() == k; });
             if (found == schema.primary.leaves.end())
-                return graph_error("Unknown vector component '" + std::string(k) + "'.");
+                return graph_error(String::concat("Unknown vector component '", String::validated(k), "'."));
             const auto idx = static_cast<std::size_t>(found - schema.primary.leaves.begin());
             bool lane_clamped = false;
             ATELIER_TRY_BIND(s, decode_scalar_or_enum_json(runtime, found->type, schema.ranges[idx], elem,
@@ -4341,17 +4364,14 @@ decode_promoted_value_json(Runtime& runtime, const ResolvedPromotedSchema& schem
 }
 
 Result<void> write_promoted_targets_if_changed(Runtime& runtime, const ResolvedPromotedSchema& schema,
-                                               const std::variant<Array<Scalar>, std::string>& desired,
+                                               const std::variant<Array<Scalar>, String>& desired,
                                                GraphDocument* clear_kept_doc = nullptr) {
     for (const auto& target : schema.all_targets) {
-        if (const auto* str = std::get_if<std::string>(&desired)) {
+        if (const auto* str = std::get_if<String>(&desired)) {
             const auto& leaf = target.leaves.front();
             String cur;
-            if (!runtime.read(target.node, leaf.path, ValueOutput{leaf.type, &cur}) || cur.view().std_view() != *str) {
-                auto str_val = String::from_utf8(StringView(*str));
-                if (!str_val)
-                    return graph_error("Invalid UTF-8 parameter string.");
-                ATELIER_TRY(runtime.write(target.node, leaf.path, ValueInput{leaf.type, &*str_val}));
+            if (!runtime.read(target.node, leaf.path, ValueOutput{leaf.type, &cur}) || cur != *str) {
+                ATELIER_TRY(runtime.write(target.node, leaf.path, ValueInput{leaf.type, str}));
             }
         } else {
             const auto& scalars = std::get<Array<Scalar>>(desired);
@@ -4367,7 +4387,7 @@ Result<void> write_promoted_targets_if_changed(Runtime& runtime, const ResolvedP
                 bool erased = false;
                 for (const auto& leaf : target.leaves) {
                     auto names = leaf.names;
-                    names.insert(0, "properties");
+                    names.insert(0, "properties"_s);
                     erased |= detail::erase_path(next, next.root(), names);
                 }
                 if (erased)
@@ -4385,14 +4405,14 @@ Array<CachedPromotedParam> build_cached_promoted_params(Runtime& runtime, const 
         auto schema = resolve_promoted_parameter_schema(runtime, doc, param);
         if (!schema)
             continue;
-        std::variant<Array<Scalar>, std::string> def_val;
+        std::variant<Array<Scalar>, String> def_val;
         if (!schema->primary.is_vector && schema->primary.leaves.front().kind == TypeKind::string) {
             String s;
             if (runtime.read(schema->primary.node, schema->primary.leaves.front().path,
                              ValueOutput{schema->primary.leaves.front().type, &s}))
-                def_val = std::string(s.view().std_view());
+                def_val = std::move(s);
             else
-                def_val = std::string{};
+                def_val = String{};
         } else {
             Array<Scalar> vals;
             vals.reserve(schema->primary.leaves.size());
@@ -4411,22 +4431,22 @@ Array<CachedPromotedParam> build_cached_promoted_params(Runtime& runtime, const 
 
 template <class WarnFn>
 Result<void> apply_cached_instance_overrides(Runtime& runtime, Span<const CachedPromotedParam> cached_params,
-                                             std::string_view asset_key, const json::Document& overrides,
+                                             const String& asset_key, const json::Document& overrides,
                                              WarnFn&& report_warn) {
     const json::Value ov_root = overrides.root();
     const bool has_ov = ov_root.kind() == json::Kind::object && ov_root.size() > 0;
     if (has_ov) {
         for (const auto& [ov_name_sv, ov_val] : *ov_root.object_items()) {
             if (std::ranges::find(cached_params, ov_name_sv, &CachedPromotedParam::name) == cached_params.end()) {
-                const std::string ov_name(ov_name_sv);
+                const String ov_name = String::from_utf8_validated(ov_name_sv);
                 report_warn(ov_name, ov_val, world::DiagnosticKind::unknown_field,
-                            "Asset '" + std::string(asset_key) + "' has no promoted parameter '" + ov_name +
-                                "'. The override is kept.");
+                            String::concat("Asset '", asset_key, "' has no promoted parameter '", ov_name,
+                                           "'. The override is kept."));
             }
         }
     }
     for (const auto& cp : cached_params) {
-        std::variant<Array<Scalar>, std::string> desired = cp.default_value;
+        std::variant<Array<Scalar>, String> desired = cp.default_value;
         if (has_ov) {
             if (const auto ov_val = *ov_root.find(cp.name)) {
                 const auto* def_scalars = std::get_if<Array<Scalar>>(&cp.default_value);
@@ -4436,11 +4456,11 @@ Result<void> apply_cached_instance_overrides(Runtime& runtime, Span<const Cached
                 auto decoded = decode_promoted_value_json(runtime, cp.schema, fallback, *ov_val, true, &was_clamped);
                 if (!decoded) {
                     report_warn(cp.name, *ov_val, world::DiagnosticKind::mismatch,
-                                decoded.error().message + " The override is kept.");
+                                String::concat(decoded.error().message, " The override is kept."));
                 } else {
                     if (was_clamped)
                         report_warn(cp.name, *ov_val, world::DiagnosticKind::invalid_value,
-                                    "Override clamped to promoted parameter hard bounds.");
+                                    "Override clamped to promoted parameter hard bounds."_s);
                     desired = std::move(*decoded);
                 }
             }
@@ -4486,13 +4506,13 @@ Array<GraphPromotedParameterView> build_promoted_views(Runtime& runtime, const G
             const auto& leaf = schema.primary.leaves.front();
             String def_str;
             if (runtime.read(schema.primary.node, leaf.path, ValueOutput{leaf.type, &def_str}))
-                view.default_string = std::string(def_str.view().std_view());
-            std::string eff_str = view.default_string;
+                view.default_string = std::move(def_str);
+            String eff_str = view.default_string;
             if (overrides_obj && overrides_obj->kind() == json::Kind::object) {
                 if (const auto ov = *overrides_obj->find(param.name)) {
                     view.overridden = true;
                     if (ov->kind() == json::Kind::string)
-                        eff_str = std::string(*ov->string());
+                        eff_str = String::from_utf8_validated(*ov->string());
                 }
             }
             Property prop;
@@ -4531,7 +4551,7 @@ Array<GraphPromotedParameterView> build_promoted_views(Runtime& runtime, const G
         for (std::size_t li = 0; li < schema.primary.leaves.size(); ++li) {
             const auto& leaf = schema.primary.leaves[li];
             Property prop;
-            prop.name = schema.primary.is_vector ? (param.name + "." + leaf.names.back()) : param.name;
+            prop.name = schema.primary.is_vector ? String::concat(param.name, ".", leaf.names.back()) : param.name;
             prop.path = leaf.path;
             prop.type = leaf.type;
             prop.value = eff_scalars[li];
@@ -4549,13 +4569,14 @@ Array<GraphPromotedParameterView> build_promoted_views(Runtime& runtime, const G
             if (std::ranges::find(doc.parameters, ov_name_sv, &GraphPromotedParameter::name) != doc.parameters.end())
                 continue;
             GraphPromotedParameterView stale;
-            stale.name = std::string(ov_name_sv);
-            stale.label = stale.name + " (Undeclared)";
+            stale.name = String::from_utf8_validated(ov_name_sv);
+            stale.label = String::concat(stale.name, " (Undeclared)");
             stale.valid = false;
             stale.overridden = true;
             stale.undeclared = true;
-            stale.invalid_reason = "Override has no matching promoted parameter in the referenced graph (kept as \"" +
-                                   assets::json_format::preview(ov_val) + "\").";
+            stale.invalid_reason =
+                String::concat("Override has no matching promoted parameter in the referenced graph (kept as \"",
+                               assets::json_format::preview(ov_val), "\").");
             out.add(std::move(stale));
         }
     }
@@ -4569,16 +4590,16 @@ Result<SavedGraphPortMap> capture_node_authored_inputs(Runtime& runtime, const G
     SavedGraphPortMap saved;
     if (const auto kept_in = *target.kept.root().find("inputs"); kept_in && kept_in->kind() == json::Kind::object) {
         for (const auto& [pname, val] : *kept_in->object_items()) {
-            Array<std::string> eps;
+            Array<String> eps;
             const bool is_arr = val.kind() == json::Kind::array;
             if (is_arr) {
                 for (const auto item : *val.array())
                     if (const auto s = item.string())
-                        eps.emplace(*s);
+                        eps.add(String::from_utf8_validated(*s));
             } else if (const auto s = val.string()) {
-                eps.emplace(*s);
+                eps.add(String::from_utf8_validated(*s));
             }
-            saved.emplace(std::string(pname), std::pair{is_arr, std::move(eps)});
+            saved.emplace(String::from_utf8_validated(pname), std::pair{is_arr, std::move(eps)});
         }
     }
     if (!target.node.registered())
@@ -4590,7 +4611,7 @@ Result<SavedGraphPortMap> capture_node_authored_inputs(Runtime& runtime, const G
         const auto& pname = target_ports->inputs[p_idx];
         if (saved.contains(pname))
             continue;
-        Array<std::string> eps;
+        Array<String> eps;
         for (const auto& in : *conns) {
             if (in.input != p_idx)
                 continue;
@@ -4607,7 +4628,7 @@ Result<SavedGraphPortMap> capture_node_authored_inputs(Runtime& runtime, const G
                 src_ports = &local_ports;
             }
             if (in.output < src_ports->outputs.size())
-                eps.add(src->name + "." + src_ports->outputs[in.output]);
+                eps.add(String::concat(src->name, ".", src_ports->outputs[in.output]));
         }
         if (!eps.empty())
             saved.emplace(pname, std::pair{target_ports->multiple[p_idx], std::move(eps)});
@@ -4628,12 +4649,12 @@ Result<void> realign_asset_node_ports(Runtime& runtime, GraphDocument& doc, Grap
     ATELIER_TRY_BIND(asset_saved_in, capture_node_authored_inputs(runtime, doc, *listed, asset_entry));
 
     struct DownstreamCapture {
-        std::string name;
+        String name;
 
         SavedGraphPortMap saved_in;
     };
     Array<DownstreamCapture> downstream;
-    const std::string asset_prefix = asset_entry.name + ".";
+    const String asset_prefix = String::concat(asset_entry.name, ".");
     for (const auto& item : doc.nodes) {
         if (!item.node.registered() || item.node.id() == asset_id)
             continue;
@@ -4641,7 +4662,7 @@ Result<void> realign_asset_node_ports(Runtime& runtime, GraphDocument& doc, Grap
         const bool live_dep =
             std::ranges::any_of(*conns, [&](const procedural::Input& in) { return in.from == asset_id; });
         const bool kept_dep =
-            kept_port_has_match(item.kept, {}, [&](std::string_view ep) { return ep.starts_with(asset_prefix); });
+            kept_port_has_match(item.kept, {}, [&](StringView ep) { return ep.starts_with(asset_prefix); });
         if (!live_dep && !kept_dep)
             continue;
         ATELIER_TRY_BIND(captured, capture_node_authored_inputs(runtime, doc, *listed, item, asset_id, &old_ports));
@@ -4668,7 +4689,7 @@ Result<std::uint64_t>
 sync_graph_document_assets_impl(Runtime& runtime, GraphDocument& root_doc,
                                 Map<ObjectId, std::unique_ptr<BoundAssetInstance>>& root_instances,
                                 Project* active_project, std::uint64_t code_version, const AssetPortResolver& resolver,
-                                FindOpenGraphFn&& find_open_graph, std::string_view root_asset_key,
+                                FindOpenGraphFn&& find_open_graph, StringView root_asset_key,
                                 bool materialize_subgraphs, bool realign_outer,
                                 Array<world::Diagnostic>* root_issues) {
     const std::uint64_t proj_rev = active_project ? active_project->revision() : 0ULL;
@@ -4676,7 +4697,7 @@ sync_graph_document_assets_impl(Runtime& runtime, GraphDocument& root_doc,
 
     const auto sync_doc = [&](auto&& self, GraphDocument& doc,
                               Map<ObjectId, std::unique_ptr<BoundAssetInstance>>& instances,
-                              Array<std::string>& stack, bool realign_this_doc,
+                              Array<String>& stack, bool realign_this_doc,
                               Array<world::Diagnostic>* issues) -> Result<std::uint64_t> {
         Set<ObjectId> live_asset_ids;
         std::uint64_t combined_rev = 14695981039346656037ULL;
@@ -4722,10 +4743,10 @@ sync_graph_document_assets_impl(Runtime& runtime, GraphDocument& root_doc,
                 failed_sub.asset_key = item.asset_key;
                 if (auto p = resolver(item.asset_key))
                     failed_sub.ports = std::move(*p);
-                failed_sub.bind_error =
-                    Error{ErrorCode::invalid_definition,
-                          is_cycle ? ("Cyclic .procgraph asset reference involving '" + item.asset_key + "'.")
-                                   : "Maximum .procgraph AssetNode nesting depth exceeded."};
+                failed_sub.bind_error = Error{
+                    ErrorCode::invalid_definition,
+                    is_cycle ? String::concat("Cyclic .procgraph asset reference involving '", item.asset_key, "'.")
+                             : "Maximum .procgraph AssetNode nesting depth exceeded."_s};
                 ATELIER_TRY(bind_failed_subgraph(item, old_sub->ports, std::move(failed_sub)));
                 continue;
             }
@@ -4751,8 +4772,8 @@ sync_graph_document_assets_impl(Runtime& runtime, GraphDocument& root_doc,
             } else {
                 procedural::AssetSubgraph miss_sub;
                 miss_sub.asset_key = item.asset_key;
-                miss_sub.bind_error =
-                    Error{ErrorCode::invalid_storage, "No active Project to resolve '" + item.asset_key + "'."};
+                miss_sub.bind_error = Error{ErrorCode::invalid_storage,
+                                            String::concat("No active Project to resolve '", item.asset_key, "'.")};
                 ATELIER_TRY(bind_failed_subgraph(item, old_sub->ports, std::move(miss_sub)));
                 continue;
             }
@@ -4761,7 +4782,7 @@ sync_graph_document_assets_impl(Runtime& runtime, GraphDocument& root_doc,
             const bool need_clone = !inst || inst->asset_key != item.asset_key || inst->source_epoch != src_epoch ||
                                     inst->code_version != code_version;
             if (need_clone) {
-                Result<GraphDocument> prepared = std::unexpected(Error{ErrorCode::invalid_storage, {}});
+                Result<GraphDocument> prepared = std::unexpected(Error{ErrorCode::invalid_storage, ""});
                 if (open_target_doc) {
                     prepared = clone_graph_document(runtime, *open_target_doc);
                 } else {
@@ -4794,26 +4815,26 @@ sync_graph_document_assets_impl(Runtime& runtime, GraphDocument& root_doc,
 
             if (!inst->overrides_initialized || inst->applied_overrides != item.overrides) {
                 inst->override_issues.clear();
-                ATELIER_TRY(
-                    apply_cached_instance_overrides(runtime, inst->cached_params, item.asset_key, item.overrides,
-                                                    [&](const std::string& ov_name, json::Value ov_val,
-                                                        world::DiagnosticKind dkind, const std::string& detail_msg) {
-                                                        world::Diagnostic diag;
-                                                        diag.severity = world::Severity::warning;
-                                                        diag.kind = dkind;
-                                                        diag.phase = world::DiagnosticPhase::load;
-                                                        diag.object = item.node.id();
-                                                        diag.type = "procedural.AssetNode";
-                                                        diag.field = {"nodes", item.name, "overrides", ov_name};
-                                                        diag.value = assets::json_format::preview(ov_val);
-                                                        diag.message = detail::dotted(diag.field) + ": " + detail_msg;
-                                                        inst->override_issues.add(std::move(diag));
-                                                    }));
+                ATELIER_TRY(apply_cached_instance_overrides(
+                    runtime, inst->cached_params, item.asset_key, item.overrides,
+                    [&](const String& ov_name, json::Value ov_val, world::DiagnosticKind dkind,
+                        const String& detail_msg) {
+                        world::Diagnostic diag;
+                        diag.severity = world::Severity::warning;
+                        diag.kind = dkind;
+                        diag.phase = world::DiagnosticPhase::load;
+                        diag.object = item.node.id();
+                        diag.type = "procedural.AssetNode"_s;
+                        diag.field = {"nodes"_s, item.name, "overrides"_s, ov_name};
+                        diag.value = assets::json_format::preview(ov_val);
+                        diag.message = String::concat(detail::dotted(diag.field), ": ", detail_msg);
+                        inst->override_issues.add(std::move(diag));
+                    }));
                 inst->applied_overrides = item.overrides;
                 inst->overrides_initialized = true;
                 if (item.overrides.root().kind() == json::Kind::object && item.overrides.root().size() > 0) {
                     const auto raw = json::write(item.overrides.root());
-                    inst->overrides_hash = source::content_hash(std::string_view(raw.data(), raw.size()), 0);
+                    inst->overrides_hash = source::content_hash(StringView{raw.data(), raw.size()}, 0);
                 } else {
                     inst->overrides_hash = 0;
                 }
@@ -4830,12 +4851,12 @@ sync_graph_document_assets_impl(Runtime& runtime, GraphDocument& root_doc,
             ATELIER_TRY_BIND(child_rev, self(self, inst->cloned_doc, inst->children, stack, true, issues));
             stack.pop();
             if (issues && issues->size() > first_child_issue) {
-                const Array<std::string> path{"nodes", item.name, "asset", item.asset_key};
-                const auto prefix = detail::dotted(path) + ".";
+                const Array<String> path{"nodes"_s, item.name, "asset"_s, item.asset_key};
+                const String prefix = String::concat(detail::dotted(path), ".");
                 for (auto& child_issue : issues->slice(first_child_issue)) {
                     child_issue.object = item.node.id();
                     child_issue.field.insert_range(0, path);
-                    child_issue.message.insert(0, prefix);
+                    child_issue.message = String::concat(prefix, child_issue.message);
                 }
             }
 
@@ -4888,9 +4909,9 @@ sync_graph_document_assets_impl(Runtime& runtime, GraphDocument& root_doc,
         return combined_rev;
     };
 
-    Array<std::string> stack;
+    Array<String> stack;
     if (!root_asset_key.empty())
-        stack.emplace(root_asset_key);
+        stack.add(String::from_utf8_validated(root_asset_key));
     return sync_doc(sync_doc, root_doc, root_instances, stack, realign_outer, root_issues);
 }
 
@@ -4908,27 +4929,31 @@ Result<void> Session::sync_open_graph_assets(OpenGraph& open, Project* project, 
         issues_sink = &open.asset_issues;
     }
 
-    const auto find_open = [&](std::string_view k) -> std::pair<const GraphDocument*, std::uint64_t> {
+    const auto find_open = [&](StringView k) -> std::pair<const GraphDocument*, std::uint64_t> {
         if (const auto* it = graphs_.find(k); it && *it)
             return {&(*it)->document, (*it)->mutation_epoch};
         return {nullptr, 0ULL};
     };
 
-    const std::string_view root_key = !open.scratch ? std::string_view(open.key) : std::string_view{};
+    const StringView root_key = !open.scratch ? open.key.view() : StringView{};
     ATELIER_TRY(sync_graph_document_assets_impl(runtime_, open.document, open.asset_instances, active_project,
                                                 code_version, resolver, find_open, root_key, materialize_subgraphs,
                                                 true, issues_sink));
     return {};
 }
 
-Optional<std::string> Session::graph_controlling_parameter(std::string_view key, std::string_view node_name,
-                                                           std::string_view field_path) const noexcept {
+Optional<String> Session::graph_controlling_parameter(StringView key, StringView node_name,
+                                                      StringView field_path) const noexcept {
     if (node_name.empty() || field_path.empty())
         return {};
     const auto* at = graphs_.find(key);
     if (!at || !*at)
         return {};
-    const std::string candidate = std::string(node_name) + "." + std::string(field_path);
+    auto nn = String::from_utf8(node_name);
+    auto fp = String::from_utf8(field_path);
+    if (!nn || !fp)
+        return {};
+    const String candidate = String::concat(*nn, ".", *fp);
     for (const auto& param : (*at)->document.parameters) {
         for (const auto& target : param.targets) {
             if (graph_target_controls_path(target, candidate))
@@ -4938,14 +4963,18 @@ Optional<std::string> Session::graph_controlling_parameter(std::string_view key,
     return {};
 }
 
-Optional<std::string> Session::graph_overlapping_parameter(std::string_view key, std::string_view node_name,
-                                                           std::string_view field_path) const noexcept {
+Optional<String> Session::graph_overlapping_parameter(StringView key, StringView node_name,
+                                                      StringView field_path) const noexcept {
     if (node_name.empty() || field_path.empty())
         return {};
     const auto* at = graphs_.find(key);
     if (!at || !*at)
         return {};
-    const std::string candidate = std::string(node_name) + "." + std::string(field_path);
+    auto nn = String::from_utf8(node_name);
+    auto fp = String::from_utf8(field_path);
+    if (!nn || !fp)
+        return {};
+    const String candidate = String::concat(*nn, ".", *fp);
     for (const auto& param : (*at)->document.parameters) {
         for (const auto& target : param.targets) {
             if (graph_targets_overlap(target, candidate))
@@ -4984,25 +5013,27 @@ Result<Array<GraphPromotedParameterView>> Session::generator_promoted_parameters
     return build_promoted_views(world_.runtime(), **target_doc, ov_ptr);
 }
 
-Result<Array<GraphPromotedParameterView>> Session::graph_promoted_parameters(std::string_view key,
+Result<Array<GraphPromotedParameterView>> Session::graph_promoted_parameters(StringView key,
                                                                              Project* project) const {
     const auto* target = graph_document(key);
     if (!target && project) {
         ATELIER_TRY_ASSIGN(target, resolve_target_graph_document(key, project));
     }
     if (!target)
-        return graph_error("Procedural graph is not open: " + std::string(key), ErrorCode::invalid_definition);
+        return graph_error(String::concat("Procedural graph is not open: ", lossy_utf8(key)),
+                           ErrorCode::invalid_definition);
     return build_promoted_views(world_.runtime(), *target, nullptr);
 }
 
 Result<Array<GraphPromotedParameterView>>
-Session::graph_asset_node_parameters(std::string_view key, std::string_view node_name, Project* project) const {
+Session::graph_asset_node_parameters(StringView key, StringView node_name, Project* project) const {
     const auto* at = graphs_.find(key);
     if (!at || !*at)
-        return graph_error("Procedural graph is not open: " + std::string(key), ErrorCode::invalid_definition);
+        return graph_error(String::concat("Procedural graph is not open: ", lossy_utf8(key)),
+                           ErrorCode::invalid_definition);
     const auto* item = find_node((*at)->document, node_name);
     if (!item)
-        return graph_error("No node named '" + std::string(node_name) + "' in this graph.");
+        return graph_error(String::concat("No node named '", lossy_utf8(node_name), "' in this graph."));
     if (item->asset_key.empty())
         return Array<GraphPromotedParameterView>{};
 
@@ -5016,43 +5047,54 @@ Session::graph_asset_node_parameters(std::string_view key, std::string_view node
     return build_promoted_views(world_.runtime(), **target_doc, ov_ptr);
 }
 
-Result<std::string> Session::graph_expose_parameter(std::string_view key, std::string_view node_name,
-                                                    std::string_view field_path, std::string_view desired_name,
-                                                    std::string_view label, std::string_view category,
-                                                    std::string_view description) {
+Result<String> Session::graph_expose_parameter(StringView key, StringView node_name, StringView field_path,
+                                               StringView desired_name, StringView label, StringView category,
+                                               StringView description) {
     ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
     auto& open = **open_ptr;
-    const std::string target_spec = std::string(node_name) + "." + std::string(field_path);
+    auto nn = String::from_utf8(node_name);
+    auto fp = String::from_utf8(field_path);
+    if (!nn || !fp)
+        return graph_error("Parameter target specification must be valid UTF-8.");
+    const String target_spec = String::concat(*nn, ".", *fp);
     ATELIER_TRY_BIND(resolved, resolve_graph_parameter_target(runtime_, open.document, target_spec));
     if (const auto existing = graph_overlapping_parameter(key, node_name, field_path))
-        return graph_error("Field '" + target_spec + "' overlaps with graph parameter '" + *existing + "'.");
-    if (!StringView(label).is_valid_utf8() || !StringView(category).is_valid_utf8() ||
-        !StringView(description).is_valid_utf8())
+        return graph_error(
+            String::concat("Field '", target_spec, "' overlaps with graph parameter '", *existing, "'."));
+    auto label_str = String::from_utf8(label);
+    auto cat_str = String::from_utf8(category);
+    auto desc_str = String::from_utf8(description);
+    if (!label_str || !cat_str || !desc_str)
         return graph_error("Parameter metadata must be valid UTF-8.");
 
-    const auto is_param_taken = [&](std::string_view cand) noexcept {
+    const auto is_param_taken = [&](StringView cand) noexcept {
         return std::ranges::find(open.document.parameters, cand, &GraphPromotedParameter::name) !=
                open.document.parameters.end();
     };
-    std::string param_name(desired_name);
-    if (param_name.empty()) {
-        std::string stem(field_path);
-        std::ranges::replace(stem, '.', '_');
+    String param_name;
+    if (desired_name.empty()) {
+        String stem;
+        for (const char c : field_path) {
+            if (static_cast<unsigned char>(c) < 0x80u)
+                stem.append_ascii(c == '.' ? '_' : c);
+        }
         if (!valid_graph_identifier(stem) || !is_param_taken(stem)) {
             param_name = make_unique_graph_identifier(stem, "param", is_param_taken);
         } else {
-            const std::string qualified = std::string(node_name) + "_" + stem;
+            const String qualified = String::concat(*nn, "_", stem);
             if (valid_graph_identifier(qualified) && !is_param_taken(qualified))
                 param_name = qualified;
             else
                 param_name = make_unique_graph_identifier(stem, "param", is_param_taken);
         }
     } else {
-        if (!valid_graph_identifier(param_name))
-            return graph_error("Invalid parameter name '" + param_name +
-                               "': expected [A-Za-z_][A-Za-z0-9_]* up to 128 characters.");
+        if (!valid_graph_identifier(desired_name))
+            return graph_error(String::concat("Invalid parameter name '", lossy_utf8(desired_name),
+                                              "': expected [A-Za-z_][A-Za-z0-9_]* up to 128 characters."));
+        param_name = String::from_utf8_validated(desired_name);
         if (is_param_taken(param_name))
-            return graph_error("A promoted parameter named '" + param_name + "' already exists in this graph.");
+            return graph_error(
+                String::concat("A promoted parameter named '", param_name, "' already exists in this graph."));
     }
 
     ATELIER_TRY(cancel_edit());
@@ -5061,9 +5103,9 @@ Result<std::string> Session::graph_expose_parameter(std::string_view key, std::s
     GraphPromotedParameter entry;
     entry.name = param_name;
     entry.targets = {target_spec};
-    entry.label = !label.empty() ? std::string(label) : resolved->label;
-    entry.category = !category.empty() ? std::string(category) : resolved->category;
-    entry.description = !description.empty() ? std::string(description) : resolved->description;
+    entry.label = !label_str->empty() ? std::move(*label_str) : resolved->label;
+    entry.category = !cat_str->empty() ? std::move(*cat_str) : resolved->category;
+    entry.description = !desc_str->empty() ? std::move(*desc_str) : resolved->description;
     open.document.parameters.add(std::move(entry));
     change.after_parameters = open.document.parameters;
     open.push_change(std::move(change));
@@ -5071,18 +5113,24 @@ Result<std::string> Session::graph_expose_parameter(std::string_view key, std::s
     return param_name;
 }
 
-Result<void> Session::graph_bind_parameter_target(std::string_view key, std::string_view param_name,
-                                                  std::string_view node_name, std::string_view field_path) {
+Result<void> Session::graph_bind_parameter_target(StringView key, StringView param_name, StringView node_name,
+                                                  StringView field_path) {
     ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
     auto& open = **open_ptr;
     const auto p_it = std::ranges::find(open.document.parameters, param_name, &GraphPromotedParameter::name);
     if (p_it == open.document.parameters.end())
-        return graph_error("No promoted parameter named '" + std::string(param_name) + "' in this graph.");
-    const std::string target_spec = std::string(node_name) + "." + std::string(field_path);
+        return graph_error(
+            String::concat("No promoted parameter named '", lossy_utf8(param_name), "' in this graph."));
+    auto nn = String::from_utf8(node_name);
+    auto fp = String::from_utf8(field_path);
+    if (!nn || !fp)
+        return graph_error("Parameter target specification must be valid UTF-8.");
+    const String target_spec = String::concat(*nn, ".", *fp);
     if (std::ranges::find(p_it->targets, target_spec) != p_it->targets.end())
         return {};
     if (const auto existing = graph_overlapping_parameter(key, node_name, field_path))
-        return graph_error("Field '" + target_spec + "' overlaps with graph parameter '" + *existing + "'.");
+        return graph_error(
+            String::concat("Field '", target_spec, "' overlaps with graph parameter '", *existing, "'."));
 
     GraphPromotedParameter candidate = *p_it;
     candidate.targets.add(target_spec);
@@ -5093,12 +5141,12 @@ Result<void> Session::graph_bind_parameter_target(std::string_view key, std::str
     change.before_parameters = open.document.parameters;
 
     // Synchronize all targets to primary's value (clamped to the intersected hard bounds).
-    std::variant<Array<Scalar>, std::string> synced_val;
+    std::variant<Array<Scalar>, String> synced_val;
     if (!schema->primary.is_vector && schema->primary.leaves.front().kind == TypeKind::string) {
         String s;
         ATELIER_TRY(runtime_.read(schema->primary.node, schema->primary.leaves.front().path,
                                   ValueOutput{schema->primary.leaves.front().type, &s}));
-        synced_val = std::string(s.view().std_view());
+        synced_val = std::move(s);
     } else {
         Array<Scalar> vals;
         for (std::size_t li = 0; li < schema->primary.leaves.size(); ++li) {
@@ -5135,15 +5183,18 @@ Result<void> Session::graph_bind_parameter_target(std::string_view key, std::str
     return {};
 }
 
-Result<void> Session::graph_unbind_parameter_target(std::string_view key, std::string_view node_name,
-                                                    std::string_view field_path) {
+Result<void> Session::graph_unbind_parameter_target(StringView key, StringView node_name, StringView field_path) {
     ATELIER_TRY_BIND(open_ptr, editable_graph(key));
     auto& open = **open_ptr;
-    const std::string target_spec = std::string(node_name) + "." + std::string(field_path);
+    auto nn = String::from_utf8(node_name);
+    auto fp = String::from_utf8(field_path);
+    if (!nn || !fp)
+        return {};
+    const String target_spec = String::concat(*nn, ".", *fp);
     auto before = open.document.parameters;
     bool changed = false;
     for (auto& param : open.document.parameters) {
-        if (param.targets.remove_if([&](std::string_view t) { return graph_targets_overlap(t, target_spec); }) > 0)
+        if (param.targets.remove_if([&](const String& t) { return graph_targets_overlap(t, target_spec); }) > 0)
             changed = true;
     }
     if (!changed)
@@ -5155,40 +5206,30 @@ Result<void> Session::graph_unbind_parameter_target(std::string_view key, std::s
     return {};
 }
 
-Result<void> Session::graph_update_parameter(std::string_view key, std::string_view param_name,
-                                             Optional<std::string> new_name, Optional<std::string> label,
-                                             Optional<std::string> category,
-                                             Optional<std::string> description,
-                                             Optional<std::size_t> new_index) {
+Result<void> Session::graph_update_parameter(StringView key, StringView param_name, Optional<String> new_name,
+                                             Optional<String> label, Optional<String> category,
+                                             Optional<String> description, Optional<std::size_t> new_index) {
     ATELIER_TRY_BIND(open_ptr, editable_graph(key));
     auto& open = **open_ptr;
     auto it = std::ranges::find(open.document.parameters, param_name, &GraphPromotedParameter::name);
     if (it == open.document.parameters.end())
-        return graph_error("No promoted parameter named '" + std::string(param_name) + "' in this graph.");
+        return graph_error(
+            String::concat("No promoted parameter named '", lossy_utf8(param_name), "' in this graph."));
     auto next = open.document.parameters;
     const auto idx = static_cast<std::size_t>(it - open.document.parameters.begin());
     if (new_name && *new_name != param_name) {
         if (!valid_graph_identifier(*new_name))
-            return graph_error("Invalid parameter name '" + *new_name + "'.");
+            return graph_error(String::concat("Invalid parameter name '", *new_name, "'."));
         if (std::ranges::find(next, *new_name, &GraphPromotedParameter::name) != next.end())
-            return graph_error("A promoted parameter named '" + *new_name + "' already exists.");
+            return graph_error(String::concat("A promoted parameter named '", *new_name, "' already exists."));
         next[idx].name = *new_name;
     }
-    if (label) {
-        if (!StringView(*label).is_valid_utf8())
-            return graph_error("Parameter label must be valid UTF-8.");
+    if (label)
         next[idx].label = *label;
-    }
-    if (category) {
-        if (!StringView(*category).is_valid_utf8())
-            return graph_error("Parameter category must be valid UTF-8.");
+    if (category)
         next[idx].category = *category;
-    }
-    if (description) {
-        if (!StringView(*description).is_valid_utf8())
-            return graph_error("Parameter description must be valid UTF-8.");
+    if (description)
         next[idx].description = *description;
-    }
     if (new_index && !next.empty()) {
         const std::size_t dst = std::min(*new_index, next.size() - 1);
         if (dst != idx)
@@ -5204,12 +5245,13 @@ Result<void> Session::graph_update_parameter(std::string_view key, std::string_v
     return {};
 }
 
-Result<void> Session::graph_remove_parameter(std::string_view key, std::string_view param_name) {
+Result<void> Session::graph_remove_parameter(StringView key, StringView param_name) {
     ATELIER_TRY_BIND(open_ptr, editable_graph(key));
     auto& open = **open_ptr;
     auto it = std::ranges::find(open.document.parameters, param_name, &GraphPromotedParameter::name);
     if (it == open.document.parameters.end())
-        return graph_error("No promoted parameter named '" + std::string(param_name) + "' in this graph.");
+        return graph_error(
+            String::concat("No promoted parameter named '", lossy_utf8(param_name), "' in this graph."));
     ATELIER_TRY(cancel_edit());
     auto before = open.document.parameters;
     open.document.parameters.remove_at(static_cast<std::size_t>(it - open.document.parameters.begin()));
@@ -5218,12 +5260,13 @@ Result<void> Session::graph_remove_parameter(std::string_view key, std::string_v
     return {};
 }
 
-Result<void> Session::graph_set_parameter_json(std::string_view key, std::string_view param_name, json::Value value) {
+Result<void> Session::graph_set_parameter_json(StringView key, StringView param_name, json::Value value) {
     ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
     auto& open = **open_ptr;
     const auto p_it = std::ranges::find(open.document.parameters, param_name, &GraphPromotedParameter::name);
     if (p_it == open.document.parameters.end())
-        return graph_error("No promoted parameter named '" + std::string(param_name) + "' in this graph.");
+        return graph_error(
+            String::concat("No promoted parameter named '", lossy_utf8(param_name), "' in this graph."));
     ATELIER_TRY_BIND(schema, resolve_promoted_parameter_schema(runtime_, open.document, *p_it));
 
     Array<Scalar> current_scalars;
@@ -5269,17 +5312,17 @@ Result<void> Session::graph_set_parameter_json(std::string_view key, std::string
 namespace {
 
 Result<json::Document> canonicalize_promoted_override_json(Runtime& runtime, const GraphDocument& target_doc,
-                                                           std::string_view asset_key, std::string_view param_name,
+                                                           const String& asset_key, StringView param_name,
                                                            const json::Value* current_overrides_obj,
                                                            json::Value value) {
     const auto p_it = std::ranges::find(target_doc.parameters, param_name, &GraphPromotedParameter::name);
     if (p_it == target_doc.parameters.end())
-        return graph_error("Asset '" + std::string(asset_key) + "' has no promoted parameter '" +
-                           std::string(param_name) + "'.");
+        return graph_error(
+            String::concat("Asset '", asset_key, "' has no promoted parameter '", lossy_utf8(param_name), "'."));
     ATELIER_TRY_BIND(schema, resolve_promoted_parameter_schema(runtime, target_doc, *p_it));
     if (!schema->primary.is_vector && schema->primary.leaves.front().kind == TypeKind::string) {
         if (value.kind() != json::Kind::string)
-            return graph_error("Expected string value for override '" + std::string(param_name) + "'.");
+            return graph_error(String::concat("Expected string value for override '", lossy_utf8(param_name), "'."));
         json::Builder b;
         b.set_validated(b.root(), *value.string());
         return b.finish();
@@ -5334,30 +5377,30 @@ Result<Scalar> validate_and_clamp_promoted_scalar(Runtime& runtime, TypeId expec
 
 } // namespace
 
-Result<void> Session::graph_set_asset_override_json(std::string_view key, std::string_view node_name,
-                                                    std::string_view param_name, Optional<json::Value> value,
-                                                    Project* project) {
+Result<void> Session::graph_set_asset_override_json(StringView key, StringView node_name, StringView param_name,
+                                                    Optional<json::Value> value, Project* project) {
     ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
     auto& open = **open_ptr;
     auto* item = find_node(open.document, node_name);
     if (!item || !item->node.registered())
-        return graph_error("Target AssetNode '" + std::string(node_name) + "' is missing or unresolved.");
+        return graph_error(
+            String::concat("Target AssetNode '", lossy_utf8(node_name), "' is missing or unresolved."));
     ATELIER_TRY_BIND(asset_node_type, runtime_.native_type<procedural::AssetNode>());
     ATELIER_TRY_BIND(node_type, runtime_.type_of(item->node.id()));
     if (*node_type != *asset_node_type)
-        return graph_error("Node '" + std::string(node_name) + "' is not a procedural.AssetNode.");
+        return graph_error(String::concat("Node '", item->name, "' is not a procedural.AssetNode."));
     if (!valid_graph_identifier(param_name))
-        return graph_error("Invalid override parameter name '" + std::string(param_name) + "'.");
+        return graph_error(String::concat("Invalid override parameter name '", lossy_utf8(param_name), "'."));
 
     const json::Document before_ov = item->overrides;
     json::Document canonical_val;
     if (value) {
         if (item->asset_key.empty())
-            return graph_error("AssetNode '" + std::string(node_name) + "' has no bound .procgraph asset.");
+            return graph_error(String::concat("AssetNode '", item->name, "' has no bound .procgraph asset."));
         Project* active_project = project ? project : open.resources.project();
         ATELIER_TRY_BIND(target_doc, resolve_target_graph_document(item->asset_key, active_project));
         if (!*target_doc)
-            return graph_error("Unable to resolve .procgraph asset '" + item->asset_key + "'.");
+            return graph_error(String::concat("Unable to resolve .procgraph asset '", item->asset_key, "'."));
         const json::Value before_root = before_ov.root();
         const json::Value* before_ptr = before_root.kind() == json::Kind::object ? &before_root : nullptr;
         ATELIER_TRY_BIND(canon, canonicalize_promoted_override_json(runtime_, **target_doc, item->asset_key, param_name,
@@ -5375,13 +5418,12 @@ Result<void> Session::graph_set_asset_override_json(std::string_view key, std::s
     if (before_ov == after_ov)
         return {};
     item->overrides = after_ov;
-    open.push_change(
-        GraphAssetOverrideChange{std::string(node_name), before_ov, after_ov, item->asset_key, item->asset_key});
+    open.push_change(GraphAssetOverrideChange{item->name, before_ov, after_ov, item->asset_key, item->asset_key});
     ++revision_;
     return {};
 }
 
-Result<void> Session::set_generator_override_json(Project* project, ObjectId component, std::string_view param_name,
+Result<void> Session::set_generator_override_json(Project* project, ObjectId component, StringView param_name,
                                                   Optional<json::Value> value) {
     ATELIER_TRY(cancel_edit());
     ATELIER_TRY_BIND(state, admit_component_edit(component));
@@ -5389,7 +5431,7 @@ Result<void> Session::set_generator_override_json(Project* project, ObjectId com
     if (!*is_gen)
         return graph_error("Target component is not a ProceduralGeneratorComponent.");
     if (!valid_graph_identifier(param_name))
-        return graph_error("Invalid override parameter name '" + std::string(param_name) + "'.");
+        return graph_error(String::concat("Invalid override parameter name '", lossy_utf8(param_name), "'."));
     ATELIER_TRY(procedural_source_program());
     ATELIER_TRY_BIND(current_src, presentation::read_procedural_source(runtime_, component));
     if (current_src->source.empty() && value.has_value())
@@ -5400,7 +5442,7 @@ Result<void> Session::set_generator_override_json(Project* project, ObjectId com
     if (value) {
         ATELIER_TRY_BIND(target_doc, resolve_target_graph_document(current_src->source, project));
         if (!*target_doc)
-            return graph_error("Unable to resolve .procgraph asset '" + current_src->source + "'.");
+            return graph_error(String::concat("Unable to resolve .procgraph asset '", current_src->source, "'."));
         const json::Value before_root = before_ov.root();
         const json::Value* before_ptr = before_root.kind() == json::Kind::object ? &before_root : nullptr;
         ATELIER_TRY_BIND(canon, canonicalize_promoted_override_json(runtime_, **target_doc, current_src->source,
@@ -5427,9 +5469,9 @@ Result<void> Session::set_generator_override_json(Project* project, ObjectId com
     return sync_procedural_generators(project);
 }
 
-Result<std::pair<std::string, std::string>>
-Session::graph_extract_asset(Project& project, std::string_view key, Span<const std::string> selected_nodes,
-                             const std::filesystem::path& asset_relative_path, std::string_view desired_node_name) {
+Result<std::pair<String, String>>
+Session::graph_extract_asset(Project& project, StringView key, Span<const String> selected_nodes,
+                             const std::filesystem::path& asset_relative_path, StringView desired_node_name) {
     ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
     auto& open = **open_ptr;
     if (selected_nodes.empty())
@@ -5437,23 +5479,23 @@ Session::graph_extract_asset(Project& project, std::string_view key, Span<const 
     if (asset_relative_path.empty())
         return graph_error("Specify a target .procgraph relative path inside Content/.");
     if (!desired_node_name.empty() && !valid_graph_identifier(desired_node_name))
-        return graph_error("Invalid AssetNode name '" + std::string(desired_node_name) +
-                           "': expected [A-Za-z_][A-Za-z0-9_]* up to 128 characters.");
+        return graph_error(String::concat("Invalid AssetNode name '", lossy_utf8(desired_node_name),
+                                          "': expected [A-Za-z_][A-Za-z0-9_]* up to 128 characters."));
 
     ATELIER_TRY_BIND(graph_in_type, runtime_.native_type<procedural::GraphInput>());
     ATELIER_TRY_BIND(graph_out_type, runtime_.native_type<procedural::GraphOutput>());
     ATELIER_TRY_BIND(asset_node_type, runtime_.native_type<procedural::AssetNode>());
     ATELIER_TRY_BIND(graph_type, runtime_.native_type<procedural::Graph>());
 
-    Array<std::string> sel_names;
+    Array<String> sel_names;
     Set<ObjectId> sel_ids;
-    Set<std::string> sel_name_set;
+    Set<String> sel_name_set;
     for (const auto& name : selected_nodes) {
         if (!sel_name_set.add(name))
             continue;
         const auto* item = find_node(open.document, name);
         if (!item || !item->node.registered())
-            return graph_error("Selected node '" + name + "' is missing or unresolved.");
+            return graph_error(String::concat("Selected node '", name, "' is missing or unresolved."));
         ATELIER_TRY_BIND(ntype, runtime_.type_of(item->node.id()));
         if (*ntype == *graph_in_type || *ntype == *graph_out_type)
             return graph_error(
@@ -5493,48 +5535,49 @@ Session::graph_extract_asset(Project& project, std::string_view key, Span<const 
 
         std::uint32_t output;
 
-        std::string endpoint;
+        String endpoint;
 
-        std::string port;
+        String port;
 
         Optional<std::size_t> slot;
     };
     Array<SavedBoundary> saved_boundaries;
-    Set<std::string_view> outer_names;
+    Set<StringView> outer_names;
     for (const auto& target : open.document.nodes) {
         const bool inside = sel_name_set.contains(target.name);
         if (!inside)
-            outer_names.add(target.name);
+            outer_names.add(target.name.view());
         const auto inputs = *target.kept.root().find("inputs");
         if (!inputs)
             continue;
-        const auto record = [&](std::string_view port, json::Value endpoint,
-                                Optional<std::size_t> slot) -> Result<void> {
+        const auto record = [&](StringView port, json::Value endpoint, Optional<std::size_t> slot) -> Result<void> {
             const auto text = endpoint.string();
             if (!text)
-                return graph_error("Invalid saved connection at " + target.name + "." + std::string(port));
+                return graph_error(String::concat("Invalid saved connection at ", target.name, ".",
+                                                  String::validated(port)));
             const auto dot = text->find('.');
-            const std::string_view source_name = text->substr(0, dot);
+            const StringView source_name = text->slice(0, dot);
             if (sel_name_set.contains(source_name) == inside) {
                 if (!inside)
                     outer_names.add(source_name);
                 return {};
             }
             const auto* source = find_node(open.document, source_name);
-            if (source && source->node.registered() && dot != text->npos) {
+            if (source && source->node.registered() && dot != StringView::npos) {
                 ATELIER_TRY_BIND(ports, procedural::ports(runtime_, source->node.id()));
-                const auto output = std::ranges::find(ports->outputs, text->substr(dot + 1));
+                const auto output = std::ranges::find(ports->outputs, text->slice(dot + 1));
                 if (output != ports->outputs.end()) {
                     saved_boundaries.add({&target, source,
                                           static_cast<std::uint32_t>(output - ports->outputs.begin()),
-                                          std::string(*text), std::string(port), slot});
+                                          String::from_utf8_validated(*text), String::from_utf8_validated(port), slot});
                     if (target.node.registered())
                         add_dependency(source->node.id(), target.node.id());
                     return {};
                 }
             }
-            return graph_error("Cannot extract saved connection '" + std::string(*text) + "' at " + target.name + "." +
-                               std::string(port) + ": the boundary source port is unresolved.");
+            return graph_error(String::concat("Cannot extract saved connection '", String::validated(*text), "' at ",
+                                              target.name, ".", String::validated(port),
+                                              ": the boundary source port is unresolved."));
         };
         for (const auto& [port, saved] : *inputs->object_items()) {
             if (saved.kind() == json::Kind::array) {
@@ -5550,13 +5593,13 @@ Session::graph_extract_asset(Project& project, std::string_view key, Span<const 
     // A retained source name is occupied even when its node is absent. Reusing it would
     // silently resolve an unrelated connection on the next load.
     if (!desired_node_name.empty() && outer_names.contains(desired_node_name))
-        return graph_error("AssetNode name '" + std::string(desired_node_name) +
-                           "' is already used by an outer node or connection.");
-    const std::string asset_node_name =
+        return graph_error(String::concat("AssetNode name '", String::validated(desired_node_name),
+                                          "' is already used by an outer node or connection."));
+    const String stem_utf8 = platform::utf16_to_utf8(asset_relative_path.stem().wstring()).value_or(String{});
+    const String asset_node_name =
         desired_node_name.empty()
-            ? make_unique_graph_identifier(asset_relative_path.stem().string(), "asset",
-                                           [&](std::string_view name) { return outer_names.contains(name); })
-            : std::string(desired_node_name);
+            ? make_unique_graph_identifier(stem_utf8, "asset", [&](StringView name) { return outer_names.contains(name); })
+            : String::from_utf8_validated(desired_node_name);
 
     Set<ObjectId> reachable_from_sel;
     {
@@ -5585,44 +5628,44 @@ Session::graph_extract_asset(Project& project, std::string_view key, Span<const 
     for (const ObjectId ext : reachable_from_sel) {
         if (can_reach_sel.contains(ext)) {
             const auto* ext_node = find_node_by_id(open.document, ext);
-            return graph_error("Selected nodes do not form a convex subgraph: external node '" +
-                               (ext_node ? ext_node->name : std::string("?")) +
-                               "' lies both downstream and upstream of the selection, which would create a cycle.");
+            return graph_error(
+                String::concat("Selected nodes do not form a convex subgraph: external node '",
+                               ext_node ? ext_node->name : "?"_s,
+                               "' lies both downstream and upstream of the selection, which would create a cycle."));
         }
     }
 
     struct BoundaryInGroup {
         ObjectId ext_from{};
 
-        std::string ext_name;
+        String ext_name;
 
         std::uint32_t ext_output{};
 
-        std::string port_name;
+        String port_name;
     };
 
     struct BoundaryOutGroup {
         ObjectId sel_from{};
 
-        std::string sel_name;
+        String sel_name;
 
         std::uint32_t sel_output{};
 
-        std::string port_name;
+        String port_name;
     };
 
-    const auto alloc_port_name = [](std::string_view preferred, Set<std::string>& used, std::string_view fallback) {
-        auto chosen = make_unique_graph_identifier(preferred, fallback,
-                                                   [&](std::string_view cand) { return used.contains(cand); });
+    const auto alloc_port_name = [](StringView preferred, Set<String>& used, StringView fallback) {
+        auto chosen = make_unique_graph_identifier(preferred, fallback, [&](StringView cand) { return used.contains(cand); });
         used.add(chosen);
         return chosen;
     };
 
     Array<BoundaryInGroup> incoming_groups;
-    const auto add_in = [&](const GraphNode& src, std::uint32_t output, std::string_view input_name) {
+    const auto add_in = [&](const GraphNode& src, std::uint32_t output, const String& input_name) {
         if (std::ranges::none_of(incoming_groups,
                                  [&](const auto& g) { return g.ext_from == src.node.id() && g.ext_output == output; }))
-            incoming_groups.add({src.node.id(), src.name, output, std::string(input_name)});
+            incoming_groups.add({src.node.id(), src.name, output, input_name});
     };
     for (const auto& sname : sel_names) {
         const auto* sel_item = find_node(open.document, sname);
@@ -5637,16 +5680,16 @@ Session::graph_extract_asset(Project& project, std::string_view key, Span<const 
     std::ranges::sort(incoming_groups, [](const BoundaryInGroup& a, const BoundaryInGroup& b) {
         return a.ext_name != b.ext_name ? a.ext_name < b.ext_name : a.ext_output < b.ext_output;
     });
-    Set<std::string> used_in_ports;
+    Set<String> used_in_ports;
     for (auto& g : incoming_groups)
         g.port_name = alloc_port_name(g.port_name, used_in_ports, "in");
 
     Array<BoundaryOutGroup> outgoing_groups;
     Set<ObjectId> downstream_ext_ids;
-    const auto add_out = [&](const GraphNode& src, std::uint32_t output, std::string_view name) {
+    const auto add_out = [&](const GraphNode& src, std::uint32_t output, StringView name) {
         if (std::ranges::none_of(outgoing_groups,
                                  [&](const auto& g) { return g.sel_from == src.node.id() && g.sel_output == output; }))
-            outgoing_groups.add({src.node.id(), src.name, output, std::string(name)});
+            outgoing_groups.add({src.node.id(), src.name, output, String::from_utf8_validated(name)});
     };
     for (const auto& item : open.document.nodes) {
         if (!item.node.registered() || sel_ids.contains(item.node.id()))
@@ -5661,11 +5704,11 @@ Session::graph_extract_asset(Project& project, std::string_view key, Span<const 
     }
     for (const auto& saved : saved_boundaries)
         if (!sel_name_set.contains(saved.target->name))
-            add_out(*saved.source, saved.output, std::string_view(saved.endpoint).substr(saved.endpoint.find('.') + 1));
+            add_out(*saved.source, saved.output, saved.endpoint.view().slice(saved.endpoint.find('.') + 1));
     std::ranges::sort(outgoing_groups, [](const BoundaryOutGroup& a, const BoundaryOutGroup& b) {
         return a.sel_name != b.sel_name ? a.sel_name < b.sel_name : a.sel_output < b.sel_output;
     });
-    Set<std::string> used_out_ports;
+    Set<String> used_out_ports;
     for (auto& g : outgoing_groups)
         g.port_name = alloc_port_name(g.port_name, used_out_ports, "out");
 
@@ -5691,7 +5734,7 @@ Session::graph_extract_asset(Project& project, std::string_view key, Span<const 
         }
         if (fallback_sink != ObjectId{}) {
             const auto* sink_item = find_node_by_id(open.document, fallback_sink);
-            outgoing_groups.add({fallback_sink, sink_item->name, 0u, "out"});
+            outgoing_groups.add({fallback_sink, sink_item->name, 0u, "out"_s});
         }
     }
 
@@ -5745,9 +5788,9 @@ Session::graph_extract_asset(Project& project, std::string_view key, Span<const 
     }
     sort_graph_nodes(extracted.nodes);
 
-    const auto unique_inner_name = [&](std::string_view stem, std::string_view fallback) {
+    const auto unique_inner_name = [&](StringView stem, StringView fallback) {
         return make_unique_graph_identifier(
-            stem, fallback, [&](std::string_view cand) noexcept { return find_node(extracted, cand) != nullptr; });
+            stem, fallback, [&](StringView cand) noexcept { return find_node(extracted, cand) != nullptr; });
     };
 
     Array<ObjectId> created_in_pins;
@@ -5755,14 +5798,14 @@ Session::graph_extract_asset(Project& project, std::string_view key, Span<const 
         ATELIER_TRY_BIND(pin, procedural::add_node(runtime_, ext_graph_id, *graph_in_type));
         const ObjectId pid = pin->id();
         ATELIER_TRY(runtime_.with_native<procedural::GraphInput>(pid, [&](procedural::GraphInput& gi) -> Result<void> {
-            if (!gi.port_name.assign(StringView{incoming_groups[i].port_name}))
-                return graph_error("Invalid GraphInput port_name.");
+            gi.port_name = incoming_groups[i].port_name;
             gi.order = static_cast<std::int32_t>(i);
             return {};
         }));
         const float half = static_cast<float>(incoming_groups.size() - 1) * 0.5f;
         GraphNode pin_node;
-        pin_node.name = unique_inner_name("input_" + incoming_groups[i].port_name, "input");
+        const String in_stem = String::concat("input_", incoming_groups[i].port_name);
+        pin_node.name = unique_inner_name(in_stem, "input");
         pin_node.node = std::move(*pin);
         pin_node.position = {std::round((static_cast<float>(i) - half) * 196.f), std::round((min_y - cy) - 120.f)};
         created_in_pins.add(pid);
@@ -5776,14 +5819,14 @@ Session::graph_extract_asset(Project& project, std::string_view key, Span<const 
         const ObjectId pid = pin->id();
         ATELIER_TRY(
             runtime_.with_native<procedural::GraphOutput>(pid, [&](procedural::GraphOutput& go) -> Result<void> {
-                if (!go.port_name.assign(StringView{outgoing_groups[i].port_name}))
-                    return graph_error("Invalid GraphOutput port_name.");
+                go.port_name = outgoing_groups[i].port_name;
                 go.order = static_cast<std::int32_t>(i);
                 return {};
             }));
         const float half = static_cast<float>(outgoing_groups.size() - 1) * 0.5f;
         GraphNode pin_node;
-        pin_node.name = unique_inner_name("output_" + outgoing_groups[i].port_name, "output");
+        const String out_stem = String::concat("output_", outgoing_groups[i].port_name);
+        pin_node.name = unique_inner_name(out_stem, "output");
         pin_node.node = std::move(*pin);
         pin_node.position = {std::round((static_cast<float>(i) - half) * 196.f), std::round((max_y - cy) + 120.f)};
         created_out_pins.add(pid);
@@ -5822,9 +5865,9 @@ Session::graph_extract_asset(Project& project, std::string_view key, Span<const 
 
     // Preserve promoted parameters whose targets lie completely inside the extracted subgraph.
     for (const auto& param : open.document.parameters) {
-        const bool all_inside = std::ranges::all_of(param.targets, [&](const std::string& t) {
+        const bool all_inside = std::ranges::all_of(param.targets, [&](const String& t) {
             const auto dot = t.find('.');
-            return dot != std::string::npos && sel_name_set.contains(t.substr(0, dot));
+            return dot != String::npos && sel_name_set.contains(t.view().slice(0, dot));
         });
         if (all_inside)
             extracted.parameters.add(param);
@@ -5848,12 +5891,12 @@ Session::graph_extract_asset(Project& project, std::string_view key, Span<const 
                     return pin.ext_from == saved.source->node.id() && pin.ext_output == saved.output;
                 });
                 const auto* pin = find_node_by_id(extracted, created_in_pins[g - incoming_groups.begin()]);
-                kept.set_validated(cell, pin->name + ".output");
+                kept.set_validated(cell, String::concat(pin->name, ".output"));
             } else {
                 const auto g = std::ranges::find_if(outgoing_groups, [&](const auto& pin) {
                     return pin.sel_from == saved.source->node.id() && pin.sel_output == saved.output;
                 });
-                kept.set_validated(cell, asset_node_name + "." + g->port_name);
+                kept.set_validated(cell, String::concat(asset_node_name, ".", g->port_name));
             }
         } while (i < saved_boundaries.size() && saved_boundaries[i].target == &owner);
         if (inside)
@@ -5951,9 +5994,9 @@ Session::graph_extract_asset(Project& project, std::string_view key, Span<const 
 
     // Update outer graph promoted parameters & surviving kept inputs.
     for (auto& param : open.document.parameters) {
-        param.targets.remove_if([&](const std::string& t) {
+        param.targets.remove_if([&](const String& t) {
             const auto dot = t.find('.');
-            return dot != std::string::npos && sel_name_set.contains(t.substr(0, dot));
+            return dot != String::npos && sel_name_set.contains(t.view().slice(0, dot));
         });
     }
     open.document.parameters.remove_if([](const GraphPromotedParameter& p) { return p.targets.empty(); });
@@ -5975,12 +6018,15 @@ Session::graph_extract_asset(Project& project, std::string_view key, Span<const 
     return std::pair{*created_asset, asset_node_name};
 }
 
-Result<void> Session::graph_set_node_asset(std::string_view key, std::string_view node_name,
-                                           std::string_view target_asset_key, Project* project) {
+Result<void> Session::graph_set_node_asset(StringView key, StringView node_name, StringView target_asset_key,
+                                           Project* project) {
     if (!target_asset_key.empty() && target_asset_key == key)
         return graph_error("A procedural graph cannot instantiate itself as an AssetNode.");
     ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
     auto& open = **open_ptr;
+    auto target_str = String::from_utf8(target_asset_key);
+    if (!target_str)
+        return graph_error("Target .procgraph asset key must be valid UTF-8.");
     if (!open.scratch && !target_asset_key.empty() && is_scratch_graph(target_asset_key))
         return graph_error("Persistent .procgraph assets cannot reference scratch graphs.");
     auto* item = find_node(open.document, node_name);
@@ -6010,8 +6056,8 @@ Result<void> Session::graph_set_node_asset(std::string_view key, std::string_vie
         pre_states.add({gn.node, std::move(*ins), gn.kept});
     }
 
-    const std::string before_asset = item->asset_key;
-    item->asset_key = std::string(target_asset_key);
+    const String before_asset = item->asset_key;
+    item->asset_key = std::move(*target_str);
     if (auto synced = sync_open_graph_assets(open, project, false); !synced) {
         item->asset_key = before_asset;
         return synced;
@@ -6021,7 +6067,7 @@ Result<void> Session::graph_set_node_asset(std::string_view key, std::string_vie
     ATELIER_TRY_BIND(after_listed, procedural::contents(runtime_, graph));
 
     GraphAssetOverrideChange change;
-    change.node_name = std::string(node_name);
+    change.node_name = item->name;
     change.before_overrides = item->overrides;
     change.after_overrides = item->overrides;
     change.before_asset = before_asset;
@@ -6050,18 +6096,20 @@ bool Session::graph_parameter_editing(std::uint64_t control_session) const noexc
     return graph_param_edit_ && graph_param_edit_->control == control_session;
 }
 
-Result<void> Session::begin_graph_parameter_edit(std::string_view key, std::string_view node_name,
-                                                 std::string_view param_name, Optional<std::size_t> lane,
-                                                 std::uint64_t control_session, Project* project,
-                                                 ObjectId generator_component) {
+Result<void> Session::begin_graph_parameter_edit(StringView key, StringView node_name, StringView param_name,
+                                                 Optional<std::size_t> lane, std::uint64_t control_session,
+                                                 Project* project, ObjectId generator_component) {
     if (editing())
         return graph_error("A field edit is already active.");
     if (!control_session)
         return graph_error("A field edit requires a control session.");
+    auto param_str = String::from_utf8(param_name);
+    if (!param_str)
+        return graph_error("Parameter name must be valid UTF-8.");
 
     GraphParameterEdit edit;
     edit.control = control_session;
-    edit.param_name = std::string(param_name);
+    edit.param_name = std::move(*param_str);
     edit.lane = lane;
     edit.edit_project = project;
 
@@ -6103,10 +6151,10 @@ Result<void> Session::begin_graph_parameter_edit(std::string_view key, std::stri
             return graph_error("ProceduralGeneratorComponent has no bound .procgraph asset.");
         ATELIER_TRY_BIND(target_doc, resolve_target_graph_document(proc_src->source, project));
         if (!*target_doc)
-            return graph_error("Unable to resolve .procgraph asset '" + proc_src->source + "'.");
+            return graph_error(String::concat("Unable to resolve .procgraph asset '", proc_src->source, "'."));
         const auto p_it = std::ranges::find((*target_doc)->parameters, param_name, &GraphPromotedParameter::name);
         if (p_it == (*target_doc)->parameters.end())
-            return graph_error("Unknown generator parameter '" + std::string(param_name) + "'.");
+            return graph_error(String::concat("Unknown generator parameter '", edit.param_name, "'."));
         ATELIER_TRY_BIND(schema, resolve_promoted_parameter_schema(runtime_, **target_doc, *p_it));
 
         edit.before_overrides = generator_overrides(generator_component);
@@ -6121,15 +6169,14 @@ Result<void> Session::begin_graph_parameter_edit(std::string_view key, std::stri
 
     ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
     auto& open = **open_ptr;
-    edit.graph_key = std::string(key);
-    edit.node_name = std::string(node_name);
+    edit.graph_key = open.key;
     if (!edit.edit_project)
         edit.edit_project = open.resources.project();
 
     if (node_name.empty()) {
         const auto p_it = std::ranges::find(open.document.parameters, param_name, &GraphPromotedParameter::name);
         if (p_it == open.document.parameters.end())
-            return graph_error("No promoted parameter named '" + std::string(param_name) + "'.");
+            return graph_error(String::concat("No promoted parameter named '", edit.param_name, "'."));
         ATELIER_TRY_BIND(schema, resolve_promoted_parameter_schema(runtime_, open.document, *p_it));
         ATELIER_TRY(populate_from_schema(*schema, nullptr));
 
@@ -6148,18 +6195,19 @@ Result<void> Session::begin_graph_parameter_edit(std::string_view key, std::stri
     } else {
         auto* item = find_node(open.document, node_name);
         if (!item || !item->node.registered())
-            return graph_error("Target AssetNode '" + std::string(node_name) + "' is missing.");
+            return graph_error(String::concat("Target AssetNode '", lossy_utf8(node_name), "' is missing."));
+        edit.node_name = item->name;
         ATELIER_TRY_BIND(asset_node_type, runtime_.native_type<procedural::AssetNode>());
         if (runtime_.type_of(item->node.id()) != *asset_node_type)
-            return graph_error("Node '" + std::string(node_name) + "' is not a procedural.AssetNode.");
+            return graph_error(String::concat("Node '", item->name, "' is not a procedural.AssetNode."));
         if (item->asset_key.empty())
-            return graph_error("AssetNode '" + std::string(node_name) + "' has no bound .procgraph asset.");
+            return graph_error(String::concat("AssetNode '", item->name, "' has no bound .procgraph asset."));
         ATELIER_TRY_BIND(target_doc, resolve_target_graph_document(item->asset_key, edit.edit_project));
         if (!*target_doc)
-            return graph_error("Unable to resolve .procgraph asset '" + item->asset_key + "'.");
+            return graph_error(String::concat("Unable to resolve .procgraph asset '", item->asset_key, "'."));
         const auto p_it = std::ranges::find((*target_doc)->parameters, param_name, &GraphPromotedParameter::name);
         if (p_it == (*target_doc)->parameters.end())
-            return graph_error("Unknown AssetNode parameter '" + std::string(param_name) + "'.");
+            return graph_error(String::concat("Unknown AssetNode parameter '", edit.param_name, "'."));
         ATELIER_TRY_BIND(schema, resolve_promoted_parameter_schema(runtime_, **target_doc, *p_it));
 
         edit.before_overrides = item->overrides;
@@ -6224,7 +6272,7 @@ Result<void> Session::preview_graph_parameter_edit(std::uint64_t control_session
         for (std::size_t i = 0; i < next_scalars.size() && i < schema->ranges.size(); ++i)
             next_scalars[i] = detail::clamp_scalar(next_scalars[i], schema->ranges[i]).first;
         ATELIER_TRY(write_promoted_targets_if_changed(
-            runtime_, *schema, std::variant<Array<Scalar>, std::string>{next_scalars}, &open.document));
+            runtime_, *schema, std::variant<Array<Scalar>, String>{next_scalars}, &open.document));
         edit.current_scalars = std::move(next_scalars);
         ++open.mutation_epoch;
         open.dirty_revision = 0;
@@ -6337,7 +6385,7 @@ Result<void> Session::cancel_graph_parameter_edit() {
     return {};
 }
 
-Result<void> Session::set_promoted_parameter_scalars(const PromotedParameterTarget& target, std::string_view param_name,
+Result<void> Session::set_promoted_parameter_scalars(const PromotedParameterTarget& target, StringView param_name,
                                                      Span<const Scalar> values, Project* project) {
     ATELIER_TRY(cancel_edit());
     constexpr std::uint64_t oneshot_session = std::numeric_limits<std::uint64_t>::max();
@@ -6352,9 +6400,9 @@ Result<void> Session::set_promoted_parameter_scalars(const PromotedParameterTarg
     return restored ? changed : restored;
 }
 
-Result<void> Session::set_promoted_parameter_string(const PromotedParameterTarget& target, std::string_view param_name,
-                                                    std::string_view value, Project* project) {
-    if (!StringView(value).is_valid_utf8())
+Result<void> Session::set_promoted_parameter_string(const PromotedParameterTarget& target, StringView param_name,
+                                                    StringView value, Project* project) {
+    if (!value.is_valid_utf8())
         return graph_error("Parameter string must be valid UTF-8.");
     json::Builder b;
     b.set_validated(b.root(), value);
@@ -6365,8 +6413,8 @@ Result<void> Session::set_promoted_parameter_string(const PromotedParameterTarge
     return graph_set_asset_override_json(target.graph_key, target.node_name, param_name, b.root(), project);
 }
 
-Result<void> Session::clear_promoted_parameter_override(const PromotedParameterTarget& target,
-                                                        std::string_view param_name, Project* project) {
+Result<void> Session::clear_promoted_parameter_override(const PromotedParameterTarget& target, StringView param_name,
+                                                        Project* project) {
     if (target.generator_component != ObjectId{})
         return set_generator_override_json(project, target.generator_component, param_name, {});
     if (target.node_name.empty())
@@ -6374,7 +6422,7 @@ Result<void> Session::clear_promoted_parameter_override(const PromotedParameterT
     return graph_set_asset_override_json(target.graph_key, target.node_name, param_name, {}, project);
 }
 
-Result<bool> Session::graph_apply(std::string_view key, json::Value patch, Project* project) {
+Result<bool> Session::graph_apply(StringView key, json::Value patch, Project* project) {
     ATELIER_TRY_BIND(target, editable_graph(key, true));
     auto& open = **target;
     if (editing() || open.pending)
@@ -6390,7 +6438,8 @@ Result<bool> Session::graph_apply(std::string_view key, json::Value patch, Proje
     revision_ = revision;
     if (!applied) {
         if (auto restored = open.replay(*this, changes, false); !restored)
-            applied.error().message += " (rollback: " + restored.error().message + ")";
+            applied.error().message =
+                String::concat(applied.error().message, " (rollback: ", restored.error().message, ")");
         return std::unexpected(std::move(applied).error());
     }
     if (changes.empty())
@@ -6400,14 +6449,14 @@ Result<bool> Session::graph_apply(std::string_view key, json::Value patch, Proje
     return true;
 }
 
-Result<json::Document> Session::graph_node_properties(std::string_view key, std::string_view name) {
+Result<json::Document> Session::graph_node_properties(StringView key, StringView name) {
     const auto id = graph_node_id(key, name);
     if (id == ObjectId{})
-        return graph_error("Missing or unresolved graph node: " + std::string(name));
+        return graph_error(String::concat("Missing or unresolved graph node: ", lossy_utf8(name)));
     return capture_object_properties(runtime_, id);
 }
 
-Result<void> Session::graph_set_properties(std::string_view key, std::string_view node_name, json::Value properties) {
+Result<void> Session::graph_set_properties(StringView key, StringView node_name, json::Value properties) {
     if (properties.kind() != json::Kind::object)
         return graph_error("Properties patch must be a JSON object.");
     ATELIER_TRY_BIND(open_ptr, editable_graph(key, true));
@@ -6419,22 +6468,22 @@ Result<void> Session::graph_set_properties(std::string_view key, std::string_vie
     } else {
         target_node = find_node(open.document, node_name);
         if (!target_node || !target_node->node.registered())
-            return graph_error("Target node '" + std::string(node_name) + "' is missing or unresolved.");
+            return graph_error(String::concat("Target node '", lossy_utf8(node_name), "' is missing or unresolved."));
         target_root = target_node->node;
 
-        Array<std::string> check_path;
+        Array<String> check_path;
         const auto check_controlled = [&](auto&& self, json::Value patch) -> Result<void> {
             for (const auto& [member, val] : *patch.object_items()) {
-                check_path.emplace(member);
+                check_path.add(String::from_utf8_validated(member));
                 if (val.kind() == json::Kind::object && val.size() > 0) {
                     ATELIER_TRY(self(self, val));
                 } else {
-                    const std::string dotted = detail::dotted(check_path);
-                    if (const auto ctrl = graph_controlling_parameter(key, node_name, dotted)) {
-                        return graph_error("Field '" + std::string(node_name) + "." + dotted +
-                                           "' is controlled by promoted graph parameter '" + *ctrl +
-                                           "'. Use Set Graph Parameter with parameter='" + *ctrl +
-                                           "' to update all its bound targets, or unbind this field first.");
+                    const String dotted = detail::dotted(check_path);
+                    if (const auto ctrl = graph_controlling_parameter(key, target_node->name, dotted)) {
+                        return graph_error(String::concat(
+                            "Field '", target_node->name, ".", dotted, "' is controlled by promoted graph parameter '",
+                            *ctrl, "'. Use Set Graph Parameter with parameter='", *ctrl,
+                            "' to update all its bound targets, or unbind this field first."));
                     }
                 }
                 check_path.pop();
@@ -6451,13 +6500,13 @@ Result<void> Session::graph_set_properties(std::string_view key, std::string_vie
 
     const auto before_kept = target_node ? target_node->kept : open.document.kept;
     json::Builder next_kept(before_kept);
-    Array<std::string> path;
+    Array<String> path;
     if (target_node)
-        path.emplace("properties");
+        path.add("properties"_s);
     const auto clear_edited = [&](auto&& self, json::Value patch) -> void {
         const auto members = *patch.object_items();
         for (const auto& [member, value] : members) {
-            path.emplace(member);
+            path.add(String::from_utf8_validated(member));
             if (value.kind() == json::Kind::object && value.size() > 0)
                 self(self, value);
             else
@@ -6483,19 +6532,19 @@ Result<void> Session::graph_set_properties(std::string_view key, std::string_vie
     return {};
 }
 
-Result<void> Session::set_string_property(ObjectId object, Span<const FieldId> path, std::string_view value) {
+Result<void> Session::set_string_property(ObjectId object, Span<const FieldId> path, StringView value) {
     if (world_.running() || world_.closed())
         return graph_error("Properties require an open, stopped document.", ErrorCode::invalid_definition);
     const auto graph_key = graph_of_object(object);
     if (!graph_key)
         return graph_error("String property editing requires a procedural graph object.",
                            ErrorCode::invalid_definition);
-    if (!StringView(value).is_valid_utf8())
+    if (!value.is_valid_utf8())
         return graph_error("Property string must be valid UTF-8.");
     ATELIER_TRY(reject_if_graph_controlled_field(object, path));
     ATELIER_TRY_BIND(string_type, runtime_.native_type<String>());
     ATELIER_TRY_BIND(type, runtime_.type_of(object));
-    Array<std::string> names;
+    Array<String> names;
     for (const auto step : path) {
         ATELIER_TRY_BIND(info, runtime_.describe(*type));
         const auto field = std::ranges::find((*info)->fields, step, &FieldInfo::id);
@@ -6503,7 +6552,7 @@ Result<void> Session::set_string_property(ObjectId object, Span<const FieldId> p
             return graph_error("Unknown property field.");
         if (field->read_only)
             return graph_error("Read-only fields cannot be edited in the inspector.", ErrorCode::invalid_definition);
-        names.emplace(field->name);
+        names.add(field->name);
         type = field->value.type;
     }
     if (*type != *string_type)
@@ -6513,7 +6562,7 @@ Result<void> Session::set_string_property(ObjectId object, Span<const FieldId> p
     const auto leaf = patch.object_path_validated(patch.root(), names);
     patch.set_validated(leaf, value);
     const auto node_name = graph_node_name(object);
-    return graph_set_properties(*graph_key, node_name.value_or(""), patch.root());
+    return graph_set_properties(*graph_key, node_name ? node_name->view() : StringView{}, patch.root());
 }
 
 Result<procedural::Evaluator*> Session::prepare_graph_evaluator(OpenGraph& open, Project* project) {
@@ -6530,45 +6579,46 @@ Result<procedural::Evaluator*> Session::prepare_graph_evaluator(OpenGraph& open,
     return open.evaluator.get();
 }
 
-Result<std::shared_ptr<const procedural::Bvh>> Session::graph_node_surface(std::string_view key, std::string_view name,
-                                                                           std::string_view output, Project* project) {
+Result<std::shared_ptr<const procedural::Bvh>> Session::graph_node_surface(StringView key, StringView name,
+                                                                           StringView output, Project* project) {
     const auto id = graph_node_id(key, name);
     if (id == ObjectId{})
-        return graph_error("Missing or unresolved graph node: " + std::string(name));
+        return graph_error(String::concat("Missing or unresolved graph node: ", lossy_utf8(name)));
     auto& open = **graphs_.find(key);
     ATELIER_TRY_BIND(evaluator, prepare_graph_evaluator(open, project));
     ATELIER_TRY_BIND(ports, procedural::ports(runtime_, id));
     const auto port = std::ranges::find(ports->outputs, output);
     if (port == ports->outputs.end())
-        return graph_error("Unknown output port on " + std::string(name) + ": " + std::string(output));
+        return graph_error(
+            String::concat("Unknown output port on ", lossy_utf8(name), ": ", lossy_utf8(output)));
     ATELIER_TRY((*evaluator)->evaluate_node(id));
     if (auto cause = (*evaluator)->target_error(id))
         return std::unexpected(std::move(*cause));
     const auto* geometry = (*evaluator)->node_output(id, static_cast<std::uint32_t>(port - ports->outputs.begin()));
     if (!geometry)
-        return graph_error("The evaluated node has no geometry on output " + std::string(output));
+        return graph_error(String::concat("The evaluated node has no geometry on output ", lossy_utf8(output)));
     if (geometry->count(procedural::Layer::instance))
         return graph_error("Raycast requires polygon geometry; realize instances before querying this output.");
     return procedural::Bvh::acquire(*geometry);
 }
 
-Result<procedural::NodeBindings> Session::graph_node_bindings(std::string_view key, std::string_view name,
-                                                              Project* project) {
+Result<procedural::NodeBindings> Session::graph_node_bindings(StringView key, StringView name, Project* project) {
     const auto id = graph_node_id(key, name);
     if (id == ObjectId{})
-        return graph_error("Missing or unresolved graph node: " + std::string(name));
+        return graph_error(String::concat("Missing or unresolved graph node: ", lossy_utf8(name)));
     auto& open = **graphs_.find(key);
     ATELIER_TRY_BIND(evaluator, prepare_graph_evaluator(open, project));
     return (*evaluator)->inspect_bindings(id);
 }
 
-Result<GraphEvaluation> Session::evaluate_graph(std::string_view key, Project* project, ObjectId inspected_node,
+Result<GraphEvaluation> Session::evaluate_graph(StringView key, Project* project, ObjectId inspected_node,
                                                 bool record_timings) {
     if (world_.closed())
         return graph_error("Graph evaluation requires an open Session.", ErrorCode::invalid_definition);
     auto* at = graphs_.find(key);
     if (!at || !*at)
-        return graph_error("Procedural graph is not open: " + std::string(key), ErrorCode::invalid_definition);
+        return graph_error(String::concat("Procedural graph is not open: ", lossy_utf8(key)),
+                           ErrorCode::invalid_definition);
     auto& open = **at;
     ATELIER_TRY(prepare_graph_evaluator(open, project));
     ATELIER_TRY(open.evaluator->evaluate(record_timings));
@@ -6627,7 +6677,7 @@ Result<GraphEvaluation> Session::evaluate_graph(std::string_view key, Project* p
     return result;
 }
 
-Result<std::shared_ptr<const GraphInspectView>> Session::graph_topology(std::string_view key) {
+Result<std::shared_ptr<const GraphInspectView>> Session::graph_topology(StringView key) {
     auto* at = graphs_.find(key);
     if (!at)
         return graph_error("Procedural graph is not open.");
@@ -6663,25 +6713,25 @@ Result<std::shared_ptr<const GraphInspectView>> Session::graph_topology(std::str
         if (const auto* disp_node = find_node_by_id(open.document, listed->display()))
             view.display = disp_node->name;
     } else if (const auto kept_disp = open.document.kept.root().string({"display"})) {
-        view.display = std::string(*kept_disp);
+        view.display = String::from_utf8_validated(*kept_disp);
     }
     if (open.document.template_node != ObjectId{}) {
         if (const auto* tmpl_node = find_node_by_id(open.document, open.document.template_node))
             view.template_node = tmpl_node->name;
     } else if (const auto kept_tmpl = open.document.kept.root().string({"template"})) {
-        view.template_node = std::string(*kept_tmpl);
+        view.template_node = String::from_utf8_validated(*kept_tmpl);
     }
 
     Project* active_project = open.resources.project();
     ObjectId cached_error_cause{};
-    std::string_view cached_error_name{};
+    StringView cached_error_name{};
     for (const auto& item : open.document.nodes) {
         GraphNodeView node_view;
         node_view.name = item.name;
         node_view.asset_key = item.asset_key;
         if (!item.asset_key.empty() && active_project) {
             if (const auto* entry = active_project->entry(item.asset_key))
-                node_view.asset_label = entry->path.stem().string();
+                node_view.asset_label = platform::utf16_to_utf8(entry->path.stem().wstring()).value_or(String{});
         }
         node_view.overrides = item.overrides;
         node_view.position = item.position;
@@ -6693,7 +6743,7 @@ Result<std::shared_ptr<const GraphInspectView>> Session::graph_topology(std::str
             node_view.is_display = item.name == view.display;
             node_view.is_template = item.name == view.template_node;
             if (const auto saved_type = item.kept.root().string({"type"}))
-                node_view.type = std::string(*saved_type);
+                node_view.type = String::from_utf8_validated(*saved_type);
             if (const auto saved_bypass = item.kept.root().boolean({"bypass"}))
                 node_view.is_bypassed = *saved_bypass;
             view.nodes.add(std::move(node_view));
@@ -6708,7 +6758,7 @@ Result<std::shared_ptr<const GraphInspectView>> Session::graph_topology(std::str
         node_view.is_frozen = *is_frozen;
         ATELIER_TRY_BIND(type, runtime_.type_of(item.node.id()));
         ATELIER_TRY_BIND(info, runtime_.describe(*type));
-        node_view.type = std::string((*info)->name);
+        node_view.type = (*info)->name;
         ATELIER_TRY_BIND(ports, procedural::ports(runtime_, item.node.id()));
         node_view.ports = {std::move(ports->inputs), std::move(ports->multiple), std::move(ports->outputs)};
         if (open.evaluator) {
@@ -6718,13 +6768,13 @@ Result<std::shared_ptr<const GraphInspectView>> Session::graph_topology(std::str
                     const ObjectId cause = st->root_node != ObjectId{} ? st->root_node : item.node.id();
                     if (cause == item.node.id()) {
                         cached_error_cause = cause;
-                        cached_error_name = item.name;
+                        cached_error_name = item.name.view();
                         node_view.root_error_node = item.name;
                     } else if (cause == cached_error_cause && !cached_error_name.empty()) {
-                        node_view.root_error_node = std::string(cached_error_name);
+                        node_view.root_error_node = String::from_utf8_validated(cached_error_name);
                     } else if (const auto* cause_node = find_node_by_id(open.document, cause)) {
                         cached_error_cause = cause;
-                        cached_error_name = cause_node->name;
+                        cached_error_name = cause_node->name.view();
                         node_view.root_error_node = cause_node->name;
                     } else {
                         node_view.root_error_node = item.name;
@@ -6739,10 +6789,10 @@ Result<std::shared_ptr<const GraphInspectView>> Session::graph_topology(std::str
             if (!src)
                 continue;
             ATELIER_TRY_BIND(src_ports, procedural::ports(runtime_, conn.from));
-            const std::string from_port =
-                conn.output < src_ports->outputs.size() ? src_ports->outputs[conn.output] : std::to_string(conn.output);
-            const std::string to_port = conn.input < node_view.ports.inputs.size() ? node_view.ports.inputs[conn.input]
-                                                                                   : std::to_string(conn.input);
+            const String from_port = conn.output < src_ports->outputs.size() ? src_ports->outputs[conn.output]
+                                                                             : String::from_number(conn.output);
+            const String to_port = conn.input < node_view.ports.inputs.size() ? node_view.ports.inputs[conn.input]
+                                                                              : String::from_number(conn.input);
             view.connections.add({src->name, from_port, conn.output, item.name, to_port, conn.input});
         }
         view.nodes.add(std::move(node_view));
@@ -6754,9 +6804,9 @@ Result<std::shared_ptr<const GraphInspectView>> Session::graph_topology(std::str
     return open.topology;
 }
 
-Result<GraphInspectView> Session::inspect_graph(std::string_view key, Project* project, ObjectId inspected_node,
+Result<GraphInspectView> Session::inspect_graph(StringView key, Project* project, ObjectId inspected_node,
                                                 bool record_timings, std::size_t max_samples, bool include_spatial,
-                                                ObjectId reference_node, std::string_view reference_name) {
+                                                ObjectId reference_node, StringView reference_name) {
     ATELIER_TRY_BIND(eval, evaluate_graph(key, project, inspected_node, record_timings));
     std::shared_ptr<const procedural::Bvh> ref_bvh;
     if (include_spatial && reference_node != ObjectId{}) {
@@ -6766,14 +6816,16 @@ Result<GraphInspectView> Session::inspect_graph(std::string_view key, Project* p
         auto& open = **at;
         ATELIER_TRY(open.evaluator->evaluate_node(reference_node, false));
         if (const auto* st = open.evaluator->status(reference_node); st && st->error)
-            return graph_error("Reference node '" + std::string(reference_name) + "' failed: " + st->error->message);
+            return graph_error(
+                String::concat("Reference node '", lossy_utf8(reference_name), "' failed: ", st->error->message));
         const auto* ref_geom = open.evaluator->node_output(reference_node, 0);
         if (!ref_geom)
-            return graph_error("Reference node '" + std::string(reference_name) + "' produced no geometry output.");
+            return graph_error(
+                String::concat("Reference node '", lossy_utf8(reference_name), "' produced no geometry output."));
         auto acquired = procedural::Bvh::acquire(*ref_geom);
         if (!acquired)
-            return graph_error("Reference node '" + std::string(reference_name) +
-                               "' has no valid polygon surface: " + acquired.error().message);
+            return graph_error(String::concat("Reference node '", lossy_utf8(reference_name),
+                                              "' has no valid polygon surface: ", acquired.error().message));
         ref_bvh = std::move(*acquired);
     }
     ATELIER_TRY_BIND(topology, graph_topology(key));
@@ -6934,7 +6986,7 @@ Result<void> Session::sync_procedural_generators(Project* project) {
     cache.entries.remove_if([&](const ObjectId id, const auto&) { return !live_components.contains(id); });
 
     const auto contain_error = [&](const Error& err, ObjectId component, ObjectId owner,
-                                   Array<std::string> field = {"graph"},
+                                   Array<String> field = {"graph"_s},
                                    world::DiagnosticKind kind = world::DiagnosticKind::invalid_value) -> Result<void> {
         cache.has_errors = true;
         cache.entries.at(component).latest_cook.emplace(std::unexpected(err));
@@ -6953,7 +7005,7 @@ Result<void> Session::sync_procedural_generators(Project* project) {
     assets::Reader builtin_reader;
     assets::Reader& active_reader =
         project ? project->assets() : (cache.fallback_reader ? *cache.fallback_reader : builtin_reader);
-    Set<std::string> referenced_graphs;
+    Set<String> referenced_graphs;
 
     for (const ObjectId component : *generators) {
         ATELIER_TRY_BIND(comp_state, world::inspect_component(runtime_, component));
@@ -7001,7 +7053,7 @@ Result<void> Session::sync_procedural_generators(Project* project) {
         if (!std::isfinite(chunk_size) || chunk_size < 0.1f || chunk_size > 100000.f) {
             ATELIER_TRY(contain_error(
                 Error{ErrorCode::argument_mismatch, "Generator chunk size must stay within [0.1, 100000] metres."},
-                component, comp_state->owner, {"chunk_size"}));
+                component, comp_state->owner, {"chunk_size"_s}));
             continue;
         }
 
@@ -7019,7 +7071,7 @@ Result<void> Session::sync_procedural_generators(Project* project) {
             return {};
         };
 
-        const auto find_open = [&](std::string_view k) -> std::pair<const GraphDocument*, std::uint64_t> {
+        const auto find_open = [&](StringView k) -> std::pair<const GraphDocument*, std::uint64_t> {
             if (const auto* it = graphs_.find(k); it && *it)
                 return {&(*it)->document, (*it)->mutation_epoch};
             return {nullptr, 0ULL};
@@ -7058,7 +7110,7 @@ Result<void> Session::sync_procedural_generators(Project* project) {
                         const auto& miss = remember_unavailable(project->assets(), assets::AssetKind::procedural_graph,
                                                                 proc_source->source, loaded_asset.error());
                         ATELIER_TRY(drop_component_output());
-                        ATELIER_TRY(contain_error(miss.error, component, comp_state->owner, {"graph"}, miss.kind));
+                        ATELIER_TRY(contain_error(miss.error, component, comp_state->owner, {"graph"_s}, miss.kind));
                         continue;
                     }
                     auto parsed_doc = load_graph(runtime_, loaded_asset->text, resolver);
@@ -7069,7 +7121,7 @@ Result<void> Session::sync_procedural_generators(Project* project) {
                         const auto& miss = remember_unavailable(project->assets(), assets::AssetKind::procedural_graph,
                                                                 proc_source->source, format_err);
                         ATELIER_TRY(drop_component_output());
-                        ATELIER_TRY(contain_error(miss.error, component, comp_state->owner, {"graph"}, miss.kind));
+                        ATELIER_TRY(contain_error(miss.error, component, comp_state->owner, {"graph"_s}, miss.kind));
                         continue;
                     }
                     unavailable_.remove(std::pair{assets::AssetKind::procedural_graph, proc_source->source});
@@ -7132,21 +7184,21 @@ Result<void> Session::sync_procedural_generators(Project* project) {
                 entry.private_instance->applied_overrides != comp_ov) {
                 auto applied = apply_cached_instance_overrides(
                     runtime_, entry.private_instance->cached_params, proc_source->source, comp_ov,
-                    [&](const std::string& ov_name, json::Value ov_val, world::DiagnosticKind dkind,
-                        const std::string& detail_msg) {
+                    [&](const String& ov_name, json::Value ov_val, world::DiagnosticKind dkind,
+                        const String& detail_msg) {
                         world::Diagnostic diag;
                         diag.severity = world::Severity::warning;
                         diag.kind = dkind;
                         diag.phase = world::DiagnosticPhase::presentation;
                         diag.object = component;
                         diag.entity = comp_state->owner;
-                        diag.field = {"overrides", ov_name};
+                        diag.field = {"overrides"_s, ov_name};
                         diag.value = assets::json_format::preview(ov_val);
-                        diag.message = "overrides." + ov_name + ": " + detail_msg;
+                        diag.message = String::concat("overrides.", ov_name, ": ", detail_msg);
                         world_.report(std::move(diag));
                     });
                 if (!applied) {
-                    ATELIER_TRY(contain_error(applied.error(), component, comp_state->owner, {"overrides"}));
+                    ATELIER_TRY(contain_error(applied.error(), component, comp_state->owner, {"overrides"_s}));
                     continue;
                 }
                 entry.private_instance->applied_overrides = comp_ov;
@@ -7173,14 +7225,14 @@ Result<void> Session::sync_procedural_generators(Project* project) {
         }
 
         Array<ObjectId> out_nodes;
-        const std::array prefix_fields{std::string("graph"), proc_source->source};
+        const std::array prefix_fields{"graph"_s, proc_source->source};
         for (auto issue : *effective_issues) {
             issue.phase = world::DiagnosticPhase::presentation;
             issue.object = component;
             issue.entity = comp_state->owner;
             issue.type.clear();
             issue.field.insert_range(0, prefix_fields);
-            issue.message = "graph." + proc_source->source + "." + issue.message;
+            issue.message = String::concat("graph.", proc_source->source, ".", issue.message);
             world_.report(std::move(issue));
         }
         auto ext_ports = extract_graph_ports(runtime_, *target_doc, nullptr, &out_nodes);
@@ -7251,11 +7303,11 @@ Result<void> Session::sync_procedural_generators(Project* project) {
 
         Array<presentation::ProceduralMeshDependency> mesh_dependencies;
         for (const auto& dep : target_evaluator->target_dependencies({&target_out, 1})) {
-            const std::string dep_key(dep.key.view().std_view());
+            const String& dep_key = dep.key;
             if (dep_key.empty())
                 continue;
             if (auto mesh_asset = cache.resources.resolve_mesh_asset(dep_key); mesh_asset && mesh_asset->mesh) {
-                Array<std::pair<std::string, std::string>> slots;
+                Array<std::pair<String, String>> slots;
                 slots.reserve(mesh_asset->materials.size());
                 for (const auto& sm : mesh_asset->materials)
                     slots.emplace(sm.slot, sm.key);
@@ -7266,12 +7318,11 @@ Result<void> Session::sync_procedural_generators(Project* project) {
         }
 
         Array<presentation::ProceduralInstanceAsset> resolved_assets;
-        Set<std::string_view> seen_keys;
+        Set<StringView> seen_keys;
         for (const auto& col : published->collections) {
-            const std::string_view key_sv = col.reference.key.view().std_view();
-            if (key_sv.empty() || !seen_keys.add(key_sv))
+            const String& key = col.reference.key;
+            if (key.empty() || !seen_keys.add(key.view()))
                 continue;
-            const std::string key(key_sv);
             auto mesh_asset = cache.resources.resolve_mesh_asset(key);
             if (!mesh_asset || !mesh_asset->mesh) {
                 if (col.reference.mesh)
@@ -7304,7 +7355,7 @@ Result<void> Session::sync_procedural_generators(Project* project) {
         entry.latest_cook.emplace();
     }
 
-    cache.graph_slots.remove_if([&](const std::string& k, const auto&) { return !referenced_graphs.contains(k); });
+    cache.graph_slots.remove_if([&](const String& k, const auto&) { return !referenced_graphs.contains(k); });
 
     if (auto now = runtime_.change_cursor()) {
         cache.idle_valid = true;
@@ -7353,7 +7404,7 @@ Result<world::Commit> Session::bake_procedural_generator(Project* project, Objec
         return graph_error("Procedural Bake requires a successful current cook.", ErrorCode::invalid_definition);
 
     struct ResolvedAssetInfo {
-        std::string key;
+        String key;
 
         geometry::MeshRef mesh;
 
@@ -7363,10 +7414,10 @@ Result<world::Commit> Session::bake_procedural_generator(Project* project, Objec
     };
 
     Array<ResolvedAssetInfo> resolved_assets;
-    Map<std::string, Optional<std::size_t>> asset_table;
+    Map<String, Optional<std::size_t>> asset_table;
     assets::Reader builtin_reader;
     assets::Reader& active_reader = project ? project->assets() : builtin_reader;
-    const auto resolve_asset_info = [&](std::string_view key) -> Result<Optional<std::size_t>> {
+    const auto resolve_asset_info = [&](const String& key) -> Result<Optional<std::size_t>> {
         if (key.empty())
             return Optional<std::size_t>{};
         if (const auto* it = asset_table.find(key))
@@ -7376,7 +7427,7 @@ Result<world::Commit> Session::bake_procedural_generator(Project* project, Objec
             asset_table.try_emplace(key, Optional<std::size_t>{});
             return Optional<std::size_t>{};
         }
-        ResolvedAssetInfo info{std::string(key),
+        ResolvedAssetInfo info{key,
                                live_mesh->mesh,
                                {},
                                live_mesh->name.empty() ? std::wstring{L"Instance"} : live_mesh->name};
@@ -7414,14 +7465,15 @@ Result<world::Commit> Session::bake_procedural_generator(Project* project, Objec
     for (const auto& col : binding->output->publication.collections) {
         if (!col.transforms || col.transforms->empty())
             continue;
-        const std::string_view key = col.reference.key.view().std_view();
+        const String& key = col.reference.key;
         ATELIER_TRY_BIND(asset_idx_opt, resolve_asset_info(key));
         if (!*asset_idx_opt)
             continue;
         const std::size_t asset_idx = **asset_idx_opt;
         if (resolved_assets[asset_idx].mesh != col.reference.mesh)
-            return graph_error("Cannot bake '" + std::string(key) +
-                               "': the published instance mesh differs from the current project asset. Recook it first.");
+            return graph_error(String::concat(
+                "Cannot bake '", key,
+                "': the published instance mesh differs from the current project asset. Recook it first."));
         for (const auto& affine : *col.transforms) {
             ATELIER_TRY_BIND(trs, decompose_procedural_instance(affine));
             pending.add({asset_idx, *trs});
@@ -7436,8 +7488,8 @@ Result<world::Commit> Session::bake_procedural_generator(Project* project, Objec
 
     ATELIER_TRY_BIND(members, world_.members());
     if (members->size() + 1 + pending.size() > maximum_entities) {
-        return graph_error("Procedural Bake exceeds the Editor Entity limit (" + std::to_string(maximum_entities) +
-                               ").",
+        return graph_error(String::concat("Procedural Bake exceeds the Editor Entity limit (",
+                                          String::from_number(maximum_entities), ")."),
                            ErrorCode::invalid_definition);
     }
 

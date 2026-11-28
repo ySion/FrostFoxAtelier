@@ -31,11 +31,11 @@ struct OperatorParameters {
     Span<const PropertyPatch> patch; // @context.object：对象类型约束下的稀疏路径补丁（第 4 节）
 };
 struct OperatorInfo {
-    std::string id;                 // 稳定 ID：小写 "<域>.<动作>"，如 "scene.delete"
+    String id;                      // 稳定 ID：小写 "<域>.<动作>"，如 "scene.delete"
     std::wstring title;
-    std::string description;
-    std::string parameters;         // Runtime 记录类型名；空表示空记录；"@context.object" / "@context.region" 表示动态类型
-    std::string result;             // 可选的无引用结果记录类型名，例如新资产的键；引用字段直接拒绝
+    String description;
+    String parameters;              // Runtime 记录类型名；空表示空记录；"@context.object" / "@context.region" 表示动态类型
+    String result;                  // 可选的无引用结果记录类型名，例如新资产的键；引用字段直接拒绝
     OperatorFlag flags{};
     std::function<Result<void>(const Context&)> poll;            // 不可用时 error.message 就是原因
     std::function<Result<void>(OperatorHost&, const Context&, const OperatorParameters&, ValueOutput result)> execute;
@@ -43,19 +43,19 @@ struct OperatorInfo {
     std::function<Optional<bool>(const Context&, ValueInput parameters)> state; // 可选：菜单的勾选/单选状态
     OperatorKind kind = OperatorKind::direct;
     std::function<bool(ValueInput)> requires_interaction; // 可选：由已解码参数决定是否需要人类交互
-    std::string interaction; // 条件说明，供发现与拒绝结果使用
+    String interaction;             // 条件说明，供发现与拒绝结果使用
 };
 class OperatorRegistry {
 public:
     Result<void> add(OperatorInfo);                // 重复 ID、ID 语法错误、标志组合非法时拒绝
-    const OperatorInfo* find(std::string_view id) const;
+    const OperatorInfo* find(StringView id) const;
     Span<const OperatorInfo> all() const;
     // 原生便捷入口：参数记录 P 由 atelier_reflect 生成，包装成上面的类型擦除形式。
-    template<class P> static OperatorInfo native(std::string id, std::wstring title, std::string description, OperatorFlag,
+    template<class P> static OperatorInfo native(Utf8Text id, std::wstring title, Utf8Text description, OperatorFlag,
         std::function<Result<void>(const Context&)> poll,
         std::function<Result<void>(OperatorHost&, const Context&, const P&)> execute);
 };
-struct OperatorCall { std::string id; Json args = Json::object(); ContextOverride context; };
+struct OperatorCall { String id; Json args = Json::object(); ContextOverride context; };
 // poll → seed 或默认构造 → 按参数类型严格解码 args → 来源准入 → execute → 检查历史不变量。
 // execute 返回后不再访问 Context。
 Result<OperatorReport> call(OperatorRegistry&, OperatorHost&, const Context&, const OperatorCall&);
@@ -108,7 +108,7 @@ struct Context {
     Selection selection;
     Region region;
     Optional<ViewportContext> viewport;             // 仅当 region 为 viewport
-    std::string asset;                              // 资源浏览器的活动资产或被检视的材质资产键
+    String asset;                                   // 资源浏览器的活动资产或被检视的材质资产键
     std::filesystem::path source;                   // 代码页的活动文档
     bool scene_available{true};                     // 工程场景是否可用；Play 运行期间的修改照常进入文档并转发给 Play
     bool interactive{};                             // UI/keymap 调用为 true；Control 与语言为 false
@@ -208,7 +208,7 @@ Transform 是例外：Entity（包括 Source 派生 Entity）实际继承的 pos
 ```cpp
 enum class KeyPhase : std::uint8_t { before_controls, after_controls };
 struct KeyChord { std::uint32_t key; bool control{}, shift{}, alt{}; bool repeat{}; };
-struct KeymapEntry { RegionKind region; KeyChord chord; KeyPhase phase; std::string_view op; std::string_view args; /* JSON */ };
+struct KeymapEntry { RegionKind region; KeyChord chord; KeyPhase phase; StringView op; StringView args; /* JSON */ };
 ```
 
 - 内置表放在 `modules/editor/application/src/editor/keymap.cpp`，保存真实 `OperatorCall`。启动时只检查操作符 ID 已注册，未知 ID 明确报错；参数在调用时严格解码，不做无宿主执行或参数试运行。

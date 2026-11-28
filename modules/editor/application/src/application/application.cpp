@@ -19,7 +19,6 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
-#include <fstream>
 #include <format>
 #include <limits>
 
@@ -42,7 +41,8 @@ Result<void> Application::completion(Result<world::Commit> result) {
 
 namespace {
 std::unexpected<Error> renderer_stopped(const renderer::Error& error) {
-    return std::unexpected(Error{ErrorCode::invalid_storage, "Renderer stopped: " + error.cause.message});
+    return std::unexpected(
+        Error{ErrorCode::invalid_storage, String::concat("Renderer stopped: ", error.cause.message)});
 }
 
 Result<Scalar> scalar_value(const Scalar& prototype, double value) {
@@ -115,14 +115,14 @@ Result<void> Application::initialize(std::unique_ptr<editor::Session> document, 
     style.title_scale = 7.f / 6;
     if (auto styled = ui_.set_style(style); !styled) {
         auto error = ui_error(styled.error());
-        error.message = "Cannot publish editor typography: " + error.message;
+        error.message = String::concat("Cannot publish editor typography: ", error.message);
         return std::unexpected(std::move(error));
     }
     ATELIER_TRY_BIND(styles, editor_styles());
     style_sheet_ = std::move(*styles);
     if (auto styled = ui_.set_style_sheet(style_sheet_); !styled) {
         auto error = ui_error(styled.error());
-        error.message = "Cannot publish editor style sheet: " + error.message;
+        error.message = String::concat("Cannot publish editor style sheet: ", error.message);
         return std::unexpected(std::move(error));
     }
     renderer::Options options;
@@ -150,7 +150,7 @@ Application::~Application() {
         report_error(result.error(), "application.cleanup_failed");
 }
 
-void Application::notice(std::string_view code, std::wstring_view message, logging::Severity severity) noexcept {
+void Application::notice(StringView code, std::wstring_view message, logging::Severity severity) noexcept {
     auto text = platform::utf16_to_utf8(message);
     if (!text) {
         std::fputs("Editor notice capture failed.\n", stderr);
@@ -161,8 +161,10 @@ void Application::notice(std::string_view code, std::wstring_view message, loggi
         std::fputs("Editor notice capture failed.\n", stderr);
         return;
     }
-    logging::Entry entry{
-        .severity = severity, .category = "application", .event_code = std::string(code), .message = std::move(*text)};
+    logging::Entry entry{.severity = severity,
+                         .category = "application"_s,
+                         .event_code = String::from_utf8_validated(code),
+                         .message = std::move(*text)};
     entry.fields = {{"document", document_->presentation().identity()}, {"project_root", std::move(*root)}};
     static_cast<void>(workspace_.output.submit_owned(std::move(entry)));
 }
@@ -179,9 +181,9 @@ void Application::diagnostics() noexcept {
     const auto total = document_->world().dropped_diagnostics();
     if (total != dropped_diagnostics_) {
         logging::Entry entry{.severity = logging::Severity::warning,
-                             .category = "world",
-                             .event_code = "world.diagnostics_dropped",
-                             .message = "World diagnostics exceeded their retention capacity."};
+                             .category = "world"_s,
+                             .event_code = "world.diagnostics_dropped"_s,
+                             .message = "World diagnostics exceeded their retention capacity."_s};
         entry.fields = {{"document", document_->presentation().identity()},
                         {"dropped_total", total},
                         {"dropped_delta", total - dropped_diagnostics_}};
@@ -190,14 +192,14 @@ void Application::diagnostics() noexcept {
     }
 }
 
-void Application::preserve_failure(std::string_view reason) noexcept {
+void Application::preserve_failure(StringView reason) noexcept {
     if (recovery_->attempted() || !document_ || closed_)
         return;
-    const auto message = StringView{diagnostic_utf8(reason)}.utf8_prefix(logging::maximum_message_bytes).std_view();
+    const auto message = diagnostic_utf8(reason).utf8_prefix(logging::maximum_message_bytes);
     const auto submitted = logging::submit({.severity = logging::Severity::critical,
-                                            .category = "application",
-                                            .event_code = "application.failure_preserved",
-                                            .message = std::string(message)});
+                                            .category = "application"_s,
+                                            .event_code = "application.failure_preserved"_s,
+                                            .message = String::from_utf8_validated(message)});
     if (submitted.status != logging::SubmitStatus::accepted) {
         std::fputs("Editor failure preserved: ", stderr);
         std::fwrite(message.data(), 1, message.size(), stderr);
@@ -208,7 +210,7 @@ void Application::preserve_failure(std::string_view reason) noexcept {
     recovery_->preserve(*document_, project_ ? project_->root() : std::filesystem::path{}, scene_path_, reason);
 }
 
-void Application::report_error(const Error& error, std::string_view event, logging::Severity severity) noexcept {
+void Application::report_error(const Error& error, StringView event, logging::Severity severity) noexcept {
     auto entry = error_diagnostic(error, event, document_root_);
     if (!entry) {
         std::fputs("Cannot capture editor error; business result is unchanged.\n", stderr);
@@ -246,7 +248,7 @@ math::Vector3 Application::lighting_focus() const {
 
 Result<void> Application::set_camera(const editor::Camera& camera, bool cut) {
     if (const auto* error = renderer::probe_focus_error(workspace_.view.lit, camera.state().target))
-        return std::unexpected(Error{ErrorCode::invalid_definition, error});
+        return std::unexpected(Error{ErrorCode::invalid_definition, String::from_utf8_validated(error)});
     if (camera.state() != camera_.state()) {
         camera_ = camera;
         camera_cut_ |= cut;
@@ -432,8 +434,9 @@ Result<void> Application::action(const ui::Action& source) {
         const auto opened = reinterpret_cast<std::intptr_t>(
             ShellExecuteW(window(), L"open", directory.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
         if (opened <= 32)
-            return std::unexpected(Error{ErrorCode::invalid_storage, "Cannot open the original run directory (Shell " +
-                                                                         std::to_string(opened) + ")."});
+            return std::unexpected(Error{
+                ErrorCode::invalid_storage,
+                String::concat("Cannot open the original run directory (Shell ", opened, ").")});
         return {};
     }
     if (workspace_.output.apply(event))
@@ -539,7 +542,7 @@ Result<void> Application::action(const ui::Action& source) {
         ATELIER_TRY(document_->create_scratch_graph());
         return open_graph_context("scratch/procedural");
     }
-    const std::string net_graph = workspace_.effective_network_graph(*document_, project_.get());
+    const String net_graph = workspace_.effective_network_graph(*document_, project_.get());
     const bool net_locked = workspace_.is_network_graph_locked(*document_, net_graph);
     if (event.kind == ui::ActionKind::activate && event.key == editor::network_control::lock_toggle) {
         if (!net_graph.empty() && !document_->is_scratch_graph(net_graph) && !document_->world().running()) {
@@ -575,11 +578,11 @@ Result<void> Application::action(const ui::Action& source) {
     }
     if (event.kind == ui::ActionKind::activate && event.key == editor::network_control::isolate_toggle) {
         if (!workspace_.active_graph.empty()) {
-            const std::string cur_graph = workspace_.active_graph;
-            const std::string root_graph =
+            const String cur_graph = workspace_.active_graph;
+            const String root_graph =
                 workspace_.graph_breadcrumbs.empty() ? cur_graph : workspace_.graph_breadcrumbs.front().graph_key;
             auto saved_crumbs = std::move(workspace_.graph_breadcrumbs);
-            const std::string saved_sel = workspace_.selected_graph_node;
+            const String saved_sel = workspace_.selected_graph_node;
             exit_graph_context();
             if (workspace_.selected_generator_graph(*document_) != root_graph && document_->has_graph(root_graph)) {
                 workspace_.network_pinned = true;
@@ -597,7 +600,7 @@ Result<void> Application::action(const ui::Action& source) {
         }
         if (!net_graph.empty()) {
             auto saved_crumbs = std::move(workspace_.graph_breadcrumbs);
-            const std::string saved_sel = workspace_.selected_graph_node;
+            const String saved_sel = workspace_.selected_graph_node;
             ATELIER_TRY(open_graph_context(net_graph));
             workspace_.graph_breadcrumbs = std::move(saved_crumbs);
             if (!saved_sel.empty() && document_->graph_node(net_graph, saved_sel))
@@ -655,8 +658,8 @@ Result<void> Application::action(const ui::Action& source) {
         if (net_graph.empty() || !document_->has_graph(net_graph) || document_->world().running() || net_locked)
             return {};
         const auto canvas_dip = network_canvas_dip();
-        std::string from_node;
-        std::string from_port;
+        String from_node;
+        String from_port;
         if (!workspace_.selected_graph_node.empty())
             if (const auto inspected = document_->graph_topology(net_graph)) {
                 const auto at = std::ranges::find((*inspected)->nodes, workspace_.selected_graph_node,
@@ -1556,7 +1559,7 @@ Result<void> Application::begin_asset_rename() {
     return {};
 }
 
-Result<void> Application::rename_asset(std::string_view key, std::string_view name) {
+Result<void> Application::rename_asset(StringView key, StringView name) {
     const auto* entry = project_ ? project_->entry(key) : nullptr;
     if (!entry)
         return std::unexpected(Error{ErrorCode::invalid_storage, "Select a project asset to rename."});
@@ -1575,7 +1578,7 @@ Result<void> Application::rename_asset(std::string_view key, std::string_view na
     return {};
 }
 
-Result<void> Application::open_graph_context(std::string_view key) {
+Result<void> Application::open_graph_context(StringView key) {
     close_menu(false);
     const auto edit = ui_.commit_edit();
     if (!edit || !effects(*edit))
@@ -1594,8 +1597,9 @@ Result<void> Application::open_graph_context(std::string_view key) {
     workspace_.material_inspection.clear();
     workspace_.graph_breadcrumbs.clear();
     workspace_.dived_network_graph.clear();
-    workspace_.active_graph = std::string(key);
-    workspace_.set_single_graph_selection(workspace_.default_selected_graph_node(*document_, key));
+    workspace_.active_graph = String::from_utf8_validated(key);
+    const auto default_sel = workspace_.default_selected_graph_node(*document_, key);
+    workspace_.set_single_graph_selection(default_sel);
     workspace_.dock.select(editor::network_control::tab);
     workspace_.dock.select(editor::control::parameters_tab);
     workspace_.bump_view_revision();
@@ -1618,7 +1622,7 @@ void Application::exit_graph_context() {
     camera_cut_ = true;
 }
 
-Result<void> Application::dive_into_asset_node(std::string_view parent_graph, std::string_view node_name) {
+Result<void> Application::dive_into_asset_node(StringView parent_graph, StringView node_name) {
     if (parent_graph.empty() || node_name.empty())
         return {};
     const auto* gnode = document_->graph_node(parent_graph, node_name);
@@ -1627,7 +1631,7 @@ Result<void> Application::dive_into_asset_node(std::string_view parent_graph, st
     if (!gnode || !gnode->node.registered() || runtime.type_of(gnode->node.id()) != *asset_node_type ||
         gnode->asset_key.empty())
         return std::unexpected(Error{ErrorCode::argument_mismatch, "Selected node has no Digital Asset assigned."});
-    const std::string target_key = gnode->asset_key;
+    const String target_key = gnode->asset_key;
     if (target_key == parent_graph || std::ranges::any_of(workspace_.graph_breadcrumbs, [&](const auto& crumb) {
             return crumb.graph_key == target_key;
         })) {
@@ -1648,14 +1652,15 @@ Result<void> Application::dive_into_asset_node(std::string_view parent_graph, st
     workspace_.network.close_tab_search();
     workspace_.network.close_popup();
     workspace_.network_lock_overrides.remove(target_key);
-    workspace_.graph_breadcrumbs.add({std::string(parent_graph), std::string(node_name)});
+    workspace_.graph_breadcrumbs.add({String::from_utf8_validated(parent_graph), String::from_utf8_validated(node_name)});
     if (!workspace_.active_graph.empty()) {
         workspace_.active_graph = target_key;
         camera_cut_ = true;
     } else {
         workspace_.dived_network_graph = target_key;
     }
-    workspace_.set_single_graph_selection(workspace_.default_selected_graph_node(*document_, target_key));
+    const auto default_sel = workspace_.default_selected_graph_node(*document_, target_key);
+    workspace_.set_single_graph_selection(default_sel);
     workspace_.inspecting_asset = false;
     workspace_.material_inspection.clear();
     workspace_.inspecting_network = true;
@@ -1706,11 +1711,11 @@ Result<void> Application::pop_graph_breadcrumb() {
         workspace_.active_graph = crumb.graph_key;
         camera_cut_ = true;
     } else {
-        workspace_.dived_network_graph = workspace_.graph_breadcrumbs.empty() ? std::string{} : crumb.graph_key;
+        workspace_.dived_network_graph = workspace_.graph_breadcrumbs.empty() ? String{} : crumb.graph_key;
     }
-    const std::string next_sel = document_->graph_node(crumb.graph_key, crumb.asset_node_name)
-                                     ? crumb.asset_node_name
-                                     : workspace_.default_selected_graph_node(*document_, crumb.graph_key);
+    const String next_sel = document_->graph_node(crumb.graph_key, crumb.asset_node_name)
+                                ? crumb.asset_node_name
+                                : workspace_.default_selected_graph_node(*document_, crumb.graph_key);
     workspace_.set_single_graph_selection(next_sel);
     workspace_.inspecting_asset = false;
     workspace_.material_inspection.clear();
@@ -1720,7 +1725,7 @@ Result<void> Application::pop_graph_breadcrumb() {
     return {};
 }
 
-void Application::select_graph_node(std::string_view key, std::string_view node_name) {
+void Application::select_graph_node(StringView key, StringView node_name) {
     const auto net_key = workspace_.current_network_graph(*document_);
     if (workspace_.active_graph != key && net_key != key)
         return;
@@ -1736,14 +1741,14 @@ void Application::select_graph_node(std::string_view key, std::string_view node_
     workspace_.bump_view_revision();
 }
 
-void Application::select_graph_nodes(std::string_view key, Span<const std::string> node_names) {
+void Application::select_graph_nodes(StringView key, Span<const String> node_names) {
     const auto net_key = workspace_.current_network_graph(*document_);
     if (workspace_.active_graph != key && net_key != key)
         return;
     workspace_.inspecting_asset = false;
     workspace_.material_inspection.clear();
-    workspace_.selected_graph_nodes.assign(node_names.begin(), node_names.end());
-    workspace_.selected_graph_node = node_names.empty() ? std::string{} : node_names.back();
+    workspace_.selected_graph_nodes.assign(node_names);
+    workspace_.selected_graph_node = node_names.empty() ? String{} : node_names.back();
     workspace_.inspecting_network = workspace_.active_graph.empty() && !workspace_.selected_graph_nodes.empty();
     workspace_.bump_view_revision();
 }
@@ -1787,7 +1792,7 @@ bool Application::key_input(const ui::Event& event, std::uint32_t key, editor::R
         if (region == editor::RegionKind::network)
             return true;
         if (workspace_.active_graph.empty() && document_->selected_entities().empty())
-            call.id = "view.frame_all";
+            call.id = "view.frame_all"_s;
     }
     if (region != editor::RegionKind::none)
         call.context.region = region;
@@ -1908,8 +1913,7 @@ void Application::sync_text_input() {
         workspace_.status = L"Text input unavailable (Windows " + std::to_wstring(error) + L").";
 }
 
-void Application::cancel_interaction(const ui::Reply& reply, std::string_view input_event,
-                                     std::source_location caller) {
+void Application::cancel_interaction(const ui::Reply& reply, StringView input_event, std::source_location caller) {
     // Session distinguishes native focus/capture loss from a forced UI cancellation.
     // Application-owned gestures must end for either kind before capture is released.
     finish_camera_fly(false);
@@ -2006,7 +2010,7 @@ Application::MenuProjection Application::current_menu_projection() const noexcep
     return state;
 }
 
-void Application::close_menu(bool restore_focus, std::source_location caller, std::string_view input_event) {
+void Application::close_menu(bool restore_focus, std::source_location caller, StringView input_event) {
     pending_menu_ = 0;
     pie_release_pending_ = pie_release_select_ = pie_pressed_ = false;
     pie_hot_ = 0;
@@ -2018,8 +2022,8 @@ void Application::close_menu(bool restore_focus, std::source_location caller, st
         logging::Field{"incarnation", menu_incarnation_},
         logging::Field{"restore_focus", restore_focus},
         logging::Field{"caller_line", std::uint64_t{caller.line()}},
-        logging::Field{"caller_function", std::string(caller.function_name())},
-        logging::Field{"input_event", std::string(input_event)}};
+        logging::Field{"caller_function", String::from_utf8_validated(caller.function_name())},
+        logging::Field{"input_event", String::from_utf8_validated(input_event)}};
     static_cast<void>(ATELIER_LOG_WITH(logging::Severity::info, "menu", "menu.closed", logging::native::Context{fields},
                                        "Menu closing"));
     workspace_.menu.reset();
@@ -2091,7 +2095,7 @@ Result<void> Application::update_menu() {
     if (!popup_->visible()) {
         const std::array fields{logging::Field{"source_control", source->key},
                                 logging::Field{"incarnation", menu_incarnation_},
-                                logging::Field{"diagnostic", std::string(popup_->diagnostic())}};
+                                logging::Field{"diagnostic", popup_->diagnostic()}};
         static_cast<void>(ATELIER_LOG_WITH(logging::Severity::warning, "menu", "menu.rejected",
                                            logging::native::Context{fields}, "Popup update rejected"));
         workspace_.status = L"UI: " + diagnostic_text(popup_->diagnostic());
@@ -2672,7 +2676,7 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
     auto updated = ui_.set_surface(surface_);
     if (!updated) {
         auto error = ui_error(updated.error());
-        error.message = "UI rejected the window surface. " + error.message;
+        error.message = String::concat("UI rejected the window surface. ", error.message);
         return std::unexpected(std::move(error));
     }
     effects(*updated);
@@ -2753,7 +2757,7 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
                                       std::ranges::none_of(workspace_controls_.controls(), [](const auto& control) {
                                           return control.key == editor::control::color_editor;
                                       }))) {
-            const auto diagnostic = std::string(workspace_.ui_error());
+            const auto diagnostic = String::from_utf8_validated(workspace_.ui_error());
             ATELIER_TRY(finish_color_edit(false));
             ATELIER_TRY(project_controls());
             workspace_.status = L"Colour editor could not open" +
@@ -2765,15 +2769,14 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
     ATELIER_TRY(describe());
     auto described = ui_.set_controls(workspace_controls_);
     if (!described && described.error().code != ui::ErrorCode::text_failed &&
-        workspace_.reject_ui_controls("UI candidate rejected at control " + std::to_string(described.error().key) +
-                                      ": " + ui_error(described.error()).message)) {
+        workspace_.reject_ui_controls(String::concat("UI candidate rejected at control ", described.error().key, ": ",
+                                                     ui_error(described.error()).message))) {
         ATELIER_TRY(describe());
         described = ui_.set_controls(workspace_controls_);
     }
     if (!described) {
         auto error = ui_error(described.error());
-        error.message =
-            "UI rejected editor controls (key " + std::to_string(described.error().key) + "). " + error.message;
+        error.message = String::concat("UI rejected editor controls (key ", described.error().key, "). ", error.message);
         return std::unexpected(std::move(error));
     }
     effects(*described);
@@ -2784,15 +2787,15 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
     stage.emplace(phases::layout);
     auto prepared = ui_.prepare();
     if (!prepared && prepared.error().code != ui::ErrorCode::text_failed &&
-        workspace_.reject_ui_controls("Editor layout candidate rejected at control " +
-                                      std::to_string(prepared.error().key) + ": " +
-                                      ui_error(prepared.error()).message)) {
+        workspace_.reject_ui_controls(String::concat("Editor layout candidate rejected at control ",
+                                                     prepared.error().key, ": ",
+                                                     ui_error(prepared.error()).message))) {
         ATELIER_TRY(describe());
         described = ui_.set_controls(workspace_controls_);
         if (!described) {
             auto error = ui_error(described.error());
-            error.message = "UI rejected restored editor controls (key " + std::to_string(described.error().key) +
-                            "). " + error.message;
+            error.message = String::concat("UI rejected restored editor controls (key ", described.error().key, "). ",
+                                           error.message);
             return std::unexpected(std::move(error));
         }
         effects(*described);
@@ -2804,10 +2807,10 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
         stage.reset();
         lighting_clock_.reset();
         auto error = ui_error(prepared.error());
-        error.message = (ui_.presented() ? "Frame preparation failed; previous frame retained: "
-                                         : "Initial editor frame preparation failed (UI code " +
-                                               std::to_string(static_cast<int>(prepared.error().code)) + "). ") +
-                        error.message;
+        error.message = ui_.presented()
+                            ? String::concat("Frame preparation failed; previous frame retained: ", error.message)
+                            : String::concat("Initial editor frame preparation failed (UI code ",
+                                             static_cast<int>(prepared.error().code), "). ", error.message);
         return std::unexpected(std::move(error));
     }
     const auto previous_ui_revision = workspace_.ui_revision();
@@ -2819,7 +2822,7 @@ Result<bool> Application::run_step(renderer::Capture* capture, StepTimes* times)
             if (!prepared) {
                 stage.reset();
                 auto error = ui_error(prepared.error());
-                error.message = "Frame preparation failed; previous frame retained: " + error.message;
+                error.message = String::concat("Frame preparation failed; previous frame retained: ", error.message);
                 return std::unexpected(std::move(error));
             }
         }
@@ -3123,21 +3126,21 @@ Result<void> Application::close() {
     closed_ = true;
     if (document_) {
         if (auto root = platform::utf16_to_utf8(document_root_.generic_wstring())) {
-            const std::string_view quit_source =
-                window_.closing() ? Window::quit_source_name(window_.quit_source()) : std::string_view{"direct_close"};
+            const StringView quit_source =
+                window_.closing() ? Window::quit_source_name(window_.quit_source()) : StringView{"direct_close"};
             logging::Entry entry{.severity = logging::Severity::info,
-                                 .category = "application",
-                                 .event_code = "application.closing",
-                                 .message = "Editor closing."};
+                                 .category = "application"_s,
+                                 .event_code = "application.closing"_s,
+                                 .message = "Editor closing."_s};
             entry.fields = {{"document", document_->presentation().identity()},
                             {"project_root", std::move(*root)},
-                            {"quit_source", std::string(quit_source)},
+                            {"quit_source", String::from_utf8_validated(quit_source)},
                             {"play_running", play_.running()}};
             if (control_) {
                 if (auto job = control_->active_job()) {
                     entry.fields.add({"active_control_job_id", std::move(job->id)});
-                    entry.fields.add({"active_control_job_kind", std::string(job->kind)});
-                    entry.fields.add({"active_control_job_phase", std::string(job->phase)});
+                    entry.fields.add({"active_control_job_kind", String::from_utf8_validated(job->kind)});
+                    entry.fields.add({"active_control_job_phase", String::from_utf8_validated(job->phase)});
                 }
             }
             static_cast<void>(workspace_.output.submit_owned(std::move(entry)));

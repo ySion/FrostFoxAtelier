@@ -11,8 +11,10 @@
 #include <cstdio>
 
 namespace atelier::editor {
+using namespace atelier::literals;
+
 namespace {
-auto fail(std::string message) {
+auto fail(Utf8Text message) {
     return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)});
 }
 
@@ -25,10 +27,10 @@ bool same(const source::SourceSnapshot& a, const source::SourceSnapshot& b) {
     return true;
 }
 
-bool lifecycle(std::string_view entry, std::string_view type) {
+bool lifecycle(StringView entry, StringView type) {
     if (entry.size() <= type.size() + 1 || !entry.starts_with(type) || entry[type.size()] != '.')
         return false;
-    const auto name = entry.substr(type.size() + 1);
+    const auto name = entry.slice(type.size() + 1);
     return name == "begin" || name == "tick" || name == "post_physics_tick" || name == "late_tick" || name == "end";
 }
 
@@ -37,17 +39,21 @@ Result<void> validate_ui(const source::SourceFile& file) {
     // exclusively by the isolated runner, including UI previews.
     Runtime runtime;
     ATELIER_TRY_BIND(registered, ui_language::register_types(runtime));
-    auto module = ui_language::Module::compile(runtime, file.path, file.source);
-    const auto reject = [&](std::string message) -> Result<void> {
+    auto module = ui_language::Module::compile(runtime, StringView{file.path}, StringView{file.source});
+    const auto reject = [&](Utf8Text message) -> Result<void> {
+        auto msg = std::move(message).into_string();
+
         SourceLocation location{file.path, file.version, 0, 1, 1, file.disk_path};
-        const auto prefix = file.path + ":";
-        if (message.starts_with(prefix)) {
-            auto text = std::string_view(message).substr(prefix.size());
+
+        const auto prefix = String::concat(file.path, ":");
+        if (msg.starts_with(prefix)) {
+            auto text = msg.view().slice(prefix.size());
+
             const auto row = std::from_chars(text.data(), text.data() + text.size(), location.line);
             if (row.ec == std::errc{} && row.ptr != text.data() + text.size() && *row.ptr == ':')
                 static_cast<void>(std::from_chars(row.ptr + 1, text.data() + text.size(), location.column));
         }
-        return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message), std::move(location)});
+        return std::unexpected(Error{ErrorCode::invalid_definition, std::move(msg), std::move(location)});
     };
     if (!module)
         return reject(module.error().message);
@@ -69,18 +75,20 @@ Result<source::SourceSnapshot> ProjectCode::snapshot(const Project& project) {
     ATELIER_TRY_BIND(paths, project.source_paths());
     ATELIER_TRY_BIND(engine, source::engine_sources(source::default_engine_root()));
     source::SourceSnapshot result;
+
     auto name = platform::utf16_to_utf8(project.name());
     if (!name)
         return fail("Invalid UTF-16 text.");
     result.name = std::move(*name);
     result.version = 14695981039346656037ULL;
     std::size_t bytes{};
+
     const auto add = [&](source::SourceFile file) {
         bytes += file.source.size();
         if (bytes > 16 * 1024 * 1024)
             return false;
         result.version = source::content_hash(file.path, source::content_hash(file.source, result.version));
-        result.files.push_back(std::move(file));
+        result.files.add(std::move(file));
         return true;
     };
     for (const auto& relative : *paths) {
@@ -113,19 +121,21 @@ Result<void> ProjectCode::build(const Project& project) {
     auto next = std::make_shared<ProjectBuild>();
     next->published_version = report_->published_version;
     std::uint64_t request_sequence{};
-    std::string_view phase = "snapshot";
-    const auto record = [&](std::string_view code, const Error* error = nullptr) noexcept {
+
+    StringView phase = "snapshot";
+
+    const auto record = [&](StringView code, const Error* error = nullptr) noexcept {
         auto root = platform::utf16_to_utf8(project.root().generic_wstring());
         if (!root) {
             std::fputs("Source build diagnostic capture failed.\n", stderr);
             return;
         }
         logging::Entry entry{.severity = error ? logging::Severity::error : logging::Severity::info,
-                             .category = "source",
-                             .event_code = std::string(code),
-                             .message = error ? error->message : "Project Source build transition."};
+                             .category = "source"_s,
+                             .event_code = String::from_utf8_validated(code),
+                             .message = error ? error->message : "Project Source build transition."_s};
         entry.fields = {{"project_root", std::move(*root)},
-                        {"phase", std::string(phase)},
+                        {"phase", String::from_utf8_validated(phase)},
                         {"snapshot_version", next->sources ? next->sources->version : 0},
                         {"published_content_version", next->published_version}};
         if (request_sequence)
@@ -238,8 +248,9 @@ Result<void> ProjectCode::build(const Project& project) {
             if (auto cleared = world_.clear_faults(); !cleared)
                 return reject(cleared.error());
     }
-    next->published_version = next->ui_source ? source::content_hash(next->ui_source->source, next->sources->version)
-                                              : next->sources->version;
+    next->published_version =
+        next->ui_source ? source::content_hash(StringView{next->ui_source->source}, next->sources->version)
+                        : next->sources->version;
     phase = "ready";
     record("source.build_ready");
     published_ = next;
@@ -286,10 +297,10 @@ Result<void> ProjectCode::bind() {
             continue;
         world::World::Behavior behavior;
         for (const auto& method : program_->entries()) {
-            const auto prefix = type.name + ".";
+            const auto prefix = String::concat(type.name, ".");
             if (!method.name.starts_with(prefix))
                 continue;
-            const auto name = std::string_view(method.name).substr(prefix.size());
+            const auto name = method.name.view().slice(prefix.size());
             auto* tick = name == "tick"                ? &behavior.tick
                          : name == "post_physics_tick" ? &behavior.post_physics_tick
                          : name == "late_tick"         ? &behavior.late_tick
@@ -368,7 +379,7 @@ Result<void> ProjectCode::poll(const Project& project, bool force) {
     return build(project);
 }
 
-ProjectDocument load_project_scene(Project& project, std::string_view source, LoadPolicy policy,
+ProjectDocument load_project_scene(Project& project, StringView source, LoadPolicy policy,
                                    bool allow_failed_build, SessionRole role) {
     ProjectDocument result;
     auto document = Session::restore_scene(
@@ -405,47 +416,76 @@ ProjectDocument load_project_scene(Project& project, std::string_view source, Lo
     return result;
 }
 
-Result<std::string> describe_diagnostic(const Session& session, const world::Diagnostic& item) {
-    auto line = "Diagnostic [" + std::string(world::name(item.severity)) + "] " + std::string(world::name(item.kind)) +
-                " in " + std::string(world::name(item.phase));
+Result<String> describe_diagnostic(const Session& session, const world::Diagnostic& item) {
+    auto line = String::concat("Diagnostic [", String::validated(world::name(item.severity)), "] ",
+                               String::validated(world::name(item.kind)), " in ",
+                               String::validated(world::name(item.phase)));
     if (item.entity != ObjectId{}) {
         const auto label = session.name(item.entity);
+
         auto name = platform::utf16_to_utf8(label);
         if (!name)
             return fail("Invalid UTF-16 text.");
-        line += label.empty() ? " Entity" : " \"" + *name + "\"";
-    }
-    if (!item.type.empty())
-        line += " (" + item.type + ")";
-    for (std::size_t i = 0; i < item.field.size(); ++i)
-        line += (i ? "." : " ") + item.field[i];
-    line += ": " + item.message;
-    if (!item.value.empty())
-        line += " Value: " + item.value;
-    if (item.element) {
-        line += " [";
-        if (!item.element->layer.empty()) {
-            line += item.element->layer.view();
-            line += ' ';
+        if (label.empty()) {
+            line.append_literal<" Entity">();
+        } else {
+            line.append_literal<" \"">();
+            line += *name;
+            line.append_literal<"\"">();
         }
-        line += std::to_string(item.element->index) + "]";
     }
-    if (item.source)
-        line += " at " + item.source->path + ":" + std::to_string(item.source->line) + ":" +
-                std::to_string(item.source->column);
-    if (item.repeats > 1)
-        line += " (×" + std::to_string(item.repeats) + ")";
-    if (!StringView(line).is_valid_utf8())
-        return fail("Invalid UTF-8 text in World diagnostic.");
+    if (!item.type.empty()) {
+        line.append_literal<" (">();
+        line += item.type;
+        line.append_literal<")">();
+    }
+    for (std::size_t i = 0; i < item.field.size(); ++i) {
+        if (i)
+            line.append_literal<".">();
+        else
+            line.append_literal<" ">();
+        line += item.field[i];
+    }
+    line.append_literal<": ">();
+    line += item.message;
+    if (!item.value.empty()) {
+        line.append_literal<" Value: ">();
+        line += item.value;
+    }
+    if (item.element) {
+        line.append_literal<" [">();
+        if (!item.element->layer.empty()) {
+            if (!line.append(item.element->layer.view()))
+                return fail("Invalid UTF-8 text.");
+            line.append_literal<" ">();
+        }
+        line.append_number(item.element->index);
+        line.append_literal<"]">();
+    }
+    if (item.source) {
+        line.append_literal<" at ">();
+        line += item.source->path;
+        line.append_literal<":">();
+        line.append_number(item.source->line);
+        line.append_literal<":">();
+        line.append_number(item.source->column);
+    }
+    if (item.repeats > 1) {
+        line.append_literal<" (×">();
+        line.append_number(item.repeats);
+        line.append_literal<")">();
+    }
     return line;
 }
 
-std::string ProjectCode::component_source(std::string_view name) {
-    return "class project." + std::string(name) +
-           " : world.Component {\n    float speed = 1.0f;\n\n    void tick(float dt) {\n        self.translate_owner(self.speed * dt, 0.0f, 0.0f);\n    }\n}\n";
+String ProjectCode::component_source(StringView name) {
+    return String::concat(
+        "class project.", String::from_utf8(name).value_or(String{}),
+        " : world.Component {\n    float speed = 1.0f;\n\n    void tick(float dt) {\n        self.translate_owner(self.speed * dt, 0.0f, 0.0f);\n    }\n}\n");
 }
 
-std::string ProjectCode::ui_source() {
-    return "ui ProjectUI(in Text title, in double elapsed, in double entities) {\n    Column hud {\n        padding_left: 8; padding_top: 8; gap: 4;\n        Text title { text: input.title; }\n        Text hint { text: \"Edit this UI in your project.\"; }\n    }\n}\n";
+String ProjectCode::ui_source() {
+    return String::literal<
+        "ui ProjectUI(in Text title, in double elapsed, in double entities) {\n    Column hud {\n        padding_left: 8; padding_top: 8; gap: 4;\n        Text title { text: input.title; }\n        Text hint { text: \"Edit this UI in your project.\"; }\n    }\n}\n">();
 }
 }

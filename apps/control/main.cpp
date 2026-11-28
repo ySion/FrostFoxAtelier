@@ -1,5 +1,8 @@
 #include "memory/fatal.hpp"
 #include "control/control.hpp"
+#include "foundation/array.hpp"
+#include "foundation/span.hpp"
+#include "foundation/string.hpp"
 #include "platform/error.hpp"
 #include "platform/utf.hpp"
 #include "platform/windows_path.hpp"
@@ -9,12 +12,16 @@
 #include <cwctype>
 #include <fstream>
 #include <iostream>
+#include <string_view>
 #include <thread>
 
 namespace {
 using namespace atelier::control;
+
 namespace json = atelier::json;
+
 namespace platform = atelier::platform;
+
 using namespace std::chrono_literals;
 
 void output(json::Value value) {
@@ -37,7 +44,7 @@ std::expected<unsigned, Failure> timeout_ms(const wchar_t* input) {
     return static_cast<unsigned>(value);
 }
 
-std::expected<std::string, Failure> read_request(const std::filesystem::path& path) {
+std::expected<atelier::Array<char>, Failure> read_request(const std::filesystem::path& path) {
     std::ifstream file;
     std::istream* input = &std::cin;
     if (path != L"-") {
@@ -49,13 +56,13 @@ std::expected<std::string, Failure> read_request(const std::filesystem::path& pa
             return std::unexpected(Failure("storage_error", "Cannot open request file"));
         input = &file;
     }
-    std::string bytes;
+    atelier::Array<char> bytes;
     char buffer[4096];
     while (input->read(buffer, sizeof(buffer)) || input->gcount()) {
         const auto count = static_cast<std::size_t>(input->gcount());
         if (count > maximum_message - bytes.size())
             return std::unexpected(Failure("invalid_request", "Request exceeds its size limit"));
-        bytes.append(buffer, count);
+        bytes.append(atelier::Span<const char>{buffer, count});
     }
     if (input->bad() || !input->eof())
         return std::unexpected(Failure("storage_error", "Cannot read request input"));
@@ -66,7 +73,7 @@ std::expected<int, Failure> call(json::Value instance, const std::filesystem::pa
                                  std::chrono::milliseconds timeout) {
     ATELIER_TRY_BIND(bytes, read_request(path));
     ATELIER_TRY_BIND(client, Client::create(json::Document(instance), timeout));
-    ATELIER_TRY_BIND(request, parse(*bytes));
+    ATELIER_TRY_BIND(request, parse(atelier::StringView{bytes->data(), bytes->size()}));
     auto response = client->call(std::move(*request));
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     for (;;) {
@@ -91,7 +98,7 @@ std::expected<int, Failure> call(json::Value instance, const std::filesystem::pa
 
 std::expected<int, Failure> run(int argc, wchar_t** argv) {
     ATELIER_TRY_BIND(directory, default_directory());
-    std::string instance;
+    atelier::String instance;
     std::filesystem::path request_path;
     bool list{};
     std::chrono::milliseconds timeout = 120s;
@@ -152,9 +159,7 @@ int wmain(int argc, wchar_t** argv) {
     if (result)
         return *result;
     const auto& error = result.error();
-    auto report = atelier::control::failure(error.code, error.message);
-    if (!report)
-        report = atelier::control::failure("invalid_request", "Diagnostic contains invalid UTF-8");
-    output(report->root());
+    const auto report = atelier::control::failure(error.code, error.message);
+    output(report.root());
     return 1;
 }

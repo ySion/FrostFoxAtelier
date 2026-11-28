@@ -1,10 +1,10 @@
 #pragma once
 
 #include "foundation/span.hpp"
+#include "foundation/string.hpp"
 #include "physics/timing.hpp"
 #include "renderer/timing.hpp"
 #include "memory/fatal.hpp"
-#include <string>
 
 // CPU phases of one host step: Application::step in the editor and one loop of
 // the project runner in Play. Host phases sit directly under the frame; World,
@@ -51,7 +51,8 @@ inline void require_frame_timing() {
     for (const auto module : modules)
         for (const auto* marker : module)
             if (!marker->registered())
-                fatal("Frame timing is not installed: call install_frame_timing() at process start (missing " +
-                      std::string(marker->key()) + ").");
+                fatal(String::concat(
+                    "Frame timing is not installed: call install_frame_timing() at process start (missing ",
+                    String::validated(marker->key()), ")."));
 }
 }

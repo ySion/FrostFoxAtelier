@@ -2,9 +2,8 @@
 #include "renderer/renderer.hpp"
 #include "control/control.hpp"
 #include "foundation/optional.hpp"
+#include "foundation/string.hpp"
 #include <filesystem>
-#include <string>
-#include <string_view>
 
 namespace atelier::application {
 class Application;
@@ -14,11 +13,11 @@ class Application;
 class EditorControl final {
 public:
     struct ActiveJobInfo {
-        std::string id;
+        String id;
 
-        std::string_view kind;
+        StringView kind;
 
-        std::string_view phase;
+        StringView phase;
     };
 
     static std::expected<EditorControl, control::Failure> create(Application&, const std::filesystem::path&);
@@ -49,7 +48,7 @@ public:
 
     void rendered(const renderer::Frame&, const renderer::FrameResult&, renderer::Capture*);
 
-    void render_failed(std::string_view);
+    void render_failed(StringView);
 
 private:
     struct Impl;

@@ -3,17 +3,18 @@
 #include "editor/operator_parameters.hpp"
 #include "foundation/array.hpp"
 #include "foundation/span.hpp"
+#include "foundation/string.hpp"
 #include <algorithm>
 #include <cmath>
 
 namespace atelier::editor::detail {
-using FieldNames = Array<std::string>;
+using FieldNames = Array<String>;
 
-inline std::string dotted(Span<const std::string> path) {
-    std::string text;
+inline String dotted(Span<const String> path) {
+    String text;
     for (const auto& name : path) {
         if (!text.empty())
-            text += '.';
+            text.append_ascii('.');
         text += name;
     }
     return text;
@@ -26,11 +27,11 @@ struct ScalarField {
 
     TypeId type;
 
-    std::string label;
+    String label;
 
-    std::string category;
+    String category;
 
-    std::string description;
+    String description;
 
     ValueForm form{ValueForm::inline_value};
 
@@ -117,7 +118,7 @@ inline Result<Array<ScalarField>> author_fields(Runtime& runtime, TypeId type, b
                 child.range = field.range;
             for (const auto& entry : field.metadata) {
                 const auto at =
-                    std::ranges::find(child.metadata, entry.first, &std::pair<std::string, std::string>::first);
+                    std::ranges::find(child.metadata, entry.first, &std::pair<String, String>::first);
                 if (at != child.metadata.end())
                     at->second = entry.second;
                 else

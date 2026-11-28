@@ -5,6 +5,7 @@
 #include "foundation/array.hpp"
 #include "foundation/function_ref.hpp"
 #include "foundation/optional.hpp"
+#include "foundation/string.hpp"
 #include "runtime/runtime.hpp"
 #include <array>
 
@@ -77,7 +78,7 @@ public:
         operator_app_quit,
     };
 
-    static constexpr std::string_view quit_source_name(QuitSource source) noexcept {
+    static constexpr StringView quit_source_name(QuitSource source) noexcept {
         switch (source) {
         case QuitSource::none:
             return "none";

@@ -10,9 +10,9 @@
 namespace atelier::application {
 namespace {
 Error popup_error(const ui::Error& error) {
-    return {ErrorCode::invalid_definition, "Popup UI failure (code " + std::to_string(static_cast<int>(error.code)) +
-                                               ", key " + std::to_string(error.key) + ", native " +
-                                               std::to_string(error.native_code) + "). " + std::string(error.message)};
+    return {ErrorCode::invalid_definition,
+            String::concat("Popup UI failure (code ", static_cast<int>(error.code), ", key ", error.key, ", native ",
+                           error.native_code, "). ", String::validated(diagnostic_utf8(error.message)))};
 }
 
 Result<void> checked(ui::Result<ui::Reply> result) {
@@ -26,7 +26,7 @@ Result<void> checked(ui::Result<ui::Reply> result) {
 Result<void> checked(ui::Result<void> result) {
     if (!result) {
         auto error = ui_error(result.error());
-        error.message = "Popup UI rejected its style. " + error.message;
+        error.message = String::concat("Popup UI rejected its style. ", error.message);
         return std::unexpected(std::move(error));
     }
     return {};
@@ -39,15 +39,15 @@ void retain_failure(Result<void>& first, Result<void> next) {
         first = std::move(next);
     else
         static_cast<void>(logging::submit({.severity = logging::Severity::error,
-                                           .category = "menu",
-                                           .event_code = "menu.cleanup_failed",
+                                           .category = "menu"_s,
+                                           .event_code = "menu.cleanup_failed"_s,
                                            .message = std::move(next.error().message)}));
 }
 
 auto window_failure(const char* message) {
     const auto code = GetLastError();
     return std::unexpected(
-        Error{ErrorCode::invalid_storage, std::string(message) + " (Win32 " + std::to_string(code) + ")."});
+        Error{ErrorCode::invalid_storage, String::concat(String::validated(message), " (Win32 ", code, ").")});
 }
 }
 
@@ -66,8 +66,8 @@ Result<void> PopupHost::initialize(HWND owner, Span<const std::wstring> fonts, b
 Result<void> PopupHost::update(ui::ControlKey source, RECT anchor, bool below, Span<const ui::MenuItem> items,
                                const ui::Style& style, std::shared_ptr<const ui::StyleSheet> sheet,
                                std::shared_ptr<ui_language::Component> component, bool center_first_item) {
-    const auto reject = [&](std::string message) {
-        diagnostic_ = std::move(message);
+    const auto reject = [&](Utf8Text message) {
+        diagnostic_ = std::move(message).into_string();
         if (instance_)
             instance_->reject_controls();
         auto hidden = hide();
@@ -159,7 +159,7 @@ Result<void> PopupHost::update(ui::ControlKey source, RECT anchor, bool below, S
             const auto& cause = accepted ? *accepted->error : accepted.error();
             auto error = ui_error(cause);
             error.message =
-                "PopupMenu controls were rejected at key " + std::to_string(cause.key) + ": " + error.message;
+                String::concat("PopupMenu controls were rejected at key ", cause.key, ": ", error.message);
             Result<void> failed = std::unexpected(std::move(error));
             retain_failure(failed, reject(failed.error().message));
             return failed;
@@ -168,7 +168,7 @@ Result<void> PopupHost::update(ui::ControlKey source, RECT anchor, bool below, S
         if (!prepared) {
             auto error = ui_error(prepared.error());
             error.message =
-                "PopupMenu layout failed at key " + std::to_string(prepared.error().key) + ": " + error.message;
+                String::concat("PopupMenu layout failed at key ", prepared.error().key, ": ", error.message);
             Result<void> failed = std::unexpected(std::move(error));
             retain_failure(failed, reject(failed.error().message));
             return failed;

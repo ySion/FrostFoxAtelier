@@ -1,14 +1,13 @@
 #pragma once
 
 #include "foundation/function_ref.hpp"
+#include "foundation/string.hpp"
 #include "json/json.hpp"
 #include <atomic>
 #include <chrono>
 #include <expected>
 #include <filesystem>
 #include <memory>
-#include <string>
-#include <string_view>
 #include <utility>
 
 namespace atelier::control {
@@ -19,10 +18,12 @@ inline constexpr std::size_t maximum_message = 4 * 1024 * 1024;
 inline constexpr unsigned maximum_timeout_ms = 600000;
 
 struct Failure final {
-    std::string code;
-    std::string message;
+    String code;
 
-    Failure(std::string category, std::string diagnostic) : code(std::move(category)), message(std::move(diagnostic)) {}
+    String message;
+
+    Failure(Utf8Text category, Utf8Text diagnostic) noexcept
+        : code(std::move(category).into_string()), message(std::move(diagnostic).into_string()) {}
 
     Failure(const json::Error& error) : Failure("invalid_request", error.describe()) {}
 };
@@ -33,11 +34,11 @@ struct Peer final {
 
 std::expected<std::filesystem::path, Failure> default_directory();
 
-std::expected<std::string, Failure> unique_id();
+std::expected<String, Failure> unique_id();
 
-json::Result<json::Document> failure(std::string_view code, std::string_view message);
+json::Document failure(Utf8Text code, Utf8Text message);
 
-json::Result<json::Document> parse(std::string_view);
+json::Result<json::Document> parse(StringView);
 
 // Local transport owns no engine objects. poll() is called only by the host's
 // owner thread. The I/O worker never invokes the handler or retains its borrows.

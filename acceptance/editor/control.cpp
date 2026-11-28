@@ -30,43 +30,57 @@ using atelier::platform::utf8_to_utf16_validated;
 
 using namespace std::chrono_literals;
 
-auto fixture_failure(std::string_view message) {
-    return std::unexpected(Error{ErrorCode::invalid_definition, std::string(message)});
+String diagnostic_string(StringView message) {
+    return String::from_utf8(message).value_or("(non-UTF-8 bytes)"_s);
+}
+
+auto fixture_failure(String message) {
+    return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)});
+}
+
+auto fixture_failure(StringView message) {
+    return std::unexpected(Error{ErrorCode::invalid_definition, diagnostic_string(message)});
 }
 
 Error transport_error(const Failure& error) {
-    return {ErrorCode::invalid_storage, error.code + ": " + error.message};
+    return {ErrorCode::invalid_storage, String::concat(error.code, ": ", error.message)};
 }
 
 Error json_error(const json::Error& error) {
     return {ErrorCode::invalid_definition, error.describe()};
 }
 
-Result<std::string> read_bytes(const std::filesystem::path& path) {
-    return assets::read_file(path, std::string{}.max_size());
+Result<Array<std::byte>> read_bytes(const std::filesystem::path& path) {
+    return assets::read_file(path, static_cast<std::size_t>(PTRDIFF_MAX));
 }
 
-Result<void> write_bytes(const std::filesystem::path& path, std::string_view bytes) {
+Result<void> write_bytes(const std::filesystem::path& path, Span<const std::byte> bytes) {
+    return editor::write_file(path, bytes);
+}
+
+Result<void> write_bytes(const std::filesystem::path& path, StringView bytes) {
     return editor::write_file(path, bytes);
 }
 
 Result<void> write_bytes(const std::filesystem::path& path, const Array<char>& bytes) {
-    return editor::write_file(path, {bytes.data(), bytes.size()});
+    return editor::write_file(path, StringView{bytes.data(), bytes.size()});
 }
 
 Result<json::Document> read(const std::filesystem::path& path) {
     ATELIER_TRY_BIND(bytes, read_bytes(path));
-    return json::Document::parse(*bytes, {32, json::DepthPolicy::containers, true}).transform_error(json_error);
+    return json::Document::parse(as_chars(*bytes), {32, json::DepthPolicy::containers, true})
+        .transform_error(json_error);
 }
 
 std::wstring quote(const std::filesystem::path& path) {
     return L"\"" + path.wstring() + L"\"";
 }
 
-auto system_failure(std::string_view action, DWORD code = GetLastError()) {
+auto system_failure(StringView action, DWORD code = GetLastError()) {
     return std::unexpected(
         Error{ErrorCode::invalid_storage,
-              std::string(action) + ": " + platform::error_message(std::error_code(code, std::system_category()))});
+              String::concat(String::validated(action), ": ",
+                             platform::error_message(std::error_code(code, std::system_category())))});
 }
 
 struct CloseNative {
@@ -135,7 +149,7 @@ struct Process {
         if (!process || WaitForSingleObject(process.get(), 0) == WAIT_OBJECT_0)
             return;
         if (auto result = reap(); !result)
-            std::cerr << "Child cleanup also failed: " << result.error().message << '\n';
+            std::cerr << "Child cleanup also failed: " << result.error().message.c_str() << '\n';
     }
 
     HWND window() const {
@@ -163,10 +177,10 @@ struct Process {
         auto closed = close(operation ? 300s : 2s);
         if (!closed) {
             if (auto forced = reap(); !forced)
-                std::cerr << "Child termination also failed: " << forced.error().message << '\n';
+                std::cerr << "Child termination also failed: " << forced.error().message.c_str() << '\n';
             if (operation)
                 return closed;
-            std::cerr << "Smoke cleanup also failed: " << closed.error().message << '\n';
+            std::cerr << "Smoke cleanup also failed: " << closed.error().message.c_str() << '\n';
         }
         return operation;
     }
@@ -192,7 +206,7 @@ private:
         }
         ATELIER_TRY_BIND(code, wait(timeout));
         if (*code != 0)
-            return fixture_failure("Editor exited with code " + std::to_string(*code) + " (expected 0)");
+            return fixture_failure(String::concat("Editor exited with code ", *code, " (expected 0)"));
         return {};
     }
 };
@@ -207,8 +221,8 @@ Result<json::Document> run_cli(const std::filesystem::path& executable, const st
     ATELIER_TRY_BIND(code, child->wait(timeout, endpoint));
     if (*code != expected_exit) {
         const auto bytes = read_bytes(output);
-        return fixture_failure("CLI exited " + std::to_string(*code) + " instead of " + std::to_string(expected_exit) +
-                               ": " + (bytes ? *bytes : bytes.error().message));
+        const auto detail = bytes ? diagnostic_string(as_chars(*bytes)) : bytes.error().message;
+        return fixture_failure(String::concat("CLI exited ", *code, " instead of ", expected_exit, ": ", detail));
     }
     return read(output);
 }
@@ -222,8 +236,7 @@ auto while_polling(application::EditorControl& endpoint, Work work) {
     return reply.get();
 }
 
-Result<json::Document> control_request(std::string_view op, const json::Document& args, std::string_view token,
-                                       std::string_view id) {
+Result<json::Document> control_request(StringView op, const json::Document& args, StringView token, StringView id) {
     json::Builder request;
     ATELIER_TRY(request.set(request.root(), "op", op).transform_error(json_error));
     ATELIER_TRY(request.set(request.root(), "args", args.root()).transform_error(json_error));
@@ -236,7 +249,7 @@ Result<json::Document> control_request(std::string_view op, const json::Document
 struct Driver {
     Client client;
 
-    std::string token;
+    String token;
 
     json::Document descriptor;
 
@@ -245,22 +258,24 @@ struct Driver {
         return Driver{std::move(*client), {}, std::move(instance)};
     }
 
-    Result<json::Document> call(std::string op, const json::Document& args = {}, std::string id = {}) {
+    Result<json::Document> call(StringView op, const json::Document& args = {}, StringView id = {}) {
         const auto operator_id = args.root().string({"id"});
-        const auto name = op == "op.call" && operator_id ? op + " " + std::string{*operator_id} : op;
+        const auto name = op == "op.call" && operator_id
+                              ? String::concat(String::validated(op), " ", String::validated(*operator_id))
+                              : String::from_utf8_validated(op);
         ATELIER_TRY_BIND(request, control_request(op, args, token, id));
         ATELIER_TRY_BIND(result, client.call(std::move(*request)).transform_error(transport_error));
         if (result->root().string({"status"}) == "error")
-            std::cerr << "Control request failed: " << name << '\n';
+            std::cerr << "Control request failed: " << name.c_str() << '\n';
         if (auto value = result->root().string({"state_token"}))
-            token = *value;
+            token = String::from_utf8_validated(*value);
         return std::move(*result);
     }
 
-    Result<json::Document> run_job(const std::string& op, const std::string& id) {
+    Result<json::Document> run_job(StringView op, StringView id) {
         ATELIER_TRY_BIND(pending, call(op, {}, id));
         if (pending->root().string({"status"}) != "pending" || pending->root().string({"job_id"}) != id)
-            return fixture_failure(op + " did not start under its request ID");
+            return fixture_failure(String::concat(String::validated(op), " did not start under its request ID"));
         json::Builder query;
         query.set_validated(query.root(), "job_id", id);
         const auto args = query.finish();
@@ -268,23 +283,21 @@ struct Driver {
         do {
             ATELIER_TRY_BIND(result, call("job.status", args));
             if (result->root().string({"job_id"}) != id)
-                return fixture_failure(op + " status lost its job ID");
+                return fixture_failure(String::concat(String::validated(op), " status lost its job ID"));
             if (result->root().string({"status"}) != "pending")
                 return result;
             std::this_thread::sleep_for(30ms);
         } while (std::chrono::steady_clock::now() < deadline);
-        return fixture_failure(op + " job did not finish");
+        return fixture_failure(String::concat(String::validated(op), " job did not finish"));
     }
 
-    Result<json::Document> ok(std::string op, const json::Document& args = {}) {
-        return success(call(std::move(op), args));
-    }
+    Result<json::Document> ok(StringView op, const json::Document& args = {}) { return success(call(op, args)); }
 
     static Result<json::Document> success(Result<json::Document> reply) {
         ATELIER_TRY(reply);
         if (reply->root().string({"status"}) != "ok") {
             const auto bytes = json::write(reply->root());
-            return fixture_failure({bytes.data(), bytes.size()});
+            return fixture_failure(StringView{bytes.data(), bytes.size()});
         }
         ATELIER_TRY_BIND(result, reply->root().at("result").transform_error(json_error));
         return json::Document{*result};
@@ -298,7 +311,7 @@ struct Driver {
         const auto deadline = std::chrono::steady_clock::now() + 125s;
         ATELIER_TRY_BIND(state, inspect());
 
-        std::string before = token;
+        String before = token;
         unsigned stable{};
         while (stable < 5 && std::chrono::steady_clock::now() < deadline) {
             before = token;
@@ -311,19 +324,19 @@ struct Driver {
             const auto accepted = state->root().u64({"accepted_frames"}).value_or(0);
             const auto frame_fields = state->root().at("last_frame")->size();
             const auto busy = state->root().boolean({"busy"}).value_or(false);
-            return fixture_failure(
-                "Editor accepted frame did not arrive with a stable state token within 125s (before=" + before +
-                ", token=" + token + ", accepted_frames=" + std::to_string(accepted) +
-                ", last_frame_fields=" + std::to_string(frame_fields) + ", busy=" + (busy ? "true" : "false") + ")");
+            return fixture_failure(String::concat(
+                "Editor accepted frame did not arrive with a stable state token within 125s (before=", before,
+                ", token=", token, ", accepted_frames=", accepted, ", last_frame_fields=", frame_fields,
+                ", busy=", busy, ")"));
         }
         return state;
     }
 
-    Result<json::Document> op(std::string id, const json::Document& args = {}, const json::Document& context = {}) {
-        return success(try_op(std::move(id), args, context));
+    Result<json::Document> op(StringView id, const json::Document& args = {}, const json::Document& context = {}) {
+        return success(try_op(id, args, context));
     }
 
-    Result<json::Document> try_op(std::string id, const json::Document& args, const json::Document& context = {}) {
+    Result<json::Document> try_op(StringView id, const json::Document& args, const json::Document& context = {}) {
         json::Builder request;
         ATELIER_TRY(request.set(request.root(), "id", id).transform_error(json_error));
         ATELIER_TRY(request.set(request.root(), "args", args.root()).transform_error(json_error));
@@ -349,7 +362,7 @@ Result<json::Document> discover_editor(const Process& editor, const std::filesys
 struct SmokeLog {
     std::filesystem::path directory;
 
-    std::string directory_text;
+    String directory_text;
 
     std::unique_ptr<atelier::logging::Reader> reader;
 
@@ -367,11 +380,13 @@ struct SmokeLog {
         return SmokeLog{path, *text, std::move(*reader), {}, {}};
     }
 
-    Result<void> check(bool value, std::string_view message) const {
+    Result<void> check(bool value, StringView message) const {
         if (!value)
-            return fixture_failure(directory_text + ": " + std::string(message));
+            return fixture_failure(String::concat(directory_text, ": ", diagnostic_string(message)));
         return {};
     }
+
+    Result<void> check(bool value, const String& message) const { return check(value, message.view()); }
 
     Result<void> poll(bool failed_command = false) {
         latest = reader->poll();
@@ -380,10 +395,11 @@ struct SmokeLog {
             const bool expected =
                 failed_command && (event == "application.failed" || event == "application.failure_preserved" ||
                                    event == "recovery.failed");
-            ATELIER_TRY(check(expected || record.entry.severity < atelier::logging::Severity::error,
-                              "run=" + record.run_id + " pid=" + std::to_string(record.process_id) +
-                                  " record=" + std::to_string(record.record_sequence) + " " + record.entry.event_code +
-                                  ": " + record.entry.message));
+            ATELIER_TRY(
+                check(expected || record.entry.severity < atelier::logging::Severity::error,
+                      String::concat("run=", record.run_id, " pid=", record.process_id,
+                                     " record=", record.record_sequence, " ", record.entry.event_code, ": ",
+                                     record.entry.message)));
             records.add(std::move(record));
         }
         latest.records.clear();
@@ -391,21 +407,21 @@ struct SmokeLog {
         return {};
     }
 
-    std::size_t count(std::string_view code) const {
+    std::size_t count(StringView code) const {
         return std::ranges::count_if(records, [&](const auto& record) { return record.entry.event_code == code; });
     }
 
-    Result<const atelier::logging::Record*> one(std::string_view code) const {
+    Result<const atelier::logging::Record*> one(StringView code) const {
         const atelier::logging::Record* found{};
         for (const auto& record : records) {
             if (record.entry.event_code != code)
                 continue;
             if (found)
-                return fixture_failure(directory_text + ": Expected exactly one " + std::string(code));
+                return fixture_failure(String::concat(directory_text, ": Expected exactly one ", String::validated(code)));
             found = &record;
         }
         if (!found)
-            return fixture_failure(directory_text + ": Missing " + std::string(code));
+            return fixture_failure(String::concat(directory_text, ": Missing ", String::validated(code)));
         return found;
     }
 
@@ -424,8 +440,8 @@ struct SmokeLog {
             const auto text = platform::utf16_to_utf8(status.latest_issue->file.native());
             if (!text)
                 return fixture_failure("Invalid UTF-16 log issue path");
-            ATELIER_TRY(check(false, *text + ":" + std::to_string(status.latest_issue->offset) + " " +
-                                         status.latest_issue->message));
+            ATELIER_TRY(check(false, String::concat(*text, ":", status.latest_issue->offset, " ",
+                                                    status.latest_issue->message)));
         }
         ATELIER_TRY(check(latest.run && status.finished && status.has_final_summary && !status.incomplete &&
                               !status.waiting_for_run && !status.partial_line && !status.unquantified_loss &&
@@ -452,13 +468,14 @@ struct SmokeLog {
 };
 
 template <class T>
-Result<T> smoke_field(const atelier::logging::Record& record, std::string_view key) {
+Result<T> smoke_field(const atelier::logging::Record& record, StringView key) {
     for (const auto& field : record.entry.fields)
         if (field.key == key)
             if (const auto* value = std::get_if<T>(&field.value))
                 return *value;
-    return fixture_failure("run=" + record.run_id + " record=" + std::to_string(record.record_sequence) + " " +
-                           record.entry.event_code + ": missing or mistyped field " + std::string(key));
+    return fixture_failure(String::concat("run=", record.run_id, " record=", record.record_sequence, " ",
+                                          record.entry.event_code, ": missing or mistyped field ",
+                                          String::validated(key)));
 }
 
 // Drive the same executable, host logging, WIC writer and scene recovery used by a real command.
@@ -505,11 +522,11 @@ Result<void> verify_host_failures(const std::filesystem::path& executable, const
     const auto& cause = (*application_failed_record)->entry.message;
     ATELIER_TRY_BIND(saved_result, dirty->one("recovery.saved"));
     const auto& saved = **saved_result;
-    ATELIER_TRY_BIND(reason_field, smoke_field<std::string>(saved, "reason"));
+    ATELIER_TRY_BIND(reason_field, smoke_field<String>(saved, "reason"));
     if (!cause.starts_with("PNG encoding failed: ") || *reason_field != cause)
         return fixture_failure("The snapshot lost the WIC failure before recovery.");
-    ATELIER_TRY_BIND(recovery_scene_field, smoke_field<std::string>(saved, "recovery_scene"));
-    ATELIER_TRY_BIND(host_scene, smoke_field<std::string>(**application_failed_record, "recovery_scene"));
+    ATELIER_TRY_BIND(recovery_scene_field, smoke_field<String>(saved, "recovery_scene"));
+    ATELIER_TRY_BIND(host_scene, smoke_field<String>(**application_failed_record, "recovery_scene"));
     if (*host_scene != *recovery_scene_field)
         return fixture_failure("The host failure identified a different recovery scene.");
     const auto scene = std::filesystem::path(utf8_to_utf16_validated(*recovery_scene_field));
@@ -517,7 +534,8 @@ Result<void> verify_host_failures(const std::filesystem::path& executable, const
     if (metadata->root().string({"reason"}) != cause || metadata->root().string({"scene"}) != "Scene.scene")
         return fixture_failure("Recovery metadata lost the original snapshot failure.");
     ATELIER_TRY_BIND(bytes, read_bytes(scene));
-    ATELIER_TRY_BIND(recovered, editor::Session::deserialize(*bytes, *project, {}, editor::LoadPolicy::strict));
+    ATELIER_TRY_BIND(
+        recovered, editor::Session::deserialize(as_chars(*bytes), *project, {}, editor::LoadPolicy::strict));
     ATELIER_TRY_BIND(members, (*recovered)->world().members());
 
     if (members->size() != 1)
@@ -530,13 +548,13 @@ Result<void> verify_host_failures(const std::filesystem::path& executable, const
     // A second failure while saving recovery must leave the WIC error as the host's first error.
     const auto blocked = root / "BlockedAppData";
     ATELIER_TRY(acceptance::create_directories(blocked / "FrostFoxAtelier"));
-    ATELIER_TRY(write_bytes(blocked / "FrostFoxAtelier/Recovery", std::string_view{"occupied"}));
+    ATELIER_TRY(write_bytes(blocked / "FrostFoxAtelier/Recovery", StringView{"occupied"}));
     if (!SetEnvironmentVariableW(L"LOCALAPPDATA", blocked.c_str()))
         return fixture_failure("Cannot select blocked recovery storage.");
     ATELIER_TRY_BIND(lost, run(L"RecoveryFailure", snapshot));
     ATELIER_TRY_BIND(recovery_failure, lost->one("application.failed"));
     ATELIER_TRY_BIND(recovery_failed_record, lost->one("recovery.failed"));
-    ATELIER_TRY_BIND(retry_reason, smoke_field<std::string>(**recovery_failed_record, "reason"));
+    ATELIER_TRY_BIND(retry_reason, smoke_field<String>(**recovery_failed_record, "reason"));
     if ((*recovery_failure)->entry.message != cause || *retry_reason != cause || lost->count("recovery.saved"))
         return fixture_failure("Recovery I/O replaced the original snapshot error.");
 
@@ -550,7 +568,7 @@ Result<void> verify_host_failures(const std::filesystem::path& executable, const
         ATELIER_TRY_BIND(log, run(name, args + option + L" " + quote(output)));
         ATELIER_TRY_BIND(application_failed_record, log->one("application.failed"));
         ATELIER_TRY_BIND(recovery_not_needed_record, log->one("recovery.not_needed"));
-        ATELIER_TRY_BIND(reason_field, smoke_field<std::string>(**recovery_not_needed_record, "reason"));
+        ATELIER_TRY_BIND(reason_field, smoke_field<String>(**recovery_not_needed_record, "reason"));
         if ((*application_failed_record)->entry.message != expected.error().message ||
             *reason_field != expected.error().message)
             return fixture_failure("The profile lost its output error or saved a clean scene.");
@@ -560,10 +578,10 @@ Result<void> verify_host_failures(const std::filesystem::path& executable, const
     ATELIER_TRY(acceptance::create_directory(output / "render-performance.json"));
     ATELIER_TRY(reject_profile(L"RenderProfile", L"--profile-render-performance", L"render-performance.json",
                                editor::WriteMode::replace));
-    ATELIER_TRY(write_bytes(output / "editor.ui.source", std::string_view{"keep"}));
+    ATELIER_TRY(write_bytes(output / "editor.ui.source", StringView{"keep"}));
     ATELIER_TRY(reject_profile(L"UiProfile", L"--profile-ui-reload", L"editor.ui.source", editor::WriteMode::create));
     ATELIER_TRY_BIND(retained_source, read_bytes(output / "editor.ui.source"));
-    if (*retained_source != "keep")
+    if (as_chars(*retained_source) != "keep")
         return fixture_failure("Rejected profile replaced the existing UI source.");
 
     return {};
@@ -573,7 +591,7 @@ Result<void> verify_smoke_logs(SmokeLog& parent, SmokeLog& child) {
     ATELIER_TRY(parent.finish());
     ATELIER_TRY_BIND(closing_result, parent.one("application.closing"));
     const auto& closing = **closing_result;
-    ATELIER_TRY_BIND(quit_source_field, smoke_field<std::string>(closing, "quit_source"));
+    ATELIER_TRY_BIND(quit_source_field, smoke_field<String>(closing, "quit_source"));
     ATELIER_TRY_BIND(play_running_field, smoke_field<bool>(closing, "play_running"));
     ATELIER_TRY(parent.check(*quit_source_field == "wm_close" && *play_running_field,
                              "application.closing did not record wm_close with play_running=true"));
@@ -634,12 +652,11 @@ struct ControlCli {
 
     const std::filesystem::path& directory;
 
-    std::string instance;
+    String instance;
 
-    std::string token;
+    String token;
 
-    Result<json::Document> call(std::string_view op, DWORD exit_code, const json::Document& args = {},
-                                std::string_view id = {}) {
+    Result<json::Document> call(StringView op, DWORD exit_code, const json::Document& args = {}, StringView id = {}) {
         const auto path = directory / "cli-request.json";
         ATELIER_TRY_BIND(request, control_request(op, args, token, id));
         ATELIER_TRY(write_bytes(path, json::write(request->root())));
@@ -650,12 +667,13 @@ struct ControlCli {
         const auto state = reply->root().string({"state_token"});
         if (reply->root().string({"instance_id"}) != instance || !state ||
             reply->root().string({"status"}) != (exit_code ? "error" : "ok"))
-            return fixture_failure("Expected a terminal response from the editor for " + std::string(op));
-        token = *state;
+            return fixture_failure(
+                String::concat("Expected a terminal response from the editor for ", String::validated(op)));
+        token = String::from_utf8_validated(*state);
         return reply;
     }
 
-    Result<json::Document> job(std::string_view op, const std::string& id, DWORD exit_code) {
+    Result<json::Document> job(StringView op, StringView id, DWORD exit_code) {
         ATELIER_TRY_BIND(reply, call(op, exit_code, {}, id));
         const auto poll_id = reply->root().string({"request_id"});
         const auto field = exit_code ? "error" : "result";
@@ -665,13 +683,14 @@ struct ControlCli {
         json::Builder query;
         query.set_validated(query.root(), "job_id", id);
         const auto args = query.finish();
-        const auto confirm = [&](const std::string& method) -> Result<void> {
-            const auto request_id = id + "-" + method;
+        const auto confirm = [&](StringView method) -> Result<void> {
+            const auto request_id = String::concat(String::validated(id), "-", String::validated(method));
             ATELIER_TRY_BIND(retained, call(method, exit_code, args, request_id));
             const auto payload = retained->root().at(field);
             if (retained->root().string({"request_id"}) != request_id || retained->root().string({"job_id"}) != id ||
                 !payload || *payload != *outcome)
-                return fixture_failure("Completed writer did not retain its first outcome on " + method);
+                return fixture_failure(String::concat("Completed writer did not retain its first outcome on ",
+                                                      String::validated(method)));
 
             return {};
         };
@@ -690,7 +709,7 @@ Result<void> verify_capture(ControlCli& cli) {
         invalid->root().string({"error", "message"}) != "Sample ordinals must increase strictly")
         return fixture_failure("Capture validation lost its first error");
 
-    const auto artifacts = cli.directory / "artifacts" / cli.instance;
+    const auto artifacts = cli.directory / "artifacts" / utf8_to_utf16_validated(cli.instance);
     ATELIER_TRY_BIND(removed, acceptance::remove_file(artifacts));
     if (!*removed)
         return fixture_failure("Expected a fresh empty instance artifact directory");
@@ -700,11 +719,12 @@ Result<void> verify_capture(ControlCli& cli) {
     std::filesystem::create_directory(artifacts / "probe", cause);
     if (!cause)
         return fixture_failure("Expected the filesystem to reject a child of a regular file");
-    for (const auto op : {std::string_view{"render.capture"}, std::string_view{"repro.export"}}) {
-        ATELIER_TRY_BIND(failed, cli.job(op, std::string(op) + "-write-failure", 1));
+    for (const auto op : {StringView{"render.capture"}, StringView{"repro.export"}}) {
+        const auto job_id = String::concat(String::validated(op), "-write-failure");
+        ATELIER_TRY_BIND(failed, cli.job(op, job_id, 1));
         if (failed->root().string({"error", "code"}) != "storage_error" ||
             failed->root().string({"error", "message"}) != platform::error_message(cause))
-            return fixture_failure("Writer lost the filesystem error for " + std::string(op));
+            return fixture_failure(String::concat("Writer lost the filesystem error for ", String::validated(op)));
     }
 
     ATELIER_TRY_BIND(obstruction_removed, acceptance::remove_file(artifacts));
@@ -739,7 +759,7 @@ Result<void> verify_capture(ControlCli& cli) {
     std::ifstream color(path.parent_path() / "sample-1.png", std::ios::binary);
     char signature[8];
     if (!color.read(signature, sizeof(signature)) ||
-        std::string_view(signature, sizeof(signature)) != "\x89PNG\r\n\x1a\n" || !width || !height)
+        StringView{signature, sizeof(signature)} != "\x89PNG\r\n\x1a\n" || !width || !height)
         return fixture_failure("Capture PNG or extent does not match the manifest");
     ATELIER_TRY_BIND(depth_bytes, acceptance::file_operation([&](auto& error) {
                          return std::filesystem::file_size(path.parent_path() / "sample-1.depth.f32", error);
@@ -764,7 +784,7 @@ Result<void> verify_repro(ControlCli& cli, const std::filesystem::path& project)
     if (!*removed)
         return fixture_failure("Could not remove the oversized input");
 
-    const auto artifacts = cli.directory / "artifacts" / cli.instance;
+    const auto artifacts = cli.directory / "artifacts" / utf8_to_utf16_validated(cli.instance);
     std::filesystem::path partial;
     std::error_code scan_error;
     for (std::filesystem::directory_iterator entry(artifacts, scan_error), end; !scan_error && entry != end;
@@ -860,13 +880,14 @@ Result<void> verify_repro(ControlCli& cli, const std::filesystem::path& project)
     auto restored = acceptance::file_operation([&](auto& error) { std::filesystem::rename(held, source, error); });
     if (!missing) {
         if (!restored)
-            std::cerr << "Identity cleanup also failed: " << restored.error().message << '\n';
+            std::cerr << "Identity cleanup also failed: " << restored.error().message.c_str() << '\n';
         return std::unexpected(std::move(missing).error());
     }
     ATELIER_TRY(restored);
     if (missing->root().string({"status"}) != "error" ||
         missing->root().string({"error", "code"}) != "dependency_mismatch" ||
-        missing->root().string({"error", "message"}) != "Asset identity file is missing: project/" + std::string(*id))
+        missing->root().string({"error", "message"}) !=
+            String::concat("Asset identity file is missing: project/", String::validated(*id)))
         return fixture_failure("Snapshot did not return the missing asset's identity before launching the writer");
     ATELIER_TRY_BIND(unstarted,
                      cli.call("job.status", 1, json::Document::literal<R"({"job_id":"export-missing-identity"})">()));
@@ -883,14 +904,13 @@ json::Document object_query(json::Value row) {
     return query.finish();
 }
 
-Result<void> require_control_error(const Result<json::Document>& received, std::string_view code,
-                                   std::string_view message) {
+Result<void> require_control_error(const Result<json::Document>& received, StringView code, StringView message) {
     ATELIER_TRY(received);
     const auto& reply = *received;
     if (reply.root().string({"status"}) != "error" || reply.root().string({"error", "code"}) != code ||
         reply.root().string({"error", "message"}) != message || *reply.root().find("result")) {
         const auto bytes = json::write(reply.root());
-        return fixture_failure({bytes.data(), bytes.size()});
+        return fixture_failure(StringView{bytes.data(), bytes.size()});
     }
     return {};
 }
@@ -928,14 +948,13 @@ Result<json::Document> verify_inspection_pages(Driver& driver, const std::filesy
             ++mesh_types;
     if (mesh_types != 1)
         return fixture_failure("Component type directory must list the mesh component type once");
-    const auto args = [](std::string_view detail, json::Value cursor) {
+    const auto args = [](StringView detail, json::Value cursor) {
         json::Builder query;
         query.set_validated(query.root(), "detail", detail);
         query.set_validated(query.root(), "cursor", cursor);
         return query;
     };
-    const auto reject = [&](const json::Builder& query, std::string_view code,
-                            std::string_view message) -> Result<void> {
+    const auto reject = [&](const json::Builder& query, StringView code, StringView message) -> Result<void> {
         return require_control_error(driver.call("editor.inspect", query.finish()), code, message);
     };
     json::Builder objects(json::Kind::array);
@@ -955,7 +974,7 @@ Result<json::Document> verify_inspection_pages(Driver& driver, const std::filesy
         for (const auto component : components)
             add(component, true);
     }
-    const auto walk = [&](std::string_view detail, json::Value expected) -> Result<json::Document> {
+    const auto walk = [&](StringView detail, json::Value expected) -> Result<json::Document> {
         json::Builder query;
         query.set_validated(query.root(), "detail", detail);
         if (!query.set(query.root(), "limit", 1u))
@@ -994,7 +1013,7 @@ Result<json::Document> verify_inspection_pages(Driver& driver, const std::filesy
     ATELIER_TRY(
         reject(args("assets", positions->root()), "invalid_request", "Unexpected object members at /args/cursor"));
 
-    const std::string filter_name{*root_entity.string({"name"})};
+    const auto filter_name = String::from_utf8_validated(*root_entity.string({"name"}));
     json::Builder filtered;
     filtered.set_validated(filtered.root(), "detail", "objects");
     filtered.set_validated(filtered.root(), "entity_name", filter_name);
@@ -1027,7 +1046,8 @@ Result<json::Document> verify_inspection_pages(Driver& driver, const std::filesy
     }
     if (!second->root().at("next_cursor")->is_null())
         return fixture_failure("Filtered page advertised a nonmatching continuation");
-    resume.set_validated(resume.root(), "entity_name", filter_name + "-other");
+    const auto other_name = String::concat(filter_name, "-other");
+    resume.set_validated(resume.root(), "entity_name", other_name);
     ATELIER_TRY(reject(resume, "invalid_request", "A pagination cursor cannot change its filters"));
 
     auto bad_asset = args("assets", assets->root());
@@ -1099,7 +1119,7 @@ Result<json::Document> verify_inspection_pages(Driver& driver, const std::filesy
 }
 
 Result<void> verify_repro_open(Driver& driver, const std::filesystem::path& examples) {
-    const auto path_args = [](std::string_view field, const std::filesystem::path& path) -> Result<json::Document> {
+    const auto path_args = [](StringView field, const std::filesystem::path& path) -> Result<json::Document> {
         const auto name = platform::utf16_to_utf8(path.generic_wstring());
         if (!name)
             return fixture_failure("Invalid repro fixture path");
@@ -1129,18 +1149,19 @@ Result<void> verify_repro_open(Driver& driver, const std::filesystem::path& exam
     ATELIER_TRY_BIND(original, read_bytes(scene));
     ATELIER_TRY_BIND(frozen, read(scene));
 
-    const auto reject = [&](std::string_view code, std::string_view message) -> Result<void> {
+    const auto reject = [&](StringView code, StringView message) -> Result<void> {
         ATELIER_TRY_BIND(reply, driver.call("repro.open", *args));
         const auto encoded = json::write(reply->root());
         if (reply->root().string({"status"}) != "error" || reply->root().string({"error", "code"}) != code ||
             reply->root().string({"error", "message"}) != message)
-            return fixture_failure({encoded.data(), encoded.size()});
+            return fixture_failure(StringView{encoded.data(), encoded.size()});
         ATELIER_TRY_BIND(after, driver.inspect());
 
         for (const auto field : {"project", "scene_path", "entities", "selection", "inspected_object", "dirty", "undo",
                                  "redo", "camera", "view"}) {
             if (*before->root().at(field) != *after->root().at(field))
-                return fixture_failure(std::string("Rejected repro changed current ") + field);
+                return fixture_failure(
+                    String::concat("Rejected repro changed current ", String::validated(StringView{field})));
         }
 
         return {};
@@ -1148,10 +1169,10 @@ Result<void> verify_repro_open(Driver& driver, const std::filesystem::path& exam
 
     // Same length and still valid JSON: only the stored digest distinguishes the modified file.
     auto modified = *original;
-    const auto space = modified.find_first_of(" \n\r\t");
-    if (space == modified.npos)
+    const auto space = as_chars(modified).find_first_of(" \n\r\t");
+    if (space == StringView::npos)
         return fixture_failure("Expected whitespace in the exported scene");
-    modified[space] = modified[space] == ' ' ? '\t' : ' ';
+    modified[space] = modified[space] == std::byte{' '} ? std::byte{'\t'} : std::byte{' '};
     ATELIER_TRY(write_bytes(scene, modified));
     ATELIER_TRY(reject("dependency_mismatch", "Repro bundle file set or content changed"));
 
@@ -1165,7 +1186,7 @@ Result<void> verify_repro_open(Driver& driver, const std::filesystem::path& exam
     const auto bytes = json::write(broken.root());
     ATELIER_TRY(write_bytes(scene, bytes));
     json::Builder listing{*manifest};
-    const auto file_path = "Project/" + std::string(scene_name);
+    const auto file_path = String::concat("Project/", String::validated(scene_name));
     bool updated{};
     for (const auto file : *listing.root().at("files")->array())
         if (file.string({"path"}) == file_path) {
@@ -1178,7 +1199,8 @@ Result<void> verify_repro_open(Driver& driver, const std::filesystem::path& exam
     if (!updated)
         return fixture_failure("Exported scene is absent from the manifest file list");
     ATELIER_TRY(write_bytes(marker, json::write(listing.root())));
-    ATELIER_TRY(reject("operation_failed", "Duplicate graph object identity: " + std::string(id)));
+    const auto dup_msg = String::concat("Duplicate graph object identity: ", String::validated(id));
+    ATELIER_TRY(reject("operation_failed", dup_msg));
 
     // A well-formed, loadable scene may still fail admission at selection restoration.
     ATELIER_TRY(write_bytes(scene, *original));
@@ -1202,8 +1224,9 @@ Result<void> verify_repro_open(Driver& driver, const std::filesystem::path& exam
     if (!omitted.array(engine, "records"))
         return fixture_failure("Could not clear the declared engine dependencies");
     ATELIER_TRY(write_bytes(marker, json::write(omitted.root())));
-    ATELIER_TRY(
-        reject("dependency_mismatch", "Repro omits or changes an actual engine dependency: " + std::string(first_key)));
+    const auto omit_msg =
+        String::concat("Repro omits or changes an actual engine dependency: ", String::validated(first_key));
+    ATELIER_TRY(reject("dependency_mismatch", omit_msg));
 
     ATELIER_TRY(write_bytes(marker, json::write(manifest->root())));
     ATELIER_TRY(driver.ok("editor.inspect", *old_component));
@@ -1232,13 +1255,12 @@ Result<void> verify_repro_open(Driver& driver, const std::filesystem::path& exam
 }
 
 template <class T>
-Result<void> require_transport_error(const std::expected<T, Failure>& result, std::string_view code,
-                                     std::string_view message) {
+Result<void> require_transport_error(const std::expected<T, Failure>& result, StringView code, StringView message) {
     if (result)
-        return fixture_failure("Expected Control transport failure: " + std::string(code));
+        return fixture_failure(String::concat("Expected Control transport failure: ", String::validated(code)));
     const auto& error = result.error();
     if (error.code != code || error.message != message)
-        return fixture_failure(error.code + ": " + error.message);
+        return fixture_failure(String::concat(error.code, ": ", error.message));
 
     return {};
 }
@@ -1264,19 +1286,22 @@ Result<void> verify_cli(const std::filesystem::path& exe, const std::filesystem:
                                       "Timeout must be between 1 and 600000 ms"));
     ATELIER_TRY(require_control_error(cli(from_file, 1), "storage_error", "Cannot open request file"));
 
-    const std::string malformed = "{";
+    constexpr StringView malformed = "{";
     ATELIER_TRY(write_bytes(path, malformed));
     const auto parsed = parse(malformed);
     if (parsed)
         return fixture_failure("Expected malformed CLI request fixture");
-    ATELIER_TRY(require_control_error(cli(from_file, 1), "invalid_request", parsed.error().describe()));
+    const auto malformed_desc = parsed.error().describe();
+    ATELIER_TRY(require_control_error(cli(from_file, 1), "invalid_request", malformed_desc));
     {
         auto occupying = Client::create(instance, 5s);
         if (!occupying)
             return std::unexpected(transport_error(occupying.error()));
         ATELIER_TRY(require_control_error(cli(from_file + L" --timeout-ms 75", 1), "busy",
                                           "Editor control endpoint is busy or unavailable"));
-        ATELIER_TRY(write_bytes(path, std::string(maximum_message + 1, ' ')));
+        String spaces;
+        spaces.append_ascii(' ', maximum_message + 1);
+        ATELIER_TRY(write_bytes(path, spaces));
         ATELIER_TRY(require_control_error(cli(from_file + L" --timeout-ms 75", 1), "invalid_request",
                                           "Request exceeds its size limit"));
     }
@@ -1328,9 +1353,9 @@ Result<void> verify_cli(const std::filesystem::path& exe, const std::filesystem:
         return fixture_failure("CLI could not reset the initial layout");
 
     // Consume real dock node identities on a persistent client; the final rejection goes through the CLI.
-    auto fill = while_polling(endpoint, [&]() -> Result<std::string> {
+    auto fill = while_polling(endpoint, [&]() -> Result<String> {
         ATELIER_TRY_BIND(driver, Driver::connect(instance));
-        driver->token = *initial->root().string({"state_token"});
+        driver->token = String::from_utf8_validated(*initial->root().string({"state_token"}));
         for (unsigned i = 0; i < 65536; ++i) {
             ATELIER_TRY_BIND(reply, driver->try_op("layout.reset", {}));
             if (reply->root().string({"status"}) == "ok")
@@ -1525,8 +1550,8 @@ Result<void> verify_inspect_read_errors(const std::filesystem::path& directory, 
         const auto parsed = parse({bytes.data(), bytes.size()});
         if (parsed || parsed.error().fault != json::Fault::depth)
             return fixture_failure("Expected a request beyond the Control nesting limit");
-        ATELIER_TRY(
-            require_transport_error(client->call(nested.finish()), "invalid_request", parsed.error().describe()));
+        const auto depth_desc = parsed.error().describe();
+        ATELIER_TRY(require_transport_error(client->call(nested.finish()), "invalid_request", depth_desc));
     }
     auto stalled = Client::create(instance, 250ms);
     if (!stalled)
@@ -1603,7 +1628,7 @@ Result<void> verify_inspect_read_errors(const std::filesystem::path& directory, 
 
 Result<void> verify_graph_write_examples(ControlCli& cli, json::Value examples) {
     ATELIER_TRY(cli.call("graph.create_scratch", 0, json::Document::literal<R"({"key":"scratch/write-examples"})">()));
-    const auto invoke = [&](std::string_view name) -> Result<json::Document> {
+    const auto invoke = [&](StringView name) -> Result<json::Document> {
         ATELIER_TRY_BIND(request, examples.at(name).transform_error(json_error));
         ATELIER_TRY_BIND(op, request->string({"op"}).transform_error(json_error));
         ATELIER_TRY_BIND(args, request->at("args").transform_error(json_error));
@@ -1628,8 +1653,7 @@ Result<void> verify_graph_write_examples(ControlCli& cli, json::Value examples) 
     ATELIER_TRY_BIND(rejected, cli.call("graph.apply", 1, json::Document::literal<R"({
         "nodes":{"roof":{"properties":{"size":{"x":9}}}}})">()));
     if (rejected->root().string({"error", "code"}) != "operation_failed" ||
-        rejected->root().string({"error", "message"}).value_or("").find("parameter='clear_width'") ==
-            std::string_view::npos)
+        !rejected->root().string({"error", "message"}).value_or("").contains("parameter='clear_width'"))
         return fixture_failure("Direct write to a promoted field lost the parameter name or repair hint");
     ATELIER_TRY(invoke("set_promoted_parameter"));
     ATELIER_TRY_BIND(updated, cli.call("graph.inspect", 0, roof));
@@ -1646,11 +1670,11 @@ Result<void> verify_graph_write_examples(ControlCli& cli, json::Value examples) 
 Result<void> verify_graph_discovery_cli(ControlCli& cli) {
     ATELIER_TRY_BIND(profile, cli.call("capabilities", 0, json::Document::literal<R"({"scope":"graph"})">()));
     const auto ops = *profile->root().at("result")->at("operations")->array();
-    Array<std::string> names;
+    Array<String> names;
     Optional<json::Value> write_examples;
     for (const auto item : ops) {
         const auto op = *item.string({"op"});
-        names.emplace(op == "op.call" ? *item.string({"id"}) : op);
+        names.add(String::from_utf8_validated(op == "op.call" ? *item.string({"id"}) : op));
         if (!*item.find("args") || !*item.find("requires_state_token"))
             return fixture_failure("Graph tool is missing its invocation contract");
         if (op == "graph.apply") {
@@ -1658,8 +1682,8 @@ Result<void> verify_graph_discovery_cli(ControlCli& cli) {
             write_examples = *examples;
         }
     }
-    if (names != Array<std::string>{"asset.new_procedural_graph", "graph.open", "graph.inspect", "graph.apply",
-                                    "graph.save", "graph.create_scratch"})
+    if (names != Array<String>{"asset.new_procedural_graph"_s, "graph.open"_s, "graph.inspect"_s, "graph.apply"_s,
+                               "graph.save"_s, "graph.create_scratch"_s})
         return fixture_failure("Unexpected graph authoring tool set");
     ATELIER_TRY_BIND(all, cli.call("capabilities", 0));
     for (const auto item : *all->root().at("result")->at("operations")->array())
@@ -1667,7 +1691,7 @@ Result<void> verify_graph_discovery_cli(ControlCli& cli) {
             return fixture_failure("Retired graph property request is still advertised");
     ATELIER_TRY_BIND(types, cli.call("graph.inspect", 0, json::Document::literal<R"({"view":"catalog"})">()));
     bool group_listed = false;
-    std::string_view noise_description;
+    StringView noise_description;
     for (const auto entry : *types->root().at("result")->at("node_types")->array()) {
         group_listed |= entry.string({"name"}) == "procedural.Group";
         if (entry.string({"name"}) == "procedural.Noise")
@@ -1786,7 +1810,8 @@ Result<void> verify_graph_discovery_cli(ControlCli& cli) {
         return fixture_failure("Graph creation did not return an asset key");
     json::Builder query;
     query.set_validated(query.root(), "view", "catalog");
-    query.set_validated(query.root(), "type", "asset:" + std::string(*asset));
+    const auto asset_type = String::concat("asset:", String::validated(*asset));
+    query.set_validated(query.root(), "type", asset_type);
     ATELIER_TRY_BIND(digital, cli.call("graph.inspect", 0, query.finish()));
     const auto parameters = *digital->root().at("result")->at("parameters");
     if (parameters.size() != 1 || parameters.at(0)->string({"name"}) != "width" || !*parameters.at(0)->find("type"))
@@ -1799,8 +1824,7 @@ Result<void> verify_graph_discovery_cli(ControlCli& cli) {
 Result<void> verify_moss_bindings_cli(ControlCli& cli) {
     // The same query must explain cached results after rewiring and undo.
     const auto query = json::Document::literal<R"({"view":"node","node":"place_clumps","bindings":true})">();
-    const auto field = [](json::Value rows, std::string_view name, std::string_view access,
-                          std::string_view key) -> std::string_view {
+    const auto field = [](json::Value rows, StringView name, StringView access, StringView key) -> StringView {
         for (const auto row : *rows.array())
             if (row.string({"name"}) == name && row.string({"access"}) == access)
                 return row.string({key}).value_or("");
@@ -1825,7 +1849,7 @@ Result<void> verify_moss_bindings_cli(ControlCli& cli) {
         ATELIER_TRY_BIND(reply, cli.call("graph.inspect", 0, query));
         const auto table = *reply->root().at("result")->at("bindings");
         const auto rows = *table.at("attributes");
-        const auto read = [&](std::string_view name, std::string_view key) { return field(rows, name, "read", key); };
+        const auto read = [&](StringView name, StringView key) { return field(rows, name, "read", key); };
         if (table.string({"mode"}) != "evaluated" || read("N", "column_source") != "moss_anchors" ||
             read("N", "status") != (orient ? "inactive" : "bound") ||
             read("orient", "status") != (orient ? "bound" : "fallback") ||
@@ -1836,7 +1860,7 @@ Result<void> verify_moss_bindings_cli(ControlCli& cli) {
             return fixture_failure("Realize placement explanation disagreed with its wired target columns");
         return {};
     };
-    const auto samples = [&]() -> Result<Array<std::string>> {
+    const auto samples = [&]() -> Result<Array<String>> {
         ATELIER_TRY_BIND(reply,
                          cli.call("graph.inspect", 0,
                                   json::Document::literal<R"({"node":"place_clumps","samples":8,"spatial":false})">()));
@@ -1844,10 +1868,10 @@ Result<void> verify_moss_bindings_cli(ControlCli& cli) {
         for (const auto attr : *summary.at("attributes")->array()) {
             if (attr.string({"name"}) != "P")
                 continue;
-            Array<std::string> result;
+            Array<String> result;
             for (const auto sample : *attr.at("samples")->array()) {
                 ATELIER_TRY_BIND(value, sample.string().transform_error(json_error));
-                result.emplace(*value);
+                result.add(String::from_utf8_validated(*value));
             }
             if (result.size() == 8)
                 return result;
@@ -1885,7 +1909,7 @@ Result<void> verify_moss_range_cli(ControlCli& cli) {
     const auto undo = json::Document::literal<R"({"id":"edit.undo"})">();
     const auto patch_query = json::Document::literal<R"({"node":"moss_patch","samples":0,"spatial":false})">();
     const auto bindings = json::Document::literal<R"({"node":"moss_patch","view":"node","bindings":true})">();
-    const auto selected = [](json::Value summary, std::string_view name) -> Result<std::uint64_t> {
+    const auto selected = [](json::Value summary, StringView name) -> Result<std::uint64_t> {
         for (const auto attr : *summary.at("attributes")->array())
             if (attr.string({"name"}) == name && attr.string({"layer"}) == "point")
                 return attr.u64({"selected_count"}).transform_error(json_error);
@@ -1963,7 +1987,7 @@ Result<void> verify_moss_roof_cli(ControlCli& cli) {
     create.set_validated(create.root(), "id", "asset.new_procedural_graph");
     const auto args = create.object_validated(create.root(), "args");
     create.set_validated(args, "path", "Content/MossRoof.procgraph");
-    ATELIER_TRY(create.set(args, "source", *source).transform_error(json_error));
+    ATELIER_TRY(create.set(args, "source", as_chars(*source)).transform_error(json_error));
     ATELIER_TRY_BIND(created, cli.call("op.call", 0, create.finish()));
     ATELIER_TRY_BIND(asset, created->root().string({"result", "result", "asset"}).transform_error(json_error));
     json::Builder open;
@@ -2085,8 +2109,7 @@ Result<void> verify_graph_raycast_cli(ControlCli& cli) {
         "view":"node","node":"roof","raycast":{"output":"output","rays":[{"origin":[0,1,0],
         "direction":[0,0,0],"max_distance":5}]}})">()));
     if (malformed->root().string({"error", "code"}) != "invalid_request" ||
-        malformed->root().string({"error", "message"}).value_or("").find("direction must be nonzero") ==
-            std::string_view::npos)
+        !malformed->root().string({"error", "message"}).value_or("").contains("direction must be nonzero"))
         return fixture_failure("Invalid ray lost its validation diagnostic");
     return {};
 }
@@ -2098,8 +2121,8 @@ Result<void> verify_rail_panel_cli(ControlCli& cli) {
     ATELIER_TRY_BIND(hints, schema->root().path({"result", "port_descriptions"}).transform_error(json_error));
     ATELIER_TRY_BIND(inputs, hints->at("inputs").and_then(&json::Value::object_items).transform_error(json_error));
     ATELIER_TRY_BIND(outputs, hints->at("outputs").and_then(&json::Value::object_items).transform_error(json_error));
-    std::string_view low_z;
-    std::string_view high_z;
+    StringView low_z;
+    StringView high_z;
     for (const auto& [port, hint] : *inputs) {
         const auto purpose = hint.string().value_or("");
         if (purpose.contains("Z 较小"))
@@ -2117,7 +2140,7 @@ Result<void> verify_rail_panel_cli(ControlCli& cli) {
         "far":{"type":"procedural.Line","properties":{"start":{"x":0,"y":2,"z":1},"end":{"x":4,"y":3,"z":1},"count":3}},
         "board":{"type":"procedural.RailPanel","properties":{"thickness":0.25}}
     }})">()));
-    const auto wire = [&](std::string_view left, std::string_view right) -> Result<void> {
+    const auto wire = [&](StringView left, StringView right) -> Result<void> {
         json::Builder patch;
         const auto nodes = patch.object_validated(patch.root(), "nodes");
         const auto board = patch.object_validated(nodes, "board");
@@ -2189,7 +2212,7 @@ Result<void> verify_bevel_cli(ControlCli& cli) {
     },"settings":{"display":"cap"}})">()));
     ATELIER_TRY_BIND(cooked, cli.call("graph.inspect", 0, json::Document::literal<R"({"node":"cap","samples":0})">()));
     if (const auto error = cooked->root().string({"result", "inspected_error"}); error)
-        return fixture_failure(std::string(*error));
+        return fixture_failure(*error);
     const auto summary = *cooked->root().at("result")->at("inspected_summary");
     ATELIER_TRY_BIND(topology, summary.path({"spatial", "topology"}).transform_error(json_error));
     if (summary.u32({"counts", "primitive"}) != 26 || topology->boolean({"skipped"}) != false ||
@@ -2274,11 +2297,11 @@ Result<void> verify_graph_patch_cli(ControlCli& cli) {
     if (structure.string({"display"}) != "raise" || structure.at("nodes")->size() != 6 ||
         *structure.find("parameters") || *structure.find("display_summary") || *structure.find("node_types"))
         return fixture_failure("Expected a structure-only roof graph");
-    Array<std::string> order;
+    Array<String> order;
     for (const auto edge : *structure.at("connections")->array())
         if (edge.string({"to_node"}) == "ordered")
-            order.emplace(*edge.string({"from_node"}));
-    if (order != Array<std::string>{"working", "roof"})
+            order.add(String::from_utf8_validated(*edge.string({"from_node"})));
+    if (order != Array<String>{"working"_s, "roof"_s})
         return fixture_failure("Topology changed the order of a multi-input port");
     ATELIER_TRY_BIND(props,
                      cli.call("graph.inspect", 0, json::Document::literal<R"({"view":"node","node":"working"})">()));
@@ -2287,7 +2310,7 @@ Result<void> verify_graph_patch_cli(ControlCli& cli) {
     ATELIER_TRY_BIND(cooked, cli.call("graph.inspect", 0,
                                       json::Document::literal<R"({"node":"working","samples":0,"spatial":false})">()));
     const auto result = *cooked->root().at("result");
-    const auto selected = [](json::Value summary, std::string_view group) {
+    const auto selected = [](json::Value summary, StringView group) {
         for (const auto attr : *summary.at("attributes")->array())
             if (attr.string({"name"}) == group)
                 return attr.u64({"selected_count"}).value_or(0);
@@ -2307,8 +2330,7 @@ Result<void> verify_graph_patch_cli(ControlCli& cli) {
         R"({"nodes":{"new_node":{"type":"procedural.Group","inputs":{"no_such_port":"roof.output"}}},"settings":{"seed":222}})">();
     ATELIER_TRY_BIND(rejected, cli.call("graph.apply", 1, bad));
     if (rejected->root().string({"error", "code"}) != "operation_failed" ||
-        rejected->root().string({"error", "message"}).value_or("").find("nodes.new_node.inputs.no_such_port") ==
-            std::string_view::npos)
+        !rejected->root().string({"error", "message"}).value_or("").contains("nodes.new_node.inputs.no_such_port"))
         return fixture_failure("Invalid patch lost its input port diagnostic");
     ATELIER_TRY_BIND(after_bad, cli.call("graph.inspect", 0, topology));
     const auto check_seed = json::Document::literal<R"({"samples":0,"spatial":false})">();
@@ -2333,7 +2355,7 @@ Result<void> verify_graph_patch_cli(ControlCli& cli) {
     ATELIER_TRY_BIND(angle,
                      cli.call("graph.inspect", 0, json::Document::literal<R"({"view":"node","node":"upper"})">()));
     ATELIER_TRY_BIND(restored, cli.call("graph.inspect", 0, topology));
-    if (cycle->root().string({"error", "message"}).value_or("").find("cycle") == std::string_view::npos ||
+    if (!cycle->root().string({"error", "message"}).value_or("").contains("cycle") ||
         angle->root().number({"result", "properties", "max_angle"}) != 45 ||
         *restored->root().at("result") != structure)
         return fixture_failure("A rejected cycle left a partial graph or field change");
@@ -2398,7 +2420,7 @@ Result<void> verify_graph_requests(Driver& driver) {
         driver.op("graph.connect",
                   json::Document::literal<
                       R"({"from_node":"points","from_port":"output","to_node":"copies","to_port":"points"})">()));
-    const auto patch = [&](std::string_view mesh, std::string_view variant) -> Result<void> {
+    const auto patch = [&](StringView mesh, StringView variant) -> Result<void> {
         json::Builder args;
         const auto nodes = args.object_validated(args.root(), "nodes");
         const auto copies = args.object_validated(nodes, "copies");
@@ -2423,7 +2445,7 @@ Result<void> verify_graph_requests(Driver& driver) {
         links.at(0)->string({"to_node"}) != "copies")
         return fixture_failure("Graph topology lost the authored nodes or connection");
     const auto detail_query = object_query(*copies);
-    const auto check = [&](std::string_view mesh, std::string_view variant, bool can_redo) -> Result<void> {
+    const auto check = [&](StringView mesh, StringView variant, bool can_redo) -> Result<void> {
         ATELIER_TRY_BIND(view, driver.ok("graph.inspect", query));
         if (!view->root().at("inspected_error")->is_null())
             return fixture_failure(view->root().string({"inspected_error"}).value_or("Cannot inspect graph output"));
@@ -2431,8 +2453,8 @@ Result<void> verify_graph_requests(Driver& driver) {
         const auto observed = json::write(references);
         if (references.size() != 1 || references.at(0)->string({"mesh"}) != mesh ||
             !(references.at(0)->u64({"count"}).value_or(0) > 0))
-            return fixture_failure("Expected instances of " + std::string(mesh) + ", got " +
-                                   std::string(observed.data(), observed.size()));
+            return fixture_failure(String::concat("Expected instances of ", String::validated(mesh), ", got ",
+                                                  String::validated(StringView{observed.data(), observed.size()})));
         if (view->root().boolean({"can_undo"}) != true || view->root().boolean({"can_redo"}) != can_redo)
             return fixture_failure("Graph patch displaced the undo or redo entry");
         ATELIER_TRY_BIND(node, driver.ok("editor.inspect", detail_query));
@@ -2554,7 +2576,7 @@ Result<void> verify_edit_requests(const std::filesystem::path& executable, const
     // editor, leaving the example/Play run with its normal zero-error log contract.
     const auto open_edit_driver = [&]() -> Result<Driver> {
         ATELIER_TRY_BIND(instance, discover_editor(*editor, directory));
-        ControlCli graph_cli{cli, directory, std::string(*instance->root().string({"instance_id"})), {}};
+        ControlCli graph_cli{cli, directory, String::from_utf8_validated(*instance->root().string({"instance_id"})), {}};
         {
             ATELIER_TRY_BIND(startup, Driver::connect(*instance));
             ATELIER_TRY(startup->settle());
@@ -2592,7 +2614,7 @@ Result<void> verify_edit_requests(const std::filesystem::path& executable, const
             args.set_validated(args.root(), "entry", entry.root());
             return args.finish();
         };
-        const auto toggle = [&](std::string_view path, bool enabled) -> Result<json::Document> {
+        const auto toggle = [&](StringView path, bool enabled) -> Result<json::Document> {
             json::Builder args(object_args);
             args.set_validated(args.root(), "path", path);
             if (!args.set(args.root(), "enabled", enabled))
@@ -2635,9 +2657,9 @@ Result<void> verify_edit_requests(const std::filesystem::path& executable, const
         if (!replacement.set(replacement.root(), "enabled", true))
             return fixture_failure("Invalid texture replacement");
         replacement.set_validated(*replacement.root().at("value"), "asset_key", "missing-replacement");
-        const auto reject = [&](const char* op, const json::Document& args, std::string_view key) -> Result<void> {
-            ATELIER_TRY(require_control_error(driver.call(op, args), "operation_failed",
-                                              "Missing resource or incorrect resource type: " + std::string(key)));
+        const auto reject = [&](StringView op, const json::Document& args, StringView key) -> Result<void> {
+            const auto msg = String::concat("Missing resource or incorrect resource type: ", String::validated(key));
+            ATELIER_TRY(require_control_error(driver.call(op, args), "operation_failed", msg));
             ATELIER_TRY_BIND(state, driver.ok("editor.inspect", json::Document::literal<R"({"detail":"summary"})">()));
             if (state->root().boolean({"busy"}) != false)
                 return fixture_failure("Failed material edit left an active transaction");
@@ -2729,7 +2751,7 @@ Result<void> smoke_logs(const std::filesystem::path& executable, const std::file
     const auto project_text = platform::utf16_to_utf8(project.generic_wstring());
     if (!root_text || !project_text)
         return fixture_failure("Invalid UTF-16 smoke fixture path");
-    std::cout << "Editor log smoke evidence: " << *root_text << '\n' << std::flush;
+    std::cout << "Editor log smoke evidence: " << root_text->c_str() << '\n' << std::flush;
     const std::filesystem::path example_root(ATELIER_EXAMPLE_PROJECT);
     ATELIER_TRY(acceptance::create_directories(project / "Content"));
     for (const auto* name : {L"Config", L"Source"})
@@ -2764,7 +2786,7 @@ Result<void> smoke_logs(const std::filesystem::path& executable, const std::file
     const auto drive = [&]() -> Result<void> {
         ATELIER_TRY_BIND(instance, discover_editor(*editor, directory));
 
-        ControlCli artifacts{cli, directory, std::string(*instance->root().string({"instance_id"})), {}};
+        ControlCli artifacts{cli, directory, String::from_utf8_validated(*instance->root().string({"instance_id"})), {}};
         json::Document state;
         {
             ATELIER_TRY_BIND(driver, Driver::connect(*instance));
@@ -2808,7 +2830,7 @@ Result<void> smoke_logs(const std::filesystem::path& executable, const std::file
             ATELIER_TRY(parent->poll());
             if (!child && parent->count("play.run_attached")) {
                 ATELIER_TRY_BIND(play_run_attached_record, parent->one("play.run_attached"));
-                ATELIER_TRY_BIND(directory_field, smoke_field<std::string>(**play_run_attached_record, "directory"));
+                ATELIER_TRY_BIND(directory_field, smoke_field<String>(**play_run_attached_record, "directory"));
                 const auto path = std::filesystem::path(utf8_to_utf16_validated(*directory_field));
                 if (path.parent_path() != logs)
                     return fixture_failure("Play log is outside this Editor run");
@@ -2835,8 +2857,8 @@ Result<void> smoke_logs(const std::filesystem::path& executable, const std::file
     ATELIER_TRY(prune_passed_smoke_runs(root.parent_path(), 4));
     ATELIER_TRY(remove_smoke_tree(project));
     ATELIER_TRY(editor::write_file(root / "passed", "", editor::WriteMode::create));
-    std::cout << "Editor log smoke: PASS (edit/save/undo, accepted frame, zero errors, Play close) | " << *root_text
-              << '\n';
+    std::cout << "Editor log smoke: PASS (edit/save/undo, accepted frame, zero errors, Play close) | "
+              << root_text->c_str() << '\n';
 
     return {};
 }
@@ -2858,7 +2880,7 @@ Result<void> run_acceptance(int argc, wchar_t** argv) {
     const auto id = unique_id();
     if (!id)
         return std::unexpected(transport_error(id.error()));
-    const auto root = *base / *id;
+    const auto root = *base / utf8_to_utf16_validated(*id);
     ATELIER_TRY(acceptance::create_directories(root));
     ATELIER_TRY(verify_host_failures(argv[1], root / "HostFailures"));
     ATELIER_TRY(verify_inspect_read_errors(root / "InspectReadErrors", argv[2]));
@@ -2871,7 +2893,7 @@ int wmain(int argc, wchar_t** argv) {
     atelier::application::install_frame_timing();
     auto result = run_acceptance(argc, argv);
     if (!result) {
-        std::cerr << "Editor log smoke: FAIL: " << result.error().message << '\n';
+        std::cerr << "Editor log smoke: FAIL: " << result.error().message.c_str() << '\n';
         return 1;
     }
     return 0;

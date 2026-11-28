@@ -7,23 +7,23 @@ namespace atelier::editor {
 namespace {
 using K = ViewValueKind;
 
-constexpr std::array<std::string_view, 4> shading{"smooth", "flat", "matcap", "scene_lit"};
+constexpr std::array<StringView, 4> shading{"smooth", "flat", "matcap", "scene_lit"};
 
-constexpr std::array<std::string_view, 3> wire{"off", "overlay", "only"};
+constexpr std::array<StringView, 3> wire{"off", "overlay", "only"};
 
-constexpr std::array<std::string_view, 2> background{"none", "gradient"};
+constexpr std::array<StringView, 2> background{"none", "gradient"};
 
-constexpr std::array<std::string_view, 3> plane{"xz", "xy", "yz"};
+constexpr std::array<StringView, 3> plane{"xz", "xy", "yz"};
 
-constexpr std::array<std::string_view, 4> aa{"off", "taa", "smaa", "smaa_t2x"};
+constexpr std::array<StringView, 4> aa{"off", "taa", "smaa", "smaa_t2x"};
 
-constexpr std::array<std::string_view, 5> probes{"off", "irradiance", "state", "update_age", "distance"};
+constexpr std::array<StringView, 5> probes{"off", "irradiance", "state", "update_age", "distance"};
 
-constexpr std::array<std::string_view, 2> placement{"fixed", "follow_focus"};
+constexpr std::array<StringView, 2> placement{"fixed", "follow_focus"};
 
-constexpr std::array<std::string_view, 4> coverage{"status", "volume", "contributors", "dominance"};
+constexpr std::array<StringView, 4> coverage{"status", "volume", "contributors", "dominance"};
 
-constexpr std::array<std::string_view, 3> probe_history{"live", "hold_irradiance", "hold_distance"};
+constexpr std::array<StringView, 3> probe_history{"live", "hold_irradiance", "hold_distance"};
 
 #define FIELD(id, kind, low, high, label, category, description)                                                       \
     ViewOptionInfo {                                                                                                   \
@@ -33,25 +33,25 @@ constexpr std::array<std::string_view, 3> probe_history{"live", "hold_irradiance
     ViewOptionInfo {                                                                                                   \
         ViewOption::id, #id, K::enumeration, 0, double(values.size() - 1), values, label, category, description        \
     }
-constexpr std::string_view volume_enabled =
+constexpr StringView volume_enabled =
     "启用这个 DDGI Volume，让它参与探针更新与间接光采样。所有启用的 Volume 共用探针数量和每帧更新预算。";
 
-constexpr std::string_view volume_placement =
+constexpr StringView volume_placement =
     "Fixed 使用固定的世界坐标范围；Follow Focus 把范围作为相对于 lighting focus 的偏移。跟随时按整格移动，保持探针间距。";
 
-constexpr std::string_view volume_minimum =
+constexpr StringView volume_minimum =
     "Volume 范围的最小 XYZ，单位 m。Fixed 使用世界坐标，Follow Focus 使用相对于 lighting focus 的偏移。每个分量必须小于对应的最大值。";
 
-constexpr std::string_view volume_maximum =
+constexpr StringView volume_maximum =
     "Volume 范围的最大 XYZ，单位 m。Fixed 使用世界坐标，Follow Focus 使用相对于 lighting focus 的偏移。每个分量必须大于对应的最小值。";
 
-constexpr std::string_view volume_counts =
+constexpr StringView volume_counts =
     "三个轴各自的探针数量。范围不变时，增加数量会缩小间距，同时增加存储和更新工作量。\n所有启用的 Volume 合计最多 4096 个探针；Follow Focus 还需要足够的内部格子容纳边界过渡。";
 
-constexpr std::string_view sky_color =
+constexpr StringView sky_color =
     "天光的非负线性 RGB，三个分量依次为 R、G、B，逐通道乘以 Intensity。可以大于 1；它不是 sRGB 屏幕颜色。";
 
-constexpr std::string_view volume_blend =
+constexpr StringView volume_blend =
     "Volume 边缘的过渡宽度，以探针格子为单位。边缘贡献会平滑交给其他覆盖该处的 Volume；它不会补出没有探针覆盖的区域。";
 
 #define VFIELD(slot, id, kind, low, high, label, description)                                                          \
@@ -209,8 +209,8 @@ constexpr ProbeVolumeField volume_field(ViewOption option) {
         static_cast<unsigned>(ProbeVolumeField::count));
 }
 
-auto invalid(std::string message) {
-    return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)});
+auto invalid(Utf8Text message) {
+    return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message).into_string()});
 }
 }
 
@@ -229,7 +229,7 @@ const ViewOptionInfo* view_option(ViewOption option) noexcept {
     return found == options.end() ? nullptr : &*found;
 }
 
-const ViewOptionInfo* view_option(std::string_view name) noexcept {
+const ViewOptionInfo* view_option(StringView name) noexcept {
     for (const auto& value : options)
         if (value.name == name)
             return &value;
@@ -425,10 +425,10 @@ Result<void> validate_view_options(const renderer::ViewSettings& view, math::Vec
         const auto value = view_value(view, option.option);
         if (!std::isfinite(value) || value < option.minimum || value > option.maximum ||
             (option.kind != K::number && value != std::floor(value)))
-            return invalid("Invalid display option: " + std::string(option.name));
+            return invalid(String::concat("Invalid display option: ", String::validated(option.name)));
     }
     if (const auto* error = renderer::probe_focus_error(view.lit, focus))
-        return invalid(error);
+        return invalid(String::from_utf8_validated(StringView{error}));
     return {};
 }
 }

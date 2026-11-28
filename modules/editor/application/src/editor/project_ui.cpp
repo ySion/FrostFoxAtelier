@@ -32,12 +32,12 @@ void ProjectUI::sync(const Project* project) {
 Result<std::shared_ptr<const ui::UiFrame>> ProjectUI::prepare(ui::Session& session, ui::Surface surface, double elapsed,
                                                               std::size_t entities,
                                                               FunctionRef<void(const ui::Reply&)> effects) {
-    const auto failed = [](std::string message) {
-        return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)});
+    const auto failed = [](Utf8Text message) {
+        return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message).into_string()});
     };
-    const auto describe = [](std::string_view stage, const ui::Error& error) {
-        return "Project UI " + std::string(stage) + " failed at control " + std::to_string(error.key) + " (UI error " +
-               std::to_string(static_cast<unsigned>(error.code)) + "). " + application::ui_error(error).message;
+    const auto describe = [](StringView stage, const ui::Error& error) {
+        return String::concat("Project UI ", String::validated(stage), " failed at control ", error.key, " (UI error ",
+                              static_cast<unsigned>(error.code), "). ", application::ui_error(error).message);
     };
     auto resized = session.set_surface(surface);
     if (!resized)
@@ -49,7 +49,7 @@ Result<std::shared_ptr<const ui::UiFrame>> ProjectUI::prepare(ui::Session& sessi
     // engine. In particular, minimizing cannot turn a bad source into active UI.
     if (!surface.extent.width || !surface.extent.height)
         return std::shared_ptr<const ui::UiFrame>{};
-    const auto restore = [&](std::string message) -> Result<std::shared_ptr<const ui::UiFrame>> {
+    const auto restore = [&](String message) -> Result<std::shared_ptr<const ui::UiFrame>> {
         if (document_)
             document_->reject_controls(message);
         error_ = std::move(message);
@@ -75,7 +75,7 @@ Result<std::shared_ptr<const ui::UiFrame>> ProjectUI::prepare(ui::Session& sessi
         if (!appended)
             return restore(appended.error().message);
         if (document_->candidate_failed())
-            return restore(std::string(document_->diagnostic()));
+            return restore(document_->diagnostic());
     } else if (configured())
         return failed(error_);
     auto described = session.set_controls(controls);
@@ -114,7 +114,7 @@ Result<void> ProjectUI::collect() {
     return {};
 }
 
-std::string_view ProjectUI::diagnostic() const noexcept {
-    return error_.empty() ? (document_ ? document_->diagnostic() : std::string_view{}) : error_;
+StringView ProjectUI::diagnostic() const noexcept {
+    return error_.empty() ? (document_ ? document_->diagnostic().view() : StringView{}) : error_.view();
 }
 }

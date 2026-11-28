@@ -17,16 +17,17 @@
 #include <cwctype>
 #include <fstream>
 #include <functional>
-#include <sstream>
 #include <array>
 
 namespace atelier::editor {
 namespace {
-auto failure(std::string text) {
-    return std::unexpected(Error{ErrorCode::invalid_storage, std::move(text)});
+using namespace atelier::literals;
+
+auto failure(Utf8Text text) {
+    return std::unexpected(Error{ErrorCode::invalid_storage, std::move(text).into_string()});
 }
 
-Result<std::string> identity() {
+Result<String> identity() {
     GUID id{};
     if (FAILED(CoCreateGuid(&id)))
         return failure("Cannot create asset identity.");
@@ -53,7 +54,9 @@ Result<json::Document> read_json(const std::filesystem::path& path) {
 
 struct ProjectSettings {
     std::wstring name;
+
     std::filesystem::path startup;
+
     std::filesystem::path ui_source;
 };
 
@@ -86,11 +89,11 @@ std::filesystem::path sidecar(std::filesystem::path path) {
     return path;
 }
 
-std::string identity_file(std::string_view key, json::Builder record = json::Builder{}) {
+String identity_file(StringView key, json::Builder record = json::Builder{}) {
     static_cast<void>(record.set(record.root(), "version", std::uint32_t{1}));
-    record.set_validated(record.root(), "id", key.substr(std::string_view{"project/"}.size()));
+    record.set_validated(record.root(), "id", key.slice(StringView{"project/"}.size()));
     const auto bytes = json::write(record.root(), {true, true});
-    return {bytes.data(), bytes.size()};
+    return String::from_utf8_validated({bytes.data(), bytes.size()});
 }
 
 // These kinds use sidecar identities. Other catalogue entries are addressed by relative path.
@@ -120,8 +123,11 @@ Result<void> read_asset_identity(const Project& project, assets::ProjectEntry& e
         if (!create_if_missing)
             return failure("Asset identity is missing; refresh the project before importing.");
         ATELIER_TRY_BIND(id, identity());
-        auto key = "project/" + *id;
-        auto created = write_file(*native, identity_file(key), WriteMode::create);
+        auto key = String::concat("project/", *id);
+
+        const auto sidecar_text = identity_file(key);
+
+        auto created = write_file(*native, sidecar_text, WriteMode::create);
         if (created) {
             entry.key = std::move(key);
             return {};
@@ -154,10 +160,10 @@ Result<void> read_asset_identity(const Project& project, assets::ProjectEntry& e
             ATELIER_TRY_BIND(material, value.string().transform_error(json_error));
             if (slot.empty())
                 return failure("Default material slot names cannot be empty.");
-            entry.materials.add({std::string(slot), std::string(*material)});
+            entry.materials.add({String::from_utf8_validated(slot), String::from_utf8_validated(*material)});
         }
     }
-    entry.key = "project/" + *name;
+    entry.key = String::concat("project/", *name);
     return {};
 }
 
@@ -167,7 +173,9 @@ Result<void> visit_project_directory(const Project& project, const std::filesyst
     ATELIER_TRY_BIND(resolved, project.resolve(directory));
     ATELIER_TRY_BIND(root, platform::windows_file_path(*resolved).transform_error(file_error));
     std::error_code error;
-    std::filesystem::recursive_directory_iterator it(*root, error), end;
+    std::filesystem::recursive_directory_iterator it(*root, error);
+
+    std::filesystem::recursive_directory_iterator end;
     while (!error && it != end) {
         const auto status = it->symlink_status(error);
         if (error)
@@ -177,14 +185,14 @@ Result<void> visit_project_directory(const Project& project, const std::filesyst
         it.increment(error);
     }
     if (error) {
-        const auto name = platform::utf16_to_utf8(directory.native());
-        return failure("Cannot scan " + name.value_or("project directory") + ": " + platform::error_message(error));
+        const auto name = platform::utf16_to_utf8(directory.native()).value_or("project directory"_s);
+        return failure(String::concat("Cannot scan ", name, ": ", platform::error_message(error)));
     }
     return {};
 }
 
 // A generated material's file name: valid on Windows and unique among `taken`, compared as the file system does (ordinal, ignoring case).
-Result<std::wstring> material_file(std::string_view slot, Array<std::wstring>& taken) {
+Result<std::wstring> material_file(StringView slot, Array<std::wstring>& taken) {
     auto converted = platform::utf8_to_utf16(slot);
     if (!converted)
         return failure("Invalid UTF-8 text.");
@@ -221,8 +229,8 @@ Result<std::wstring> material_file(std::string_view slot, Array<std::wstring>& t
     }
 }
 
-Result<void> write_in_directory(const std::filesystem::path& native, std::string_view text, WriteMode mode) {
-    if (text.size() > MAXDWORD)
+Result<void> write_in_directory(const std::filesystem::path& native, Span<const std::byte> bytes, WriteMode mode) {
+    if (bytes.size() > MAXDWORD)
         return std::unexpected(Error{ErrorCode::capacity_exceeded, "File exceeds the write size limit."});
     ATELIER_TRY_BIND(id, identity());
     auto temporary = native;
@@ -231,14 +239,16 @@ Result<void> write_in_directory(const std::filesystem::path& native, std::string
         CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) {
         const auto error = GetLastError();
-        const auto name = platform::utf16_to_utf8(native.native()).value_or("<invalid UTF-16 path>");
-        return failure("Cannot create temporary file for " + name + " (Windows error " + std::to_string(error) + ").");
+
+        const auto name = platform::utf16_to_utf8(native.native()).value_or("<invalid UTF-16 path>"_s);
+        return failure(String::concat("Cannot create temporary file for ", name, " (Windows error ", error, ")."));
     }
     DWORD written{};
+
     DWORD first_error{};
-    if (!WriteFile(file, text.data(), static_cast<DWORD>(text.size()), &written, nullptr))
+    if (!WriteFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr))
         first_error = GetLastError();
-    else if (written != text.size())
+    else if (written != bytes.size())
         first_error = ERROR_WRITE_FAULT;
     else if (!FlushFileBuffers(file))
         first_error = GetLastError();
@@ -248,10 +258,11 @@ Result<void> write_in_directory(const std::filesystem::path& native, std::string
     if (!first_error && !MoveFileExW(temporary.c_str(), native.c_str(), flags))
         first_error = GetLastError();
     if (first_error) {
-        const auto name = platform::utf16_to_utf8(native.native()).value_or("<invalid UTF-16 path>");
-        auto message = "Cannot save " + name + " (Windows error " + std::to_string(first_error) + ").";
+        const auto name = platform::utf16_to_utf8(native.native()).value_or("<invalid UTF-16 path>"_s);
+
+        auto message = String::concat("Cannot save ", name, " (Windows error ", first_error, ").");
         if (!DeleteFileW(temporary.c_str()))
-            message += " Temporary file cleanup failed (Windows error " + std::to_string(GetLastError()) + ").";
+            message += String::concat(" Temporary file cleanup failed (Windows error ", GetLastError(), ").");
         return failure(std::move(message));
     }
     return {};
@@ -259,6 +270,7 @@ Result<void> write_in_directory(const std::filesystem::path& native, std::string
 
 bool same_path(const std::filesystem::path& a, const std::filesystem::path& b) {
     const auto left = a.lexically_normal().generic_wstring();
+
     const auto right = b.lexically_normal().generic_wstring();
     return CompareStringOrdinal(left.c_str(), -1, right.c_str(), -1, TRUE) == CSTR_EQUAL;
 }
@@ -270,14 +282,21 @@ public:
     MeshImportFiles(const Project& project, bool reimport, Optional<Error> unverified)
         : project_(project), reimport_(reimport), unverified_(std::move(unverified)) {}
 
-    Result<void> stage(const std::filesystem::path& relative, std::string bytes, bool replace) {
+    Result<void> stage(const std::filesystem::path& relative, StringView text, bool replace) {
+        return stage(relative, Array<std::byte>{as_bytes(text)}, replace);
+    }
+
+    Result<void> stage(const std::filesystem::path& relative, Array<std::byte> bytes, bool replace) {
         ATELIER_TRY_BIND(resolved, project_.resolve(relative));
         ATELIER_TRY_BIND(path, platform::windows_file_path(*resolved).transform_error(file_error));
         if (std::ranges::any_of(files_, [&](const auto& file) { return same_path(file.path, *path); }))
-            return failure("Import outputs collide: " +
-                           platform::utf16_to_utf8(relative.generic_wstring()).value_or("<invalid UTF-16 path>"));
+            return failure(String::concat(
+                "Import outputs collide: ",
+                platform::utf16_to_utf8(relative.generic_wstring()).value_or("<invalid UTF-16 path>"_s)));
         File file{std::move(*path), std::move(bytes)};
+
         std::error_code error;
+
         const bool exists = std::filesystem::exists(file.path, error);
         if (error)
             return std::unexpected(file_error(error));
@@ -287,13 +306,14 @@ public:
                 return std::unexpected(file_error(error));
             ATELIER_TRY_BIND(before, assets::read_file(file.path, 512ull << 20));
             if (!replace && (!reimport_ || file.bytes != *before)) {
-                const auto name = platform::utf16_to_utf8(relative.generic_wstring()).value_or("<invalid UTF-16 path>");
+                const auto name =
+                    platform::utf16_to_utf8(relative.generic_wstring()).value_or("<invalid UTF-16 path>"_s);
                 if (unverified_) {
                     auto cause = *unverified_;
-                    cause.message += "; cannot overwrite " + name;
+                    cause.message += String::concat("; cannot overwrite ", name);
                     return std::unexpected(std::move(cause));
                 }
-                return failure("Import would overwrite an unrelated or unverified file: " + name);
+                return failure(String::concat("Import would overwrite an unrelated or unverified file: ", name));
             }
             file.before = std::move(*before);
         }
@@ -330,9 +350,10 @@ public:
     }
 
     Error rollback(Error first) const {
-        const auto cleanup = [&](const std::filesystem::path& path, const std::string& message) {
-            first.message += "; import rollback failed for " +
-                             platform::utf16_to_utf8(path.native()).value_or("<invalid UTF-16 path>") + ": " + message;
+        const auto cleanup = [&](const std::filesystem::path& path, const String& message) {
+            first.message += String::concat(
+                "; import rollback failed for ",
+                platform::utf16_to_utf8(path.native()).value_or("<invalid UTF-16 path>"_s), ": ", message);
         };
         for (auto it = files_.rbegin(); it != files_.rend(); ++it) {
             if (!it->written)
@@ -362,9 +383,9 @@ private:
     struct File {
         std::filesystem::path path;
 
-        std::string bytes;
+        Array<std::byte> bytes;
 
-        Optional<std::string> before{};
+        Optional<Array<std::byte>> before{};
 
         std::filesystem::file_time_type modified{};
 
@@ -383,22 +404,22 @@ private:
 };
 }
 
-Result<void> write_file(const std::filesystem::path& path, std::string_view text, WriteMode mode) {
+Result<void> write_file(const std::filesystem::path& path, Span<const std::byte> bytes, WriteMode mode) {
     ATELIER_TRY_BIND(native, platform::windows_file_path(path).transform_error(file_error));
     std::error_code error;
     std::filesystem::create_directories(native->parent_path(), error);
     if (error)
         return std::unexpected(file_error(error));
-    return write_in_directory(*native, text, mode);
+    return write_in_directory(*native, bytes, mode);
 }
 
 Result<std::filesystem::path> Project::resolve(const std::filesystem::path& relative) const {
     return assets::resolve_project_path(root_, relative);
 }
 
-Result<std::string> Project::read_scene(const std::filesystem::path& relative) const {
+Result<String> Project::read_scene(const std::filesystem::path& relative) const {
     ATELIER_TRY_BIND(path, resolve(relative));
-    return assets::read_file(*path);
+    return assets::read_utf8_file(*path);
 }
 
 Result<Project> Project::create(const std::filesystem::path& folder) {
@@ -448,7 +469,7 @@ Result<Project> Project::create(const std::filesystem::path& folder) {
     ATELIER_TRY(write_file(folder / ".gitignore", "/Cache/\n", WriteMode::create));
     // Marker is published last.
     const auto bytes = json::write(config.root(), {true, true});
-    ATELIER_TRY(write_file(folder / "Config/Project.json", {bytes.data(), bytes.size()}, WriteMode::create));
+    ATELIER_TRY(write_file(folder / "Config/Project.json", StringView{bytes.data(), bytes.size()}, WriteMode::create));
     return open(folder);
 }
 
@@ -493,7 +514,7 @@ Result<Array<std::filesystem::path>> Project::source_paths() const {
     return paths;
 }
 
-Result<void> Project::create_source(const std::filesystem::path& relative, std::string_view text) {
+Result<void> Project::create_source(const std::filesystem::path& relative, StringView text) {
     if (relative.empty() || *relative.begin() != L"Source" || relative.extension() != L".source")
         return failure("Create source files inside the project's Source directory.");
     const auto path = resolve(relative);
@@ -501,7 +522,7 @@ Result<void> Project::create_source(const std::filesystem::path& relative, std::
         return std::unexpected(path.error());
     if (text.size() > 1024 * 1024)
         return failure("Source file exceeds the 1 MiB limit.");
-    if (!StringView(text).is_valid_utf8())
+    if (!text.is_valid_utf8())
         return failure("Invalid UTF-8 text.");
     return write_file(*path, text, WriteMode::create);
 }
@@ -527,7 +548,7 @@ Result<void> Project::set_ui_source(const std::filesystem::path& relative) {
         next_config.set_validated(next_config.root(), "ui_source", *next);
     }
     const auto bytes = json::write(next_config.root(), {true, true});
-    ATELIER_TRY(write_file(*path, {bytes.data(), bytes.size()}));
+    ATELIER_TRY(write_file(*path, StringView{bytes.data(), bytes.size()}));
     ui_source_ = relative;
     return {};
 }
@@ -588,10 +609,14 @@ Result<Array<assets::ProjectEntry>> Project::scan_entries(bool create_identities
     using enum assets::AssetKind;
     Array<assets::ProjectEntry> entries;
     for (const auto& directory : roots()) {
-        entries.add({directory, directory.string(), folder});
+        auto dir_name = platform::utf16_to_utf8(directory.generic_wstring());
+        if (!dir_name)
+            return failure("Invalid UTF-16 text.");
+        entries.add({directory, std::move(*dir_name), folder});
         const auto collect = [&](const std::filesystem::directory_entry& file, std::filesystem::file_status status,
                                  const std::filesystem::path& root) -> Result<void> {
             const auto& path = file.path();
+
             const auto filename = path.filename().native();
             if (filename.ends_with(L".asset.json") || filename.ends_with(L".tmp"))
                 return {};
@@ -606,7 +631,7 @@ Result<Array<assets::ProjectEntry>> Project::scan_entries(bool create_identities
             if (const auto kind = resource_kind(path, directory)) {
                 entry.kind = *kind;
                 if (auto identity = read_asset_identity(*this, entry, create_identities); !identity) {
-                    identity.error().message = entry.key + ".asset.json: " + identity.error().message;
+                    identity.error().message = String::concat(entry.key, ".asset.json: ", identity.error().message);
                     return identity;
                 }
             } else
@@ -633,23 +658,26 @@ Result<void> Project::refresh() {
     return assets_.publish(std::move(*entries));
 }
 
-Result<std::string> Project::import_mesh(const std::filesystem::path& source) {
+Result<String> Project::import_mesh(const std::filesystem::path& source) {
     ATELIER_TRY_BIND(published, import_mesh_files(source, {}));
     return std::move(published->mesh.key);
 }
 
-Result<MeshImportPublication> Project::reimport_mesh(std::string_view key, const std::filesystem::path& source) {
+Result<MeshImportPublication> Project::reimport_mesh(StringView key, const std::filesystem::path& source) {
     if (!key.starts_with("project/"))
         return failure("Reimport requires an existing project mesh identity.");
     return import_mesh_files(source, key);
 }
 
-Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::path& source,
-                                                         std::string_view existing_key) {
+Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::path& source, StringView existing_key) {
     if (!assets::is_mesh_path(source))
         return failure("Import Mesh accepts Wavefront OBJ or glTF 2.0 (.gltf) geometry and its dependencies.");
-    const std::string requested(existing_key); // The caller may borrow its key from this Reader.
+    auto requested_opt = String::from_utf8(existing_key);
+    if (!requested_opt)
+        return failure("Invalid UTF-8 text.");
+    const String requested = std::move(*requested_opt); // The caller may borrow its key from this Reader.
     std::error_code error;
+
     const auto absolute = std::filesystem::absolute(source, error);
     if (error)
         return failure(platform::error_message(error));
@@ -660,6 +688,7 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
     ATELIER_TRY_BIND(scanned, scan_entries(false));
     ATELIER_TRY(current.publish(std::move(*scanned)));
     const auto catalog = current.entries();
+
     const auto file_entry = [&](const std::filesystem::path& path) -> const assets::ProjectEntry* {
         const auto at = std::ranges::find_if(catalog, [&](const auto& entry) { return same_path(entry.path, path); });
         return at == catalog.end() ? nullptr : &*at;
@@ -668,14 +697,18 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
     if (loaded.files.size() > 1)
         relative /= source.stem();
     auto target_relative = relative / source.filename();
-    std::string resource = requested;
+
+    String resource = requested;
     if (requested.empty()) {
         ATELIER_TRY_BIND(id, identity());
-        resource = "project/" + *id;
+        resource = String::concat("project/", *id);
     }
     json::Builder metadata;
+
     json::Builder defaults;
+
     Array<std::filesystem::path> owned;
+
     Optional<Error> dependency_error;
     if (!requested.empty()) {
         const auto* at = current.entry(requested);
@@ -698,8 +731,9 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
         } else {
             dependency_error = std::move(previous.error());
             dependency_error->message =
-                "Existing mesh dependencies could not be verified: " + dependency_error->message;
-            loaded.notes.add(dependency_error->message + "; only unchanged existing dependencies may be reused.");
+                String::concat("Existing mesh dependencies could not be verified: ", dependency_error->message);
+            loaded.notes.add(
+                String::concat(dependency_error->message, "; only unchanged existing dependencies may be reused."));
         }
         auto main = std::ranges::find(loaded.files, source.filename(), &assets::ImportedFile::relative);
         if (main == loaded.files.end())
@@ -709,21 +743,24 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
     MeshImportFiles files{*this, !requested.empty(), std::move(dependency_error)};
     // Prepare exact input pixels and persistent texture keys before moving the
     // immutable file bytes into the common create/replace transaction.
-    Map<std::filesystem::path, std::string> texture_keys;
-    Array<std::string_view> image_bytes;
+    Map<std::filesystem::path, String> texture_keys;
+
+    Array<Span<const std::byte>> image_bytes;
+
     MeshImportPublication result;
+
     const auto prepare_texture = [&](const std::filesystem::path& file) -> Result<void> {
         if (file.empty() || texture_keys.contains(file))
             return {};
         const auto* existing = file_entry(relative / file);
         if (existing && existing->kind != assets::AssetKind::texture)
             return failure("Imported texture path names another resource kind.");
-        std::string key;
+        String key;
         if (existing)
             key = existing->key;
         else {
             ATELIER_TRY_BIND(id, identity());
-            key = "project/" + *id;
+            key = String::concat("project/", *id);
         }
         texture_keys.try_emplace(file, key);
         const auto bytes = std::ranges::find(loaded.files, file, &assets::ImportedFile::relative);
@@ -749,6 +786,7 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
         result.textures[i].image = (*images)[i];
     for (auto& file : loaded.files) {
         const auto path = relative / file.relative;
+
         auto filename = path.filename().wstring();
         for (auto& c : filename)
             c = static_cast<wchar_t>(std::towlower(c));
@@ -766,19 +804,22 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
         if (assets::is_texture_path(path) || assets::is_mesh_path(path) || assets::is_sky_path(path) ||
             path.extension() == L".material") {
             if (!file_entry(path)) {
-                std::string key;
+                String key;
                 if (const auto* texture = texture_keys.find(file.relative))
                     key = *texture;
                 else {
                     ATELIER_TRY_BIND(id, identity());
-                    key = "project/" + *id;
+                    key = String::concat("project/", *id);
                 }
-                ATELIER_TRY(files.stage(sidecar(path), identity_file(key), false));
+                const auto sidecar_text = identity_file(key);
+                ATELIER_TRY(files.stage(sidecar(path), sidecar_text, false));
             }
         }
     }
-    Set<std::string> returned_materials;
-    Set<std::string> slots;
+    Set<String> returned_materials;
+
+    Set<String> slots;
+
     Array<std::wstring> names;
     for (const auto& entry : catalog)
         if (same_path(entry.path.parent_path(), relative / "Materials"))
@@ -801,16 +842,17 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
             const auto text = saved->string();
             if (!text)
                 return failure(text.error().describe());
-            const std::string key(*text);
+            const auto key = String::from_utf8_validated(*text);
             if (auto written = defaults.set(defaults.root(), slot, *saved); !written)
                 return failure(written.error().describe());
-            loaded.notes.add("Preserved material binding and author values for slot '" + slot +
-                             "'; source material changes were not merged.");
+            loaded.notes.add(String::concat("Preserved material binding and author values for slot '", slot,
+                                            "'; source material changes were not merged."));
             if (returned_materials.add(key)) {
                 if (auto material = current.material(key))
                     result.materials.add(std::move(*material));
                 else
-                    loaded.notes.add("Preserved unavailable material " + key + ": " + material.error().message);
+                    loaded.notes.add(
+                        String::concat("Preserved unavailable material ", key, ": ", material.error().message));
             }
             continue;
         }
@@ -819,8 +861,11 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
         auto author = *loaded.materials[i];
         for (std::size_t input = 0; input < assets::imported_material_inputs.size(); ++input)
             if (const auto& file = loaded.textures[i][input]; !file.empty()) {
-                const auto path = std::string(assets::imported_material_inputs[input]) + "_texture";
+                const auto path =
+                    String::concat(String::validated(assets::imported_material_inputs[input]), "_texture");
+
                 const auto entry = std::ranges::find(author.entries, path, &material::Override::path);
+
                 auto* binding =
                     entry == author.entries.end() ? nullptr : std::get_if<material::TextureBinding>(&entry->value);
                 if (!binding)
@@ -832,20 +877,24 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
             }
         ATELIER_TRY_BIND(filename, material_file(slot, names));
         if (assets::is_material_source_path(*filename)) {
-            filename = material_file(slot + " (MI)", names);
+            const auto fallback_slot = String::concat(slot, " (MI)");
+            filename = material_file(fallback_slot, names);
             if (!filename)
                 return std::unexpected(std::move(filename.error()));
         }
         const auto path = relative / "Materials" / *filename;
         ATELIER_TRY_BIND(id, identity());
-        const auto key = "project/" + *id;
+        const auto key = String::concat("project/", *id);
+
         assets::MaterialAsset asset{key, path.stem().wstring(), std::move(author)};
+
         const auto encoded = assets::material_format::encode(asset);
         if (!encoded)
             return failure(encoded.error().describe());
         const auto bytes = json::write(encoded->root(), {true, true});
-        ATELIER_TRY(files.stage(path, {bytes.data(), bytes.size()}, false));
-        ATELIER_TRY(files.stage(sidecar(path), identity_file(key), false));
+        ATELIER_TRY(files.stage(path, StringView{bytes.data(), bytes.size()}, false));
+        const auto mat_sidecar_text = identity_file(key);
+        ATELIER_TRY(files.stage(sidecar(path), mat_sidecar_text, false));
         if (auto written = defaults.set(defaults.root(), slot, key); !written)
             return failure(written.error().describe());
         result.materials.add(std::move(asset));
@@ -854,8 +903,8 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
         metadata.set_validated(metadata.root(), "materials", defaults.root());
     else
         metadata.erase(metadata.root(), "materials");
-    ATELIER_TRY(
-        files.stage(sidecar(target_relative), identity_file(resource, std::move(metadata)), !requested.empty()));
+    const auto target_sidecar_text = identity_file(resource, std::move(metadata));
+    ATELIER_TRY(files.stage(sidecar(target_relative), target_sidecar_text, !requested.empty()));
     const auto commit = [&]() -> Result<assets::MeshAsset> {
         ATELIER_TRY(files.write());
         ATELIER_TRY_BIND(updated, scan_entries(false));
@@ -870,36 +919,37 @@ Result<MeshImportPublication> Project::import_mesh_files(const std::filesystem::
 }
 
 namespace {
-std::filesystem::path collision_path(std::string_view key, math::Vector3 scale) {
+std::filesystem::path collision_path(const String& key, math::Vector3 scale) {
     // The key is a validated project GUID; float bits keep distinct import scales apart.
-    std::ostringstream name;
-    name << "Cache/Physics/" << key.substr(8) << '-' << std::hex << std::bit_cast<std::uint32_t>(scale.x) << '-'
-         << std::bit_cast<std::uint32_t>(scale.y) << '-' << std::bit_cast<std::uint32_t>(scale.z) << ".jolt-shape";
-    return name.str();
+    const auto name = String::concat("Cache/Physics/", String::validated(key.view().slice(8)), "-",
+                                     String::from_hex(std::bit_cast<std::uint32_t>(scale.x)), "-",
+                                     String::from_hex(std::bit_cast<std::uint32_t>(scale.y)), "-",
+                                     String::from_hex(std::bit_cast<std::uint32_t>(scale.z)), ".jolt-shape");
+    return platform::utf8_to_utf16_validated(name);
 }
 }
 
-Result<std::filesystem::path> Project::cook_collision(std::string_view key, math::Vector3 scale) {
+Result<std::filesystem::path> Project::cook_collision(StringView key, math::Vector3 scale) {
     if (!key.starts_with("project/"))
         return failure("Collision Cook requires a project mesh identity.");
     ATELIER_TRY_BIND(asset, assets_.mesh(key));
-    ATELIER_TRY_BIND(cooked, physics::cook_triangle_mesh(asset->mesh, scale, key));
-    ATELIER_TRY_BIND(path, resolve(collision_path(key, scale)));
+    ATELIER_TRY_BIND(cooked, physics::cook_triangle_mesh(asset->mesh, scale, asset->key));
+    ATELIER_TRY_BIND(path, resolve(collision_path(asset->key, scale)));
     ATELIER_TRY(write_file(*path, *cooked));
     return *path;
 }
 
-Result<std::shared_ptr<const std::string>> Project::collision(std::string_view key, math::Vector3 scale) {
+Result<std::shared_ptr<const Array<std::byte>>> Project::collision(StringView key, math::Vector3 scale) {
     if (!key.starts_with("project/"))
         return failure("Collision asset requires a project mesh identity.");
     ATELIER_TRY_BIND(asset, assets_.mesh(key));
-    ATELIER_TRY_BIND(path, resolve(collision_path(key, scale)));
+    ATELIER_TRY_BIND(path, resolve(collision_path(asset->key, scale)));
     if (auto bytes = assets::read_file(*path, 128ull * 1024 * 1024 + 8192);
-        bytes && physics::validate_cooked_triangle_mesh(*bytes, asset->mesh, scale, key))
-        return std::make_shared<const std::string>(std::move(*bytes));
+        bytes && physics::validate_cooked_triangle_mesh(*bytes, asset->mesh, scale, asset->key))
+        return std::make_shared<const Array<std::byte>>(std::move(*bytes));
     // The cache is derived data: a missing or stale entry is rebuilt from the source mesh.
-    ATELIER_TRY_BIND(cooked, physics::cook_triangle_mesh(asset->mesh, scale, key));
+    ATELIER_TRY_BIND(cooked, physics::cook_triangle_mesh(asset->mesh, scale, asset->key));
     static_cast<void>(write_file(*path, *cooked)); // A failed write only costs the next load another Cook.
-    return std::make_shared<const std::string>(std::move(*cooked));
+    return std::make_shared<const Array<std::byte>>(std::move(*cooked));
 }
 }

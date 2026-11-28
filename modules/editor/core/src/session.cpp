@@ -12,8 +12,10 @@
 #include <type_traits>
 
 namespace atelier::editor {
+using namespace atelier::literals;
+
 namespace {
-auto invalid(std::string message) {
+auto invalid(Utf8Text message) {
     return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)});
 }
 
@@ -133,24 +135,26 @@ Result<void> Session::validate_name(std::wstring_view name) {
 namespace {
 // The EnvironmentComponent field names of a World Settings option (a view option
 // for which world_option holds), e.g. probe_volume_0_min_x -> volume0.minimum.x.
-Array<std::string> environment_field(std::string_view option) {
-    constexpr std::string_view volume = "probe_volume_";
+Array<String> environment_field(StringView option) {
+    constexpr StringView volume = "probe_volume_";
     if (option.starts_with(volume) && option.size() > volume.size() + 2) {
-        Array<std::string> names{"volume" + std::string(option.substr(volume.size(), 1))};
-        const auto rest = option.substr(volume.size() + 2);
+        Array<String> names{
+            String::concat("volume", String::from_utf8(option.slice(volume.size(), 1)).value_or(String{}))};
+
+        const auto rest = option.slice(volume.size() + 2);
         if (rest.starts_with("min_")) {
-            names.emplace("minimum");
-            names.emplace(rest.substr(4));
+            names.add("minimum"_s);
+            names.add(String::from_utf8(rest.slice(4)).value_or(String{}));
         } else if (rest.starts_with("max_")) {
-            names.emplace("maximum");
-            names.emplace(rest.substr(4));
+            names.add("maximum"_s);
+            names.add(String::from_utf8(rest.slice(4)).value_or(String{}));
         } else
-            names.emplace(rest);
+            names.add(String::from_utf8(rest).value_or(String{}));
         return names;
     }
     if (option.starts_with("sky_color_"))
-        return {"sky_color", std::string(option.substr(10))};
-    return {std::string(option)};
+        return {"sky_color"_s, String::from_utf8(option.slice(10)).value_or(String{})};
+    return {String::from_utf8(option).value_or(String{})};
 }
 }
 
@@ -247,9 +251,12 @@ Result<Session::EnvironmentEdit> Session::environment_edit(const rendering::Scen
         if (value == view_value(before, option.option))
             continue;
         const auto names = environment_field(option.name);
+
         const auto field = std::ranges::find(*fields, names, &detail::ScalarField::names);
         if (field == fields->end())
-            return invalid("World setting " + std::string(option.name) + " has no Environment field.");
+            return invalid(
+                String::concat("World setting ", String::from_utf8(option.name).value_or(String{}),
+                               " has no Environment field."));
         // The view option kind matches the field's Scalar type.
         Scalar leaf;
         switch (option.kind) {
@@ -621,13 +628,18 @@ Result<world::Commit> Session::create_static_mesh(const assets::MeshAsset& asset
     return attach_created(std::move(*root), asset.name);
 }
 
-Result<std::pair<std::string, std::wstring>> Session::resolve_procedural_graph_asset(std::string_view graph_key,
-                                                                                     Project* project) const {
+Result<std::pair<String, std::wstring>> Session::resolve_procedural_graph_asset(StringView graph_key,
+                                                                                Project* project) const {
     if (is_scratch_graph(graph_key))
         return std::unexpected(
             Error{ErrorCode::invalid_definition,
                   "Save the scratch procedural graph as a Project asset before binding it to a Scene Entity."});
-    std::string resolved_key(graph_key);
+    auto owned_key = String::from_utf8(graph_key);
+    if (!owned_key)
+        return invalid("Invalid UTF-8 procedural graph key.");
+
+    String resolved_key = std::move(*owned_key);
+
     std::wstring label = L"Procedural Generator";
     if (!graph_key.empty() && project && !has_graph(graph_key)) {
         ATELIER_TRY_BIND(asset, project->assets().procedural_graph(graph_key));
@@ -644,7 +656,7 @@ Result<std::pair<std::string, std::wstring>> Session::resolve_procedural_graph_a
     return std::pair{std::move(resolved_key), std::move(label)};
 }
 
-Result<world::Commit> Session::create_procedural_generator(std::string_view graph_key, math::Vector3 position,
+Result<world::Commit> Session::create_procedural_generator(StringView graph_key, math::Vector3 position,
                                                            Project* project) {
     ATELIER_TRY_BIND(cancelled, cancel_edit());
     ATELIER_TRY_BIND(members, world_.members());
@@ -659,7 +671,7 @@ Result<world::Commit> Session::create_procedural_generator(std::string_view grap
     return std::move(*attached);
 }
 
-Result<void> Session::set_procedural_graph(Project* project, ObjectId component, std::string_view graph_key) {
+Result<void> Session::set_procedural_graph(Project* project, ObjectId component, StringView graph_key) {
     ATELIER_TRY(cancel_edit());
     ATELIER_TRY_BIND(state, admit_component_edit(component));
     ATELIER_TRY_BIND(resolved, resolve_procedural_graph_asset(graph_key, project));
@@ -851,7 +863,7 @@ Result<Array<ComponentType>> Session::component_types() const {
             continue;
         ATELIER_TRY_BIND(matches, runtime_.is_a(type, types_.component));
         if (*matches)
-            result.add({type, std::string((*info)->name)});
+            result.add({type, (*info)->name});
     }
     return result;
 }
@@ -888,7 +900,7 @@ Result<Array<Property>> Session::properties(ObjectId object) const {
                           field.transient,
                           field.read_only,
                           true,
-                          std::string(value.view().std_view()),
+                          std::move(value),
                           {},
                           std::move(field.metadata)};
             result.add(std::move(prop));
@@ -935,11 +947,12 @@ Result<void> Session::configure_body(ObjectId component, physics::BodySettings s
 
 Result<void> Session::reject_if_graph_controlled_field(ObjectId object, Span<const FieldId> path) const {
     const auto gkey = graph_of_object(object);
+
     const auto nname = graph_node_name(object);
     if (!gkey || !nname)
         return {};
     ATELIER_TRY_BIND(cur_type, runtime_.type_of(object));
-    Array<std::string> fnames;
+    Array<String> fnames;
     for (const auto step : path) {
         ATELIER_TRY_BIND(info, runtime_.describe(*cur_type));
         const auto f = std::ranges::find((*info)->fields, step, &FieldInfo::id);
@@ -948,10 +961,10 @@ Result<void> Session::reject_if_graph_controlled_field(ObjectId object, Span<con
         fnames.add(f->name);
         cur_type = f->value.type;
     }
-    const std::string dotted = detail::dotted(fnames);
+    const String dotted = detail::dotted(fnames);
     if (const auto ctrl = graph_controlling_parameter(*gkey, *nname, dotted))
-        return invalid("Field '" + *nname + "." + dotted + "' is controlled by promoted graph parameter '" + *ctrl +
-                       "'.");
+        return invalid(String::concat("Field '", *nname, ".", dotted, "' is controlled by promoted graph parameter '",
+                                      *ctrl, "'."));
     return {};
 }
 

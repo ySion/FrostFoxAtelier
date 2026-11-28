@@ -4,6 +4,7 @@
 #include "foundation/array.hpp"
 #include "foundation/optional.hpp"
 #include "foundation/scope_exit.hpp"
+#include "foundation/string.hpp"
 #include "platform/error.hpp"
 #include "platform/utf.hpp"
 #include "logging/native.hpp"
@@ -14,12 +15,13 @@
 
 namespace atelier::application {
 namespace {
-auto failure(std::string message, DWORD error = GetLastError()) {
-    return std::unexpected(
-        Error{ErrorCode::invalid_storage, std::move(message) + " (Windows " + std::to_string(error) + ")."});
+auto failure(Utf8Text message, DWORD error = GetLastError()) {
+    return std::unexpected(Error{
+        ErrorCode::invalid_storage,
+        String::concat(std::move(message).into_string(), " (Windows ", error, ").")});
 }
 
-void report_os_failure(std::string_view operation, DWORD error) noexcept {
+void report_os_failure(StringView operation, DWORD error) noexcept {
     static_cast<void>(
         ATELIER_LOG(logging::Severity::error, "play", "play.os_failed", "{} failed: Windows {}", operation, error));
 }
@@ -141,7 +143,8 @@ Result<void> PlayProcess::start(const std::filesystem::path& project, const std:
         if (!id)
             return std::unexpected(Error{ErrorCode::invalid_storage, id.error().message});
         std::error_code error;
-        directory = std::filesystem::absolute(storage->parent_path() / "Logs" / *id, error);
+        directory =
+            std::filesystem::absolute(storage->parent_path() / "Logs" / platform::utf8_to_utf16_validated(*id), error);
         if (error)
             return std::unexpected(Error{ErrorCode::invalid_storage, platform::error_message(error)});
     }
@@ -287,10 +290,10 @@ void PlayProcess::drain() noexcept {
             const auto overflow =
                 output.bytes.size() + received > output_capacity ? output.bytes.size() + received - output_capacity : 0;
             if (overflow) {
-                output.bytes.erase(0, overflow);
+                output.bytes.remove_at(0, overflow);
                 output.status.dropped_bytes += overflow;
             }
-            output.bytes.append(buffer.data(), received);
+            output.bytes.append(Span<const char>{buffer.data(), received});
         }
         if (!progressed)
             break;

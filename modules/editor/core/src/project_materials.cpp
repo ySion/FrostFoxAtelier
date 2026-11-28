@@ -9,26 +9,31 @@
 
 namespace atelier::editor {
 namespace {
-Result<const assets::ProjectEntry*> listed(const Project& project, std::string_view key, assets::AssetKind kind) {
+using namespace atelier::literals;
+
+Result<const assets::ProjectEntry*> listed(const Project& project, StringView key, assets::AssetKind kind) {
     const auto* at = project.entry(key);
-    if (!at || at->kind != kind)
-        return std::unexpected(
-            Error{ErrorCode::invalid_storage, "Missing resource or incorrect resource type: " + std::string(key)});
+    if (!at || at->kind != kind) {
+        const auto safe_key = String::from_utf8(key).value_or("<invalid UTF-8>"_s);
+        return std::unexpected(Error{
+            ErrorCode::invalid_storage, String::concat("Missing resource or incorrect resource type: ", safe_key)});
+    }
     return at;
 }
 
-auto failed_import(std::string message, Span<const std::filesystem::path> paths) {
+auto failed_import(Utf8Text message_text, Span<const std::filesystem::path> paths) {
+    String message = std::move(message_text).into_string();
     for (auto at = paths.rbegin(); at != paths.rend(); ++at) {
         std::error_code error;
         std::filesystem::remove(*at, error);
         if (error)
-            message += "; cleanup failed: " + platform::error_message(error);
+            message += String::concat("; cleanup failed: ", platform::error_message(error));
     }
     return std::unexpected(Error{ErrorCode::invalid_storage, std::move(message)});
 }
 }
 
-Result<std::string> Project::import_texture(const std::filesystem::path& source) {
+Result<String> Project::import_texture(const std::filesystem::path& source) {
     Array<std::filesystem::path> created;
     if (!assets::is_texture_path(source))
         return failed_import("Import a PNG, JPEG, BMP or TIFF texture.", created);
@@ -40,6 +45,7 @@ Result<std::string> Project::import_texture(const std::filesystem::path& source)
     auto metadata = *target;
     metadata += L".asset.json";
     std::error_code error;
+
     const auto exists = std::filesystem::exists(metadata, error);
     if (error)
         return failed_import(platform::error_message(error), created);
@@ -61,7 +67,7 @@ Result<std::string> Project::import_texture(const std::filesystem::path& source)
     return at->key;
 }
 
-Result<assets::TextureAsset> Project::reimport_texture(std::string_view key, const std::filesystem::path& source) {
+Result<assets::TextureAsset> Project::reimport_texture(StringView key, const std::filesystem::path& source) {
     ATELIER_TRY_BIND(listed_item, listed(*this, key, assets::AssetKind::texture));
     auto item = **listed_item;
     if (!assets::is_texture_path(source))
@@ -84,9 +90,9 @@ Result<assets::TextureAsset> Project::reimport_texture(std::string_view key, con
     return result;
 }
 
-Result<std::string> Project::create_material(const std::filesystem::path& relative,
-                                             const assets::MaterialAsset& asset) {
+Result<String> Project::create_material(const std::filesystem::path& relative, const assets::MaterialAsset& asset) {
     Array<std::filesystem::path> created;
+
     const auto normalized = relative.lexically_normal();
     if (normalized.empty() || normalized.has_root_path() || normalized.extension() != L".material" ||
         *normalized.begin() != L"Content")
@@ -101,6 +107,7 @@ Result<std::string> Project::create_material(const std::filesystem::path& relati
     auto metadata = *target;
     metadata += L".asset.json";
     std::error_code error;
+
     const auto exists = std::filesystem::exists(metadata, error);
     if (error)
         return failed_import(platform::error_message(error), created);
@@ -122,7 +129,7 @@ Result<std::string> Project::create_material(const std::filesystem::path& relati
     if (!document)
         return failed_import(document.error().describe(), created);
     const auto bytes = json::write(document->root(), {true, true});
-    ATELIER_TRY(write_file(*target, {bytes.data(), bytes.size()}, WriteMode::create));
+    ATELIER_TRY(write_file(*target, StringView{bytes.data(), bytes.size()}, WriteMode::create));
     created.add(*target);
     auto refreshed = refresh();
     if (std::filesystem::exists(metadata, error))
@@ -137,8 +144,9 @@ Result<std::string> Project::create_material(const std::filesystem::path& relati
     return at->key;
 }
 
-Result<std::string> Project::create_material_source(const std::filesystem::path& relative, std::string_view text) {
+Result<String> Project::create_material_source(const std::filesystem::path& relative, StringView text) {
     Array<std::filesystem::path> created;
+
     const auto normalized = relative.lexically_normal();
     if (normalized.empty() || normalized.has_root_path() || *normalized.begin() != L"Content" ||
         !assets::is_material_source_path(normalized))
@@ -157,6 +165,7 @@ material.Output shade(material.Context context,Params p) {
     ATELIER_TRY(write_file(*source_file, text, WriteMode::create));
     created.add(*source_file);
     assets::MaterialAsset asset;
+
     auto name = platform::utf16_to_utf8(source_path.generic_wstring());
     if (!name)
         return failed_import("Invalid UTF-16 text.", created);
@@ -178,12 +187,13 @@ Result<void> Project::save_material(const assets::MaterialAsset& asset) {
     if (!document)
         return std::unexpected(Error{ErrorCode::invalid_storage, document.error().describe()});
     const auto bytes = json::write(document->root(), {true, true});
-    ATELIER_TRY(write_file(*target, {bytes.data(), bytes.size()}));
+    ATELIER_TRY(write_file(*target, StringView{bytes.data(), bytes.size()}));
     return {}; // The caller records the successful save before refreshing the catalog.
 }
 
-Result<std::string> Project::create_procedural_graph(const std::filesystem::path& relative, std::string_view text) {
+Result<String> Project::create_procedural_graph(const std::filesystem::path& relative, StringView text) {
     Array<std::filesystem::path> created;
+
     const auto normalized = relative.lexically_normal();
     if (normalized.empty() || normalized.has_root_path() || !assets::is_procedural_graph_path(normalized) ||
         *normalized.begin() != L"Content")
@@ -195,12 +205,13 @@ Result<std::string> Project::create_procedural_graph(const std::filesystem::path
     auto metadata = *target;
     metadata += L".asset.json";
     std::error_code error;
+
     const auto exists = std::filesystem::exists(metadata, error);
     if (error)
         return failed_import(platform::error_message(error), created);
     if (exists)
         return failed_import("Procedural graph metadata already exists.", created);
-    std::string content;
+    String content;
     if (text.empty()) {
         Runtime validation;
         ATELIER_TRY(procedural::register_types(validation));
@@ -211,14 +222,14 @@ Result<std::string> Project::create_procedural_graph(const std::filesystem::path
         ATELIER_TRY_BIND(canonical, save_graph(validation, empty_doc));
         content = std::move(*canonical);
     } else {
-        if (!StringView(text).is_valid_utf8())
+        if (!text.is_valid_utf8())
             return failed_import("Invalid UTF-8 text.", created);
         Runtime validation;
         ATELIER_TRY(procedural::register_types(validation));
         const auto parsed = load_graph(validation, text);
         if (!parsed)
             return failed_import(parsed.error().message, created);
-        content.assign(text);
+        content = String::from_utf8_validated(text);
     }
     ATELIER_TRY(write_file(*target, content, WriteMode::create));
     created.add(*target);
@@ -235,9 +246,9 @@ Result<std::string> Project::create_procedural_graph(const std::filesystem::path
     return at->key;
 }
 
-Result<void> Project::save_procedural_graph(std::string_view key, std::string_view text) {
+Result<void> Project::save_procedural_graph(StringView key, StringView text) {
     ATELIER_TRY_BIND(item, listed(*this, key, assets::AssetKind::procedural_graph));
-    if (!StringView(text).is_valid_utf8())
+    if (!text.is_valid_utf8())
         return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-8 text."});
     Runtime validation;
     ATELIER_TRY(procedural::register_types(validation));

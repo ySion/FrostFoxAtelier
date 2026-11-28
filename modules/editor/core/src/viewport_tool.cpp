@@ -34,8 +34,8 @@ const std::array<ui::Color, 3> colors{srgb(0xff, 0x14, 0x14), srgb(0x14, 0xff, 0
 
 const ui::Color picked = srgb(0xff, 0xd9, 0x00);
 
-auto invalid(const char* text) {
-    return std::unexpected(Error{ErrorCode::invalid_definition, text});
+auto invalid(Utf8Text text) {
+    return std::unexpected(Error{ErrorCode::invalid_definition, std::move(text)});
 }
 
 float segment_distance(V2 p, V2 a, V2 b) {
@@ -842,10 +842,16 @@ Result<void> ViewportTool::update(Session& session, const ViewportView& view, V2
     g.valid = false;
     Optional<float> typed;
     if (!g.typed.empty()) {
-        const std::string text(g.typed.begin(), g.typed.end());
+        char text[32]{};
+
+        const std::size_t count = std::min<std::size_t>(g.typed.size(), sizeof(text));
+        for (std::size_t i = 0; i < count; ++i)
+            text[i] = static_cast<char>(g.typed[i]);
+
         float value{};
-        const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
-        if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || !std::isfinite(value)) {
+
+        const auto parsed = std::from_chars(text, text + count, value);
+        if (parsed.ec != std::errc{} || parsed.ptr != text + count || !std::isfinite(value)) {
             hint_ = L"Value: " + g.typed + L" · Enter a complete number / Esc cancel";
             return {};
         }

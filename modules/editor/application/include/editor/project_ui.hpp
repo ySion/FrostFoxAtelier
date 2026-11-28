@@ -2,6 +2,7 @@
 #include "editor/project.hpp"
 #include "foundation/array.hpp"
 #include "foundation/function_ref.hpp"
+#include "foundation/string.hpp"
 #include "ui_language/live_document.hpp"
 
 namespace atelier::editor {
@@ -21,7 +22,7 @@ public:
 
     Result<bool> event(const ui::Action&);
 
-    std::string_view diagnostic() const noexcept;
+    StringView diagnostic() const noexcept;
 
     std::uint64_t revision() const noexcept { return document_ ? document_->revision() : 0; }
 
@@ -40,7 +41,7 @@ private:
 
     std::wstring title_;
 
-    std::string error_;
+    String error_;
 
     Array<ui::Control> accepted_controls_;
 

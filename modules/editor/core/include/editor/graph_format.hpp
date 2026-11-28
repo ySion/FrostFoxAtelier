@@ -4,6 +4,7 @@
 #include "foundation/array.hpp"
 #include "foundation/function_ref.hpp"
 #include "foundation/optional.hpp"
+#include "foundation/string.hpp"
 #include "procedural/graph.hpp"
 #include "runtime/runtime.hpp"
 #include "world/diagnostic.hpp"
@@ -11,12 +12,10 @@
 #include <cstdint>
 #include <functional>
 #include <map>
-#include <string>
-#include <string_view>
 
 namespace atelier::editor {
 
-Optional<std::pair<std::string_view, std::string_view>> graph_endpoint(json::Value value);
+Optional<std::pair<StringView, StringView>> graph_endpoint(json::Value value);
 
 enum class GraphNodeShape : std::uint8_t {
     auto_role = 0,
@@ -30,45 +29,45 @@ enum class GraphNodeShape : std::uint8_t {
     circle,
 };
 
-[[nodiscard]] std::string_view graph_node_shape_name(GraphNodeShape shape) noexcept;
+[[nodiscard]] StringView graph_node_shape_name(GraphNodeShape shape) noexcept;
 
-[[nodiscard]] Optional<GraphNodeShape> parse_graph_node_shape(std::string_view text) noexcept;
+[[nodiscard]] Optional<GraphNodeShape> parse_graph_node_shape(StringView text) noexcept;
 
-[[nodiscard]] std::string format_graph_hex_color(std::uint32_t rgb);
+[[nodiscard]] String format_graph_hex_color(std::uint32_t rgb);
 
-[[nodiscard]] Optional<std::uint32_t> parse_graph_hex_color(std::string_view text) noexcept;
+[[nodiscard]] Optional<std::uint32_t> parse_graph_hex_color(StringView text) noexcept;
 
-[[nodiscard]] bool valid_graph_identifier(std::string_view text) noexcept;
+[[nodiscard]] bool valid_graph_identifier(StringView text) noexcept;
 
-[[nodiscard]] std::string make_unique_graph_identifier(std::string_view preferred, std::string_view fallback,
-                                                       FunctionRef<bool(std::string_view)> is_taken);
+[[nodiscard]] String make_unique_graph_identifier(StringView preferred, StringView fallback,
+                                                  FunctionRef<bool(StringView)> is_taken);
 
-[[nodiscard]] bool valid_graph_target_path(std::string_view text) noexcept;
+[[nodiscard]] bool valid_graph_target_path(StringView text) noexcept;
 
-[[nodiscard]] bool graph_targets_overlap(std::string_view a, std::string_view b) noexcept;
+[[nodiscard]] bool graph_targets_overlap(StringView a, StringView b) noexcept;
 
 // True when `promoted_target` equals `candidate` or is a strict dot-ancestor of `candidate`
 // (for example "box1.size" controls "box1.size.x", whereas "box1.size.x" does not control "box1.size").
-[[nodiscard]] bool graph_target_controls_path(std::string_view promoted_target, std::string_view candidate) noexcept;
+[[nodiscard]] bool graph_target_controls_path(StringView promoted_target, StringView candidate) noexcept;
 
 struct GraphPromotedParameter {
-    std::string name; // [A-Za-z_][A-Za-z0-9_]*, unique in `GraphDocument::parameters`.
+    String name; // [A-Za-z_][A-Za-z0-9_]*, unique in `GraphDocument::parameters`.
 
-    Array<std::string> targets; // Non-empty "node.field..." paths sharing one leaf/vector TypeId.
+    Array<String> targets; // Non-empty "node.field..." paths sharing one leaf/vector TypeId.
 
-    std::string label;
+    String label;
 
-    std::string category;
+    String category;
 
-    std::string description;
+    String description;
 
     bool operator==(const GraphPromotedParameter&) const = default;
 };
 
 struct ResolvedGraphTarget {
-    std::string node_name;
+    String node_name;
 
-    std::string field_path;
+    String field_path;
 
     ObjectId node{};
 
@@ -76,25 +75,25 @@ struct ResolvedGraphTarget {
 
     bool is_vector{};
 
-    std::string label;
+    String label;
 
-    std::string category;
+    String category;
 
-    std::string description;
+    String description;
 
     Array<detail::ScalarField> leaves;
 };
 
 struct GraphStickyNote {
-    std::string name; // [A-Za-z_][A-Za-z0-9_]*, unique among notes.
+    String name; // [A-Za-z_][A-Za-z0-9_]*, unique among notes.
 
     std::array<float, 2> position{};
 
     std::array<float, 2> size{210.f, 116.f};
 
-    std::string title;
+    String title;
 
-    std::string text;
+    String text;
 
     std::uint32_t color{0xd4a72c};
 
@@ -102,13 +101,13 @@ struct GraphStickyNote {
 };
 
 struct GraphNetworkBox {
-    std::string name; // [A-Za-z_][A-Za-z0-9_]*, unique among boxes.
+    String name; // [A-Za-z_][A-Za-z0-9_]*, unique among boxes.
 
     std::array<float, 2> position{};
 
     std::array<float, 2> size{320.f, 220.f};
 
-    std::string title;
+    String title;
 
     std::uint32_t color{0x3b5b78};
 
@@ -118,11 +117,11 @@ struct GraphNetworkBox {
 // A node of a procedural graph document. Its name, canvas position, and visual annotations are
 // document data, not node fields, so moving or styling a node on the canvas does not stamp it.
 struct GraphNode {
-    std::string name; // [A-Za-z_][A-Za-z0-9_]*, unique in its document.
+    String name; // [A-Za-z_][A-Za-z0-9_]*, unique in its document.
 
     ObjectRoot node; // Null when the Runtime has no node type of the saved name.
 
-    std::string asset_key{}; // On procedural.AssetNode: referenced .procgraph asset key ("project/...").
+    String asset_key{}; // On procedural.AssetNode: referenced .procgraph asset key ("project/...").
 
     json::Document overrides{}; // On procedural.AssetNode: sparse parameter overrides keyed by promoted name.
 
@@ -132,7 +131,7 @@ struct GraphNode {
 
     Optional<std::uint32_t> color{};
 
-    std::string comment{};
+    String comment{};
 
     // Saved JSON written over the node's own on save: its whole entry when `node` is null,
     // otherwise the property/override leaves that did not decode and the input ports that did not connect.
@@ -169,7 +168,7 @@ struct ResolvedPromotedSchema {
 };
 
 [[nodiscard]] Result<ResolvedGraphTarget>
-resolve_graph_parameter_target(Runtime& runtime, const GraphDocument& document, std::string_view target_spec);
+resolve_graph_parameter_target(Runtime& runtime, const GraphDocument& document, StringView target_spec);
 
 [[nodiscard]] Result<ResolvedPromotedSchema>
 resolve_promoted_parameter_schema(Runtime& runtime, const GraphDocument& document, const GraphPromotedParameter& param);
@@ -187,28 +186,28 @@ resolve_promoted_parameter_schema(Runtime& runtime, const GraphDocument& documen
 // Deterministically destroys all Runtime node and graph objects owned by a private cloned GraphDocument.
 void destroy_private_graph_document(Runtime& runtime, GraphDocument& document) noexcept;
 
-using SavedGraphPortMap = std::map<std::string, std::pair<bool, Array<std::string>>>;
+using SavedGraphPortMap = std::map<String, std::pair<bool, Array<String>>, std::less<>>;
 
 [[nodiscard]] Result<void> apply_saved_graph_node_inputs(Runtime& runtime, GraphDocument& document, GraphNode& target,
                                                          const SavedGraphPortMap& saved,
                                                          Array<world::Diagnostic>* issues = nullptr);
 
-using AssetPortResolver = std::function<Result<procedural::Ports>(std::string_view asset_key)>;
+using AssetPortResolver = std::function<Result<procedural::Ports>(StringView asset_key)>;
 
 [[nodiscard]] procedural::AssetSubgraph resolve_asset_binding(const AssetPortResolver& resolver,
-                                                              std::string_view asset_key);
+                                                              StringView asset_key);
 
 // Opens a version 4 graph file into `runtime`, which has the procedural types. Loading is
 // tolerant, as for scenes: a node of an unknown type, a property leaf that does not fit its field,
 // and a connection, display or template naming no loaded node or port are kept, reported, and
 // written back on save. Structural errors fail: the version, an unknown key, `nodes` that is not a
 // record, an invalid identifier, malformed `inputs` or `parameters`, or invalid shape/color/annotation geometry.
-[[nodiscard]] Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text,
+[[nodiscard]] Result<GraphDocument> load_graph(Runtime& runtime, StringView text,
                                                const AssetPortResolver& asset_ports = {});
 
 // The canonical version 4 text: nodes/notes/boxes by name, ordered promoted parameters, every node
 // parameter, two-space indent and a final newline, so saving an unchanged document again gives the
 // same bytes. Every node of the graph needs exactly one entry, and every loaded entry must be in the graph.
-[[nodiscard]] Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document);
+[[nodiscard]] Result<String> save_graph(Runtime& runtime, const GraphDocument& document);
 
 } // namespace atelier::editor

@@ -3,12 +3,12 @@
 #include "foundation/frame_timing.hpp"
 #include "foundation/optional.hpp"
 #include "foundation/span.hpp"
+#include "foundation/string.hpp"
 #include "renderer/renderer.hpp"
 #include "ui/controls.hpp"
 #include <array>
 #include <chrono>
 #include <memory>
-#include <string_view>
 
 namespace atelier::editor {
 // One CPU+GPU frame pipeline. CPU samples are the host's frame timing records of
@@ -33,9 +33,9 @@ public:
     enum class State { unavailable, waiting, ready };
 
     struct Pass {
-        std::string_view key;
+        StringView key;
 
-        std::string_view title;
+        StringView title;
 
         int parent{-1};
 

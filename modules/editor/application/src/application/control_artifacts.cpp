@@ -15,9 +15,7 @@
 #include "source/snapshot.hpp"
 #include <Windows.h>
 #include "assets/png.hpp"
-#include <fstream>
-#include <map>
-#include <set>
+#include <algorithm>
 
 namespace atelier::application::control_artifacts {
 namespace {
@@ -41,7 +39,11 @@ std::expected<void, Failure> checkpoint(const WriteState& work) {
     return {};
 }
 
-std::expected<void, Failure> write(const std::filesystem::path& path, std::string_view bytes) {
+std::expected<void, Failure> write(const std::filesystem::path& path, StringView bytes) {
+    return editor::write_file(path, bytes, editor::WriteMode::create).transform_error(storage_error);
+}
+
+std::expected<void, Failure> write_bytes(const std::filesystem::path& path, Span<const std::byte> bytes) {
     return editor::write_file(path, bytes, editor::WriteMode::create).transform_error(storage_error);
 }
 
@@ -56,16 +58,15 @@ json::Result<json::Document> engine_source_hashes(Span<const language::SourceFil
     json::Builder hashes;
     for (const auto& file : files)
         if (file.path.starts_with("engine/"))
-            ATELIER_TRY(
-                hashes.set(hashes.root(), file.path, foundation::sha256(as_bytes(Span<const char>{file.source}))));
+            ATELIER_TRY(hashes.set(hashes.root(), file.path, foundation::sha256(as_bytes(file.source.view()))));
     return hashes.finish();
 }
 
-std::expected<std::string, Failure> mesh_hash(const assets::MeshAsset& asset) {
+std::expected<String, Failure> mesh_hash(const assets::MeshAsset& asset) {
     return assets::mesh_content_sha256(asset).transform_error(dependency_error);
 }
 
-std::expected<assets::EngineDependency, Failure> installed_asset(std::string_view key, assets::AssetKind kind) {
+std::expected<assets::EngineDependency, Failure> installed_asset(StringView key, assets::AssetKind kind) {
     return assets::Reader{}.engine_dependency(key, kind).transform_error(dependency_error);
 }
 
@@ -84,7 +85,7 @@ json::Result<json::Document> engine_assets_json(Span<const assets::EngineDepende
     return result.finish();
 }
 
-bool valid_sha256(std::string_view digest) {
+bool valid_sha256(StringView digest) {
     return digest.size() == 64 &&
            std::ranges::all_of(digest, [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
 }
@@ -108,34 +109,40 @@ std::expected<Array<assets::EngineDependency>, Failure> installed_assets(json::V
         return std::unexpected(Failure("invalid_request", "Unknown engine assets schema; export it again"));
     ATELIER_TRY_BIND(records_value, object.at("records"));
     ATELIER_TRY_BIND(records, records_value->array());
-    Set<std::string_view> keys;
+    Set<StringView> keys;
     Array<assets::EngineDependency> result;
     for (const auto record : *records) {
         ATELIER_TRY(record.allowed_members({"key", "kind", "semantic_version", "digest_version", "content_sha256"}));
         ATELIER_TRY_BIND(key_text, record.string({"key"}));
-        const std::string key{*key_text};
-        if (!keys.add(*key_text))
-            return std::unexpected(Failure("invalid_request", "Duplicate engine asset: " + key));
+        const StringView key = *key_text;
+        if (!keys.add(key))
+            return std::unexpected(
+                Failure("invalid_request", String::concat("Duplicate engine asset: ", String::validated(key))));
         ATELIER_TRY_BIND(semantic_value, record.at("semantic_version"));
         ATELIER_TRY_BIND(semantic, version(*semantic_value));
         ATELIER_TRY_BIND(encoding_value, record.at("digest_version"));
         ATELIER_TRY_BIND(encoding, version(*encoding_value));
         ATELIER_TRY_BIND(name, record.string({"kind"}));
         if (*name != "mesh" && *name != "material")
-            return std::unexpected(Failure("dependency_mismatch", "Installed engine asset kind differs: " + key));
+            return std::unexpected(Failure(
+                "dependency_mismatch", String::concat("Installed engine asset kind differs: ", String::validated(key))));
         const auto kind = *name == "material" ? assets::AssetKind::material : assets::AssetKind::mesh;
         if (*encoding !=
             (kind == assets::AssetKind::material ? assets::material_digest_version : assets::mesh_digest_version))
             return std::unexpected(Failure("invalid_request", "Unknown engine asset digest encoding; export it again"));
         ATELIER_TRY_BIND(digest, record.string({"content_sha256"}));
         if (!valid_sha256(*digest))
-            return std::unexpected(Failure("invalid_request", "Invalid engine asset SHA-256: " + key));
+            return std::unexpected(
+                Failure("invalid_request", String::concat("Invalid engine asset SHA-256: ", String::validated(key))));
         ATELIER_TRY_BIND(current, installed_asset(key, kind));
         if (current->semantic_version != *semantic)
-            return std::unexpected(
-                Failure("dependency_mismatch", "Installed engine asset semantic version differs: " + key));
+            return std::unexpected(Failure("dependency_mismatch",
+                                           String::concat("Installed engine asset semantic version differs: ",
+                                                          String::validated(key))));
         if (current->content_sha256 != *digest)
-            return std::unexpected(Failure("dependency_mismatch", "Installed engine asset content differs: " + key));
+            return std::unexpected(Failure(
+                "dependency_mismatch",
+                String::concat("Installed engine asset content differs: ", String::validated(key))));
         result.add(std::move(*current));
     }
     std::ranges::sort(result, {}, &assets::EngineDependency::key);
@@ -158,14 +165,15 @@ std::expected<void, Failure> validate_material_records(json::Value manifest) {
             return std::unexpected(Failure("invalid_request", "Invalid material content digest record"));
         const auto digest = *value.string();
         if (!valid_sha256(digest))
-            return std::unexpected(Failure("invalid_request", "Invalid material content SHA-256: " + std::string{key}));
+            return std::unexpected(Failure(
+                "invalid_request", String::concat("Invalid material content SHA-256: ", String::validated(key))));
     }
     return {};
 }
 
-std::string string_field(json::Value object, std::string_view name) {
+String string_field(json::Value object, StringView name) {
     const auto at = object.find(name);
-    return at && *at && (**at).kind() == json::Kind::string ? std::string{*(**at).string()} : std::string{};
+    return at && *at && (**at).kind() == json::Kind::string ? String::from_utf8_validated(*(**at).string()) : String{};
 }
 
 // Only schema resource slots are references. Do not inspect arbitrary strings,
@@ -198,9 +206,9 @@ std::expected<void, Failure> scene_references(json::Value scene, const Reference
 // inputs, never all copied files. The strict loader still owns project failures;
 // this preflight identifies invalid engine keys before it can reject the load.
 std::expected<void, Failure> preflight_resources(editor::Project& project, json::Value scene) {
-    Set<std::pair<assets::AssetKind, std::string>> references;
-    Array<std::string> materials;
-    const auto reference = [&](assets::AssetKind kind, const std::string& key) -> std::expected<void, Failure> {
+    Set<std::pair<assets::AssetKind, String>> references;
+    Array<String> materials;
+    const auto reference = [&](assets::AssetKind kind, const String& key) -> std::expected<void, Failure> {
         if (key.empty() || !references.add({kind, key}))
             return {};
         if (key.starts_with("builtin/"))
@@ -212,7 +220,7 @@ std::expected<void, Failure> preflight_resources(editor::Project& project, json:
     ATELIER_TRY(scene_references(scene, reference));
     // The cooked candidate supplies SOP dependencies; disconnected or bypassed nodes may name missing assets.
     // Collect before visiting materials; their ordinal need not follow meshes.
-    Array<std::string> meshes;
+    Array<String> meshes;
     for (const auto& [kind, key] : references)
         if (kind == assets::AssetKind::mesh)
             meshes.add(key);
@@ -220,7 +228,7 @@ std::expected<void, Failure> preflight_resources(editor::Project& project, json:
         if (auto mesh = project.assets().mesh(key))
             for (const auto& binding : mesh->materials)
                 ATELIER_TRY(reference(assets::AssetKind::material, binding.key));
-    Map<std::string, assets::MaterialAsset> authors;
+    Map<String, assets::MaterialAsset> authors;
     for (std::size_t i = 0; i < materials.size(); ++i)
         if (auto asset = project.assets().material(materials[i])) {
             if (const auto* source = std::get_if<assets::MaterialSourceAsset>(&asset->author)) {
@@ -232,8 +240,8 @@ std::expected<void, Failure> preflight_resources(editor::Project& project, json:
             auto material_key = asset->key;
             authors.try_emplace(std::move(material_key), std::move(*asset));
         }
-    const auto source_author = [&](std::string key) -> const assets::MaterialSourceAsset* {
-        Set<std::string> visited;
+    const auto source_author = [&](String key) -> const assets::MaterialSourceAsset* {
+        Set<String> visited;
         while (!key.empty() && visited.add(key)) {
             const auto* at = authors.find(key);
             if (!at)
@@ -262,7 +270,7 @@ std::expected<void, Failure> preflight_resources(editor::Project& project, json:
     ATELIER_TRY_BIND(definitions, scene.find("materials"));
     if (*definitions && (**definitions).kind() == json::Kind::array) {
         ATELIER_TRY_BIND(items, (**definitions).array());
-        Map<std::string, json::Value> locals;
+        Map<StringView, json::Value> locals;
         for (const auto definition : *items) {
             ATELIER_TRY_BIND(id, definition.string({"id"}));
             locals.try_emplace(*id, definition);
@@ -284,7 +292,7 @@ std::expected<void, Failure> preflight_resources(editor::Project& project, json:
                     if (!*parent)
                         break;
                     if ((**parent).kind() == json::Kind::string) {
-                        source = source_author(std::string{*(**parent).string()});
+                        source = source_author(String::from_utf8_validated(*(**parent).string()));
                         break;
                     }
                     if ((**parent).kind() != json::Kind::object)
@@ -313,12 +321,12 @@ json::Result<json::Document> image_content(const material::ImageRef& image) {
     return content.finish();
 }
 
-std::string json_hash(json::Value value) {
+String json_hash(json::Value value) {
     const auto bytes = json::write(value);
     return foundation::sha256(as_bytes(bytes.view()));
 }
 
-json::Result<std::string> source_material_hash(const assets::MaterialAsset& asset, const language::SourceFile& file) {
+json::Result<String> source_material_hash(const assets::MaterialAsset& asset, const language::SourceFile& file) {
     // The installed MS producer's versioned author/text encoding, not a runtime
     // program hash. Project/scene records additionally digest the input pixels.
     json::Builder content;
@@ -332,7 +340,7 @@ json::Result<std::string> source_material_hash(const assets::MaterialAsset& asse
     return json_hash(content.root());
 }
 
-json::Result<std::string> sky_hash(const rendering::SkyMap& map) {
+json::Result<String> sky_hash(const rendering::SkyMap& map) {
     json::Builder content;
     ATELIER_TRY(content.set(content.root(), "width", map.width()));
     ATELIER_TRY(content.set(content.root(), "height", map.height()));
@@ -366,8 +374,7 @@ struct ComApartment {
     }
 };
 
-std::expected<void, Failure> output_path(json::Builder& result, std::string_view key,
-                                         const std::filesystem::path& path) {
+std::expected<void, Failure> output_path(json::Builder& result, StringView key, const std::filesystem::path& path) {
     const auto name = platform::utf16_to_utf8(path.generic_wstring());
     if (!name)
         return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
@@ -419,40 +426,49 @@ std::expected<json::Document, Failure> finish(const std::filesystem::path& outpu
         return std::unexpected(Failure("resource_limit", "Artifact manifest exceeds the 16 MiB file limit"));
     if (!work.claim_outcome())
         return std::unexpected(Failure("cancelled", "Artifact export cancelled"));
-    ATELIER_TRY(write(directory / "manifest.json", {encoded.data(), encoded.size()}));
+    ATELIER_TRY(write(directory / "manifest.json", StringView{encoded.data(), encoded.size()}));
     return result.finish();
 }
 
-std::string html_text(std::string_view text) {
-    std::string escaped;
-    for (const auto c : text)
-        switch (c) {
+String html_text(StringView text) {
+    String escaped;
+    escaped.reserve(text.size());
+    std::size_t plain = 0;
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        StringView entity;
+        switch (text[i]) {
         case '&':
-            escaped += "&amp;";
+            entity = "&amp;";
             break;
         case '<':
-            escaped += "&lt;";
+            entity = "&lt;";
             break;
         case '>':
-            escaped += "&gt;";
+            entity = "&gt;";
             break;
         case '"':
-            escaped += "&quot;";
+            entity = "&quot;";
             break;
         case '\'':
-            escaped += "&#39;";
+            entity = "&#39;";
             break;
         default:
-            escaped += c;
-            break;
+            continue;
         }
+        if (i > plain)
+            escaped.append_validated(text.slice(plain, i - plain));
+        escaped.append_validated(entity);
+        plain = i + 1;
+    }
+    if (text.size() > plain)
+        escaped.append_validated(text.slice(plain));
     return escaped;
 }
 
 // This view consumes only the exported facts. It has no pass names, settings
 // branches, resource-state model or inferred producer/consumer edges.
-std::string trace_html(json::Value trace) {
-    std::string html = R"HTML(<!doctype html>
+String trace_html(json::Value trace) {
+    auto html = String::from_utf8_validated(R"HTML(<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
 <title>Recorded post-processing commands</title><style>
@@ -471,97 +487,110 @@ th{color:#eee}td code{overflow-wrap:anywhere}caption{text-align:left;margin-bott
 </style><main><h1>Recorded post-processing commands</h1>
 <p>CPU command recording only. This is not GPU completion or proof of display.
 Solid arrows show recording order; dashed lines show bindings, not dependencies.</p>
-)HTML";
+)HTML");
     // The trace writer supplies every field below; this is its presentation,
     // not a second schema decoder or an external JSON entry point.
     const auto text = [](json::Value value) {
         if (value.kind() == json::Kind::string)
             return html_text(*value.string());
         const auto bytes = json::write(value);
-        return html_text({bytes.data(), bytes.size()});
+        return html_text(StringView{bytes.data(), bytes.size()});
     };
-    html += "<div class=\"facts\">Scope: <code>" + text(*trace.at("scope")) +
-            "</code><br>Recording sequence: " + text(*trace.at("recording_sequence")) +
-            " · UI frame: " + text(*trace.at("ui_frame_id")) + "<br>Attempt: " + text(*trace.at("attempt")) +
-            " · Frame result: <strong>" + text(*trace.at("frame_status")) + "</strong> · Observation: <strong>" +
-            text(*trace.path({"observation", "status"})) + "</strong></div>";
+    html.append(String::concat("<div class=\"facts\">Scope: <code>", text(*trace.at("scope")),
+                               "</code><br>Recording sequence: ", text(*trace.at("recording_sequence")),
+                               " · UI frame: ", text(*trace.at("ui_frame_id")), "<br>Attempt: ",
+                               text(*trace.at("attempt")), " · Frame result: <strong>",
+                               text(*trace.at("frame_status"))));
+    html.append(String::concat("</strong> · Observation: <strong>", text(*trace.path({"observation", "status"})),
+                               "</strong></div>"));
     if (const auto error = *trace.find("error")) {
         const auto bytes = json::write(*error, {true});
-        html += "<pre class=\"notice\">" + html_text({bytes.data(), bytes.size()}) + "</pre>";
+        html.append(String::concat("<pre class=\"notice\">", html_text(StringView{bytes.data(), bytes.size()}), "</pre>"));
     }
     if (*trace.string({"observation", "status"}) != "complete")
-        html += "<p class=\"notice\">This observation is not complete. Missing commands or bindings are not inferred. "
-                "See observation flags in the snapshot metadata below.</p>";
+        html.append_validated(
+            "<p class=\"notice\">This observation is not complete. Missing commands or bindings are not inferred. "
+            "See observation flags in the snapshot metadata below.</p>");
     const auto commands = *trace.at("commands")->array();
-    html += "<h2>Recording order</h2>";
+    html.append_validated("<h2>Recording order</h2>");
     if (commands.size() == 0)
-        html += "<p>No dispatch was observed in this scope for this render attempt. No pipeline template is shown.</p>";
+        html.append_validated(
+            "<p>No dispatch was observed in this scope for this render attempt. No pipeline template is shown.</p>");
     else {
-        html +=
-            "<div class=\"scroll\"><svg role=\"img\" aria-label=\"Actual dispatch recording order\" viewBox=\"0 0 1000 " +
-            std::to_string(commands.size() * 60) + "\">";
+        html.append(String::concat(
+            "<div class=\"scroll\"><svg role=\"img\" aria-label=\"Actual dispatch recording order\" viewBox=\"0 0 1000 ",
+            commands.size() * 60, "\">"));
         std::size_t i = 0;
         for (const auto command : commands) {
-            const auto y = std::to_string(i * 60);
-            html += "<g transform=\"translate(0 " + y + ")\" id=\"command-" + text(*command.at("ordinal")) +
-                    "\"><rect x=\"40\" y=\"2\" width=\"510\" height=\"40\"/>";
-            html += "<text x=\"54\" y=\"28\">" + text(*command.at("ordinal")) + " · " + text(*command.at("entry")) +
-                    "</text><text x=\"580\" y=\"28\">" + text(*command.at("kind")) + " · groups " +
-                    text(*command.at("groups")) + "</text>";
+            html.append(String::concat("<g transform=\"translate(0 ", i * 60, ")\" id=\"command-",
+                                       text(*command.at("ordinal")),
+                                       "\"><rect x=\"40\" y=\"2\" width=\"510\" height=\"40\"/>"));
+            html.append(String::concat("<text x=\"54\" y=\"28\">", text(*command.at("ordinal")), " · ",
+                                       text(*command.at("entry")), "</text><text x=\"580\" y=\"28\">",
+                                       text(*command.at("kind")), " · groups ", text(*command.at("groups")), "</text>"));
             if (i + 1 < commands.size())
-                html += "<path d=\"M56 42 V55\"/><path class=\"arrow\" d=\"M52 52 L56 58 L60 52 Z\"/>";
-            html += "</g>";
+                html.append_validated(
+                    "<path d=\"M56 42 V55\"/><path class=\"arrow\" d=\"M52 52 L56 58 L60 52 Z\"/>");
+            html.append_validated("</g>");
             ++i;
         }
-        html += "</svg></div><h2>Actual bindings</h2><p>Expand a command to inspect its binding ports and view ranges. "
-                "R numbers identify resources only within this snapshot. Resource origins are not inferred.</p>";
+        html.append_validated(
+            "</svg></div><h2>Actual bindings</h2><p>Expand a command to inspect its binding ports and view ranges. "
+            "R numbers identify resources only within this snapshot. Resource origins are not inferred.</p>");
     }
     for (const auto command : commands) {
         const auto bindings = *command.at("bindings")->array();
-        html += "<details><summary><code>" + text(*command.at("ordinal")) + " · " + text(*command.at("entry")) +
-                "</code> — " + std::to_string(bindings.size()) + " bindings</summary>";
-        html += "<div class=\"scroll\"><svg role=\"img\" aria-label=\"Actual resource bindings\" viewBox=\"0 0 1000 " +
-                std::to_string(std::max<std::size_t>(80, bindings.size() * 36 + 12)) + "\">";
-        html += "<rect x=\"8\" y=\"8\" width=\"110\" height=\"40\"/><text x=\"20\" y=\"34\">Command " +
-                text(*command.at("ordinal")) + "</text>";
+        html.append(String::concat("<details><summary><code>", text(*command.at("ordinal")), " · ",
+                                   text(*command.at("entry")), "</code> — ", bindings.size(), " bindings</summary>"));
+        html.append(String::concat(
+            "<div class=\"scroll\"><svg role=\"img\" aria-label=\"Actual resource bindings\" viewBox=\"0 0 1000 ",
+            std::max<std::size_t>(80, bindings.size() * 36 + 12), "\">"));
+        html.append(String::concat("<rect x=\"8\" y=\"8\" width=\"110\" height=\"40\"/><text x=\"20\" y=\"34\">Command ",
+                                   text(*command.at("ordinal")), "</text>"));
         std::size_t i = 0;
         for (const auto binding : bindings) {
-            const auto y = std::to_string(i * 36 + 28);
-            const auto label =
-                binding.at("resource")->is_null() ? text(*binding.at("status")) : "R" + text(*binding.at("resource"));
-            html += "<g id=\"binding-" + text(*command.at("ordinal")) + "-" + text(*binding.at("root_parameter")) +
-                    "-" + text(*binding.at("array_index")) + "\">";
-            html += "<path class=\"binding\" d=\"M118 28 H140 V" + y + " H170 M720 " + y + " H760\"/>";
-            html += "<text x=\"178\" y=\"" + std::to_string(i * 36 + 33) + "\">root " +
-                    text(*binding.at("root_parameter")) + ", " + text(*binding.at("kind")) + " · " +
-                    text(*binding.at("name")) + "[" + text(*binding.at("array_index")) + "]</text>";
-            html += "<rect x=\"760\" y=\"" + std::to_string(i * 36 + 12) +
-                    "\" width=\"220\" height=\"30\"/><text x=\"774\" y=\"" + std::to_string(i * 36 + 33) + "\">" +
-                    label + "</text></g>";
+            const auto y = i * 36 + 28;
+            const auto label = binding.at("resource")->is_null()
+                                   ? text(*binding.at("status"))
+                                   : String::concat("R", text(*binding.at("resource")));
+            html.append(String::concat("<g id=\"binding-", text(*command.at("ordinal")), "-",
+                                       text(*binding.at("root_parameter")), "-", text(*binding.at("array_index")),
+                                       "\">"));
+            html.append(String::concat("<path class=\"binding\" d=\"M118 28 H140 V", y, " H170 M720 ", y, " H760\"/>"));
+            html.append(String::concat("<text x=\"178\" y=\"", i * 36 + 33, "\">root ",
+                                       text(*binding.at("root_parameter")), ", ", text(*binding.at("kind")), " · ",
+                                       text(*binding.at("name")), "[", text(*binding.at("array_index")), "]</text>"));
+            html.append(String::concat("<rect x=\"760\" y=\"", i * 36 + 12,
+                                       "\" width=\"220\" height=\"30\"/><text x=\"774\" y=\"", i * 36 + 33, "\">",
+                                       label, "</text></g>"));
             ++i;
         }
-        html +=
+        html.append_validated(
             "</svg></div><div class=\"scroll\"><table><caption>Installed binding details</caption>"
-            "<thead><tr><th>Root / element</th><th>Name</th><th>Kind / status</th><th>Resource</th><th>View</th></tr></thead><tbody>";
+            "<thead><tr><th>Root / element</th><th>Name</th><th>Kind / status</th><th>Resource</th><th>View</th></tr></thead><tbody>");
         for (const auto binding : bindings)
-            html += "<tr><td>" + text(*binding.at("root_parameter")) + " / " + text(*binding.at("array_index")) +
-                    "</td><td><code>" + text(*binding.at("name")) + "</code></td><td>" + text(*binding.at("kind")) +
-                    " / " + text(*binding.at("status")) + "</td><td>" + text(*binding.at("resource")) +
-                    "</td><td><code>" + text(*binding.at("view")) + "</code></td></tr>";
-        html += "</tbody></table></div></details>";
+            html.append(String::concat("<tr><td>", text(*binding.at("root_parameter")), " / ",
+                                       text(*binding.at("array_index")), "</td><td><code>", text(*binding.at("name")),
+                                       "</code></td><td>", text(*binding.at("kind")), " / ",
+                                       text(*binding.at("status")),
+                                       String::concat("</td><td>", text(*binding.at("resource")), "</td><td><code>",
+                                                      text(*binding.at("view")), "</code></td></tr>")));
+        html.append_validated("</tbody></table></div></details>");
     }
-    html +=
-        "<h2>Resources</h2><div class=\"scroll\"><table><thead><tr><th>ID</th><th>Kind / name</th><th>Extent / DXGI format</th></tr></thead><tbody>";
+    html.append_validated(
+        "<h2>Resources</h2><div class=\"scroll\"><table><thead><tr><th>ID</th><th>Kind / name</th><th>Extent / DXGI format</th></tr></thead><tbody>");
     for (const auto resource : *trace.at("resources")->array())
-        html += "<tr><td>R" + text(*resource.at("index")) + "</td><td>" + text(*resource.at("kind")) + " / <code>" +
-                text(*resource.at("name")) + "</code></td><td>" + text(*resource.at("extent")) + " / " +
-                text(*resource.at("format")) + "</td></tr>";
-    html += "</tbody></table></div><details><summary>Snapshot metadata</summary><pre>";
+        html.append(String::concat("<tr><td>R", text(*resource.at("index")), "</td><td>", text(*resource.at("kind")),
+                                   " / <code>", text(*resource.at("name")), "</code></td><td>",
+                                   text(*resource.at("extent")), " / ", text(*resource.at("format")), "</td></tr>"));
+    html.append_validated("</tbody></table></div><details><summary>Snapshot metadata</summary><pre>");
     json::Builder metadata{trace};
     metadata.erase(metadata.root(), "commands");
     metadata.erase(metadata.root(), "resources");
     const auto bytes = json::write(metadata.root(), {true});
-    return html + html_text({bytes.data(), bytes.size()}) + "</pre></details></main></html>\n";
+    html.append(html_text(StringView{bytes.data(), bytes.size()}));
+    html.append_validated("</pre></details></main></html>\n");
+    return html;
 }
 }
 
@@ -570,21 +599,22 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
     ATELIER_TRY_BIND(serialized, document.serialize().transform_error(storage_error));
     data.scene = std::move(*serialized);
     ATELIER_TRY_BIND(scene, assets::json_format::parse(data.scene));
-    std::map<std::string, assets::EngineDependency, std::less<>> engine;
-    std::set<std::pair<assets::AssetKind, std::string>> references;
+    Map<String, assets::EngineDependency> engine;
+    Set<std::pair<assets::AssetKind, String>> references;
     Array<ObjectId> pending;
-    const auto add_engine_asset = [&](assets::AssetKind kind, const std::string& key) -> std::expected<void, Failure> {
-        const auto at = engine.find(key);
-        if (at == engine.end()) {
+    const auto add_engine_asset = [&](assets::AssetKind kind, const String& key) -> std::expected<void, Failure> {
+        if (const auto* existing = engine.find(key)) {
+            if (existing->kind != kind)
+                return std::unexpected(
+                    Failure("dependency_mismatch", String::concat("Engine asset used with conflicting kinds: ", key)));
+        } else {
             ATELIER_TRY_BIND(asset, installed_asset(key, kind));
-            engine.emplace(key, std::move(*asset));
-        } else if (at->second.kind != kind) {
-            return std::unexpected(Failure("dependency_mismatch", "Engine asset used with conflicting kinds: " + key));
+            engine.try_emplace(key, std::move(*asset));
         }
         return {};
     };
-    const auto reference = [&](assets::AssetKind kind, const std::string& key) -> std::expected<void, Failure> {
-        if (key.empty() || !references.emplace(kind, key).second)
+    const auto reference = [&](assets::AssetKind kind, const String& key) -> std::expected<void, Failure> {
+        if (key.empty() || !references.add({kind, key}))
             return {};
         if (key.starts_with("builtin/"))
             ATELIER_TRY(add_engine_asset(kind, key));
@@ -594,21 +624,21 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
         return {};
     };
     const auto implicit_surface = [&]() -> std::expected<void, Failure> {
-        const std::string key = "builtin/material/default-grid";
-        references.emplace(assets::AssetKind::material, key);
+        const auto key = "builtin/material/default-grid"_s;
+        references.add({assets::AssetKind::material, key});
         return add_engine_asset(assets::AssetKind::material, key);
     };
     // The serialized graph includes retained resource definitions, but not every
     // material a browser happened to load. Ordinary properties are not references.
     ATELIER_TRY(scene_references(scene->root(), reference));
     auto& runtime = document.world().runtime();
-    Map<std::string, json::Value> locals;
+    Map<String, json::Value> locals;
     ATELIER_TRY_BIND(materials, scene->root().at("materials"));
     ATELIER_TRY_BIND(definitions, materials->array());
     for (const auto definition : *definitions)
         if (string_field(definition, "source").empty()) {
             ATELIER_TRY_BIND(id, definition.string({"id"}));
-            locals.try_emplace(*id, definition);
+            locals.try_emplace(String::from_utf8_validated(*id), definition);
         }
     if (!locals.empty()) {
         // local_object intentionally admits only Entities/Components. Enumerate
@@ -616,10 +646,10 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
         // (including retained definitions), not unrelated drafts or Undo roots.
         Array<ObjectId> live;
         runtime.changed_objects(0, live);
-        Set<std::string> found;
+        Set<String> found;
         for (const auto object : live)
             if (const auto id = document.document_identity(object))
-                if (const auto key = std::to_string(*id); locals.contains(key)) {
+                if (const auto key = String::from_number(*id); locals.contains(key)) {
                     pending.add(object);
                     found.add(key);
                 }
@@ -680,11 +710,11 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
                 ATELIER_TRY(reference(assets::AssetKind::procedural_graph, proc->source));
                 if (!proc->source.empty() && !proc->source.starts_with("builtin/") &&
                     std::ranges::find(data.procedural_graphs, proc->source,
-                                      &std::pair<std::string, std::string>::first) == data.procedural_graphs.end()) {
+                                      &std::pair<String, String>::first) == data.procedural_graphs.end()) {
                     ATELIER_TRY_BIND(
                         encoded, document.procedural_graph_snapshot(proc->source).transform_error(dependency_error));
                     if (*encoded)
-                        data.procedural_graphs.emplace(proc->source, std::move(**encoded));
+                        data.procedural_graphs.add({proc->source, std::move(**encoded)});
                 }
                 ATELIER_TRY_BIND(
                     bindings,
@@ -692,7 +722,7 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
                 for (const auto& binding : *bindings)
                     pending.add(binding.resource.id());
                 if (proc->output && proc->output->surface_mesh &&
-                    std::ranges::find(*bindings, std::string_view{"default"}, &presentation::MaterialBinding::slot) ==
+                    std::ranges::find(*bindings, StringView{"default"}, &presentation::MaterialBinding::slot) ==
                         bindings->end()) {
                     ATELIER_TRY(implicit_surface());
                 }
@@ -740,7 +770,7 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
                 if (sky->resolved && std::ranges::none_of(data.skies, [&](const auto& entry) {
                         return entry.first == sky->source && entry.second == sky->resolved;
                     }))
-                    data.skies.emplace(sky->source, sky->resolved);
+                    data.skies.add({sky->source, sky->resolved});
             }
         }
     }
@@ -748,24 +778,26 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
     json::Builder resources;
     ATELIER_TRY(resources.set(resources.root(), "version", assets::json_format::json_bytes_version));
     ATELIER_TRY_BIND(records, resources.object(resources.root(), "records"));
-    const auto identity = [&](ObjectId object, const std::string& key) -> std::expected<std::string, Failure> {
+    const auto identity = [&](ObjectId object, const String& key) -> std::expected<String, Failure> {
         if (!key.empty())
             return key;
         const auto id = document.document_identity(object);
-        if (!id || !locals.contains(std::to_string(*id)))
+        const auto id_text = id ? String::from_number(*id) : String{};
+        if (!id || !locals.contains(id_text))
             return std::unexpected(
                 Failure("dependency_mismatch", "Material parent is outside the serialized scene closure"));
-        return "scene/" + std::to_string(*id);
+        return String::concat("scene/", id_text);
     };
-    const auto texture = [&](std::string_view path, const std::string& key, const ObjectRoot& root,
+    const auto texture = [&](StringView path, const String& key, const ObjectRoot& root,
                              json::Builder& content, json::Value inputs) -> std::expected<void, Failure> {
         ATELIER_TRY(reference(assets::AssetKind::texture, key));
         material::ImageRef image;
         if (root.registered()) {
             ATELIER_TRY_BIND(state, material::read_texture(runtime, root.id()).transform_error(storage_error));
             if (state->source != key)
-                return std::unexpected(
-                    Failure("dependency_mismatch", "Material input is bound to a different texture key: " + key));
+                return std::unexpected(Failure(
+                    "dependency_mismatch",
+                    String::concat("Material input is bound to a different texture key: ", key)));
             image = std::move(state->image);
         }
         ATELIER_TRY_BIND(input, content.object(inputs, path));
@@ -780,8 +812,8 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
         else if (at->image != image) {
             ATELIER_TRY_BIND(previous, image_content(at->image));
             if (*previous != *pixels)
-                return std::unexpected(
-                    Failure("dependency_mismatch", "One texture key has distinct loaded input pixels: " + key));
+                return std::unexpected(Failure(
+                    "dependency_mismatch", String::concat("One texture key has distinct loaded input pixels: ", key)));
         }
         return {};
     };
@@ -812,18 +844,18 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
                 if (at == data.material_sources.end())
                     data.material_sources.add(file);
                 else if (at->source != file.source)
-                    return std::unexpected(
-                        Failure("dependency_mismatch", "One MS Source path has distinct loaded text: " + file.path));
+                    return std::unexpected(Failure(
+                        "dependency_mismatch", String::concat("One MS Source path has distinct loaded text: ", file.path)));
                 if (key->starts_with("builtin/")) {
                     ATELIER_TRY_BIND(hash, source_material_hash(*asset, file));
                     if (*hash != engine.at(*key).content_sha256)
-                        return std::unexpected(
-                            Failure("dependency_mismatch",
-                                    "Loaded engine material differs from its installed producer: " + *key));
+                        return std::unexpected(Failure(
+                            "dependency_mismatch",
+                            String::concat("Loaded engine material differs from its installed producer: ", *key)));
                 }
             } else if (key->starts_with("builtin/"))
-                return std::unexpected(
-                    Failure("dependency_mismatch", "Loaded engine material has no Source snapshot: " + *key));
+                return std::unexpected(Failure(
+                    "dependency_mismatch", String::concat("Loaded engine material has no Source snapshot: ", *key)));
             if (state->definition && state->default_textures.size() != state->definition->textures().size())
                 return std::unexpected(
                     Failure("dependency_mismatch", "Material default texture bindings differ from its definition"));
@@ -847,7 +879,7 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
                 ATELIER_TRY(content.set_null(content.root(), "parent"));
             if (key->empty()) {
                 const auto doc_id = document.document_identity(object);
-                content.set_validated(content.root(), "author", locals.at(std::to_string(*doc_id)));
+                content.set_validated(content.root(), "author", locals.at(String::from_number(*doc_id)));
             }
             ATELIER_TRY_BIND(surface, material::capture_program(runtime, object).transform_error(storage_error));
             if (state->textures.size() != state->entries.size())
@@ -869,17 +901,23 @@ std::expected<Repro, Failure> snapshot_resources(const editor::Session& document
     }
     // Compare every distinct loaded version before deduplicating the declaration.
     for (const auto& mesh : data.meshes)
-        if (const auto at = engine.find(mesh.key); at != engine.end()) {
+        if (const auto* at = engine.find(mesh.key)) {
             ATELIER_TRY_BIND(hash, mesh_hash(mesh));
-            if (*hash != at->second.content_sha256)
-                return std::unexpected(Failure("dependency_mismatch",
-                                               "Loaded engine mesh differs from its installed producer: " + mesh.key));
+            if (*hash != at->content_sha256)
+                return std::unexpected(Failure(
+                    "dependency_mismatch",
+                    String::concat("Loaded engine mesh differs from its installed producer: ", mesh.key)));
         }
-    for (auto& [key, dependency] : engine) {
+    data.engine_assets.reserve(engine.size());
+    for (auto [key, dependency] : engine) {
         static_cast<void>(key);
         data.engine_assets.add(std::move(dependency));
     }
-    data.references.assign(references.begin(), references.end());
+    std::ranges::sort(data.engine_assets, {}, &assets::EngineDependency::key);
+    data.references.reserve(references.size());
+    for (const auto& item : references)
+        data.references.add(item);
+    std::ranges::sort(data.references);
     data.material_resources = resources.finish();
     return data;
 }
@@ -891,17 +929,19 @@ std::expected<void, Failure> validate_candidate_assets(const editor::Session& ca
                                      .transform_error(storage_error));
     for (const auto component : *generators)
         if (const auto* error = candidate.procedural_generator_error(component))
-            return std::unexpected(
-                Failure("dependency_mismatch", "Repro generator could not reproduce its output: " + error->message));
+            return std::unexpected(Failure(
+                "dependency_mismatch",
+                String::concat("Repro generator could not reproduce its output: ", error->message)));
     ATELIER_TRY_BIND(actual, snapshot_resources(candidate));
     for (const auto& item : actual->engine_assets)
         if (std::ranges::find(expected, item) == expected.end())
-            return std::unexpected(
-                Failure("dependency_mismatch", "Repro omits or changes an actual engine dependency: " + item.key));
+            return std::unexpected(Failure(
+                "dependency_mismatch",
+                String::concat("Repro omits or changes an actual engine dependency: ", item.key)));
     for (const auto& item : expected)
         if (std::ranges::find(actual->engine_assets, item) == actual->engine_assets.end())
-            return std::unexpected(
-                Failure("dependency_mismatch", "Repro declares an unused engine dependency: " + item.key));
+            return std::unexpected(Failure(
+                "dependency_mismatch", String::concat("Repro declares an unused engine dependency: ", item.key)));
     if (*bundle.manifest.root().at("material_resources") != actual->material_resources.root())
         return std::unexpected(
             Failure("dependency_mismatch",
@@ -954,8 +994,9 @@ std::expected<json::Document, Failure> export_repro(const std::filesystem::path&
                     const auto name = platform::utf16_to_utf8(section.generic_wstring());
                     if (!name)
                         return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
-                    return std::unexpected(Failure("invalid_destination",
-                                                   "Repro output cannot be inside a project folder (" + *name + ")"));
+                    return std::unexpected(Failure(
+                        "invalid_destination",
+                        String::concat("Repro output cannot be inside a project folder (", *name, ")")));
                 }
                 const auto next = parent.parent_path();
                 if (next == parent || next.empty())
@@ -1006,11 +1047,9 @@ std::expected<json::Document, Failure> export_repro(const std::filesystem::path&
             }
             auto source = data.material_sources.begin();
             for (; source != data.material_sources.end(); ++source) {
-                const auto named = platform::utf8_to_utf16(source->path);
-                if (!named)
-                    return std::unexpected(Failure("invalid_request", "Invalid UTF-8 text"));
+                const auto named = platform::utf8_to_utf16_validated(source->path);
                 const auto path = relative.generic_wstring();
-                if (CompareStringOrdinal(named->c_str(), -1, path.c_str(), -1, TRUE) == CSTR_EQUAL)
+                if (CompareStringOrdinal(named.c_str(), -1, path.c_str(), -1, TRUE) == CSTR_EQUAL)
                     break;
             }
             material::ImageRef image;
@@ -1024,9 +1063,9 @@ std::expected<json::Document, Failure> export_repro(const std::filesystem::path&
                     return storage_failure(error);
                 if (std::filesystem::is_regular_file(status)) {
                     ATELIER_TRY_BIND(bytes, assets::read_file(identity).transform_error(storage_error));
-                    ATELIER_TRY_BIND(identity_data, assets::json_format::parse(*bytes));
+                    ATELIER_TRY_BIND(identity_data, assets::json_format::parse(as_chars(*bytes)));
                     ATELIER_TRY_BIND(id, identity_data->root().string({"id"}));
-                    const auto key = "project/" + std::string{*id};
+                    const auto key = String::concat("project/", String::validated(*id));
                     if (const auto at = std::ranges::find(data.textures, key, &assets::TextureAsset::key);
                         at != data.textures.end())
                         image = at->image;
@@ -1175,7 +1214,7 @@ std::expected<json::Document, Failure> export_repro(const std::filesystem::path&
     // Reproduce the code actually published into this Runtime. Drafts are separate.
     // Saved edits/additions may not have published. Keep them outside the
     // runnable Source tree, then materialize exactly the live inputs.
-    Map<std::string, const language::SourceFile*> published;
+    Map<String, const language::SourceFile*> published;
     if (data.sources)
         for (const auto& file : data.sources->files)
             published.try_emplace(file.path, &file);
@@ -1207,7 +1246,7 @@ std::expected<json::Document, Failure> export_repro(const std::filesystem::path&
                 return storage_failure(error);
             if (bytes == (*found)->source.size()) {
                 ATELIER_TRY_BIND(text, assets::read_file(path).transform_error(storage_error));
-                if (*text == (*found)->source) {
+                if (as_chars(*text) == (*found)->source) {
                     std::filesystem::remove(path, error);
                     if (error)
                         return storage_failure(error);
@@ -1224,10 +1263,7 @@ std::expected<json::Document, Failure> export_repro(const std::filesystem::path&
             return storage_failure(error);
     }
     const auto publish_source = [&](const language::SourceFile& file) -> std::expected<void, Failure> {
-        const auto name = platform::utf8_to_utf16(file.path);
-        if (!name)
-            return std::unexpected(Failure("invalid_request", "Invalid UTF-8 text"));
-        const std::filesystem::path relative = *name;
+        const std::filesystem::path relative = platform::utf8_to_utf16_validated(file.path);
         if (relative.is_absolute() || relative.empty() || *relative.begin() != L"Source" ||
             relative.lexically_normal() != relative)
             return std::unexpected(Failure("dependency_mismatch", "Published source is not project relative"));
@@ -1254,26 +1290,26 @@ std::expected<json::Document, Failure> export_repro(const std::filesystem::path&
         if (file.path.starts_with("builtin/"))
             continue;
         if (const auto* at = published.find(file.path); at && (*at)->source != file.source)
-            return std::unexpected(
-                Failure("dependency_mismatch", "Gameplay and material Source captured different text at " + file.path));
+            return std::unexpected(Failure(
+                "dependency_mismatch",
+                String::concat("Gameplay and material Source captured different text at ", file.path)));
         // Containment compares canonical paths, not the worker's extended Win32 spelling.
         const auto canonical = std::filesystem::canonical(project, error);
         if (error)
             return storage_failure(error);
-        const auto name = platform::utf8_to_utf16(file.path);
-        if (!name)
-            return std::unexpected(Failure("invalid_request", "Invalid UTF-8 text"));
-        ATELIER_TRY_BIND(target, assets::resolve_project_path(canonical, *name).transform_error(storage_error));
+        const auto name = platform::utf8_to_utf16_validated(file.path);
+        ATELIER_TRY_BIND(target, assets::resolve_project_path(canonical, name).transform_error(storage_error));
         ATELIER_TRY(editor::write_file(*target, file.source).transform_error(storage_error));
     }
     ATELIER_TRY_BIND(scene_id, control::unique_id());
-    const auto scene_path = std::filesystem::path("Content/Scenes") / ("Control-" + *scene_id + ".scene");
+    const auto scene_rel = String::concat("Control-", *scene_id, ".scene");
+    const auto scene_path = std::filesystem::path(L"Content/Scenes") / platform::utf8_to_utf16_validated(scene_rel);
     ATELIER_TRY(write(project / scene_path, data.scene));
     ATELIER_TRY_BIND(config_text, assets::read_file(project / "Config/Project.json").transform_error(storage_error));
-    ATELIER_TRY_BIND(config_document, assets::json_format::parse(*config_text));
+    ATELIER_TRY_BIND(config_document, assets::json_format::parse(as_chars(*config_text)));
     json::Builder config{*config_document};
     if (data.ui_source)
-        ATELIER_TRY(config.set(config.root(), "ui_source", data.ui_source->path));
+        config.set_validated(config.root(), "ui_source", data.ui_source->path);
     else
         config.erase(config.root(), "ui_source");
     const auto scene_name = platform::utf16_to_utf8(scene_path.generic_wstring());
@@ -1281,7 +1317,7 @@ std::expected<json::Document, Failure> export_repro(const std::filesystem::path&
         return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
     config.set_validated(config.root(), "startup_scene", *scene_name);
     const auto config_bytes = json::write(config.root(), {true, true});
-    ATELIER_TRY(editor::write_file(project / "Config/Project.json", {config_bytes.data(), config_bytes.size()})
+    ATELIER_TRY(editor::write_file(project / "Config/Project.json", StringView{config_bytes.data(), config_bytes.size()})
                     .transform_error(storage_error));
     ATELIER_TRY_BIND(opened, editor::Project::open(output / "Project").transform_error(storage_error));
     auto& clone = *opened;
@@ -1294,31 +1330,24 @@ std::expected<json::Document, Failure> export_repro(const std::filesystem::path&
         ATELIER_TRY_BIND(actual, assets::material_format::encode(*copied));
         ATELIER_TRY_BIND(expected, assets::material_format::encode(material));
         if (*actual != *expected)
-            return std::unexpected(
-                Failure("dependency_mismatch", "Exported material author differs from its snapshot: " + material.key));
+            return std::unexpected(Failure(
+                "dependency_mismatch", String::concat("Exported material author differs from its snapshot: ", material.key)));
     }
     for (const auto& [key, text] : data.procedural_graphs) {
         ATELIER_TRY(checkpoint(work));
         ATELIER_TRY(clone.save_procedural_graph(key, text).transform_error(storage_error));
         ATELIER_TRY_BIND(actual, clone.assets().procedural_graph(key).transform_error(storage_error));
         if (actual->text != text)
-            return std::unexpected(
-                Failure("dependency_mismatch", "Exported procedural graph differs from its snapshot: " + key));
+            return std::unexpected(Failure(
+                "dependency_mismatch", String::concat("Exported procedural graph differs from its snapshot: ", key)));
     }
     for (const auto& file : data.material_sources) {
         ATELIER_TRY(checkpoint(work));
-        std::wstring name;
-        if (file.path.starts_with("builtin/")) {
-            auto converted = platform::utf8_to_utf16(file.path);
-            if (!converted)
-                return std::unexpected(Failure("invalid_request", "Invalid UTF-8 text"));
-            name = std::move(*converted);
-        } else
-            name = platform::utf8_to_utf16_validated(file.path); // Checked before publishing this unchanged path.
+        const std::wstring name = platform::utf8_to_utf16_validated(file.path);
         ATELIER_TRY_BIND(loaded, clone.assets().source(name).transform_error(storage_error));
         if (loaded->path != file.path || loaded->source != file.source)
-            return std::unexpected(
-                Failure("dependency_mismatch", "Exported MS Source differs from its loaded text: " + file.path));
+            return std::unexpected(Failure(
+                "dependency_mismatch", String::concat("Exported MS Source differs from its loaded text: ", file.path)));
     }
     for (const auto& texture : data.textures) {
         ATELIER_TRY(checkpoint(work));
@@ -1326,23 +1355,24 @@ std::expected<json::Document, Failure> export_repro(const std::filesystem::path&
         ATELIER_TRY_BIND(actual, image_content(copied->image));
         ATELIER_TRY_BIND(expected, image_content(texture.image));
         if (*actual != *expected)
-            return std::unexpected(
-                Failure("dependency_mismatch", "Exported texture differs from the loaded RGBA input: " + texture.key));
+            return std::unexpected(Failure(
+                "dependency_mismatch",
+                String::concat("Exported texture differs from the loaded RGBA input: ", texture.key)));
     }
-    Set<std::string_view> recorded;
+    Set<StringView> recorded;
     for (const auto& mesh : data.meshes) {
         ATELIER_TRY(checkpoint(work));
         ATELIER_TRY_BIND(loaded, clone.assets().mesh(mesh.key).transform_error(storage_error));
         ATELIER_TRY_BIND(expected, mesh_hash(mesh));
         if (!loaded->mesh)
-            return std::unexpected(
-                Failure("dependency_mismatch",
-                        "Copied dependency differs from the loaded mesh content or slot defaults: " + mesh.key));
+            return std::unexpected(Failure(
+                "dependency_mismatch",
+                String::concat("Copied dependency differs from the loaded mesh content or slot defaults: ", mesh.key)));
         ATELIER_TRY_BIND(actual, mesh_hash(*loaded));
         if (*actual != *expected)
-            return std::unexpected(
-                Failure("dependency_mismatch",
-                        "Copied dependency differs from the loaded mesh content or slot defaults: " + mesh.key));
+            return std::unexpected(Failure(
+                "dependency_mismatch",
+                String::concat("Copied dependency differs from the loaded mesh content or slot defaults: ", mesh.key)));
         if (mesh.key.starts_with("builtin/")) {
             const auto at = std::ranges::find(data.engine_assets, mesh.key, &assets::EngineDependency::key);
             if (at != data.engine_assets.end()) {
@@ -1350,9 +1380,10 @@ std::expected<json::Document, Failure> export_repro(const std::filesystem::path&
                 if (*at == *installed && at->content_sha256 == *expected)
                     continue;
             }
-            return std::unexpected(
-                Failure("dependency_mismatch", "Frozen engine declaration differs from the loaded mesh: " + mesh.key));
-        } else if (recorded.add(mesh.key)) {
+            return std::unexpected(Failure(
+                "dependency_mismatch",
+                String::concat("Frozen engine declaration differs from the loaded mesh: ", mesh.key)));
+        } else if (recorded.add(mesh.key.view())) {
             const auto resource = manifest.append_object(*resources);
             ATELIER_TRY(manifest.set(resource, "key", mesh.key));
             ATELIER_TRY(manifest.set(resource, "digest_version", assets::mesh_digest_version));
@@ -1363,14 +1394,14 @@ std::expected<json::Document, Failure> export_repro(const std::filesystem::path&
         ATELIER_TRY(checkpoint(work));
         ATELIER_TRY_BIND(loaded, clone.assets().sky_map(key).transform_error(storage_error));
         if (!loaded->map)
-            return std::unexpected(
-                Failure("dependency_mismatch", "Copied dependency differs from the loaded sky map: " + key));
+            return std::unexpected(Failure(
+                "dependency_mismatch", String::concat("Copied dependency differs from the loaded sky map: ", key)));
         ATELIER_TRY_BIND(expected, sky_hash(*map));
         ATELIER_TRY_BIND(actual, sky_hash(*loaded->map));
         if (*actual != *expected)
-            return std::unexpected(
-                Failure("dependency_mismatch", "Copied dependency differs from the loaded sky map: " + key));
-        if (recorded.add(key)) {
+            return std::unexpected(Failure(
+                "dependency_mismatch", String::concat("Copied dependency differs from the loaded sky map: ", key)));
+        if (recorded.add(key.view())) {
             const auto resource = manifest.append_object(*resources);
             ATELIER_TRY(manifest.set(resource, "key", key));
             ATELIER_TRY(manifest.set(resource, "digest_version", assets::json_format::json_bytes_version));
@@ -1384,7 +1415,7 @@ std::expected<json::Document, Failure> export_repro(const std::filesystem::path&
     manifest.set_validated(manifest.root(), "scene", *scene_name);
     if (data.drafts.root().size() != 0) {
         const auto bytes = json::write(data.drafts.root(), {true, true});
-        ATELIER_TRY(write(directory / "drafts.json", {bytes.data(), bytes.size()}));
+        ATELIER_TRY(write(directory / "drafts.json", StringView{bytes.data(), bytes.size()}));
     }
     json::Builder result;
     ATELIER_TRY(output_path(result, "project", output / "Project"));
@@ -1401,7 +1432,7 @@ std::expected<ReproBundle, Failure> validate_repro(const std::filesystem::path& 
     const auto& directory = *native;
     ATELIER_TRY_BIND(text, assets::read_file(directory / "manifest.json").transform_error(storage_error));
     // Format-limit and duplicate-field failures are input errors, not I/O failures.
-    ATELIER_TRY_BIND(document, assets::json_format::parse(*text));
+    ATELIER_TRY_BIND(document, assets::json_format::parse(as_chars(*text)));
     const auto manifest = document->root();
     ATELIER_TRY_BIND(kind, manifest.string({"kind"}));
     ATELIER_TRY_BIND(complete, manifest.boolean({"complete"}));
@@ -1432,7 +1463,7 @@ std::expected<ReproBundle, Failure> validate_repro(const std::filesystem::path& 
     ATELIER_TRY_BIND(files, files_value->array());
     if (files->size() > 11000)
         return std::unexpected(Failure("invalid_request", "Invalid repro file list"));
-    Map<std::string, json::Value> expected;
+    Map<String, json::Value> expected;
     for (const auto file : *files) {
         ATELIER_TRY_BIND(name, file.string({"path"}));
         const std::filesystem::path path = platform::utf8_to_utf16_validated(*name);
@@ -1440,7 +1471,7 @@ std::expected<ReproBundle, Failure> validate_repro(const std::filesystem::path& 
         if (!generic)
             return std::unexpected(Failure("invalid_request", "Invalid UTF-16 text"));
         if (path.empty() || path.has_root_path() || path.lexically_normal() != path || *path.begin() == L".." ||
-            name->find(':') != std::string::npos || path == L"manifest.json" || generated_cache(path) ||
+            name->contains(':') || path == L"manifest.json" || generated_cache(path) ||
             !expected.try_emplace(*generic, file).inserted)
             return std::unexpected(Failure("invalid_request", "Invalid or duplicate bundle path"));
     }
@@ -1528,20 +1559,23 @@ std::expected<json::Document, Failure> write_samples(const std::filesystem::path
     std::size_t index{};
     for (auto& sample : samples) {
         ATELIER_TRY(checkpoint(work));
-        const auto name = "sample-" + std::to_string(++index);
+        const auto name = String::concat("sample-", ++index);
+        const auto png_name = String::concat(name, ".png");
+        const auto depth_name = String::concat(name, ".depth.f32");
+        const auto json_name = String::concat(name, ".json");
         const auto& pixels = sample.pixels;
         const auto count = std::uint64_t(pixels.extent.width) * pixels.extent.height;
         if (!count || count > UINT_MAX / 4 || count * 4 != pixels.rgba.size() || count != pixels.depth.size())
             return std::unexpected(Failure("render_failure", "Capture size does not match accepted extent"));
-        ATELIER_TRY(
-            assets::write_png(pixels.extent.width, pixels.extent.height, pixels.rgba, directory / (name + ".png"))
-                .transform_error(storage_error));
+        ATELIER_TRY(assets::write_png(pixels.extent.width, pixels.extent.height, pixels.rgba,
+                                      directory / platform::utf8_to_utf16_validated(png_name))
+                        .transform_error(storage_error));
         ATELIER_TRY(checkpoint(work));
-        ATELIER_TRY(write(directory / (name + ".depth.f32"),
-                          {reinterpret_cast<const char*>(pixels.depth.data()), pixels.depth.size() * sizeof(float)}));
+        ATELIER_TRY(write_bytes(directory / platform::utf8_to_utf16_validated(depth_name),
+                                as_bytes(Span{pixels.depth})));
         json::Builder record{sample.metadata};
-        record.set_validated(record.root(), "color", name + ".png");
-        record.set_validated(record.root(), "depth", name + ".depth.f32");
+        record.set_validated(record.root(), "color", png_name);
+        record.set_validated(record.root(), "depth", depth_name);
         ATELIER_TRY_BIND(extent, record.array(record.root(), "extent"));
         record.append(*extent, std::uint64_t{pixels.extent.width});
         record.append(*extent, std::uint64_t{pixels.extent.height});
@@ -1550,7 +1584,8 @@ std::expected<json::Document, Failure> write_samples(const std::filesystem::path
             "float32-le, top-left, tightly packed, reversed-Z near=1 background=0; camera.far_depth is the geometry clipping boundary; unjittered");
         record.set_validated(record.root(), "color_format", "sRGB RGBA8, top-left; complete editor client area");
         const auto bytes = json::write(record.root(), {true, true});
-        ATELIER_TRY(write(directory / (name + ".json"), {bytes.data(), bytes.size()}));
+        ATELIER_TRY(write(directory / platform::utf8_to_utf16_validated(json_name),
+                          StringView{bytes.data(), bytes.size()}));
         manifest.append(*records, record.root());
     }
     json::Builder result;
@@ -1596,7 +1631,7 @@ std::expected<json::Document, Failure> write_trace(const std::filesystem::path& 
         const auto record = trace.append_object(*commands);
         ATELIER_TRY(trace.set(record, "ordinal", commands->size()));
         ATELIER_TRY(trace.set(record, "kernel", *kernel));
-        ATELIER_TRY(trace.set(record, "entry", std::string_view{command.entry.data()}));
+        ATELIER_TRY(trace.set(record, "entry", StringView{command.entry.data()}));
         trace.set_validated(record, "kind", command.indirect ? "dispatch_indirect" : "dispatch");
         if (command.indirect)
             ATELIER_TRY(trace.set_null(record, "groups"));
@@ -1620,14 +1655,14 @@ std::expected<json::Document, Failure> write_trace(const std::filesystem::path& 
                     const auto resource = trace.append_object(*resource_records);
                     ATELIER_TRY(trace.set(resource, "index", *item));
                     trace.set_validated(resource, "kind", kind == kGfxObserved_TextureSRV ? "texture" : kinds[kind]);
-                    ATELIER_TRY(trace.set(resource, "name", std::string_view{owned.resource_name.data()}));
+                    ATELIER_TRY(trace.set(resource, "name", StringView{owned.resource_name.data()}));
                     ATELIER_TRY_BIND(extent, trace.array(resource, "extent"));
                     for (const auto size : std::array<std::uint64_t, 3>{binding.width, binding.height, binding.depth})
                         trace.append(*extent, size);
                     ATELIER_TRY(trace.set(resource, "format", static_cast<std::uint32_t>(binding.resource_format)));
                 }
             }
-            ATELIER_TRY(trace.set(entry, "name", std::string_view{owned.name.data()}));
+            ATELIER_TRY(trace.set(entry, "name", StringView{owned.name.data()}));
             ATELIER_TRY(trace.set(entry, "root_parameter", binding.root_parameter));
             ATELIER_TRY(trace.set(entry, "array_index", binding.array_index));
             trace.set_validated(entry, "kind", kinds[binding.kind]);
@@ -1643,9 +1678,10 @@ std::expected<json::Document, Failure> write_trace(const std::filesystem::path& 
         }
     }
     const auto bytes = json::write(trace.root(), {true, true});
-    ATELIER_TRY(write(directory / "trace.json", {bytes.data(), bytes.size()}));
+    ATELIER_TRY(write(directory / "trace.json", StringView{bytes.data(), bytes.size()}));
     ATELIER_TRY(checkpoint(work));
-    ATELIER_TRY(write(directory / "trace.html", trace_html(trace.root())));
+    const auto html = trace_html(trace.root());
+    ATELIER_TRY(write(directory / "trace.html", html));
     json::Builder manifest{metadata};
     const auto entry = manifest.object_validated(manifest.root(), "trace");
     manifest.set_validated(entry, "json", "trace.json");

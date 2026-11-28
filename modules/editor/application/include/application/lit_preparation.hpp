@@ -1,9 +1,9 @@
 #pragma once
 #include "foundation/optional.hpp"
+#include "foundation/string.hpp"
 #include "renderer/renderer.hpp"
 #include "runtime/runtime.hpp"
 #include <filesystem>
-#include <string>
 
 namespace atelier::application {
 // ATELIER_SHADER_CACHE, else %LOCALAPPDATA%\FrostFoxAtelier\ShaderCache, else empty (no cache).
@@ -25,7 +25,7 @@ public:
 
         bool fallback{};
 
-        std::string failure;
+        String failure;
     };
 
     // The optional result belongs to the first requested-view attempt, including

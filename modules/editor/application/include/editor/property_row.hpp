@@ -1,6 +1,7 @@
 #pragma once
 #include "foundation/map.hpp"
 #include "foundation/optional.hpp"
+#include "foundation/string.hpp"
 #include "platform/utf.hpp"
 #include "ui_language/component.hpp"
 #include <algorithm>
@@ -105,12 +106,12 @@ public:
     void clear() { entries_.clear(); }
 
     ui_language::TooltipBinding get(ui::ControlKey key, std::wstring_view title, std::wstring_view identity,
-                                    std::string_view description) {
+                                    StringView description) {
         auto& entry = *entries_.try_emplace(key).value;
         entry.used = true;
         if (!entry.help || entry.help->title != title || entry.help->identity != identity ||
             entry.description != description) {
-            entry.description = description;
+            entry.description = String::from_utf8_validated(description);
             entry.help = std::make_shared<const ui::Tooltip>(ui::Tooltip{
                 std::wstring(title), std::wstring(identity), platform::utf8_to_utf16_validated(description)});
         }
@@ -121,7 +122,7 @@ private:
     struct Entry {
         ui_language::TooltipBinding help;
 
-        std::string description;
+        String description;
 
         bool used{};
     };

@@ -3,6 +3,7 @@
 #include "foundation/array.hpp"
 #include "foundation/map.hpp"
 #include "foundation/span.hpp"
+#include "foundation/string.hpp"
 #include "renderer/renderer.hpp"
 #include "ui_language/component.hpp"
 
@@ -28,7 +29,7 @@ public:
 
     Result<void> reset_document(); // Retire JIT scopes before the owner Runtime is closed, even on failure.
 
-    std::string_view diagnostic() const noexcept { return diagnostic_; }
+    const String& diagnostic() const noexcept { return diagnostic_; }
 
     Result<void> close(); // Retire GPU work before HWND destruction.
 
@@ -63,7 +64,7 @@ private:
 
     std::unique_ptr<ui_language::Instance> instance_;
 
-    std::string diagnostic_;
+    String diagnostic_;
 
     ui::PixelExtent extent_;
 

@@ -80,7 +80,7 @@ void verify_graph_format() {
         auto cand = take(source::Program::prepare(req));
         take(program->try_publish(cand));
     }
-    const std::string_view input_json = R"({
+    const StringView input_json = R"({
   "nodes": {
     "grid": {
       "inputs": {},
@@ -205,9 +205,10 @@ Result<void> verify_scene_recovery(editor::Project& project) {
     const auto saved = take(recovery.preserve(document, project.root(), original, "Frame read failed", directory));
     require(saved && saved->warning.empty(), "Author scene recovery did not publish a complete record");
     const auto metadata = take(assets::read_file(saved->scene.parent_path() / "recovery.json"));
-    const auto parsed = json::Document::parse(metadata, {16});
+    const auto parsed = json::Document::parse(as_chars(metadata), {16});
+    const auto saved_scene_bytes = take(assets::read_file(saved->scene));
     require(parsed && parsed->root().string({"reason"}) == "Frame read failed" &&
-                take(assets::read_file(saved->scene)) == expected_scene,
+                as_chars(saved_scene_bytes) == expected_scene,
             "Recovery lost the failed frame's scene or reason");
 
     application::SceneRecovery partial;
@@ -217,8 +218,9 @@ Result<void> verify_scene_recovery(editor::Project& project) {
     ATELIER_TRY_BIND(metadata_exists, acceptance::file_exists(surviving->scene.parent_path() / "recovery.json"));
     require(!surviving->warning.empty() && !*metadata_exists,
             "Rejected metadata hid the saved scene or published a partial sidecar");
-    const auto loaded = take(editor::Session::deserialize(take(assets::read_file(surviving->scene)), project, {},
-                                                          editor::LoadPolicy::strict));
+    const auto surviving_bytes = take(assets::read_file(surviving->scene));
+    const auto loaded =
+        take(editor::Session::deserialize(as_chars(surviving_bytes), project, {}, editor::LoadPolicy::strict));
     require(take(loaded->world().members()).size() == 1, "Surviving recovery scene cannot be reopened");
 
     application::SceneRecovery blocked;
@@ -319,8 +321,8 @@ Result<void> verify_roof_group(editor::Session& doc, editor::Project& project, e
 Result<void> verify_procedural_editor() {
     ATELIER_TRY_BIND(
         temp, acceptance::file_operation([](auto& error) { return std::filesystem::temp_directory_path(error); }));
-    const auto temp_root = *temp / ("atelier-sop-editor-" + std::to_string(GetCurrentProcessId()) + "-" +
-                                    std::to_string(GetTickCount64()));
+    const auto temp_root = *temp / (L"atelier-sop-editor-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
+                                    std::to_wstring(GetTickCount64()));
     struct Cleanup {
         std::filesystem::path dir;
 
@@ -361,10 +363,11 @@ class game.DiagnosticSop : procedural.Node {
     require(graph_entry != nullptr && graph_entry->kind == assets::AssetKind::procedural_graph && *sidecar_exists,
             "Project did not register .procgraph asset with GUID sidecar.");
 
-    auto loaded = editor::load_project_scene(project, take(assets::read_file(temp_root / "Content/Scenes/Main.scene")),
-                                             editor::LoadPolicy::strict, false, editor::SessionRole::editor);
+    const auto main_scene_bytes = take(assets::read_file(temp_root / "Content/Scenes/Main.scene"));
+    auto loaded = editor::load_project_scene(project, as_chars(main_scene_bytes), editor::LoadPolicy::strict,
+                                             false, editor::SessionRole::editor);
     require(loaded.session != nullptr && !loaded.error,
-            loaded.error ? loaded.error->message : "Project scene failed to load with custom Source SOP.");
+            loaded.error ? StringView{loaded.error->message} : "Project scene failed to load with custom Source SOP.");
     auto& doc = *loaded.session;
     doc.bind_project_code(loaded.code);
 
@@ -392,11 +395,11 @@ class game.DiagnosticSop : procedural.Node {
     take(doc.graph_undo(repair_key, false));
     take(doc.graph_undo(repair_key, true));
     take(doc.save_graph(project, repair_key));
-    const auto disk = take(assets::read_file(temp_root / "Content/Graphs/Repair.procgraph"));
+    const auto disk_bytes = take(assets::read_file(temp_root / "Content/Graphs/Repair.procgraph"));
+    const auto disk = as_chars(disk_bytes);
     const auto reopened = take(editor::load_graph(rt, disk));
-    require(disk.find("builtin/cube") != disk.npos && disk.find("renamed.output") != disk.npos &&
-                disk.find("legacy.output") != disk.npos && disk.find("grid.output") == disk.npos &&
-                reopened.issues.size() == 2,
+    require(disk.contains("builtin/cube") && disk.contains("renamed.output") && disk.contains("legacy.output") &&
+                !disk.contains("grid.output") && reopened.issues.size() == 2,
             "Save/reopen must retain repaired properties, renamed live edges and unavailable endpoints.");
 
     // Cutting wires or deleting nodes on a multi-input port with unresolved siblings must strip removed endpoints,
@@ -405,40 +408,42 @@ class game.DiagnosticSop : procedural.Node {
         take(doc.graph_add_node(repair_key, "procedural.Box", "extra_box", {40.f, 220.f}));
         take(doc.graph_connect(repair_key, "extra_box", "output", "merged", "inputs"));
         take(doc.save_graph(project, repair_key));
-        const auto with_extra = take(assets::read_file(temp_root / "Content/Graphs/Repair.procgraph"));
+        const auto with_extra_bytes = take(assets::read_file(temp_root / "Content/Graphs/Repair.procgraph"));
+        const auto with_extra = as_chars(with_extra_bytes);
         const auto pos_ren = with_extra.find("renamed.output");
         const auto pos_leg = with_extra.find("legacy.output");
         const auto pos_ext = with_extra.find("extra_box.output");
-        require(pos_ren != with_extra.npos && pos_leg != with_extra.npos && pos_ext != with_extra.npos &&
+        require(pos_ren != StringView::npos && pos_leg != StringView::npos && pos_ext != StringView::npos &&
                     pos_ren < pos_leg && pos_leg < pos_ext,
                 "Connecting to a multi-input port with kept endpoints lost unresolved siblings or order.");
 
-        const std::array cut_renamed{editor::GraphConnectionView{"renamed", "output", 0, "merged", "inputs", 0}};
+        const std::array cut_renamed{editor::GraphConnectionView{"renamed"_s, "output"_s, 0, "merged"_s, "inputs"_s, 0}};
         take(doc.graph_disconnect_edges(repair_key, cut_renamed));
         require(doc.graph_dirty(repair_key), "Cutting a live wire on a kept multi-input port must dirty the graph.");
         take(doc.graph_undo(repair_key, false));
         require(!doc.graph_dirty(repair_key), "Undo of wire cut did not restore exact kept multi-input list.");
         take(doc.graph_undo(repair_key, true));
         take(doc.save_graph(project, repair_key));
-        const auto after_cut_disk = take(assets::read_file(temp_root / "Content/Graphs/Repair.procgraph"));
+        const auto after_cut_bytes = take(assets::read_file(temp_root / "Content/Graphs/Repair.procgraph"));
+        const auto after_cut_disk = as_chars(after_cut_bytes);
         const auto reopened_after_cut = take(editor::load_graph(rt, after_cut_disk));
         const auto cut_leg = after_cut_disk.find("legacy.output");
         const auto cut_ext = after_cut_disk.find("extra_box.output");
-        require(after_cut_disk.find("renamed.output") == after_cut_disk.npos && cut_leg != after_cut_disk.npos &&
-                    cut_ext != after_cut_disk.npos && cut_leg < cut_ext && reopened_after_cut.issues.size() == 2,
+        require(!after_cut_disk.contains("renamed.output") && cut_leg != StringView::npos &&
+                    cut_ext != StringView::npos && cut_leg < cut_ext && reopened_after_cut.issues.size() == 2,
                 "Cut wire resurrected on save/reopen or disturbed remaining kept multi-input order.");
 
-        const std::array remove_extra{std::string{"extra_box"}};
+        const std::array remove_extra{"extra_box"_s};
         take(doc.graph_remove_nodes(repair_key, remove_extra));
         require(doc.graph_dirty(repair_key), "Removing an upstream node must dirty the graph.");
         take(doc.graph_undo(repair_key, false));
         require(!doc.graph_dirty(repair_key), "Undo of node removal did not restore downstream kept multi-input list.");
         take(doc.graph_undo(repair_key, true));
         take(doc.save_graph(project, repair_key));
-        const auto after_del_disk = take(assets::read_file(temp_root / "Content/Graphs/Repair.procgraph"));
-        require(after_del_disk.find("extra_box") == after_del_disk.npos &&
-                    after_del_disk.find("renamed.output") == after_del_disk.npos &&
-                    after_del_disk.find("legacy.output") != after_del_disk.npos,
+        const auto after_del_bytes = take(assets::read_file(temp_root / "Content/Graphs/Repair.procgraph"));
+        const auto after_del_disk = as_chars(after_del_bytes);
+        require(!after_del_disk.contains("extra_box") && !after_del_disk.contains("renamed.output") &&
+                    after_del_disk.contains("legacy.output"),
                 "Removed node endpoint resurrected on save or lost unresolved sibling.");
     }
 
@@ -471,7 +476,7 @@ class game.DiagnosticSop : procedural.Node {
             return Optional<std::filesystem::path>{};
         }
 
-        void asset_created(std::string_view, bool) override {}
+        void asset_created(StringView, bool) override {}
 
         Result<void> end_interaction() override { return {}; }
 
@@ -522,7 +527,7 @@ class game.DiagnosticSop : procedural.Node {
 
         Result<void> fit_lighting(bool) override { return {}; }
 
-        Result<void> rename_asset(std::string_view, std::string_view) override { return {}; }
+        Result<void> rename_asset(StringView, StringView) override { return {}; }
 
         Result<void> save_scene(const std::filesystem::path&) override { return {}; }
 
@@ -546,16 +551,16 @@ class game.DiagnosticSop : procedural.Node {
 
         void stop_play(bool) override {}
 
-        Result<std::string> import_asset(editor::ImportKind, const std::filesystem::path&) override {
-            return std::string{};
+        Result<String> import_asset(editor::ImportKind, const std::filesystem::path&) override {
+            return String{};
         }
 
-        Result<void> reimport_asset(std::string_view, const std::filesystem::path&) override { return {}; }
+        Result<void> reimport_asset(StringView, const std::filesystem::path&) override { return {}; }
 
-        Result<void> open_graph_context(std::string_view key) override {
+        Result<void> open_graph_context(StringView key) override {
             if (!doc.has_graph(key))
                 ATELIER_TRY(doc.open_graph(proj, key));
-            ws.active_graph = std::string(key);
+            ws.active_graph = String::from_utf8_validated(key);
             ws.set_single_graph_selection({});
             ws.dock.select(editor::network_control::tab);
             ws.dock.select(editor::control::parameters_tab);
@@ -569,7 +574,7 @@ class game.DiagnosticSop : procedural.Node {
             ws.bump_view_revision();
         }
 
-        void select_graph_node(std::string_view key, std::string_view node_name) override {
+        void select_graph_node(StringView key, StringView node_name) override {
             if (ws.active_graph == key) {
                 ws.set_single_graph_selection(node_name);
                 ws.bump_view_revision();
@@ -578,29 +583,34 @@ class game.DiagnosticSop : procedural.Node {
     } host{doc, project, workspace};
     ATELIER_TRY(verify_roof_group(doc, project, workspace, host));
 
-    const auto parse_doc = [](std::string_view json_text) { return take(json::Document::parse(json_text, {65536})); };
+    const auto parse_doc = [](const auto& json_text) {
+        return take(json::Document::parse(StringView{json_text}, {65536}));
+    };
     const auto take_ui = [](auto result) {
         if (!result)
             fatal(application::ui_error(result.error()).message);
         if constexpr (!std::is_void_v<typename decltype(result)::value_type>)
             return std::move(*result);
     };
-    const auto invoke = [&](std::string id, std::string_view json_args = "{}") {
-        auto parsed = parse_doc(json_args);
+    const auto invoke = [&](Utf8Text id_text, Utf8Text json_args = "{}") {
+        const auto args = std::move(json_args).into_string();
+        auto parsed = parse_doc(args);
+        auto id = std::move(id_text).into_string();
         const auto label = id;
         const auto report =
             take(editor::call(workspace.operators, host, workspace.operator_context(doc, &project, false),
                               {std::move(id), std::move(parsed), {}}));
+        const auto fallback = String::concat("Operator did not finish: ", label);
         require(report.status == editor::OperatorStatus::finished,
-                report.message.empty() ? ("Operator did not finish: " + label) : report.message);
+                report.message.empty() ? fallback : report.message);
         return report;
     };
 
-    invoke("graph.open", "{\"asset\":\"" + graph_key + "\"}");
+    invoke("graph.open", String::concat("{\"asset\":\"", graph_key, "\"}"));
     require(workspace.active_graph == graph_key && !doc.graph_dirty(graph_key) && !doc.dirty(),
             "Opening an untouched .procgraph marked graph or scene dirty.");
 
-    const auto set_node_props = [&](std::string_view node, std::string_view json_props) {
+    const auto set_node_props = [&](StringView node, StringView json_props) {
         const auto parsed = parse_doc(json_props);
         take(doc.graph_set_properties(graph_key, node, parsed.root()));
     };
@@ -746,7 +756,7 @@ class game.DiagnosticSop : procedural.Node {
     // Slice 1B: graph.layout topological rank assignment + 1-step Undo/Redo:
     invoke("graph.layout");
     const auto laid_out = take(doc.inspect_graph(graph_key, &project));
-    const auto node_y = [](const editor::GraphInspectView& gv, std::string_view name) {
+    const auto node_y = [](const editor::GraphInspectView& gv, StringView name) {
         const auto it = std::ranges::find(gv.nodes, name, &editor::GraphNodeView::name);
         require(it != gv.nodes.end(), "Missing expected SOP node in layout check.");
         return it->position[1];
@@ -900,7 +910,7 @@ class game.DiagnosticSop : procedural.Node {
         send_ptr(ui::EventKind::pointer_down, sphere_body[0], sphere_body[1]);
         send_ptr(ui::EventKind::pointer_up, sphere_body[0], sphere_body[1]);
         require(workspace.selected_graph_node == "sphere" &&
-                    workspace.selected_graph_nodes == Array<std::string>{"sphere"},
+                    workspace.selected_graph_nodes == Array<String>{"sphere"_s},
                 "Clicking an unselected SOP node without dragging did not select it.");
 
         const auto out_pin = workspace.network.port_dip(*sphere_it, true, 0);
@@ -974,7 +984,7 @@ class game.DiagnosticSop : procedural.Node {
                 tab_undone.display == "instancer",
             "edit.undo did not revert Tab node placement + auto-wire + Display Flag in a single Undo step.");
 
-    invoke("graph.open", "{\"asset\":\"" + repair_key + "\"}");
+    invoke("graph.open", String::concat("{\"asset\":\"", repair_key, "\"}"));
     invoke("graph.select", R"({"node":"legacy"})");
     auto repair_controls = take(workspace.describe(doc, {1400, 900}, frame.get(), &project, &ui_session));
     take_ui(ui_session.set_controls(repair_controls));
@@ -985,24 +995,26 @@ class game.DiagnosticSop : procedural.Node {
     require(doc.graph_node(repair_key, "legacy"), "Undo did not restore the placeholder.");
 
     // 33 x 32 connections fit on screen and exceed the capacity of a single stroke batch.
-    std::string dense = R"({"version":4,"settings":{"display":"fault"},"nodes":{)";
-    std::string inputs;
+    String dense = R"({"version":4,"settings":{"display":"fault"},"nodes":{)"_s;
+    String inputs;
     for (unsigned i = 0; i < 33; ++i) {
-        const auto name = "grid" + std::to_string(i);
-        dense += "\"" + name + R"(":{"type":"procedural.Grid","position":[)" + std::to_string(i * 8 + 12) + R"(,0]},)";
+        const auto name = String::concat("grid", i);
+        dense.append(
+            String::concat("\"", name, R"(":{"type":"procedural.Grid","position":[)", i * 8 + 12, R"(,0]},)"));
         if (i)
-            inputs += ',';
-        inputs += "\"" + name + ".output\"";
+            inputs.append_ascii(',');
+        inputs.append(String::concat("\"", name, ".output\""));
     }
     for (unsigned i = 0; i < 32; ++i)
-        dense += "\"merge" + std::to_string(i) +
-                 R"(":{"type":"procedural.Merge","position":[0,160],"inputs":{"inputs":[)" + inputs + "]}},";
-    dense += R"("fault":{"type":"game.DiagnosticSop","position":[210,80],"inputs":{"input":"grid0.output"}}}})";
+        dense.append(String::concat("\"merge", i,
+                                    R"(":{"type":"procedural.Merge","position":[0,160],"inputs":{"inputs":[)", inputs,
+                                    "]}},"));
+    dense.append_validated(
+        R"("fault":{"type":"game.DiagnosticSop","position":[210,80],"inputs":{"input":"grid0.output"}}}})");
     const auto dense_key = take(project.create_procedural_graph(L"Content/Graphs/Dense.procgraph", dense));
-    invoke("graph.open", "{\"asset\":\"" + dense_key + "\"}");
+    invoke("graph.open", String::concat("{\"asset\":\"", dense_key, "\"}"));
     const auto error_cook = take(doc.evaluate_graph(dense_key, &project));
-    require(error_cook.display_error &&
-                error_cook.display_error->message.find(std::string("A\0B", 3)) != std::string::npos,
+    require(error_cook.display_error && error_cook.display_error->message.contains(StringView{"A\0B", 3}),
             "The original Source diagnostic was not retained.");
     const auto dense_controls = take(workspace.describe(doc, {1400, 900}, frame.get(), &project, &ui_session));
     std::size_t wire_segments = 0;
@@ -1057,7 +1069,7 @@ class game.DiagnosticSop : procedural.Node {
     }
 
     // Phase B: Null milestone node, Drag-onto-wire Auto-Splice, Template Flag wireframe, Shapes/Colors/Notes/Boxes:
-    invoke("graph.open", "{\"asset\":\"" + graph_key + "\"}");
+    invoke("graph.open", String::concat("{\"asset\":\"", graph_key, "\"}"));
     workspace.network.frame_nodes(take(doc.graph_topology(graph_key))->nodes, {cpx.width, cpx.height});
 
     // Acronym Tab search ranking ('ctp' -> CopyToPoints, 'vs' -> VolumeScatter):
@@ -1178,7 +1190,7 @@ class game.DiagnosticSop : procedural.Node {
     // and verify Z / C / I floating popups mount cleanly in UI layout:
     {
         const auto cur_top = take(doc.graph_topology(graph_key));
-        const std::array focus_sphere{std::string{"sphere"}};
+        const std::array focus_sphere{"sphere"_s};
         workspace.network.frame_nodes(cur_top->nodes, {cpx.width, cpx.height}, focus_sphere);
         const auto* sph = cur_top->find_node("sphere");
         const auto sph_dip = workspace.network.to_dip(sph->position[0] + editor::NetworkCanvas::node_width * .45f,
@@ -1215,7 +1227,7 @@ class game.DiagnosticSop : procedural.Node {
             require(pre_freeze_eval.display_output != nullptr, "Missing display output before Freeze test.");
             const std::size_t frozen_inst_count = pre_freeze_eval.display_output->count(procedural::Layer::instance);
             const auto cur_t2 = take(doc.graph_topology(graph_key));
-            const std::array focus_terrace{std::string{"terrace"}};
+            const std::array focus_terrace{"terrace"_s};
             workspace.network.frame_nodes(cur_t2->nodes, {cpx.width, cpx.height}, focus_terrace);
             const auto* ter = cur_t2->find_node("terrace");
             const auto ter_center =
@@ -1292,10 +1304,10 @@ class game.DiagnosticSop : procedural.Node {
             require(take(doc.graph_topology(ghost_key))->display == "ghost" &&
                         take(doc.graph_topology(ghost_key))->template_node == "ghost",
                     "graph_topology did not report kept placeholder display/template.");
-            const std::array rm_ghost{std::string{"ghost"}};
+            const std::array rm_ghost{"ghost"_s};
             take(doc.graph_remove_nodes(ghost_key, rm_ghost));
-            const auto cleaned_snap = take(doc.procedural_graph_snapshot(ghost_key)).value_or("");
-            require(!cleaned_snap.empty() && cleaned_snap.find("ghost") == std::string::npos,
+            const auto cleaned_snap = take(doc.procedural_graph_snapshot(ghost_key)).value_or(""_s);
+            require(!cleaned_snap.empty() && !cleaned_snap.contains("ghost"),
                     "Removing placeholder node left dangling display/template entry in kept settings.");
             take(doc.graph_undo(ghost_key, false));
             require(!doc.graph_dirty(ghost_key) && take(doc.graph_topology(ghost_key))->display == "ghost" &&
@@ -1354,7 +1366,7 @@ class game.DiagnosticSop : procedural.Node {
             "Session allowed binding a scratch procedural graph to a Scene Entity.");
 
     // S5-1: Scene Procedural Generator Entity creation, Inspector UI, live .procgraph sync, assign_graph, and Bake:
-    invoke("scene.add", "{\"kind\":\"procedural_generator\",\"graph\":\"" + graph_key + "\"}");
+    invoke("scene.add", String::concat("{\"kind\":\"procedural_generator\",\"graph\":\"", graph_key, "\"}"));
     const ObjectId gen_ent = doc.selection().entity;
     require(gen_ent != ObjectId{} &&
                 take(doc.world().runtime().type_of(gen_ent)) == doc.presentation_types().procedural_generator_entity,
@@ -1480,7 +1492,7 @@ class game.DiagnosticSop : procedural.Node {
             "edit.undo did not restore ProceduralGeneratorComponent graph binding.");
 
     // Live .procgraph edit in Network updates World generator on sync:
-    invoke("graph.open", "{\"asset\":\"" + graph_key + "\"}");
+    invoke("graph.open", String::concat("{\"asset\":\"", graph_key, "\"}"));
     set_node_props("scatter", R"({"density":0.55})");
     invoke("graph.exit");
     take(doc.sync_procedural_generators(&project));
@@ -1522,7 +1534,7 @@ class game.DiagnosticSop : procedural.Node {
     set_node_props(shear_node, R"({"scale":{"x":2.5,"y":1.0,"z":1.0}})");
     take(doc.graph_set_display(graph_key, shear_node));
     const auto sheared_bake = doc.bake_procedural_generator(&project, gen_ent);
-    require(!sheared_bake && sheared_bake.error().message.find("shear") != std::string::npos,
+    require(!sheared_bake && sheared_bake.error().message.contains("shear"),
             "procedural.bake did not reject sheared instance transforms.");
 
     // Reimporting a mesh, then deleting it from disk and refreshing assets must invalidate SOP snapshots:
@@ -1531,13 +1543,14 @@ class game.DiagnosticSop : procedural.Node {
         const auto obj_src = temp_root / "reimport_prop.obj";
         take(editor::write_file(obj_src, "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"));
         const auto prop_key = take(project.import_mesh(obj_src));
-        const auto prop_graph_key = take(project.create_procedural_graph(
-            L"Content/Graphs/ReimportProp.procgraph",
+        const auto prop_graph_src = String::concat(
             "{\"version\":4,\"settings\":{\"display\":\"copy\"},\"nodes\":{"
             "\"pts\":{\"type\":\"procedural.Grid\",\"properties\":{\"primitive_type\":\"points\",\"columns\":2,\"rows\":2}},"
             "\"copy\":{\"type\":\"procedural.CopyToPoints\",\"inputs\":{\"points\":\"pts.output\"},"
-            "\"properties\":{\"meshes\":[\"" +
-                prop_key + "\"]}}}}"));
+            "\"properties\":{\"meshes\":[\"",
+            prop_key, "\"]}}}}");
+        const auto prop_graph_key =
+            take(project.create_procedural_graph(L"Content/Graphs/ReimportProp.procgraph", prop_graph_src));
         take(doc.open_graph(project, prop_graph_key));
         ATELIER_TRY(changed(doc.create_procedural_generator(prop_graph_key, {10.f, 0.f, 0.f}, &project)));
         const ObjectId prop_gen = doc.selection().entity;
@@ -1590,7 +1603,7 @@ class game.DiagnosticSop : procedural.Node {
         const auto frozen_obj_src = temp_root / "frozen_prop.obj";
         take(editor::write_file(frozen_obj_src, "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"));
         const auto frozen_key = take(project.import_mesh(frozen_obj_src));
-        const auto patch_frozen_mesh = parse_doc("{\"meshes\":[\"" + frozen_key + "\"]}");
+        const auto patch_frozen_mesh = parse_doc(String::concat("{\"meshes\":[\"", frozen_key, "\"]}"));
         take(doc.graph_set_properties(prop_graph_key, "copy", patch_frozen_mesh.root()));
         take(doc.sync_procedural_generators(&project));
         take(doc.graph_set_frozen(prop_graph_key, "copy", true, &project));
@@ -1628,10 +1641,10 @@ class game.DiagnosticSop : procedural.Node {
         take(editor::write_file(floor_quad_src, "v -5.0 0.0 -5.0\nv -5.0 0.0 5.0\nv 5.0 0.0 5.0\nv 5.0 0.0 -5.0\n"
                                                 "f 1 2 3\nf 1 3 4\n"));
         const auto floor_mesh_key = take(project.import_mesh(floor_quad_src));
-        const std::string sp_key = "scratch/spatial_check";
+        const String sp_key = "scratch/spatial_check"_s;
         take(doc.create_scratch_graph(sp_key));
         take(doc.graph_add_node(sp_key, "procedural.MeshImport", "floor", {0.f, 0.f}));
-        const auto floor_patch = parse_doc("{\"mesh\":\"" + floor_mesh_key + "\"}");
+        const auto floor_patch = parse_doc(String::concat("{\"mesh\":\"", floor_mesh_key, "\"}"));
         take(doc.graph_set_properties(sp_key, "floor", floor_patch.root()));
         take(doc.graph_add_node(sp_key, "procedural.Box", "closed_box", {160.f, 0.f}));
         take(doc.graph_add_node(sp_key, "procedural.Line", "pts", {0.f, 120.f}));
@@ -1640,7 +1653,7 @@ class game.DiagnosticSop : procedural.Node {
         take(doc.graph_set_properties(sp_key, "pts", pts_patch_1.root()));
         take(doc.graph_add_node(sp_key, "procedural.CopyToPoints", "copy", {0.f, 220.f}));
         take(doc.graph_connect(sp_key, "pts", "output", "copy", "points"));
-        const auto copy_patch = parse_doc("{\"meshes\":[\"" + cube_key + "\"]}");
+        const auto copy_patch = parse_doc(String::concat("{\"meshes\":[\"", cube_key, "\"]}"));
         take(doc.graph_set_properties(sp_key, "copy", copy_patch.root()));
         take(doc.graph_set_display(sp_key, "copy"));
 
@@ -1701,7 +1714,7 @@ class game.DiagnosticSop : procedural.Node {
 
     // S4 Digital Assets (.procgraph v4), multi-target promoted parameters, port realignment & graph_extract_asset:
     {
-        const std::string pillar_key = take(project.create_procedural_graph("Content/Graphs/PillarPair.procgraph"));
+        const String pillar_key = take(project.create_procedural_graph("Content/Graphs/PillarPair.procgraph"));
         take(doc.open_graph(project, pillar_key));
         take(doc.graph_add_node(pillar_key, "procedural.GraphInput", "in_pts", {0.f, -120.f}));
         {
@@ -1749,8 +1762,8 @@ class game.DiagnosticSop : procedural.Node {
             const ObjectId box_b_id = doc.graph_node_id(pillar_key, "box_b");
             const auto props_a = take(doc.properties(box_a_id));
             const auto props_b = take(doc.properties(box_b_id));
-            const auto ay = std::ranges::find(props_a, std::string_view{"size.y"}, &editor::Property::name);
-            const auto by = std::ranges::find(props_b, std::string_view{"size.y"}, &editor::Property::name);
+            const auto ay = std::ranges::find(props_a, StringView{"size.y"}, &editor::Property::name);
+            const auto by = std::ranges::find(props_b, StringView{"size.y"}, &editor::Property::name);
             require(ay != props_a.end() && by != props_b.end() && std::abs(std::get<float>(ay->value) - 3.5f) < 1e-5f &&
                         std::abs(std::get<float>(by->value) - 3.5f) < 1e-5f,
                     "Multi-target promoted parameter did not synchronize both bound node fields.");
@@ -1773,15 +1786,16 @@ class game.DiagnosticSop : procedural.Node {
         take(doc.save_graph(project, pillar_key));
 
         // Instantiate Digital Asset in outer graph via "asset:<key>":
-        const std::string court_key = take(project.create_procedural_graph("Content/Graphs/OuterCourt.procgraph"));
+        const String court_key = take(project.create_procedural_graph("Content/Graphs/OuterCourt.procgraph"));
         take(doc.open_graph(project, court_key));
         take(doc.graph_add_node(court_key, "procedural.Line", "line_pts", {0.f, -120.f}, &project));
         {
             const auto lpatch = parse_doc(R"({"count":4})");
             take(doc.graph_set_properties(court_key, "line_pts", lpatch.root()));
         }
+        const auto pillar_asset_type = String::concat("asset:", pillar_key);
         const auto inst_name =
-            take(doc.graph_add_node(court_key, "asset:" + pillar_key, "pillars", {0.f, 0.f}, &project));
+            take(doc.graph_add_node(court_key, pillar_asset_type, "pillars", {0.f, 0.f}, &project));
         require(inst_name == "pillars", "Expected AssetNode name 'pillars'.");
         take(doc.graph_connect(court_key, "line_pts", "output", "pillars", "points"));
         take(doc.graph_add_node(court_key, "procedural.GraphOutput", "court_out", {0.f, 120.f}));
@@ -1815,7 +1829,7 @@ class game.DiagnosticSop : procedural.Node {
             require(std::abs(max_y - 3.0f) < 1e-4f,
                     "AssetNode height=6.0 override did not produce half-extent y=3.0m.");
             const auto props_a = take(doc.properties(doc.graph_node_id(pillar_key, "box_a")));
-            const auto ay = std::ranges::find(props_a, std::string_view{"size.y"}, &editor::Property::name);
+            const auto ay = std::ranges::find(props_a, StringView{"size.y"}, &editor::Property::name);
             require(std::abs(std::get<float>(ay->value) - 3.5f) < 1e-5f,
                     "AssetNode override mutated the shared Digital Asset definition.");
         }
@@ -1840,7 +1854,7 @@ class game.DiagnosticSop : procedural.Node {
 
         // Removing a bound target node shrinks/restores promoted targets across Undo/Redo:
         {
-            const std::array<std::string, 1> rm_b{"box_right"};
+            const std::array<String, 1> rm_b{"box_right"_s};
             take(doc.graph_remove_nodes(pillar_key, rm_b));
             require(take(doc.graph_promoted_parameters(pillar_key))[0].targets.size() == 1,
                     "Removing box_right did not prune promoted parameter target list.");
@@ -1870,11 +1884,12 @@ class game.DiagnosticSop : procedural.Node {
                     "AssetNode did not tolerantly surface unmatched stale override as undeclared.");
             const auto nested_key = take(project.create_procedural_graph("Content/Graphs/NestedCourt.procgraph"));
             take(doc.open_graph(project, nested_key));
-            take(doc.graph_add_node(nested_key, "asset:" + court_key, "court", {0.f, 0.f}, &project));
+            const auto court_asset_type = String::concat("asset:", court_key);
+            take(doc.graph_add_node(nested_key, court_asset_type, "court", {0.f, 0.f}, &project));
             take(doc.graph_set_display(nested_key, "court"));
             take(doc.save_graph(project, nested_key));
-            const Array<std::string> nested_field{"nodes", "court",   "asset",     court_key,
-                                                  "nodes", "pillars", "overrides", "obsolete_depth"};
+            const Array<String> nested_field{"nodes"_s, "court"_s,   "asset"_s,     court_key,
+                                             "nodes"_s, "pillars"_s, "overrides"_s, "obsolete_depth"_s};
             for (int cook = 0; cook < 2; ++cook) {
                 (void)take(doc.evaluate_graph(nested_key, &project));
                 const auto nested_view = take(doc.inspect_graph(nested_key, &project));
@@ -1887,7 +1902,7 @@ class game.DiagnosticSop : procedural.Node {
                 take(component(doc, doc.selection().entity, doc.presentation_types().procedural_generator_component));
             take(doc.sync_procedural_generators(&project));
             auto generator_field = nested_field;
-            const std::string graph_prefix[]{"graph", nested_key};
+            const String graph_prefix[]{"graph"_s, nested_key};
             generator_field.insert_range(0, graph_prefix);
             const auto generator_issues = doc.take_diagnostics();
             require(std::ranges::count_if(generator_issues,
@@ -1898,14 +1913,14 @@ class game.DiagnosticSop : procedural.Node {
                     "Generator did not report the stale nested override on its owning component.");
 
             take(doc.clear_promoted_parameter_override(
-                editor::PromotedParameterTarget{std::string(court_key), "pillars", ObjectId{}}, "obsolete_depth",
-                &project));
+                editor::PromotedParameterTarget{court_key, "pillars", ObjectId{}}, "obsolete_depth", &project));
         }
 
         // Indirect cycle A -> B -> A is rejected without infinite recursion, and graph_set_node_asset Undo/Redo works:
         {
+            const auto back_ref_type = String::concat("asset:", court_key);
             const auto cyc_node =
-                take(doc.graph_add_node(pillar_key, "asset:" + court_key, "back_ref", {160.f, 0.f}, &project));
+                take(doc.graph_add_node(pillar_key, back_ref_type, "back_ref", {160.f, 0.f}, &project));
             require(cyc_node == "back_ref", "Expected AssetNode back_ref.");
             take(doc.graph_connect(pillar_key, "back_ref", "output", "pair_merge", "inputs"));
             const auto cyc_inspect = take(doc.inspect_graph(court_key, &project, {}, false, 4, false));
@@ -1919,12 +1934,12 @@ class game.DiagnosticSop : procedural.Node {
                 "version":4,"settings":{},"nodes":{
                 "one":{"type":"procedural.GraphOutput","properties":{"port_name":"same"}},
                 "two":{"type":"procedural.GraphOutput","properties":{"port_name":"same"}}}})"));
-            const std::string missing_key = "nonexistent-asset";
+            const String missing_key = "nonexistent-asset"_s;
             const auto missing = project.assets().procedural_graph(missing_key);
             require(!missing, "Missing-asset fixture unexpectedly exists.");
             for (const auto& [key, message] :
                  std::array{std::pair{missing_key, missing.error().message},
-                            std::pair{bad_key, std::string("Duplicate GraphOutput port_name 'same'.")}}) {
+                            std::pair{bad_key, "Duplicate GraphOutput port_name 'same'."_s}}) {
                 take(doc.graph_set_node_asset(court_key, "pillars", key, &project));
                 const auto* node = doc.graph_node(court_key, "pillars");
                 const auto binding = take(procedural::asset_subgraph(rt, node->node.id()));
@@ -1937,7 +1952,7 @@ class game.DiagnosticSop : procedural.Node {
                         "Undo of failed binding did not restore the original connection.");
             }
 
-            const std::string alt_key = take(project.create_procedural_graph("Content/Graphs/AltAsset.procgraph"));
+            const String alt_key = take(project.create_procedural_graph("Content/Graphs/AltAsset.procgraph"));
             take(doc.open_graph(project, alt_key));
             take(doc.graph_add_node(alt_key, "procedural.Sphere", "sph", {0.f, 0.f}));
             take(doc.graph_set_display(alt_key, "sph"));
@@ -1978,7 +1993,7 @@ class game.DiagnosticSop : procedural.Node {
               "outside":{"type":"procedural.Merge","inputs":{"inputs":["a.output","Retained.output","b.output"]}}}})"));
             take(doc.open_graph(project, host));
             const auto revision = project.revision();
-            const std::array<std::string, 1> only_b{"b"};
+            const std::array<String, 1> only_b{"b"_s};
             const auto failed = doc.graph_extract_asset(project, host, only_b, "Content/Graphs/Rejected.procgraph");
             require(
                 !failed &&
@@ -1989,18 +2004,17 @@ class game.DiagnosticSop : procedural.Node {
                     !std::filesystem::exists(project.root() / "Content/Graphs/Rejected.procgraph.asset.json"),
                 "Unrepresentable extraction must return the first boundary error before publishing anything.");
 
-            const std::array<std::string, 2> selected{"a", "b"};
+            const std::array<String, 2> selected{"a"_s, "b"_s};
             const auto shadow =
                 doc.graph_extract_asset(project, host, selected, "Content/Graphs/Shadow.procgraph", "Retained");
-            require(!shadow && shadow.error().message.find("Retained") != std::string::npos &&
-                        project.revision() == revision &&
+            require(!shadow && shadow.error().message.contains("Retained") && project.revision() == revision &&
                         !std::filesystem::exists(project.root() / "Content/Graphs/Shadow.procgraph"),
                     "An explicit AssetNode name captured an unrelated unresolved outer wire.");
             const auto stage =
                 take(doc.graph_extract_asset(project, host, selected, "Content/Graphs/Retained.procgraph"));
             take(doc.open_graph(project, stage.first));
-            const auto check_inputs = [&](const std::string& graph, std::string_view node, std::string_view first,
-                                          std::string_view second, std::string_view third) {
+            const auto check_inputs = [&](StringView graph, StringView node, StringView first, StringView second,
+                                          StringView third) {
                 const auto* found = doc.graph_node(graph, node);
                 require(found != nullptr, "Expected retained node after extraction.");
                 const auto port = take(found->kept.root().path({"inputs", "inputs"}));
@@ -2019,7 +2033,7 @@ class game.DiagnosticSop : procedural.Node {
 
         // graph_extract_asset: reject non-convex selection, extract convex stage, and 1-step Undo/Redo:
         {
-            const std::string ext_test_key =
+            const String ext_test_key =
                 take(project.create_procedural_graph("Content/Graphs/ExtractHost.procgraph"));
             take(doc.open_graph(project, ext_test_key));
             take(doc.graph_add_node(ext_test_key, "procedural.Box", "src_box", {0.f, 0.f}));
@@ -2035,13 +2049,13 @@ class game.DiagnosticSop : procedural.Node {
             (void)take(doc.graph_expose_parameter(ext_test_key, "mid_xform", "translate.y", "lift_y"));
 
             // Non-convex selection {src_box, tail_xform} leaves mid_xform both downstream and upstream -> must reject!
-            const std::array<std::string, 2> non_convex{"src_box", "tail_xform"};
+            const std::array<String, 2> non_convex{"src_box"_s, "tail_xform"_s};
             require(!doc.graph_extract_asset(project, ext_test_key, non_convex,
                                              "Content/Graphs/IllegalNonConvex.procgraph"),
                     "graph_extract_asset accepted a non-convex selection that would introduce a cycle.");
 
             const auto pre_eval = take(doc.evaluate_graph(ext_test_key, &project));
-            const std::array<std::string, 1> convex_sel{"mid_xform"};
+            const std::array<String, 1> convex_sel{"mid_xform"_s};
             const auto extracted = take(doc.graph_extract_asset(
                 project, ext_test_key, convex_sel, "Content/Graphs/ExtractedStage.procgraph", "stage_asset"));
             require(!extracted.first.empty() && extracted.second == "stage_asset",
@@ -2080,8 +2094,8 @@ class game.DiagnosticSop : procedural.Node {
 Result<void> verify_scene_recovery() {
     ATELIER_TRY_BIND(
         temp, acceptance::file_operation([](auto& error) { return std::filesystem::temp_directory_path(error); }));
-    const auto temp_root = *temp / ("atelier-scene-recovery-" + std::to_string(GetCurrentProcessId()) + "-" +
-                                    std::to_string(GetTickCount64()));
+    const auto temp_root = *temp / (L"atelier-scene-recovery-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
+                                    std::to_wstring(GetTickCount64()));
     struct Cleanup {
         std::filesystem::path dir;
 
@@ -2092,9 +2106,9 @@ Result<void> verify_scene_recovery() {
     } cleanup{temp_root};
 
     auto project = take(editor::Project::create(temp_root / "project"));
-    auto loaded =
-        editor::load_project_scene(project, take(assets::read_file(project.root() / "Content/Scenes/Main.scene")),
-                                   editor::LoadPolicy::strict, false, editor::SessionRole::editor);
+    const auto rec_scene_bytes = take(assets::read_file(project.root() / "Content/Scenes/Main.scene"));
+    auto loaded = editor::load_project_scene(project, as_chars(rec_scene_bytes), editor::LoadPolicy::strict,
+                                             false, editor::SessionRole::editor);
     require(loaded.session != nullptr && !loaded.error, "Recovery test scene failed to load.");
     auto& doc = *loaded.session;
     ATELIER_TRY(changed(doc.create_static_mesh(assets::mesh_assets().front())));
@@ -2111,9 +2125,10 @@ Result<void> verify_scene_recovery() {
     require(doc.editing() && doc.dirty(), "Expected dirty document with an active unfinished transform gesture.");
 
     const auto log_dir = temp_root / "logs";
-    auto run = take(logging::start_run({.directory = log_dir, .process_name = "recovery_acceptance"}));
+    auto run = take(logging::start_run({.directory = log_dir, .process_name = "recovery_acceptance"_s}));
     application::SceneRecovery recovery;
-    const std::string oversized_reason(5000, 'r');
+    String oversized_reason;
+    oversized_reason.append_ascii('r', 5000);
     const auto& outcome =
         recovery.preserve(doc, project.root(), "Content/Scenes/Main.scene", oversized_reason, temp_root / "recovery");
     require(recovery.attempted() && recovery.logged() && outcome && outcome->has_value() && doc.dirty() &&
@@ -2125,7 +2140,7 @@ Result<void> verify_scene_recovery() {
     const auto diag_field = recovery.diagnostic_field();
     const auto expected_utf8 = platform::utf16_to_utf8(saved_scene.generic_wstring());
     require(expected_utf8.has_value() && diag_field && diag_field->key == "recovery_scene" &&
-                std::get<std::string>(diag_field->value) == *expected_utf8,
+                std::get<String>(diag_field->value) == *expected_utf8,
             "SceneRecovery::diagnostic_field did not retain the saved scene path.");
 
     const auto finished = run->finish();
@@ -2144,18 +2159,20 @@ Result<void> verify_scene_recovery() {
     require(reader_done, "Logging Reader did not finish reading recovery run.");
     const auto logged_it =
         std::ranges::find_if(records, [](const logging::Record& r) { return r.entry.event_code == "recovery.saved"; });
-    require(logged_it != records.end() && logged_it->entry.message == "Scene recovery saved: " + *expected_utf8,
+    require(logged_it != records.end() &&
+                logged_it->entry.message == String::concat("Scene recovery saved: ", *expected_utf8),
             "events.jsonl did not persist recovery.saved with the full recovery scene path.");
 
-    const auto sidecar =
-        take(json::Document::parse(take(assets::read_file(saved_scene.parent_path() / "recovery.json")), {16}));
+    const auto sidecar_bytes = take(assets::read_file(saved_scene.parent_path() / "recovery.json"));
+    const auto sidecar = take(json::Document::parse(as_chars(sidecar_bytes), {16}));
     require(take(sidecar.root().string({"kind"})) == "author_scene_recovery" &&
                 take(sidecar.root().boolean({"unfinished_edit_cancelled"})) &&
                 take(sidecar.root().string({"reason"})) == oversized_reason,
             "recovery.json did not record cancelled unfinished gesture and full failure reason.");
 
-    auto recovered = editor::load_project_scene(project, take(assets::read_file(saved_scene)),
-                                                editor::LoadPolicy::strict, false, editor::SessionRole::editor);
+    const auto recovered_bytes = take(assets::read_file(saved_scene));
+    auto recovered = editor::load_project_scene(project, as_chars(recovered_bytes), editor::LoadPolicy::strict,
+                                                false, editor::SessionRole::editor);
     require(recovered.session != nullptr && !recovered.error, "Recovered scene failed strict reload.");
     const auto members = take(recovered.session->world().members());
     ObjectId recovered_mesh_entity{};
@@ -2173,7 +2190,7 @@ Result<void> verify_scene_recovery() {
 }
 }
 
-Result<void> run_document(int argc, char** argv, std::string_view& stage) {
+Result<void> run_document(int argc, char** argv, StringView& stage) {
     if ((argc == 5 || argc == 6) && stage == "--profile-scene-cpu")
         return profile_scene_cpu(argv[2], argv[3], argv[4],
                                  argc == 6 ? std::filesystem::path(argv[5]) : std::filesystem::path{});
@@ -2248,7 +2265,7 @@ Result<void> run_document(int argc, char** argv, std::string_view& stage) {
 
 int main(int argc, char** argv) {
     atelier::install_fatal_handler();
-    std::string_view stage = argc > 1 ? argv[1] : "document history";
+    StringView stage = argc > 1 ? StringView{argv[1]} : "document history";
     auto run = run_document(argc, argv, stage);
     if (!run) {
         std::fprintf(stderr, "Editor document acceptance: FAIL [%.*s]: %s\n", static_cast<int>(stage.size()),

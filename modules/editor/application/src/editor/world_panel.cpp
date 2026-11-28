@@ -5,7 +5,7 @@
 
 namespace atelier::editor {
 namespace {
-std::wstring title(std::string_view name) {
+std::wstring title(StringView name) {
     std::wstring result;
     bool capital = true;
     for (char c : name) {

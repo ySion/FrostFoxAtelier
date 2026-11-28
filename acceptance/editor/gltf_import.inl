@@ -1,13 +1,13 @@
 void verify_gltf_import() {
     namespace fs = std::filesystem;
     const auto source = fs::current_path() / "gltf-transform-evidence" /
-                        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+                        std::to_wstring(std::chrono::steady_clock::now().time_since_epoch().count());
     fs::create_directories(source);
     // Three interleaved vertices: position, normal, tangent, UV.
     const float d = .70710678f;
     const float vertices[]{0, 0, 0, d, 0, d, 1, 0, 0, 1, 0, 0, 1, 0, 0, d, 0, d,
                            1, 0, 0, 1, 1, 0, 0, 1, 0, d, 0, d, 1, 0, 0, 1, 0, 1};
-    take(editor::write_file(source / "mesh.bin", {reinterpret_cast<const char*>(vertices), sizeof(vertices)}));
+    take(editor::write_file(source / "mesh.bin", as_bytes(Span{vertices})));
     take(editor::write_file(source / "mesh.gltf", R"({
         "asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],
         "nodes":[{"translation":[1,2,3],"scale":[2,1,1],

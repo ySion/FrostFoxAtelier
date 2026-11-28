@@ -50,9 +50,9 @@ struct LiveLink::Impl {
 
     std::condition_variable wake;
 
-    RingDeque<std::string> outbox;
+    RingDeque<Array<char>> outbox;
 
-    Array<std::string> inbox;
+    Array<Array<char>> inbox;
 
     std::atomic_bool closed{};
 
@@ -89,29 +89,30 @@ struct LiveLink::Impl {
             std::uint32_t bytes{};
             if (!transfer(read, &bytes, sizeof(bytes), false) || !bytes || bytes > maximum_message)
                 break;
-            std::string text(bytes, '\0');
-            if (!transfer(read, text.data(), bytes, false))
+            Array<char> frame;
+            frame.resize_uninitialized(bytes);
+            if (!transfer(read, frame.data(), bytes, false))
                 break;
             std::lock_guard lock(mutex);
-            inbox.add(std::move(text));
+            inbox.add(std::move(frame));
         }
         finish();
     }
 
     void send_loop() {
         for (;;) {
-            std::string text;
+            Array<char> frame;
             {
                 std::unique_lock lock(mutex);
                 wake.wait(lock, [&] { return stopping || closed || !outbox.empty(); });
                 if (stopping || closed)
                     break;
-                text = std::move(outbox.front());
+                frame = std::move(outbox.front());
                 outbox.pop_front();
             }
-            const auto bytes = static_cast<std::uint32_t>(text.size());
+            const auto bytes = static_cast<std::uint32_t>(frame.size());
             if (!transfer(write, const_cast<std::uint32_t*>(&bytes), sizeof(bytes), true) ||
-                !transfer(write, text.data(), text.size(), true))
+                !transfer(write, frame.data(), frame.size(), true))
                 break;
         }
         finish();
@@ -125,19 +126,25 @@ LiveLink::LiveLink(HANDLE read, HANDLE write) noexcept : impl_(std::make_unique<
 
 LiveLink::~LiveLink() = default;
 
-void LiveLink::send(std::string text) {
-    if (text.empty() || text.size() > maximum_message)
+void LiveLink::send(Array<char> frame) {
+    if (frame.empty() || frame.size() > maximum_message)
         fatal("A Play link message is empty or exceeds 4 MiB.");
     {
         std::lock_guard lock(impl_->mutex);
         if (impl_->closed)
             return;
-        impl_->outbox.emplace_back(std::move(text));
+        impl_->outbox.emplace_back(std::move(frame));
     }
     impl_->wake.notify_all();
 }
 
-Array<std::string> LiveLink::receive() {
+void LiveLink::send(StringView text) {
+    Array<char> frame;
+    frame.assign(Span<const char>{text.data(), text.size()});
+    send(std::move(frame));
+}
+
+Array<Array<char>> LiveLink::receive() {
     std::lock_guard lock(impl_->mutex);
     return std::exchange(impl_->inbox, {});
 }
@@ -161,14 +168,14 @@ void PlayLink::open(std::unique_ptr<LiveLink> link, std::filesystem::path spill)
 void PlayLink::forward(Span<const editor::LiveChange> ops) {
     if (!link_ || !divergence_.empty() || ops.empty())
         return;
-    constexpr std::size_t envelope = std::string_view(R"({"ops":[]})").size();
-    std::string batch;
+    constexpr std::size_t envelope = StringView(R"({"ops":[]})").size();
+    Array<char> batch;
     Pending resources;
     for (const auto& op : ops) {
-        std::string encoded;
-        std::string mesh_bytes;
-        std::string_view text = op.text;
-        std::string_view content;
+        Array<char> encoded;
+        Array<std::byte> mesh_bytes;
+        StringView text = op.text.view();
+        Span<const std::byte> content;
         std::filesystem::path file;
         std::size_t resource_bytes{};
         if (op.texture && op.mesh) {
@@ -208,13 +215,12 @@ void PlayLink::forward(Span<const editor::LiveChange> ops) {
                 return json::write(result.root());
             }();
             if (!written) {
-                fail("Cannot forward Play changes: " + written.error().describe());
+                fail(String::concat("Cannot forward Play changes: ", written.error().describe()));
                 return;
             }
-            encoded.assign(written->data(), written->size());
-            text = encoded;
-            const auto pixels = op.texture->pixels();
-            content = {reinterpret_cast<const char*>(pixels.data()), pixels.size()};
+            encoded = std::move(*written);
+            text = StringView{encoded.data(), encoded.size()};
+            content = as_bytes(op.texture->pixels());
         } else if (op.mesh) {
             const auto parsed = [&]() -> json::Result<json::Document> {
                 ATELIER_TRY_BIND(mesh, assets::json_format::parse(text));
@@ -228,14 +234,14 @@ void PlayLink::forward(Span<const editor::LiveChange> ops) {
                 return std::move(*mesh);
             }();
             if (!parsed) {
-                fail("Cannot forward Play changes: " + parsed.error().describe());
+                fail(String::concat("Cannot forward Play changes: ", parsed.error().describe()));
                 return;
             }
             // Encoding checks its full size against the shared remaining budget
             // before allocating the payload. Never revisit project source files.
             auto snapshot = assets::mesh_format::encode(*op.mesh, available);
             if (!snapshot) {
-                fail("Cannot forward Play changes: " + snapshot.error().message);
+                fail(String::concat("Cannot forward Play changes: ", snapshot.error().message));
                 return;
             }
             mesh_bytes = std::move(*snapshot);
@@ -249,16 +255,15 @@ void PlayLink::forward(Span<const editor::LiveChange> ops) {
             }
             json::Builder mesh(*parsed);
             mesh.set_validated(mesh.root(), "file", *path);
-            const auto bytes = json::write(mesh.root());
-            encoded.assign(bytes.data(), bytes.size());
-            text = encoded;
+            encoded = json::write(mesh.root());
+            text = StringView{encoded.data(), encoded.size()};
         }
         if (text.size() + envelope > maximum_batch) {
-            fail("A change of " + std::to_string(text.size() >> 20) + " MiB exceeds the 16 MiB Play batch limit.");
+            fail(String::concat("A change of ", text.size() >> 20, " MiB exceeds the 16 MiB Play batch limit."));
             return;
         }
         if (!batch.empty() && batch.size() + 1 + text.size() + envelope > maximum_batch) {
-            send(batch, std::move(resources));
+            send(StringView{batch.data(), batch.size()}, std::move(resources));
             batch.clear();
             if (!divergence_.empty())
                 return;
@@ -268,35 +273,47 @@ void PlayLink::forward(Span<const editor::LiveChange> ops) {
             resources.files.add(file);
             if (auto saved = editor::write_file(file, content, editor::WriteMode::create); !saved) {
                 resources.files.pop();
-                fail(std::string("Cannot write a Play ") + (op.mesh ? "mesh" : "texture") +
-                     " publication: " + saved.error().message);
+                fail(String::concat("Cannot write a Play ", String::validated(op.mesh ? "mesh" : "texture"),
+                                    " publication: ", saved.error().message));
                 return;
             }
             resources.resource_bytes += resource_bytes;
         }
         if (!batch.empty())
-            batch += ',';
-        batch += text;
+            batch.add(',');
+        batch.append(Span<const char>{text.data(), text.size()});
     }
-    send(batch, std::move(resources));
+    send(StringView{batch.data(), batch.size()}, std::move(resources));
 }
 
-void PlayLink::send(std::string_view ops, Pending&& resources) {
+void PlayLink::send(StringView ops, Pending&& resources) {
     const auto seq = next_seq_++;
-    auto message = R"({"type":"batch","seq":)" + std::to_string(seq) + R"(,"ops":[)";
-    message.append(ops);
-    message += "]}";
+    const auto seq_text = String::from_number(seq);
+    constexpr StringView prefix = R"({"type":"batch","seq":)";
+    constexpr StringView mid = R"(,"ops":[)";
+    constexpr StringView suffix = "]}";
+    Array<char> message;
+    message.reserve(prefix.size() + seq_text.size() + mid.size() + ops.size() + suffix.size());
+    message.append(Span<const char>{prefix.data(), prefix.size()});
+    message.append(Span<const char>{seq_text.c_str(), seq_text.size()});
+    message.append(Span<const char>{mid.data(), mid.size()});
+    message.append(Span<const char>{ops.data(), ops.size()});
+    message.append(Span<const char>{suffix.data(), suffix.size()});
     auto bytes = message.size();
     if (message.size() > LiveLink::maximum_message) {
         const auto file = spill_ / (L"batch-" + std::to_wstring(seq) + L".json");
-        std::string text = R"({"ops":[)";
-        text.append(ops);
-        text += "]}";
+        constexpr StringView spill_prefix = R"({"ops":[)";
+        Array<char> text;
+        text.reserve(spill_prefix.size() + ops.size() + suffix.size());
+        text.append(Span<const char>{spill_prefix.data(), spill_prefix.size()});
+        text.append(Span<const char>{ops.data(), ops.size()});
+        text.append(Span<const char>{suffix.data(), suffix.size()});
         bytes = text.size();
         resources.files.add(file);
-        if (auto saved = editor::write_file(file, text, editor::WriteMode::create); !saved) {
+        if (auto saved = editor::write_file(file, StringView{text.data(), text.size()}, editor::WriteMode::create);
+            !saved) {
             resources.files.pop();
-            fail("Cannot write a large Play change batch: " + saved.error().message);
+            fail(String::concat("Cannot write a large Play change batch: ", saved.error().message));
             return;
         }
         auto path = platform::utf16_to_utf8(file.native());
@@ -308,8 +325,7 @@ void PlayLink::send(std::string_view ops, Pending&& resources) {
         notice.set_validated(notice.root(), "type", "batch");
         (void)notice.set(notice.root(), "seq", seq);
         notice.set_validated(notice.root(), "file", *path);
-        const auto encoded = json::write(notice.root());
-        message.assign(encoded.data(), encoded.size());
+        message = json::write(notice.root());
     }
     // Transfer ownership before queuing: once sent, even a disconnect cannot retire
     // files the peer may still be reading. Only ACK or closing this run releases them.
@@ -321,18 +337,19 @@ void PlayLink::send(std::string_view ops, Pending&& resources) {
     resources.resource_bytes = 0;
     link_->send(std::move(message));
     if (pending_.size() > maximum_pending || pending_bytes_ > maximum_pending_bytes)
-        fail("Play stopped acknowledging changes (" + std::to_string(pending_.size()) + " batches pending).");
+        fail(String::concat("Play stopped acknowledging changes (", pending_.size(), " batches pending)."));
 }
 
-void PlayLink::fail(std::string reason) {
+void PlayLink::fail(Utf8Text reason) {
     if (divergence_.empty())
-        divergence_ = std::move(reason);
+        divergence_ = std::move(reason).into_string();
 }
 
 void PlayLink::poll(bool running, bool stopping) {
     if (!link_)
         return;
-    for (const auto& text : link_->receive()) {
+    for (const auto& raw : link_->receive()) {
+        const StringView text{raw.data(), raw.size()};
         const auto read = [&]() -> Result<void> {
             ATELIER_TRY_BIND(message, message_value(assets::json_format::parse(text)));
             const auto root = message->root();
@@ -342,19 +359,19 @@ void PlayLink::poll(bool running, bool stopping) {
                 ATELIER_TRY_BIND(graph, message_value(root.find("graph")));
                 if (*graph) {
                     ATELIER_TRY_BIND(value, message_value((**graph).string()));
-                    inspected_.insert_or_assign(*id, std::string(*value));
+                    inspected_.insert_or_assign(*id, String::from_utf8_validated(*value));
                 } else {
                     ATELIER_TRY_BIND(error, message_value(root.string({"error"})));
-                    inspected_.insert_or_assign(*id, "error: " + std::string(*error));
+                    inspected_.insert_or_assign(*id, String::concat("error: ", String::validated(*error)));
                 }
             } else if (*type == "error") {
                 ATELIER_TRY_BIND(error, message_value(root.string({"message"})));
-                fail(std::string(*error));
+                fail(String::from_utf8_validated(*error));
             } else if (*type == "ack") {
                 ATELIER_TRY_BIND(seq, message_value(root.u64({"seq"})));
                 if (pending_.empty() || pending_.front().seq != *seq)
                     return std::unexpected(Error{ErrorCode::invalid_storage,
-                                                 "batch " + std::to_string(*seq) + " acknowledged out of order"});
+                                                 String::concat("batch ", *seq, " acknowledged out of order")});
                 pending_bytes_ -= pending_.front().bytes;
                 pending_resource_bytes_ -= pending_.front().resource_bytes;
                 pending_.pop_front();
@@ -364,7 +381,7 @@ void PlayLink::poll(bool running, bool stopping) {
                     ATELIER_TRY_BIND(severity, message_value(item.string({"severity"})));
                     if (*severity == "error") {
                         ATELIER_TRY_BIND(error, message_value(item.string({"message"})));
-                        fail(std::string(*error));
+                        fail(String::from_utf8_validated(*error));
                         break;
                     }
                 }
@@ -373,7 +390,7 @@ void PlayLink::poll(bool running, bool stopping) {
             return {};
         }();
         if (!read)
-            fail("Unreadable Play reply: " + read.error().message);
+            fail(String::concat("Unreadable Play reply: ", read.error().message));
     }
     // A child closes its handles before its process ends; only a link that stays
     // closed while Play keeps running means Play cannot follow anymore.
@@ -411,33 +428,34 @@ std::uint64_t PlayLink::inspect(std::uint64_t identity) {
     message.set_validated(message.root(), "type", "inspect");
     (void)message.set(message.root(), "id", request);
     (void)message.set(message.root(), "object", identity);
-    const auto bytes = json::write(message.root());
-    link_->send(std::string(bytes.data(), bytes.size()));
+    link_->send(json::write(message.root()));
     return request;
 }
 
-Optional<std::string> PlayLink::inspected(std::uint64_t request) {
+Optional<String> PlayLink::inspected(std::uint64_t request) {
     return inspected_.take(request);
 }
 
 void PlayEnd::service(editor::Session& document, editor::Project& project) {
-    for (auto& text : link_->receive()) {
+    for (const auto& raw : link_->receive()) {
+        const StringView text{raw.data(), raw.size()};
         json::Builder reply;
-        const auto reject = [&](const std::string& message, bool print) {
+        const auto reject = [&](Utf8Text message_in, bool print) {
             diverged_ = true;
             world::Diagnostic item;
             item.severity = world::Severity::error;
             item.kind = world::DiagnosticKind::command_rejected;
             item.phase = world::DiagnosticPhase::command;
-            item.message = message;
+            item.message = std::move(message_in).into_string();
             if (print)
                 report_world(document, {&item, 1}, project.root(), "live");
         };
-        const auto error_reply = [&](std::string message) {
-            reject(message, true);
+        const auto error_reply = [&](Utf8Text message_in) {
+            auto message = std::move(message_in).into_string();
             reply = json::Builder{};
             reply.set_validated(reply.root(), "type", "error");
-            reply.set_validated(reply.root(), "message", diagnostic_utf8(message));
+            reply.set_validated(reply.root(), "message", message);
+            reject(std::move(message), true);
         };
         const auto handled = [&]() -> Result<void> {
             ATELIER_TRY_BIND(message, message_value(assets::json_format::parse(text)));
@@ -451,7 +469,7 @@ void PlayEnd::service(editor::Session& document, editor::Project& project) {
                 auto graph = document.local_object(*identity).and_then(
                     [&](ObjectId object) { return document.serialize_live_subtree(object); });
                 if (!graph)
-                    reply.set_validated(reply.root(), "error", diagnostic_utf8(graph.error().message));
+                    reply.set_validated(reply.root(), "error", graph.error().message);
                 else if (graph->size() > LiveLink::maximum_message / 2)
                     reply.set_validated(reply.root(), "error", "The inspected graph exceeds the reply limit.");
                 else
@@ -462,45 +480,48 @@ void PlayEnd::service(editor::Session& document, editor::Project& project) {
                 reply.set_validated(reply.root(), "type", "ack");
                 ATELIER_TRY(message_value(reply.set(reply.root(), "seq", seq)));
                 ATELIER_TRY_BIND(out, message_value(reply.array(reply.root(), "diagnostics")));
-                const auto refused = [&](std::string message, bool print) {
-                    reject(message, print);
+                const auto refused = [&](Utf8Text message_in, bool print) {
+                    auto message = std::move(message_in).into_string();
                     const auto item = reply.append_object(*out);
                     reply.set_validated(item, "severity", "error");
                     reply.set_validated(item, "kind", "command_rejected");
-                    reply.set_validated(item, "message", diagnostic_utf8(message));
+                    reply.set_validated(item, "message", message);
+                    reject(std::move(message), print);
                 };
                 if (diverged_) {
-                    refused("Play diverged before change batch " + std::to_string(seq) + "; nothing was applied.",
-                            false);
+                    refused(String::concat("Play diverged before change batch ", seq, "; nothing was applied."), false);
                 } else if (seq != expected_) {
-                    refused("Play change sequence gap: expected batch " + std::to_string(expected_) + ", received " +
-                                std::to_string(seq) + ".",
+                    refused(String::concat("Play change sequence gap: expected batch ", expected_, ", received ", seq,
+                                           "."),
                             true);
                 } else {
                     ++expected_;
-                    std::string batch;
+                    Array<std::byte> file_bytes;
+                    Array<char> json_bytes;
+                    StringView batch;
                     ATELIER_TRY_BIND(file, message_value(root.find("file")));
                     if (*file) {
                         ATELIER_TRY_BIND(path, message_value((**file).string()));
                         auto read = assets::read_file(platform::utf8_to_utf16_validated(*path));
-                        if (read)
-                            batch = std::move(*read);
-                        else {
-                            refused("Cannot read Play change batch " + std::to_string(seq) + ": " +
-                                        read.error().message,
-                                    true);
+                        if (read) {
+                            file_bytes = std::move(*read);
+                            batch = as_chars(file_bytes);
+                        } else {
+                            refused(
+                                String::concat("Cannot read Play change batch ", seq, ": ", read.error().message),
+                                true);
                         }
                     } else {
                         ATELIER_TRY_BIND(ops, message_value(root.at("ops")));
                         json::Builder envelope;
                         envelope.set_validated(envelope.root(), "ops", *ops);
-                        const auto bytes = json::write(envelope.root());
-                        batch.assign(bytes.data(), bytes.size());
+                        json_bytes = json::write(envelope.root());
+                        batch = StringView{json_bytes.data(), json_bytes.size()};
                     }
                     if (!batch.empty()) {
                         auto applied = document.apply_live(batch, project);
                         if (!applied) {
-                            refused("Play change batch " + std::to_string(seq) + " failed: " + applied.error().message,
+                            refused(String::concat("Play change batch ", seq, " failed: ", applied.error().message),
                                     true);
                         } else {
                             report_world(document, *applied, project.root(), "live");
@@ -509,13 +530,14 @@ void PlayEnd::service(editor::Session& document, editor::Project& project) {
                                     diverged_ = true;
                                 auto description = editor::describe_diagnostic(document, item);
                                 if (!description) {
-                                    error_reply("Unreadable editor message: " + description.error().message);
+                                    error_reply(
+                                        String::concat("Unreadable editor message: ", description.error().message));
                                     break;
                                 }
                                 const auto entry = reply.append_object(*out);
                                 reply.set_validated(entry, "severity", world::name(item.severity));
                                 reply.set_validated(entry, "kind", world::name(item.kind));
-                                reply.set_validated(entry, "message", diagnostic_utf8(*description));
+                                reply.set_validated(entry, "message", *description);
                             }
                         }
                     }
@@ -525,7 +547,7 @@ void PlayEnd::service(editor::Session& document, editor::Project& project) {
             return {};
         }();
         if (!handled)
-            error_reply("Unreadable editor message: " + handled.error().message);
+            error_reply(String::concat("Unreadable editor message: ", handled.error().message));
         auto bytes = json::write(reply.root());
         // Every diagnostic is already in the output; an oversized acknowledgement keeps only its verdict.
         const auto diagnostics = *reply.root().find("diagnostics");
@@ -538,7 +560,7 @@ void PlayEnd::service(editor::Session& document, editor::Project& project) {
                     summary.set_validated(entry, "severity", "error");
                     summary.set_validated(entry, "kind", *item.string({"kind"}));
                     const auto message = *item.string({"message"});
-                    summary.set_validated(entry, "message", StringView{message}.utf8_prefix(4096).std_view());
+                    summary.set_validated(entry, "message", message.utf8_prefix(4096));
                     break;
                 }
             reply.set_validated(reply.root(), "diagnostics", summary.root());
@@ -547,7 +569,7 @@ void PlayEnd::service(editor::Session& document, editor::Project& project) {
         if (bytes.size() > LiveLink::maximum_message)
             reject("Cannot reply to the editor: A Play link message is empty or exceeds 4 MiB.", true);
         else
-            link_->send(std::string(bytes.data(), bytes.size()));
+            link_->send(std::move(bytes));
     }
 }
 }

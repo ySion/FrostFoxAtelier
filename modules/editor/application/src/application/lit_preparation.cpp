@@ -44,7 +44,7 @@ renderer::Result<LitFallback::Drawn> LitFallback::render(renderer::Renderer& ren
             last_lit_ = frame.view;
         return Drawn{*result, frame.view, false, {}};
     }
-    std::string failure;
+    String failure;
     if (!result) {
         // Other recoverable failures keep the caller's retry path.
         if (result.error().terminal || renderer.preparation(frame.view))

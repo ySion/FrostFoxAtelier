@@ -2,6 +2,8 @@
 #include "editor/view_options.hpp"
 
 namespace atelier::editor {
+using namespace atelier::literals;
+
 Result<void> register_editor_types(Runtime& runtime) {
     Array<TypeDefinition> definitions;
     definitions.reserve(84);
@@ -44,7 +46,7 @@ Result<void> register_editor_types(Runtime& runtime) {
     definitions.add(reflection::Definition<ViewToggle>::build(runtime));
     definitions.add(reflection::Definition<MenuKind>::build(runtime));
     // The public menu name is a C++ keyword.
-    definitions.back().enumeration->values[static_cast<unsigned>(MenuKind::delete_selection)].first = "delete";
+    definitions.back().enumeration->values[static_cast<unsigned>(MenuKind::delete_selection)].first = "delete"_s;
     definitions.add(reflection::Definition<MenuParameters>::build(runtime));
     definitions.add(reflection::Definition<LightingFitMode>::build(runtime));
     definitions.add(reflection::Definition<LightingFit>::build(runtime));
@@ -86,14 +88,14 @@ Result<void> register_editor_types(Runtime& runtime) {
     definitions.add(reflection::Definition<AssignProceduralGraph>::build(runtime));
     definitions.add(reflection::Definition<ProceduralBake>::build(runtime));
     TypeDefinition view;
-    view.name = "editor.ViewSettings";
+    view.name = "editor.ViewSettings"_s;
     view.kind = TypeKind::record;
     for (const auto& option : view_options()) {
         FieldDefinition field;
-        field.name = option.name;
-        field.label = option.label;
-        field.category = option.category;
-        field.description = option.description;
+        field.name = String::from_utf8_validated(option.name);
+        field.label = String::from_utf8_validated(option.label);
+        field.category = String::from_utf8_validated(option.category);
+        field.description = String::from_utf8_validated(option.description);
         switch (option.kind) {
         case ViewValueKind::boolean:
             field.value.type = TypeReference::native<bool>();
@@ -114,11 +116,12 @@ Result<void> register_editor_types(Runtime& runtime) {
             break;
         case ViewValueKind::enumeration: {
             TypeDefinition enumeration;
-            enumeration.name = "editor.ViewOption_" + std::string(option.name);
+            enumeration.name = String::concat("editor.ViewOption_", String::validated(option.name));
             enumeration.kind = TypeKind::enumeration;
             enumeration.enumeration = TypeDefinition::Enumeration{TypeReference::native<std::uint32_t>(), {}};
             for (std::size_t i = 0; i < option.choices.size(); ++i)
-                enumeration.enumeration->values.emplace(option.choices[i], static_cast<std::uint32_t>(i));
+                enumeration.enumeration->values.emplace(String::from_utf8_validated(option.choices[i]),
+                                                        static_cast<std::uint32_t>(i));
             field.value.type = TypeReference{enumeration.name};
             definitions.add(std::move(enumeration));
             break;

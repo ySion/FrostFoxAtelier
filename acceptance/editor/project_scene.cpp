@@ -18,6 +18,8 @@
 namespace {
 using namespace atelier;
 
+using namespace atelier::literals;
+
 using namespace atelier::acceptance::helpers;
 
 void changed(Result<world::Commit> result) {
@@ -34,7 +36,7 @@ struct Entity : world::Entity {
     Result<void> validate() const {
         if (health < 0)
             return std::unexpected(Error{ErrorCode::argument_mismatch, "Health must be nonnegative."});
-        if (label.view().std_view() == "reserved")
+        if (label == "reserved")
             return std::unexpected(
                 Error{ErrorCode::invocation_failed, "Reserved label.", SourceLocation{"entity.source", 7, 12, 3, 4}});
         return {};
@@ -112,7 +114,8 @@ void verify_rejected_graph(editor::Session& document, ObjectId root, editor::Pro
     const auto subtree = take(assets::json_format::parse(take(document.serialize_subtree(root))));
     json::Builder broken(subtree);
     const auto root_key = take(take(broken.root().at("roots")).at(0));
-    const std::string key(take(root_key.string()));
+
+    const String key = String::from_utf8_validated(take(root_key.string()));
     const auto add_material = [](json::Builder& graph) {
         const auto instance = graph.append_object(take(graph.root().at("materials")));
         graph.set_validated(instance, "id", "900001");
@@ -159,7 +162,7 @@ void verify_rejected_graph(editor::Session& document, ObjectId root, editor::Pro
             "A rejected Play add published part of its graph.");
 
     batch.set_validated(add, "graph", subtree.root());
-    const auto change = [&](std::string_view op) {
+    const auto change = [&](StringView op) {
         const auto item = batch.append_object(ops);
         batch.set_validated(item, "op", op);
         batch.set_validated(item, "id", key);
@@ -254,7 +257,7 @@ void verify_rejected_graph(editor::Session& document, ObjectId root, editor::Pro
 
 void verify_roundtrip() {
     const auto directory = std::filesystem::current_path() / "project-scene-evidence" /
-                           std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+                           std::to_wstring(std::chrono::steady_clock::now().time_since_epoch().count());
     auto project = take(editor::Project::create(directory));
     editor::Session document;
     take(document.initialize(prepare));
@@ -320,32 +323,33 @@ void verify_roundtrip() {
     auto reopened = take(load_old(editor::LoadPolicy::strict));
     require(reopened->load_issues().empty(), "Strict load reported a transient field.");
     old_scene.set_validated(cache, "future_field", "keep");
-    Array<Array<std::string>> kept_paths;
+    Array<Array<String>> kept_paths;
     take(editor::decode_properties(
         runtime, {move_type, move}, props,
-        {[&](Array<std::string> at, json::Value, world::DiagnosticKind kind, const std::string&) -> Result<void> {
+        {[&](Array<String> at, json::Value, world::DiagnosticKind kind, StringView) -> Result<void> {
              require(kind == world::DiagnosticKind::unknown_field, "Unexpected tolerant decode diagnostic.");
              kept_paths.add(std::move(at));
              return {};
          },
-         [](Array<std::string>, json::Value) -> Result<void> { return {}; }}));
-    require(kept_paths == Array<Array<std::string>>{{"cache", "future_field"}},
+         [](Array<String>, json::Value) -> Result<void> { return {}; }}));
+    require(kept_paths == Array<Array<String>>{{"cache"_s, "future_field"_s}},
             "Shared tolerant decode_properties did not skip transient fields.");
     old_scene.set_validated(props, "speed", "legacy speed");
     const auto strict = load_old(editor::LoadPolicy::strict);
+
     auto tolerant = take(load_old(editor::LoadPolicy::tolerant));
+
     const auto issues = tolerant->load_issues();
     require(issues.size() == 2 && !strict && strict.error().message == issues.front().message &&
                 std::ranges::any_of(issues,
                                     [](const auto& issue) {
                                         return issue.kind == world::DiagnosticKind::unknown_field &&
-                                               issue.field ==
-                                                   Array<std::string>{"properties", "cache", "future_field"};
+                                               issue.field == Array<String>{"properties"_s, "cache"_s, "future_field"_s};
                                     }) &&
                 std::ranges::any_of(issues,
                                     [](const auto& issue) {
                                         return issue.kind == world::DiagnosticKind::mismatch &&
-                                               issue.field == Array<std::string>{"properties", "speed"};
+                                               issue.field == Array<String>{"properties"_s, "speed"_s};
                                     }),
             "Strict load lost its first error or tolerant load lost a rejected field.");
     const auto doc_ent_id = document.document_identity(entity);
@@ -397,9 +401,10 @@ void verify_roundtrip() {
             "Strict scene load accepted an invalid custom entity.");
     old_scene.set_validated(range, "discarded_with_range", "obsolete");
     auto recovered = take(load_old(editor::LoadPolicy::tolerant));
+
     const auto diagnostics = recovered->load_issues();
-    require(diagnostics.size() == 3 && diagnostics[0].field == Array<std::string>{"properties"} &&
-                diagnostics.back().field == Array<std::string>{"properties", "range"},
+    require(diagnostics.size() == 3 && diagnostics[0].field == Array<String>{"properties"_s} &&
+                diagnostics.back().field == Array<String>{"properties"_s, "range"_s},
             "Scene recovery must diagnose each invalid record.");
     auto& recovered_runtime = recovered->world().runtime();
     const auto recovered_owner = take(recovered->world().members()).front().id();
@@ -473,9 +478,11 @@ void verify_stop_reentry() {
 
 void verify_procedural_generator_scene() {
     const auto directory = std::filesystem::current_path() / "project-scene-evidence" /
-                           ("procgen-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+                           (L"procgen-" + std::to_wstring(std::chrono::steady_clock::now().time_since_epoch().count()));
+
     auto project = take(editor::Project::create(directory));
-    const std::string_view graph_json = R"({
+
+    const StringView graph_json = R"({
   "nodes": {
     "sphere": {
       "inputs": {},
@@ -511,8 +518,8 @@ void verify_procedural_generator_scene() {
         assets::MaterialAsset{{},
                               L"Stone",
                               assets::MaterialInstanceAsset{
-                                  "builtin/material/standard-opaque-double",
-                                  {{"base_color", math::Vector4{.62f, .58f, .50f, 1.f}}, {"roughness", .76f}}}}));
+                                  "builtin/material/standard-opaque-double"_s,
+                                  {{"base_color"_s, math::Vector4{.62f, .58f, .50f, 1.f}}, {"roughness"_s, .76f}}}}));
 
     editor::Session doc;
     take(doc.initialize());
@@ -638,7 +645,7 @@ void verify_procedural_generator_scene() {
         json::Builder extra_slot(parsed.root());
         const auto comp = take(take(take(take(extra_slot.root().at("entities")).at(0)).at("components")).at(0));
         const auto mats = take(comp.at("materials"));
-        const auto first_mat_res = std::string{take(take(mats.at(0)).string({"resource"}))};
+        const auto first_mat_res = String::from_utf8_validated(take(take(mats.at(0)).string({"resource"})));
         const auto stale = extra_slot.append_object(mats);
         extra_slot.set_validated(stale, "slot", "obsolete_slot");
         extra_slot.set_validated(stale, "resource", first_mat_res);
@@ -665,8 +672,9 @@ void verify_procedural_generator_scene() {
     // Corrupt .procgraph on disk must fail LoadPolicy::strict and isolate cleanly under LoadPolicy::tolerant.
     {
         const auto broken_key = take(project.create_procedural_graph(L"Content/Graphs/Broken.procgraph", graph_json));
+
         const auto broken_path = take(project.resolve(project.entry(broken_key)->path));
-        take(editor::write_file(broken_path, "{corrupt json"));
+        take(editor::write_file(broken_path, as_bytes(StringView{"{corrupt json"})));
         take(project.refresh());
 
         const auto parsed = take(assets::json_format::parse(saved));
@@ -716,9 +724,10 @@ void verify_procedural_generator_scene() {
 
 void verify_examples_procedural_showcases() {
     const std::filesystem::path examples_root{ATELIER_EXAMPLE_PROJECT};
+
     const auto temp_dir =
         std::filesystem::current_path() / "project-scene-evidence" /
-        ("examples-proc-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        (L"examples-proc-" + std::to_wstring(std::chrono::steady_clock::now().time_since_epoch().count()));
     std::filesystem::create_directories(temp_dir / "Content");
     const auto copy_opts = std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing;
     std::filesystem::copy(examples_root / "Config", temp_dir / "Config", copy_opts);
@@ -730,7 +739,8 @@ void verify_examples_procedural_showcases() {
     // 1. ProceduralShowcase.scene
     {
         const auto scene_file = take(project.resolve("Content/Procedural/Scenes/ProceduralShowcase.scene"));
-        const auto scene_text = take(assets::read_file(scene_file, 16 * 1024 * 1024));
+
+        const auto scene_text = take(assets::read_utf8_file(scene_file, 16 * 1024 * 1024));
         auto loaded = editor::load_project_scene(project, scene_text, editor::LoadPolicy::strict);
         if (loaded.error)
             fatal(loaded.error->message);
@@ -763,7 +773,8 @@ void verify_examples_procedural_showcases() {
     // 2. GenerativeModelingShowcase.scene
     {
         const auto scene_file = take(project.resolve("Content/Procedural/Scenes/GenerativeModelingShowcase.scene"));
-        const auto scene_text = take(assets::read_file(scene_file, 16 * 1024 * 1024));
+
+        const auto scene_text = take(assets::read_utf8_file(scene_file, 16 * 1024 * 1024));
         auto loaded = editor::load_project_scene(project, scene_text, editor::LoadPolicy::strict);
         if (loaded.error)
             fatal(loaded.error->message);
@@ -792,9 +803,10 @@ void verify_examples_procedural_showcases() {
             const auto ruin_params =
                 take(loaded.session->generator_promoted_parameters(gen_slots[2].item->component, &project));
             const auto hall_floors =
-                std::ranges::find(hall_params, std::string_view{"floors"}, &editor::GraphPromotedParameterView::name);
+                std::ranges::find(hall_params, StringView{"floors"}, &editor::GraphPromotedParameterView::name);
+
             const auto ruin_floors =
-                std::ranges::find(ruin_params, std::string_view{"floors"}, &editor::GraphPromotedParameterView::name);
+                std::ranges::find(ruin_params, StringView{"floors"}, &editor::GraphPromotedParameterView::name);
             require(hall_floors != hall_params.end() && !hall_floors->overridden &&
                         std::get<std::int32_t>(hall_floors->properties.front().value) == 3 &&
                         ruin_floors != ruin_params.end() && ruin_floors->overridden &&
@@ -802,10 +814,9 @@ void verify_examples_procedural_showcases() {
                     "Generator promoted parameter views did not reflect default vs overridden floors.");
         }
 
-        const auto assert_manifold_stages = [&](std::string_view graph_key,
-                                                std::initializer_list<std::string_view> stages) {
+        const auto assert_manifold_stages = [&](StringView graph_key, std::initializer_list<StringView> stages) {
             (void)take(loaded.session->open_graph(project, graph_key));
-            for (const std::string_view stage : stages) {
+            for (const StringView stage : stages) {
                 const ObjectId node_id = loaded.session->graph_node_id(graph_key, stage);
                 require(node_id != ObjectId{}, "Missing expected solid stage in showcase graph.");
                 const auto view = take(loaded.session->inspect_graph(graph_key, &project, node_id, false, 4, true));
@@ -819,9 +830,10 @@ void verify_examples_procedural_showcases() {
             }
         };
 
-        const std::string_view outpost_key = "project/{E4A19C72-8F3B-4D12-9A65-7B2C41F8E301}";
+        const StringView outpost_key = "project/{E4A19C72-8F3B-4D12-9A65-7B2C41F8E301}";
         assert_manifold_stages(outpost_key, {"road_sweep", "wall_sweep", "merlon_sweep"});
         const ObjectId island_ref = loaded.session->graph_node_id(outpost_key, "island_terrace");
+
         const auto outpost_view = take(
             loaded.session->inspect_graph(outpost_key, &project, {}, false, 4, true, island_ref, "island_terrace"));
         require(!outpost_view.display_error && outpost_view.display_summary.valid &&
@@ -832,7 +844,7 @@ void verify_examples_procedural_showcases() {
                     outpost_view.display_summary.spatial->surface_clearance->floating_count == 0,
                 "FortifiedOutpost display reported instance overlaps or floating props.");
 
-        const std::string_view ruin_key = "project/{A91C4E85-3D72-49B0-8E24-6C1F5B70D402}";
+        const StringView ruin_key = "project/{A91C4E85-3D72-49B0-8E24-6C1F5B70D402}";
         assert_manifold_stages(ruin_key, {"facade_extrude", "slab_extrude", "roof_sweep", "structure_shell"});
         const ObjectId slab_ref = loaded.session->graph_node_id(ruin_key, "slab_extrude");
         const auto ruin_view =
@@ -865,7 +877,7 @@ void verify_examples_procedural_showcases() {
         take(loaded.session->presentation().update());
 
         // 3. RuinedSettlement.procgraph (3-instance AssetNode composition + spatial overlap clearance):
-        const std::string_view settlement_key = "project/{D37A5B14-6C8E-4F29-B510-9E4D2A83C604}";
+        const StringView settlement_key = "project/{D37A5B14-6C8E-4F29-B510-9E4D2A83C604}";
         (void)take(loaded.session->open_graph(project, settlement_key));
         const auto settlement_view = take(loaded.session->inspect_graph(settlement_key, &project, {}, false, 4, true));
         require(!settlement_view.display_error && settlement_view.display_summary.valid &&
@@ -876,7 +888,7 @@ void verify_examples_procedural_showcases() {
                 "RuinedSettlement.procgraph 3-instance AssetNode composition reported missing geometry or overlaps.");
 
         // 3b. ArcBalustrade.procgraph (direct self.polyline_length without SampleCurve) & Footbridge.procgraph (RailPanel):
-        const std::string_view balustrade_key = "project/{5EE9A8F9-A129-4BB3-ABB5-C4A1769A9CB6}";
+        const StringView balustrade_key = "project/{5EE9A8F9-A129-4BB3-ABB5-C4A1769A9CB6}";
         assert_manifold_stages(balustrade_key,
                                {"bedding", "wall_stones", "sill_stones", "balusters", "handrail", "stonework"});
         require(loaded.session->graph_node_id(balustrade_key, "guide_end") == ObjectId{},
@@ -886,7 +898,7 @@ void verify_examples_procedural_showcases() {
                     balustrade_view.nodes.size() == 19,
                 "ArcBalustrade.procgraph failed or mismatched expected 19-node topology.");
 
-        const std::string_view footbridge_key = "project/{D939310F-FB4A-43F3-969D-766EF268C181}";
+        const StringView footbridge_key = "project/{D939310F-FB4A-43F3-969D-766EF268C181}";
         (void)take(loaded.session->open_graph(project, footbridge_key));
         const auto footbridge_view = take(loaded.session->inspect_graph(footbridge_key, &project, {}, false, 4, true));
         require(!footbridge_view.display_error && footbridge_view.display_summary.valid &&
@@ -919,8 +931,9 @@ void verify_examples_procedural_showcases() {
 
             loaded.session->set_live_forwarding(true);
 
-            auto play_base =
-                editor::load_project_scene(project, take(loaded.session->serialize()), editor::LoadPolicy::strict);
+            const auto play_scene = take(loaded.session->serialize());
+
+            auto play_base = editor::load_project_scene(project, play_scene, editor::LoadPolicy::strict);
             if (play_base.error)
                 fatal(play_base.error->message);
             play_base.session->enter_play();
@@ -977,10 +990,12 @@ void verify_examples_procedural_showcases() {
 
             // Scene roundtrip preserves sparse overrides + tolerantly retains unmatched stale overrides:
             auto saved_with_ov = take(loaded.session->serialize());
-            const std::string_view needle = "\"floors\": 5";
+
+            const StringView needle = "\"floors\": 5";
+
             const auto at_floors = saved_with_ov.find(needle);
-            require(at_floors != std::string::npos, "Serialized scene did not write '\"floors\": 5' override.");
-            saved_with_ov.replace(at_floors, needle.size(), "\"floors\": 5, \"legacy_obsolete\": 42");
+            require(at_floors != StringView::npos, "Serialized scene did not write '\"floors\": 5' override.");
+            take(saved_with_ov.replace(at_floors, needle.size(), "\"floors\": 5, \"legacy_obsolete\": 42"));
             auto reloaded_ov = editor::load_project_scene(project, saved_with_ov, editor::LoadPolicy::tolerant);
             if (reloaded_ov.error)
                 fatal(reloaded_ov.error->message);
@@ -1017,10 +1032,12 @@ void verify_examples_procedural_showcases() {
                                                  .root(),
                                              &project));
             const auto diag_view = take(loaded.session->inspect_graph("scratch/diag_batch3", &project));
+
             const auto* board_nv = diag_view.find_node("board");
+
             const auto* after_nv = diag_view.find_node("after");
             require(diag_view.display_error.has_value() && diag_view.display_error_node == "board" &&
-                        diag_view.display_error->element == ErrorElement{"element", 0u} &&
+                        diag_view.display_error->element == ErrorElement{"element"_s, 0u} &&
                         diag_view.display_error->source.has_value() &&
                         editor::format_error_coordinates(*diag_view.display_error).contains("[element 0]") &&
                         board_nv && board_nv->root_error_node == "board" && after_nv &&

@@ -3,6 +3,8 @@
 #include "foundation/optional.hpp"
 #include "foundation/ring_deque.hpp"
 #include "foundation/set.hpp"
+#include "foundation/span.hpp"
+#include "foundation/string.hpp"
 #include "logging/logging.hpp"
 #include "ui_language/live_document.hpp"
 #include <array>
@@ -93,7 +95,7 @@ public:
     // child JSONL. Retains at most three UTF-8 bytes per stream across chunks;
     // invalid bytes and literal backslashes are reversibly escaped. Offsets are
     // original byte positions; ended flushes a final fragment without a newline.
-    void capture_raw(Stream&, bool standard_error, std::string_view bytes, std::uint64_t offset, bool ended);
+    void capture_raw(Stream&, bool standard_error, Span<const char> bytes, std::uint64_t offset, bool ended);
 
     // Standalone consumer seam only. Missing stream identity is assigned here;
     // recent 4096 supplied identities are checked before repeat counting. The
@@ -141,7 +143,7 @@ private:
 
     bool pending_change_{};
 
-    std::string memory_run_;
+    String memory_run_;
 
     Optional<logging::RunInfo> host_;
 
@@ -149,7 +151,7 @@ private:
 
     std::uint64_t next_key_{1};
 
-    using Identity = std::tuple<std::string, std::uint32_t, std::uint64_t, std::uint64_t>;
+    using Identity = std::tuple<String, std::uint32_t, std::uint64_t, std::uint64_t>;
 
     Set<Identity> owned_identities_;
 

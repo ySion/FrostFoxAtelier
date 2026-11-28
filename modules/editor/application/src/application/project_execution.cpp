@@ -10,8 +10,8 @@
 
 namespace atelier::application {
 namespace {
-auto failure(std::string message) {
-    return std::unexpected(Error{ErrorCode::invalid_storage, std::move(message)});
+auto failure(Utf8Text message) {
+    return std::unexpected(Error{ErrorCode::invalid_storage, std::move(message).into_string()});
 }
 
 bool same_sources(const source::SourceSnapshot& a, const source::SourceSnapshot& b) {
@@ -40,9 +40,9 @@ void Application::attach_play_output() noexcept {
                    stderr);
         return;
     }
-    logging::Entry entry{.category = "play",
-                         .event_code = "play.run_attached",
-                         .message = "Runner process launched; waiting for its startup evidence."};
+    logging::Entry entry{.category = "play"_s,
+                         .event_code = "play.run_attached"_s,
+                         .message = "Runner process launched; waiting for its startup evidence."_s};
     entry.fields = {{"directory", std::move(*directory)}, {"project_root", std::move(*root)}};
     static_cast<void>(workspace_.output.submit_owned(std::move(entry)));
 }
@@ -72,12 +72,12 @@ void Application::consume_play_output() noexcept {
                 return;
             }
             logging::Entry entry{.severity = loss ? logging::Severity::warning : logging::Severity::info,
-                                 .category = "process.raw",
-                                 .event_code = "raw.transport",
+                                 .category = "process.raw"_s,
+                                 .event_code = "raw.transport"_s,
                                  .message =
-                                     loss ? "Raw process output is incomplete." : "Raw process stream reached EOF."};
+                                     loss ? "Raw process output is incomplete."_s : "Raw process stream reached EOF."_s};
             entry.fields = {{"directory", std::move(*directory)},
-                            {"stream", std::string(standard_error ? "stderr" : "stdout")},
+                            {"stream", standard_error ? "stderr"_s : "stdout"_s},
                             {"received_bytes", state.received_bytes},
                             {"dropped_bytes", state.dropped_bytes},
                             {"abandoned_bytes", state.abandoned_bytes},
@@ -211,7 +211,7 @@ Result<void> Application::build_project(bool rebuild, bool interactive) {
         ATELIER_TRY(document_->save_material(*project_, key));
     }
     ATELIER_TRY_BIND(open_graphs, document_->snapshot_open_graphs());
-    ATELIER_TRY_BIND(text, workspace_.scene_available ? document_->serialize() : Result<std::string>{pending_scene_});
+    ATELIER_TRY_BIND(text, workspace_.scene_available ? document_->serialize() : Result<String>{pending_scene_});
     const bool dirty = workspace_.scene_available && document_->dirty();
     auto next =
         editor::load_project_scene(*project_, *text, editor::LoadPolicy::tolerant, false, editor::SessionRole::editor);
@@ -255,12 +255,12 @@ Result<void> Application::create_source(const std::filesystem::path& relative, b
     if (!is_ui && (stem->empty() ||
                    !((stem->front() >= 'A' && stem->front() <= 'Z') || (stem->front() >= 'a' && stem->front() <= 'z') ||
                      stem->front() == '_') ||
-                   std::ranges::any_of(*stem, [](unsigned char c) {
+                   std::ranges::any_of(stem->view(), [](unsigned char c) {
                        return !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_');
                    })))
         return failure("Use a Source identifier as the component file name (letters, digits and underscore).");
-    ATELIER_TRY(project_->create_source(relative, is_ui ? editor::ProjectCode::ui_source()
-                                                        : editor::ProjectCode::component_source(*stem)));
+    const auto generated = is_ui ? editor::ProjectCode::ui_source() : editor::ProjectCode::component_source(*stem);
+    ATELIER_TRY(project_->create_source(relative, generated));
     if (is_ui) {
         auto configured = project_->set_ui_source(relative);
         if (!configured) {

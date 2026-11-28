@@ -126,7 +126,7 @@ Result<void> Window::initialize(HWND popup_owner, Optional<ui::PixelExtent> init
             DestroyWindow(handle_);
         handle_ = nullptr;
         return std::unexpected(
-            Error{ErrorCode::invalid_storage, std::string(message) + " (Win32 " + std::to_string(code) + ")."});
+            Error{ErrorCode::invalid_storage, String::concat(String::validated(message), " (Win32 ", code, ").")});
     };
     if (initial_client && (popup_ || !initial_client->width || !initial_client->height ||
                            initial_client->width > 32768 || initial_client->height > 32768))

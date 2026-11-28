@@ -63,7 +63,7 @@ struct ColumnExtractor {
 
 } // namespace
 
-void GeometryGroupGuide::select(procedural::Layer layer, std::string name) {
+void GeometryGroupGuide::select(procedural::Layer layer, String name) {
     layer_ = layer;
     name_ = std::move(name);
     column_ = {};
@@ -72,7 +72,7 @@ void GeometryGroupGuide::select(procedural::Layer layer, std::string name) {
 }
 
 bool GeometryGroupGuide::resolve(const procedural::Geometry& geometry) {
-    const auto* attr = name_.empty() ? nullptr : geometry.find(StringView{name_});
+    const auto* attr = name_.empty() ? nullptr : geometry.find(name_.view());
     const auto* mask = attr && attr->layer == layer_ ? std::get_if<SharedArray<bool>>(&attr->data) : nullptr;
     if (!mask) {
         column_ = {};
@@ -248,9 +248,8 @@ const std::shared_ptr<const ui::TableData>& GeometrySpreadsheet::build_table(con
             if (filter_matches_column(L"reference", L"Reference", filter_)) {
                 extractors.add({L"Reference", 160.f, ui::TextAlign::left, [refs, &indices](std::size_t idx) {
                                     const auto r = indices[idx];
-                                    return r < refs.size()
-                                               ? platform::utf8_to_utf16_validated(refs[r].key.view().std_view())
-                                               : L"<invalid>";
+                                    return r < refs.size() ? platform::utf8_to_utf16_validated(refs[r].key)
+                                                           : L"<invalid>";
                                 }});
             }
             constexpr std::array<const wchar_t*, 3> tx_titles{L"Translate[x]", L"Translate[y]", L"Translate[z]"};
@@ -266,7 +265,7 @@ const std::shared_ptr<const ui::TableData>& GeometrySpreadsheet::build_table(con
         for (const auto& attr : geometry->attributes()) {
             if (attr.layer != layer_)
                 continue;
-            const auto attr_name = platform::utf8_to_utf16_validated(attr.name.view().std_view());
+            const auto attr_name = platform::utf8_to_utf16_validated(attr.name);
             std::visit(
                 [&](const auto& col) {
                     using Shared = std::decay_t<decltype(col)>;
@@ -323,8 +322,7 @@ const std::shared_ptr<const ui::TableData>& GeometrySpreadsheet::build_table(con
                     } else if constexpr (std::same_as<T, String>) {
                         if (filter_matches_column(attr_name, attr_name, filter_)) {
                             extractors.add({attr_name, 130.f, ui::TextAlign::left, [values](std::size_t idx) {
-                                                return platform::utf8_to_utf16_validated(
-                                                    values[idx].view().std_view());
+                                                return platform::utf8_to_utf16_validated(values[idx]);
                                             }});
                         }
                     }
@@ -449,9 +447,9 @@ std::uint32_t blend_hex(std::uint32_t a, std::uint32_t b, float t) noexcept {
     return ch(16) | ch(8) | ch(0);
 }
 
-std::string short_type_name(std::string_view full_name) {
-    const auto dot = full_name.find_last_of('.');
-    return std::string(dot == std::string_view::npos ? full_name : full_name.substr(dot + 1));
+StringView short_type_name(StringView full_name) noexcept {
+    const auto dot = full_name.rfind('.');
+    return dot == StringView::npos ? full_name : full_name.slice(dot + 1);
 }
 
 std::wstring sanitize_single_line(std::wstring_view raw) {
@@ -501,7 +499,7 @@ std::wstring escape_note_single_line(std::wstring_view raw) {
     return out;
 }
 
-std::string unescape_note_utf8(std::wstring_view raw) {
+String unescape_note_utf8(std::wstring_view raw) {
     std::wstring expanded;
     expanded.reserve(raw.size());
     for (std::size_t i = 0; i < raw.size(); ++i) {
@@ -514,7 +512,7 @@ std::string unescape_note_utf8(std::wstring_view raw) {
             expanded.push_back(raw[i]);
         }
     }
-    return platform::utf16_to_utf8(expanded).value_or(std::string{});
+    return platform::utf16_to_utf8(expanded).value_or(String{});
 }
 
 std::uint64_t steady_millis() noexcept {
@@ -523,7 +521,7 @@ std::uint64_t steady_millis() noexcept {
             .count());
 }
 
-std::wstring extract_acronym(std::string_view short_name) {
+std::wstring extract_acronym(StringView short_name) {
     std::wstring out;
     for (std::size_t i = 0; i < short_name.size(); ++i) {
         const char c = short_name[i];
@@ -790,7 +788,7 @@ constexpr std::array<AirSectorDef, 5> air_sector_defs{{
      "切换紫红色副视对比线框标记，在 3D 视口中将此节点作为参考线框叠加对比。"},
 }};
 
-ui::ControlIcon sop_node_icon(std::string_view type_name, bool is_source_sop, bool has_error) noexcept {
+ui::ControlIcon sop_node_icon(StringView type_name, bool is_source_sop, bool has_error) noexcept {
     if (has_error)
         return ui::ControlIcon::close;
     if (is_source_sop)
@@ -957,14 +955,13 @@ void NetworkCanvas::cancel_gesture() noexcept {
     snapped_port_.reset();
 }
 
-ui::ControlKey NetworkCanvas::node_base_key(std::string_view graph_key, std::string_view item_name,
-                                            std::string_view prefix) {
-    std::string combined;
+ui::ControlKey NetworkCanvas::node_base_key(StringView graph_key, StringView item_name, StringView prefix) {
+    String combined;
     combined.reserve(graph_key.size() + 1 + prefix.size() + item_name.size());
-    combined.append(graph_key);
-    combined.push_back('\n');
-    combined.append(prefix);
-    combined.append(item_name);
+    combined.append_validated(graph_key);
+    combined.append_ascii('\n');
+    combined.append_validated(prefix);
+    combined.append_validated(item_name);
     const auto [slot, inserted] = node_keys_.try_emplace(std::move(combined), next_node_key_);
     if (inserted && next_node_key_ + 12 < network_control::batch_key_base)
         next_node_key_ += 12;
@@ -1044,9 +1041,8 @@ std::array<float, 2> NetworkCanvas::port_dip(const GraphNodeView& node, bool is_
     return {px, py};
 }
 
-void NetworkCanvas::sync_graph(std::string_view graph_key, Span<const GraphNodeView> nodes,
-                               ui_layout::Size canvas_dip, Span<const GraphNetworkBox> boxes,
-                               Span<const GraphStickyNote> notes) {
+void NetworkCanvas::sync_graph(StringView graph_key, Span<const GraphNodeView> nodes, ui_layout::Size canvas_dip,
+                               Span<const GraphNetworkBox> boxes, Span<const GraphStickyNote> notes) {
     if (canvas_dip.width > 32.f && canvas_dip.height > 32.f)
         last_canvas_dip_ = canvas_dip;
     if (active_graph_ != graph_key) {
@@ -1062,7 +1058,7 @@ void NetworkCanvas::sync_graph(std::string_view graph_key, Span<const GraphNodeV
         air_node_.clear();
         hovered_flag_ = FlagZone::none;
         hovered_air_ = AirButton::none;
-        active_graph_ = std::string(graph_key);
+        active_graph_ = String::from_utf8_validated(graph_key);
         if (const auto* found = saved_views_.find(active_graph_)) {
             pan_x_ = found->pan_x;
             pan_y_ = found->pan_y;
@@ -1075,13 +1071,13 @@ void NetworkCanvas::sync_graph(std::string_view graph_key, Span<const GraphNodeV
             framed_ = false;
         }
     }
-    const auto has_node = [&](std::string_view name) {
+    const auto has_node = [&](StringView name) {
         return std::ranges::find(nodes, name, &GraphNodeView::name) != nodes.end();
     };
-    const auto has_note = [&](std::string_view name) {
+    const auto has_note = [&](StringView name) {
         return std::ranges::find(notes, name, &GraphStickyNote::name) != notes.end();
     };
-    const auto has_box = [&](std::string_view name) {
+    const auto has_box = [&](StringView name) {
         return std::ranges::find(boxes, name, &GraphNetworkBox::name) != boxes.end();
     };
     if (!selected_note_.empty() && !has_note(selected_note_))
@@ -1109,7 +1105,7 @@ void NetworkCanvas::sync_graph(std::string_view graph_key, Span<const GraphNodeV
             if (!has_node(popup_.target_name))
                 close_popup();
         } else {
-            popup_.target_nodes.remove_if([&](const std::string& n) { return !has_node(n); });
+            popup_.target_nodes.remove_if([&](const String& n) { return !has_node(n); });
             if (!popup_.target_name.empty() && !has_node(popup_.target_name))
                 popup_.target_name.clear();
             if (!popup_.palette_floating && popup_.target_nodes.empty())
@@ -1150,7 +1146,7 @@ void NetworkCanvas::step_zoom(int delta_steps, float anchor_dip_x, float anchor_
 }
 
 void NetworkCanvas::frame_nodes(Span<const GraphNodeView> nodes, ui_layout::Size canvas_dip,
-                                Span<const std::string> only_selected, Span<const GraphNetworkBox> boxes,
+                                Span<const String> only_selected, Span<const GraphNetworkBox> boxes,
                                 Span<const GraphStickyNote> notes) {
     const float cw = canvas_dip.width > 32.f ? canvas_dip.width : last_canvas_dip_.width;
     const float ch = canvas_dip.height > 32.f ? canvas_dip.height : last_canvas_dip_.height;
@@ -1220,8 +1216,8 @@ void NetworkCanvas::frame_nodes(Span<const GraphNodeView> nodes, ui_layout::Size
     framed_ = true;
 }
 
-void NetworkCanvas::open_tab_search(float dip_x, float dip_y, ui_layout::Size canvas_dip, std::string from_node,
-                                    std::string from_port, std::string to_node, std::string to_port) {
+void NetworkCanvas::open_tab_search(float dip_x, float dip_y, ui_layout::Size canvas_dip, String from_node,
+                                    String from_port, String to_node, String to_port) {
     close_popup();
     const float cw = canvas_dip.width > 32.f ? canvas_dip.width : last_canvas_dip_.width;
     const float ch = canvas_dip.height > 32.f ? canvas_dip.height : last_canvas_dip_.height;
@@ -1282,9 +1278,8 @@ Array<GraphNodeCatalogEntry> NetworkCanvas::filter_catalog(Span<const GraphNodeC
             scored.add({100, &item});
             continue;
         }
-        const std::string sname = !item.asset_key.empty() && !item.display_label.empty()
-                                      ? item.display_label
-                                      : std::string(short_type_name(item.name));
+        const StringView sname = !item.asset_key.empty() && !item.display_label.empty() ? item.display_label.view()
+                                                                                        : short_type_name(item.name);
         const auto short_lower = lowercase_w(platform::utf8_to_utf16_validated(sname));
         const auto full_lower = lowercase_w(platform::utf8_to_utf16_validated(item.name));
         const auto acronym = extract_acronym(sname);
@@ -1321,11 +1316,10 @@ Array<GraphNodeCatalogEntry> NetworkCanvas::filter_catalog(Span<const GraphNodeC
     return out;
 }
 
-Result<std::string> NetworkCanvas::commit_tab_pick(Session& session, std::string_view graph_key,
-                                                   Span<const GraphNodeCatalogEntry> catalog,
-                                                   std::size_t pick_index, std::string& primary_selected,
-                                                   Array<std::string>& selected_nodes, bool set_display,
-                                                   Project* project) {
+Result<String> NetworkCanvas::commit_tab_pick(Session& session, StringView graph_key,
+                                              Span<const GraphNodeCatalogEntry> catalog, std::size_t pick_index,
+                                              String& primary_selected, Array<String>& selected_nodes,
+                                              bool set_display, Project* project) {
     const auto matches = filter_catalog(catalog);
     if (pick_index >= matches.size())
         return std::unexpected(Error{ErrorCode::argument_mismatch, "No matching SOP node type selected."});
@@ -1339,13 +1333,13 @@ Result<std::string> NetworkCanvas::commit_tab_pick(Session& session, std::string
     return std::move(*created);
 }
 
-void NetworkCanvas::open_node_popup(PopupKind kind, const GraphInspectView& view, std::string_view primary_selected,
-                                    Span<const std::string> selected_nodes, ui_layout::Size canvas_dip,
+void NetworkCanvas::open_node_popup(PopupKind kind, const GraphInspectView& view, StringView primary_selected,
+                                    Span<const String> selected_nodes, ui_layout::Size canvas_dip,
                                     Optional<std::array<float, 2>> anchor_dip) {
     const float cw = canvas_dip.width > 32.f ? canvas_dip.width : last_canvas_dip_.width;
     const float ch = canvas_dip.height > 32.f ? canvas_dip.height : last_canvas_dip_.height;
-    std::string target = !primary_selected.empty() ? std::string(primary_selected)
-                                                   : (!selected_nodes.empty() ? selected_nodes.back() : std::string{});
+    String target = !primary_selected.empty() ? String::from_utf8_validated(primary_selected)
+                                              : (!selected_nodes.empty() ? selected_nodes.back() : String{});
     const auto* nv = target.empty() ? nullptr : view.find_node(target);
     if (!nv && kind == PopupKind::node_info)
         return;
@@ -1378,8 +1372,8 @@ void NetworkCanvas::open_node_popup(PopupKind kind, const GraphInspectView& view
     popup_ = std::move(next);
 }
 
-Result<bool> NetworkCanvas::apply_action(Session& session, std::string_view graph_key, std::string& primary_selected,
-                                         Array<std::string>& selected_nodes, ui_layout::Size canvas_dip,
+Result<bool> NetworkCanvas::apply_action(Session& session, StringView graph_key, String& primary_selected,
+                                         Array<String>& selected_nodes, ui_layout::Size canvas_dip,
                                          const ui::Action& action, std::wstring& out_status, bool read_only) {
     const bool blocked = session.world().running() || read_only;
     if (action.key == network_control::tab_search_input) {
@@ -1406,8 +1400,8 @@ Result<bool> NetworkCanvas::apply_action(Session& session, std::string_view grap
         ATELIER_TRY_BIND(insp, session.graph_topology(graph_key));
         const bool sel_only = action.key == network_control::frame_selected;
         frame_nodes((*insp)->nodes, canvas_dip,
-                    sel_only ? Span<const std::string>{selected_nodes} : Span<const std::string>{},
-                    (*insp)->boxes, (*insp)->notes);
+                    sel_only ? Span<const String>{selected_nodes} : Span<const String>{}, (*insp)->boxes,
+                    (*insp)->notes);
         out_status = (sel_only && !selected_nodes.empty()) ? L"Framed SOP selection" : L"Framed all SOP nodes";
         return true;
     }
@@ -1419,7 +1413,7 @@ Result<bool> NetworkCanvas::apply_action(Session& session, std::string_view grap
             selected_nodes.clear();
             for (const auto& n : (*insp)->nodes)
                 selected_nodes.add(n.name);
-            primary_selected = selected_nodes.empty() ? std::string{} : selected_nodes.back();
+            primary_selected = selected_nodes.empty() ? String{} : selected_nodes.back();
             out_status = L"Selected all SOP nodes";
         } else if (action.key == network_control::deselect_all_nodes) {
             selected_nodes.clear();
@@ -1428,12 +1422,12 @@ Result<bool> NetworkCanvas::apply_action(Session& session, std::string_view grap
             selected_box_.clear();
             out_status = L"Cleared SOP selection";
         } else {
-            Array<std::string> inverted;
+            Array<String> inverted;
             for (const auto& n : (*insp)->nodes)
                 if (std::ranges::find(selected_nodes, n.name) == selected_nodes.end())
                     inverted.add(n.name);
             selected_nodes = std::move(inverted);
-            primary_selected = selected_nodes.empty() ? std::string{} : selected_nodes.back();
+            primary_selected = selected_nodes.empty() ? String{} : selected_nodes.back();
             out_status = L"Inverted SOP selection";
         }
         return true;
@@ -1521,7 +1515,7 @@ Result<bool> NetworkCanvas::apply_action(Session& session, std::string_view grap
     if (!popup_.open() || blocked)
         return false;
 
-    const auto active_style_targets = [&]() -> const Array<std::string>& {
+    const auto active_style_targets = [&]() -> const Array<String>& {
         return !selected_nodes.empty() ? selected_nodes : popup_.target_nodes;
     };
 
@@ -1567,7 +1561,8 @@ Result<bool> NetworkCanvas::apply_action(Session& session, std::string_view grap
             if (!targets.empty()) {
                 ATELIER_TRY(
                     session.graph_set_node_appearance(graph_key, targets, {}, Optional<std::uint32_t>{rgb}, {}));
-                out_status = L"Updated node color: " + platform::utf8_to_utf16_validated(format_graph_hex_color(rgb));
+                const auto hex = format_graph_hex_color(rgb);
+                out_status = L"Updated node color: " + platform::utf8_to_utf16_validated(hex);
                 if (!popup_.palette_floating)
                     close_popup();
             } else if (!selected_note_.empty()) {
@@ -1602,7 +1597,7 @@ Result<bool> NetworkCanvas::apply_action(Session& session, std::string_view grap
         if (const auto* text = std::get_if<std::wstring>(&action.value)) {
             popup_.body_edit = sanitize_single_line(*text);
             if (action.kind == ui::ActionKind::edit_commit) {
-                const auto utf8 = platform::utf16_to_utf8(popup_.body_edit).value_or(std::string{});
+                const auto utf8 = platform::utf16_to_utf8(popup_.body_edit).value_or(String{});
                 ATELIER_TRY(session.graph_set_node_appearance(graph_key, popup_.target_nodes, {}, {}, utf8));
                 out_status = L"Updated node comment";
             }
@@ -1614,7 +1609,7 @@ Result<bool> NetworkCanvas::apply_action(Session& session, std::string_view grap
         if (const auto* text = std::get_if<std::wstring>(&action.value)) {
             popup_.title_edit = sanitize_single_line(*text);
             if (action.kind == ui::ActionKind::edit_commit) {
-                const auto utf8 = platform::utf16_to_utf8(popup_.title_edit).value_or(std::string{});
+                const auto utf8 = platform::utf16_to_utf8(popup_.title_edit).value_or(String{});
                 ATELIER_TRY(session.graph_update_note(graph_key, popup_.target_name, {}, {}, utf8, {}, {}));
                 out_status = L"Updated Sticky Note title";
             }
@@ -1638,7 +1633,7 @@ Result<bool> NetworkCanvas::apply_action(Session& session, std::string_view grap
         if (const auto* text = std::get_if<std::wstring>(&action.value)) {
             popup_.title_edit = sanitize_single_line(*text);
             if (action.kind == ui::ActionKind::edit_commit) {
-                const auto utf8 = platform::utf16_to_utf8(popup_.title_edit).value_or(std::string{});
+                const auto utf8 = platform::utf16_to_utf8(popup_.title_edit).value_or(String{});
                 ATELIER_TRY(session.graph_update_box(graph_key, popup_.target_name, {}, {}, utf8, {}));
                 out_status = L"Updated Network Box title";
             }
@@ -1650,9 +1645,9 @@ Result<bool> NetworkCanvas::apply_action(Session& session, std::string_view grap
 }
 
 Result<NetworkCanvas::InteractionOutcome>
-NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::string& primary_selected,
-                             Array<std::string>& selected_nodes, ui::Rect canvas_px, float dpi_scale,
-                             const ui::Event& event, Project* project, bool read_only) {
+NetworkCanvas::pointer_event(Session& session, StringView graph_key, String& primary_selected,
+                             Array<String>& selected_nodes, ui::Rect canvas_px, float dpi_scale, const ui::Event& event,
+                             Project* project, bool read_only) {
     InteractionOutcome out;
     const bool blocked = session.world().running() || read_only;
     if (graph_key.empty() || !session.has_graph(graph_key) || canvas_px.width <= 0 || canvas_px.height <= 0 ||
@@ -1672,7 +1667,7 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
     sync_graph(graph_key, view.nodes, canvas_dip, view.boxes, view.notes);
 
     const auto hit_port = [&](float x, float y, float radius, Optional<bool> want_output = {},
-                              std::string_view exclude_node = {}) -> Optional<PortRef> {
+                              StringView exclude_node = {}) -> Optional<PortRef> {
         float best_d2 = radius * radius;
         Optional<PortRef> best;
         for (const auto& node : view.nodes) {
@@ -1732,7 +1727,7 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
                 gesture_ = Gesture::move_nodes;
             } else {
                 if (event.kind == ui::EventKind::pointer_up && event.button == gesture_button_) {
-                    const std::string clicked = pressed_node_;
+                    const String clicked = pressed_node_;
                     const bool shift = gesture_shift_;
                     const bool clicked_only = move_dist < 4.f;
                     cancel_gesture();
@@ -1743,7 +1738,7 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
                     if (shift) {
                         if (selected_nodes.remove(clicked)) {
                             if (primary_selected == clicked)
-                                primary_selected = selected_nodes.empty() ? std::string{} : selected_nodes.back();
+                                primary_selected = selected_nodes.empty() ? String{} : selected_nodes.back();
                         } else {
                             selected_nodes.add(clicked);
                             primary_selected = clicked;
@@ -1754,14 +1749,15 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
                         primary_selected = clicked;
                         if (clicked_only) {
                             const auto now = steady_millis();
-                            if (last_click_target_ == "node:" + clicked && now - last_click_tick_ <= 420) {
+                            const auto click_key = String::concat("node:", clicked);
+                            if (last_click_target_ == click_key && now - last_click_tick_ <= 420) {
                                 if (const auto* nv = view.find_node(clicked);
                                     nv && nv->type == "procedural.AssetNode" && !nv->asset_key.empty()) {
                                     out.dive_into_node = clicked;
                                 }
                                 last_click_tick_ = 0;
                             } else {
-                                last_click_target_ = "node:" + clicked;
+                                last_click_target_ = click_key;
                                 last_click_tick_ = now;
                             }
                         }
@@ -1819,7 +1815,7 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
                     ? (event.kind == ui::EventKind::pointer_down && event.button == ui::PointerButton::primary)
                     : (event.kind == ui::EventKind::pointer_up && event.button == gesture_button_);
             if (commit) {
-                Array<std::pair<std::string, std::array<float, 2>>> moves;
+                Array<std::pair<String, std::array<float, 2>>> moves;
                 moves.reserve(drag_origins_.size());
                 for (const auto& [name, origin] : drag_origins_)
                     moves.emplace(name, std::array{std::round(origin[0] + drag_world_delta_[0]),
@@ -1850,7 +1846,7 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
                 return out;
             }
             if (event.kind == ui::EventKind::pointer_up && event.button == gesture_button_) {
-                const std::string target = active_annotation_;
+                const String target = active_annotation_;
                 const std::array next_pos{std::round(annotation_origin_pos_[0] + drag_world_delta_[0]),
                                           std::round(annotation_origin_pos_[1] + drag_world_delta_[1])};
                 const bool clicked_only = move_dist < 4.f;
@@ -1859,7 +1855,8 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
                 out.cursor = ui::Cursor::arrow;
                 if (clicked_only) {
                     const auto now = steady_millis();
-                    if (last_click_target_ == "note:" + target && now - last_click_tick_ <= 420) {
+                    const auto click_key = String::concat("note:", target);
+                    if (last_click_target_ == click_key && now - last_click_tick_ <= 420) {
                         if (const auto* n = view.find_note(target)) {
                             const auto tl = to_dip(n->position[0], n->position[1]);
                             popup_.kind = PopupKind::edit_note;
@@ -1872,7 +1869,7 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
                         }
                         last_click_tick_ = 0;
                     } else {
-                        last_click_target_ = "note:" + target;
+                        last_click_target_ = click_key;
                         last_click_tick_ = now;
                     }
                     return out;
@@ -1892,7 +1889,7 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
                 return out;
             }
             if (event.kind == ui::EventKind::pointer_up && event.button == gesture_button_) {
-                const std::string target = active_annotation_;
+                const String target = active_annotation_;
                 const std::array next_sz{std::max(120.f, std::round(annotation_origin_size_[0] + drag_world_delta_[0])),
                                          std::max(64.f, std::round(annotation_origin_size_[1] + drag_world_delta_[1]))};
                 cancel_gesture();
@@ -1912,11 +1909,11 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
                 return out;
             }
             if (event.kind == ui::EventKind::pointer_up && event.button == gesture_button_) {
-                const std::string target = active_annotation_;
+                const String target = active_annotation_;
                 const bool clicked_only = move_dist < 4.f;
-                Array<std::pair<std::string, std::array<float, 2>>> node_moves;
-                Array<std::pair<std::string, std::array<float, 2>>> note_moves;
-                Array<std::pair<std::string, std::array<float, 2>>> box_moves;
+                Array<std::pair<String, std::array<float, 2>>> node_moves;
+                Array<std::pair<String, std::array<float, 2>>> note_moves;
+                Array<std::pair<String, std::array<float, 2>>> box_moves;
                 for (const auto& [n, orig] : drag_origins_)
                     node_moves.emplace(n, std::array{std::round(orig[0] + drag_world_delta_[0]),
                                                      std::round(orig[1] + drag_world_delta_[1])});
@@ -1931,7 +1928,8 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
                 out.cursor = ui::Cursor::arrow;
                 if (clicked_only) {
                     const auto now = steady_millis();
-                    if (last_click_target_ == "box:" + target && now - last_click_tick_ <= 420) {
+                    const auto click_key = String::concat("box:", target);
+                    if (last_click_target_ == click_key && now - last_click_tick_ <= 420) {
                         if (const auto* b = view.find_box(target)) {
                             const auto tl = to_dip(b->position[0], b->position[1]);
                             popup_.kind = PopupKind::edit_box;
@@ -1942,7 +1940,7 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
                         }
                         last_click_tick_ = 0;
                     } else {
-                        last_click_target_ = "box:" + target;
+                        last_click_target_ = click_key;
                         last_click_tick_ = now;
                     }
                     return out;
@@ -1961,7 +1959,7 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
                 return out;
             }
             if (event.kind == ui::EventKind::pointer_up && event.button == gesture_button_) {
-                const std::string target = active_annotation_;
+                const String target = active_annotation_;
                 const std::array next_sz{std::max(160.f, std::round(annotation_origin_size_[0] + drag_world_delta_[0])),
                                          std::max(96.f, std::round(annotation_origin_size_[1] + drag_world_delta_[1]))};
                 cancel_gesture();
@@ -2033,7 +2031,7 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
                             selected_nodes.add(node.name);
                     }
                 }
-                primary_selected = selected_nodes.empty() ? std::string{} : selected_nodes.back();
+                primary_selected = selected_nodes.empty() ? String{} : selected_nodes.back();
                 return out;
             }
             return out;
@@ -2189,7 +2187,7 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
         }
     }
 
-    std::string node_under;
+    String node_under;
     FlagZone flag_under = FlagZone::none;
     bool body_interior = false;
     for (auto it = view.nodes.rbegin(); it != view.nodes.rend(); ++it) {
@@ -2292,12 +2290,12 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
                                              : L"Bypass cleared: " + platform::utf8_to_utf16_validated(air_node_);
             } else if (air_hit == AirButton::display && !n->placeholder) {
                 const bool make_disp = !n->is_display;
-                ATELIER_TRY(session.graph_set_display(graph_key, make_disp ? std::string_view{air_node_} : ""));
+                ATELIER_TRY(session.graph_set_display(graph_key, make_disp ? air_node_.view() : StringView{}));
                 out.status = make_disp ? L"Display Flag: " + platform::utf8_to_utf16_validated(air_node_)
                                        : L"Cleared Display Flag";
             } else if (air_hit == AirButton::template_flag && !n->placeholder) {
                 const bool make_tmpl = !n->is_template;
-                ATELIER_TRY(session.graph_set_template(graph_key, make_tmpl ? std::string_view{air_node_} : ""));
+                ATELIER_TRY(session.graph_set_template(graph_key, make_tmpl ? air_node_.view() : StringView{}));
                 out.status = make_tmpl ? L"Template Flag: " + platform::utf8_to_utf16_validated(air_node_)
                                        : L"Cleared Template Flag";
             } else if (air_hit == AirButton::info) {
@@ -2344,12 +2342,12 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
             if (n && !n->placeholder) {
                 if (flag_under == FlagZone::display) {
                     const bool make_display = !n->is_display;
-                    ATELIER_TRY(session.graph_set_display(graph_key, make_display ? std::string_view{node_under} : ""));
+                    ATELIER_TRY(session.graph_set_display(graph_key, make_display ? node_under.view() : StringView{}));
                     out.status = make_display ? L"Display Flag: " + platform::utf8_to_utf16_validated(node_under)
                                               : L"Cleared Display Flag";
                 } else if (flag_under == FlagZone::template_flag) {
                     const bool make_tmpl = !n->is_template;
-                    ATELIER_TRY(session.graph_set_template(graph_key, make_tmpl ? std::string_view{node_under} : ""));
+                    ATELIER_TRY(session.graph_set_template(graph_key, make_tmpl ? node_under.view() : StringView{}));
                     out.status = make_tmpl ? L"Template Flag: " + platform::utf8_to_utf16_validated(node_under)
                                            : L"Cleared Template Flag";
                 } else if (flag_under == FlagZone::bypass) {
@@ -2476,9 +2474,9 @@ NetworkCanvas::pointer_event(Session& session, std::string_view graph_key, std::
 }
 
 Result<NetworkCanvas::InteractionOutcome>
-NetworkCanvas::key_event(Session& session, std::string_view graph_key, std::string& primary_selected,
-                         Array<std::string>& selected_nodes, ui::Rect canvas_px, float dpi_scale,
-                         const ui::Event& event, std::uint32_t native_key, Project* project, bool read_only) {
+NetworkCanvas::key_event(Session& session, StringView graph_key, String& primary_selected,
+                         Array<String>& selected_nodes, ui::Rect canvas_px, float dpi_scale, const ui::Event& event,
+                         std::uint32_t native_key, Project* project, bool read_only) {
     InteractionOutcome out;
     const bool blocked = session.world().running() || read_only;
     if (event.kind == ui::EventKind::key_up) {
@@ -2533,7 +2531,7 @@ NetworkCanvas::key_event(Session& session, std::string_view graph_key, std::stri
 
     if (active_gesture()) {
         if (event.key == ui::Key::enter && gesture_ == Gesture::move_nodes && keyboard_grab_) {
-            Array<std::pair<std::string, std::array<float, 2>>> moves;
+            Array<std::pair<String, std::array<float, 2>>> moves;
             moves.reserve(drag_origins_.size());
             for (const auto& [name, origin] : drag_origins_)
                 moves.emplace(name, std::array{std::round(origin[0] + drag_world_delta_[0]),
@@ -2570,11 +2568,11 @@ NetworkCanvas::key_event(Session& session, std::string_view graph_key, std::stri
         return std::unexpected(inspected_res.error());
     const auto& view = **inspected_res;
 
-    const std::string target_node = !hovered_node_.empty() ? hovered_node_
-                                    : !air_node_.empty()   ? air_node_
-                                                           : primary_selected;
+    const String target_node = !hovered_node_.empty() ? hovered_node_
+                               : !air_node_.empty()   ? air_node_
+                                                      : primary_selected;
     const auto resolve_targets = [&]() {
-        Array<std::string> targets = selected_nodes;
+        Array<String> targets = selected_nodes;
         if (targets.empty() && !target_node.empty())
             targets.add(target_node);
         return targets;
@@ -2601,8 +2599,8 @@ NetworkCanvas::key_event(Session& session, std::string_view graph_key, std::stri
         out.cursor = ui::Cursor::move;
     };
     const auto open_add_menu = [&]() -> InteractionOutcome {
-        std::string auto_from;
-        std::string auto_from_port;
+        String auto_from;
+        String auto_from_port;
         float tx = current_dip_x_;
         float ty = current_dip_y_;
         if (tx <= 0.f || ty <= 0.f || tx >= canvas_dip.width || ty >= canvas_dip.height) {
@@ -2630,7 +2628,7 @@ NetworkCanvas::key_event(Session& session, std::string_view graph_key, std::stri
                 selected_note_.clear();
                 selected_box_.clear();
                 selected_nodes = *created;
-                primary_selected = created->empty() ? std::string{} : created->back();
+                primary_selected = created->empty() ? String{} : created->back();
                 out.consumed = true;
                 out.status = std::format(L"Duplicated {} SOP node(s)", created->size());
             }
@@ -2640,18 +2638,18 @@ NetworkCanvas::key_event(Session& session, std::string_view graph_key, std::stri
             selected_nodes.clear();
             for (const auto& n : view.nodes)
                 selected_nodes.add(n.name);
-            primary_selected = selected_nodes.empty() ? std::string{} : selected_nodes.back();
+            primary_selected = selected_nodes.empty() ? String{} : selected_nodes.back();
             out.consumed = true;
             return out;
         }
         if (!event.repeat && native_key == 'I') {
-            Array<std::string> inverted;
+            Array<String> inverted;
             for (const auto& n : view.nodes) {
                 if (std::ranges::find(selected_nodes, n.name) == selected_nodes.end())
                     inverted.add(n.name);
             }
             selected_nodes = std::move(inverted);
-            primary_selected = selected_nodes.empty() ? std::string{} : selected_nodes.back();
+            primary_selected = selected_nodes.empty() ? String{} : selected_nodes.back();
             out.consumed = true;
             out.status = L"Inverted SOP selection";
             return out;
@@ -2683,7 +2681,7 @@ NetworkCanvas::key_event(Session& session, std::string_view graph_key, std::stri
                 selected_note_.clear();
                 selected_box_.clear();
                 selected_nodes = *created;
-                primary_selected = created->empty() ? std::string{} : created->back();
+                primary_selected = created->empty() ? String{} : created->back();
                 if (const auto after = session.graph_topology(graph_key))
                     begin_keyboard_grab(**after, true);
                 out.status =
@@ -2757,7 +2755,7 @@ NetworkCanvas::key_event(Session& session, std::string_view graph_key, std::stri
 
     if (native_key == 'D' && !blocked && !target_node.empty()) {
         if (const auto* n = view.find_node(target_node); n && !n->placeholder) {
-            ATELIER_TRY(session.graph_set_display(graph_key, n->is_display ? std::string_view{} : target_node));
+            ATELIER_TRY(session.graph_set_display(graph_key, n->is_display ? StringView{} : target_node.view()));
             out.consumed = true;
             out.status = n->is_display ? L"Cleared Display Flag"
                                        : L"Display Flag: " + platform::utf8_to_utf16_validated(target_node);
@@ -2767,7 +2765,7 @@ NetworkCanvas::key_event(Session& session, std::string_view graph_key, std::stri
 
     if (native_key == 'T' && !blocked && !target_node.empty()) {
         if (const auto* n = view.find_node(target_node); n && !n->placeholder) {
-            ATELIER_TRY(session.graph_set_template(graph_key, n->is_template ? std::string_view{} : target_node));
+            ATELIER_TRY(session.graph_set_template(graph_key, n->is_template ? StringView{} : target_node.view()));
             out.consumed = true;
             out.status = n->is_template ? L"Cleared Template Flag"
                                         : L"Template Flag: " + platform::utf8_to_utf16_validated(target_node);
@@ -2840,7 +2838,7 @@ NetworkCanvas::key_event(Session& session, std::string_view graph_key, std::stri
             selected_nodes.clear();
             for (const auto& n : view.nodes)
                 selected_nodes.add(n.name);
-            primary_selected = selected_nodes.empty() ? std::string{} : selected_nodes.back();
+            primary_selected = selected_nodes.empty() ? String{} : selected_nodes.back();
         }
         out.consumed = true;
         return out;
@@ -2865,7 +2863,7 @@ NetworkCanvas::key_event(Session& session, std::string_view graph_key, std::stri
             out.status = L"Deleted Network Box";
             return out;
         }
-        Array<std::string> targets = selected_nodes;
+        Array<String> targets = selected_nodes;
         if (targets.empty() && !primary_selected.empty())
             targets.add(primary_selected);
         if (!targets.empty()) {
@@ -2912,7 +2910,7 @@ void NetworkCanvas::append_tab_categories(Array<ui::Control>& controls, ui::Cont
         btn.text = labels[i];
         btn.single_line = true;
         btn.selected = active;
-        btn.classes = {"ghost-button"};
+        btn.classes = {"ghost-button"_s};
         btn.layout = ui_layout::NodeInput::box(0.f, 20.f);
         btn.layout.width = ui_layout::Axis::expand();
         btn.style.font_size = 10.5f;
@@ -2973,8 +2971,8 @@ std::array<float, 2> NetworkCanvas::prepare_wire_routes(const std::shared_ptr<co
 
 void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::ControlKey canvas_parent,
                                   ui_layout::Size canvas_dip, const std::shared_ptr<const GraphInspectView>& topology,
-                                  Span<const GraphNodeCatalogEntry> catalog, std::string_view primary_selected,
-                                  Span<const std::string> selected_nodes, bool read_only) {
+                                  Span<const GraphNodeCatalogEntry> catalog, StringView primary_selected,
+                                  Span<const String> selected_nodes, bool read_only) {
     const auto& view = *topology;
     const auto& graph_key = view.key;
     sync_graph(graph_key, view.nodes, canvas_dip, view.boxes, view.notes);
@@ -2990,7 +2988,7 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
                                      {cw, ch},
                                      pan(),
                                      z,
-                                     std::string(primary_selected),
+                                     String::from_utf8_validated(primary_selected),
                                      selected_note_,
                                      selected_box_,
                                      hovered_node_,
@@ -3351,46 +3349,63 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
         const ui::ControlKey base_key = node_base_key(graph_key, node.name);
         ui::Tooltip help;
         help.title = sanitize_single_line(platform::utf8_to_utf16_validated(node.name));
-        help.identity = sanitize_single_line(platform::utf8_to_utf16_validated(
-            is_asset_node ? ("Digital Asset · " + (!node.asset_label.empty() ? node.asset_label : node.asset_key))
-                          : (node.type + (is_source_sop ? " · Source SOP" : " · C++ SOP"))));
-        std::string desc = cat_it != catalog.end() ? cat_it->description : std::string{};
+        const auto identity_utf8 =
+            is_asset_node
+                ? String::concat("Digital Asset · ", !node.asset_label.empty() ? node.asset_label : node.asset_key)
+                : String::concat(node.type, String::validated(is_source_sop ? " · Source SOP" : " · C++ SOP"));
+        help.identity = sanitize_single_line(platform::utf8_to_utf16_validated(identity_utf8));
+        String desc = cat_it != catalog.end() ? cat_it->description : String{};
         if (cat_it != catalog.end() && cat_it->help) {
             if (!desc.empty())
-                desc += "\n";
-            desc += cat_it->help->text;
+                desc.append_ascii('\n');
+            desc.append(cat_it->help->text);
         }
         if (is_asset_node && !node.asset_key.empty()) {
             if (!desc.empty())
-                desc += "\n";
-            desc += "Asset: " + node.asset_key + "\nDouble-click or press Enter to dive into this Digital Asset.";
+                desc.append_ascii('\n');
+            desc.append_validated("Asset: ");
+            desc.append(node.asset_key);
+            desc.append_validated("\nDouble-click or press Enter to dive into this Digital Asset.");
         }
         if (!node.comment.empty()) {
             if (!desc.empty())
-                desc += "\n";
-            desc += "Comment: " + node.comment;
+                desc.append_ascii('\n');
+            desc.append_validated("Comment: ");
+            desc.append(node.comment);
         }
         if (node.is_bypassed) {
             if (!desc.empty())
-                desc += "\n";
-            desc += "[Bypassed: input 0 passed straight through]";
+                desc.append_ascii('\n');
+            desc.append_validated("[Bypassed: input 0 passed straight through]");
         }
         if (node.is_frozen) {
             if (!desc.empty())
-                desc += "\n";
-            desc += "[Frozen: cooked geometry snapshot locked]";
+                desc.append_ascii('\n');
+            desc.append_validated("[Frozen: cooked geometry snapshot locked]");
         }
         if (node.status) {
             if (!desc.empty())
-                desc += "\n";
-            desc += std::format("Evaluations: {} · Cache hits: {}", node.status->evaluations, node.status->cache_hits);
-            if (node.status->time)
-                desc += std::format(" · Cook: {:.2f} ms", double(node.status->time->count()) / 1e6);
-            if (const auto& bs = node.status->boolean_stats)
-                desc += std::format("\nBoolean: {} faces · {} pairs · {} splits", bs->input_faces, bs->candidate_pairs,
-                                    bs->splits);
+                desc.append_ascii('\n');
+            desc.append_validated("Evaluations: ");
+            desc.append_number(node.status->evaluations);
+            desc.append_validated(" · Cache hits: ");
+            desc.append_number(node.status->cache_hits);
+            if (node.status->time) {
+                desc.append_validated(" · Cook: ");
+                desc.append_float_fixed(double(node.status->time->count()) / 1e6, 2);
+                desc.append_validated(" ms");
+            }
+            if (const auto& bs = node.status->boolean_stats) {
+                desc.append_validated("\nBoolean: ");
+                desc.append_number(bs->input_faces);
+                desc.append_validated(" faces · ");
+                desc.append_number(bs->candidate_pairs);
+                desc.append_validated(" pairs · ");
+                desc.append_number(bs->splits);
+                desc.append_validated(" splits");
+            }
             if (node.status->error) {
-                desc += "\nError: ";
+                desc.append_validated("\nError: ");
                 append_error(desc, *node.status->error);
             }
         }
@@ -3443,8 +3458,7 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
         // External right-side Line 2: ShortType · cook_ms / Comment / ERR:
         if (z >= .55f) {
             std::wstring sub = sanitize_single_line(platform::utf8_to_utf16_validated(
-                is_asset_node && !node.asset_label.empty() ? std::string_view{node.asset_label}
-                                                           : short_type_name(node.type)));
+                is_asset_node && !node.asset_label.empty() ? node.asset_label.view() : short_type_name(node.type)));
             if (has_error)
                 sub += L" · ERR";
             else if (node.is_frozen)
@@ -3587,7 +3601,7 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
                 control.layout = ui_layout::NodeInput::box(cw, ch);
                 control.layout.width = ui_layout::Axis::expand();
                 control.layout.height = ui_layout::Axis::expand();
-                control.classes = {"network-canvas-bg"};
+                control.classes = {"network-canvas-bg"_s};
             } else {
                 control.enabled = false;
                 control.layout = out_of_flow_box(0.f, 0.f, cw, ch);
@@ -3608,9 +3622,9 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
     if (active_port) {
         if (const auto* pn = view.find_node(active_port->node)) {
             const auto pt = port_dip(*pn, active_port->is_output, active_port->index);
-            std::string label = active_port->port;
+            String label = active_port->port;
             if (active_port->multiple)
-                label += " []";
+                label.append_validated(" []");
             ui::Control tag;
             tag.key = network_control::hover_port_tag;
             tag.parent = canvas_parent;
@@ -3640,7 +3654,7 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
         if (!popup_.open()) {
             idle_projection_.emplace(IdleProjection{topology,
                                                     std::move(*idle),
-                                                    Array<std::string>{selected_nodes},
+                                                    Array<String>{selected_nodes},
                                                     Array<GraphNodeCatalogEntry>{catalog},
                                                     std::move(controls),
                                                     revision});
@@ -3649,7 +3663,7 @@ void NetworkCanvas::append_canvas(ui_language::ControlOutput output, ui::Control
         }
         idle_projection_.emplace(IdleProjection{topology,
                                                 std::move(*idle),
-                                                Array<std::string>{selected_nodes},
+                                                Array<String>{selected_nodes},
                                                 Array<GraphNodeCatalogEntry>{catalog},
                                                 controls,
                                                 revision});
@@ -3722,7 +3736,7 @@ void NetworkCanvas::append_canvas_popup(Array<ui::Control>& controls, ui::Contro
             sw_btn.kind = ui::ControlKind::button;
             sw_btn.text = popup_.kind == PopupKind::color_picker ? L"Shapes [Z]" : L"Colors [C]";
             sw_btn.single_line = true;
-            sw_btn.classes = {"ghost-button"};
+            sw_btn.classes = {"ghost-button"_s};
             sw_btn.layout = ui_layout::NodeInput::box(64.f, 20.f);
             sw_btn.style.font_size = 10.5f;
             sw_btn.style.radius = {3.f, 3.f, 3.f, 3.f};
@@ -3736,7 +3750,7 @@ void NetworkCanvas::append_canvas_popup(Array<ui::Control>& controls, ui::Contro
             del_btn.kind = ui::ControlKind::button;
             del_btn.enabled = !read_only;
             del_btn.icon = ui::ControlIcon::trash;
-            del_btn.classes = {"ghost-tool"};
+            del_btn.classes = {"ghost-tool"_s};
             del_btn.layout = ui_layout::NodeInput::box(22.f, 20.f);
             del_btn.style.radius = {3.f, 3.f, 3.f, 3.f};
             controls.add(std::move(del_btn));
@@ -3747,7 +3761,7 @@ void NetworkCanvas::append_canvas_popup(Array<ui::Control>& controls, ui::Contro
         close_btn.parent = network_control::popup_header;
         close_btn.kind = ui::ControlKind::button;
         close_btn.icon = ui::ControlIcon::close;
-        close_btn.classes = {"ghost-tool"};
+        close_btn.classes = {"ghost-tool"_s};
         close_btn.layout = ui_layout::NodeInput::box(22.f, 20.f);
         close_btn.style.radius = {3.f, 3.f, 3.f, 3.f};
         controls.add(std::move(close_btn));
@@ -3869,10 +3883,12 @@ void NetworkCanvas::append_canvas_popup(Array<ui::Control>& controls, ui::Contro
         } else if (popup_.kind == PopupKind::color_picker) {
             static const auto swatch_help = [] {
                 std::array<std::shared_ptr<const ui::Tooltip>, color_palette.size()> result;
-                for (std::size_t i = 0; i < result.size(); ++i)
+                for (std::size_t i = 0; i < result.size(); ++i) {
+                    const auto hex = format_graph_hex_color(color_palette[i]);
                     result[i] = std::make_shared<const ui::Tooltip>(
-                        ui::Tooltip{platform::utf8_to_utf16_validated(format_graph_hex_color(color_palette[i])),
-                                    L"Color Swatch", L"将选中节点的自定义颜色设为此预设色板值。"});
+                        ui::Tooltip{platform::utf8_to_utf16_validated(hex), L"Color Swatch",
+                                    L"将选中节点的自定义颜色设为此预设色板值。"});
+                }
                 return result;
             }();
             for (std::size_t row_i = 0; row_i < 4; ++row_i) {
@@ -3944,8 +3960,10 @@ void NetworkCanvas::append_canvas_popup(Array<ui::Control>& controls, ui::Contro
                     if (const auto& bs = nv->status->boolean_stats)
                         info_txt += std::format(L"\nBoolean: {} faces · {} pairs · {} splits", bs->input_faces,
                                                 bs->candidate_pairs, bs->splits);
-                    if (nv->status->error)
-                        info_txt += L"\nError: " + application::diagnostic_text(format_error(*nv->status->error));
+                    if (nv->status->error) {
+                        const auto err = format_error(*nv->status->error);
+                        info_txt += L"\nError: " + application::diagnostic_text(err);
+                    }
                 }
 
                 ui::Control stats;
@@ -3982,7 +4000,7 @@ void NetworkCanvas::append_canvas_popup(Array<ui::Control>& controls, ui::Contro
                 cedit.text = popup_.body_edit;
                 cedit.layout = ui_layout::NodeInput::box(0.f, 23.f);
                 cedit.layout.width = ui_layout::Axis::expand();
-                cedit.classes = {"field"};
+                cedit.classes = {"field"_s};
                 controls.add(std::move(cedit));
             }
         } else if (popup_.kind == PopupKind::edit_note || popup_.kind == PopupKind::edit_box) {
@@ -3995,7 +4013,7 @@ void NetworkCanvas::append_canvas_popup(Array<ui::Control>& controls, ui::Contro
             tedit.text = popup_.title_edit;
             tedit.layout = ui_layout::NodeInput::box(0.f, 23.f);
             tedit.layout.width = ui_layout::Axis::expand();
-            tedit.classes = {"field"};
+            tedit.classes = {"field"_s};
             controls.add(std::move(tedit));
 
             if (is_note) {
@@ -4019,7 +4037,7 @@ void NetworkCanvas::append_canvas_popup(Array<ui::Control>& controls, ui::Contro
                 bedit.text = popup_.body_edit;
                 bedit.layout = ui_layout::NodeInput::box(0.f, 23.f);
                 bedit.layout.width = ui_layout::Axis::expand();
-                bedit.classes = {"field"};
+                bedit.classes = {"field"_s};
                 controls.add(std::move(bedit));
             }
 

@@ -2,16 +2,15 @@
 
 #include "editor/session.hpp"
 #include "foundation/optional.hpp"
+#include "foundation/string.hpp"
 #include "logging/logging.hpp"
 #include <filesystem>
-#include <string>
-#include <string_view>
 
 namespace atelier::application {
 struct RecoveryRecord {
     std::filesystem::path scene;
 
-    std::string warning; // The scene survived even if the sidecar could not be written.
+    String warning; // The scene survived even if the sidecar could not be written.
 };
 
 // One attempt per application lifetime. CPU-only: never resolves or copies assets,
@@ -32,7 +31,7 @@ public:
     void report_stderr() const noexcept;
 
     const Outcome& preserve(editor::Session&, const std::filesystem::path& project, const std::filesystem::path& scene,
-                            std::string_view reason, const std::filesystem::path& directory = {});
+                            StringView reason, const std::filesystem::path& directory = {});
 
 private:
     bool attempted_{};

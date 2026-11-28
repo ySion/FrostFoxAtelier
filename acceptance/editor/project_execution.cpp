@@ -30,15 +30,18 @@ void run(const std::filesystem::path& root) {
         "float travel(float speed,float dt) { return speed * dt * (2.0f * procedural.unit(2147483648)); }"));
     take(editor::write_file(component, "class project.Move : world.Component { float speed=2.0f; void tick(float dt) {"
                                        "self.translate_owner(travel(self.speed,dt),0.0f,0.0f); } }"));
-    auto loaded = editor::load_project_scene(project, take(assets::read_file(root / "Content/Scenes/Main.scene")));
-    require(loaded.session != nullptr, loaded.error ? loaded.error->message : "Project Source failed to load.");
+    const auto initial_scene = take(assets::read_file(root / "Content/Scenes/Main.scene"));
+    auto loaded = editor::load_project_scene(project, as_chars(initial_scene));
+    require(loaded.session != nullptr,
+            loaded.error ? StringView{loaded.error->message} : "Project Source failed to load.");
     auto& document = *loaded.session;
     complete(document.add_entity());
     const auto entity = document.selection().entity;
     take(document.set_transform(entity, {}));
     complete(document.add_component(entity, take(document.world().runtime().find_type("project.Move"))));
     const auto snapshot = root / "Cache/run.scene";
-    take(editor::write_file(snapshot, take(document.serialize())));
+    const auto serialized = take(document.serialize());
+    take(editor::write_file(snapshot, serialized));
     complete(document.start());
     take(document.update(.5f));
     // procedural.unit(2^31)=0.5, so speed 2 * dt 0.5 gives one unit of travel.
@@ -79,7 +82,8 @@ void run(const std::filesystem::path& root) {
         child.stop();
         wait_exit(child);
         require(child.exit_code() == 0u && !child.forced(), "Live Play did not stop cleanly.");
-        auto restored = editor::load_project_scene(project, take(assets::read_file(report)));
+        const auto report_bytes = take(assets::read_file(report));
+        auto restored = editor::load_project_scene(project, as_chars(report_bytes));
         const auto entity_id = document.document_identity(entity);
         require(restored.session && entity_id &&
                     restored.session->name(take(restored.session->local_object(*entity_id))) == L"Renamed in Play",
@@ -90,7 +94,8 @@ void run(const std::filesystem::path& root) {
     // Use the same rejected Source build as the authority for the child process diagnostic.
     take(editor::write_file(component,
                             "class project.Move : world.Component { void tick(float dt) { missing_symbol(); } }"));
-    const auto invalid = editor::load_project_scene(project, take(assets::read_file(snapshot)));
+    const auto snapshot_bytes = take(assets::read_file(snapshot));
+    const auto invalid = editor::load_project_scene(project, as_chars(snapshot_bytes));
     require(!invalid.session && invalid.error && invalid.error->source, "Expected a located Source build error.");
     {
         application::PlayProcess child;
@@ -170,7 +175,7 @@ void verify_network_control_reuse(const std::filesystem::path& root) {
     ui::Session ui_session;
     const auto take_ui = []<class T>(ui::Result<T> value) -> T {
         if (!value)
-            fatal("UI acceptance error: " + std::to_string(static_cast<int>(value.error().code)));
+            fatal(String::concat("UI acceptance error: ", static_cast<int>(value.error().code)));
         if constexpr (!std::is_void_v<T>)
             return std::move(*value);
     };
@@ -260,10 +265,11 @@ void verify_stateful_rebuild(const std::filesystem::path& root) {
     const auto graph_key =
         take(project.create_procedural_graph(L"Content/Graphs/RebuildCheck.procgraph", disk_graph_json));
 
-    auto loaded = editor::load_project_scene(project, take(assets::read_file(root / "Content/Scenes/Main.scene")),
-                                             editor::LoadPolicy::tolerant, false, editor::SessionRole::editor);
+    const auto main_scene_bytes = take(assets::read_file(root / "Content/Scenes/Main.scene"));
+    auto loaded = editor::load_project_scene(project, as_chars(main_scene_bytes), editor::LoadPolicy::tolerant,
+                                             false, editor::SessionRole::editor);
     require(loaded.session != nullptr && loaded.code != nullptr && !loaded.error,
-            loaded.error ? loaded.error->message : "Initial HeightStep project failed to build.");
+            loaded.error ? StringView{loaded.error->message} : "Initial HeightStep project failed to build.");
     auto doc = std::move(loaded.session);
 
     complete(doc->create_procedural_generator(graph_key, {2.f, 0.f, -1.f}, &project));
@@ -283,7 +289,8 @@ void verify_stateful_rebuild(const std::filesystem::path& root) {
     require(doc->graph_dirty(graph_key), "Unsaved node addition did not mark procedural graph dirty.");
 
     take(doc->create_scratch_graph("scratch/procedural"));
-    take(doc->graph_add_node("scratch/procedural", "asset:" + graph_key, "temp_asset", {20.f, 30.f}, &project));
+    const auto scratch_asset_type = String::concat("asset:", graph_key);
+    take(doc->graph_add_node("scratch/procedural", scratch_asset_type, "temp_asset", {20.f, 30.f}, &project));
     take(doc->graph_set_display("scratch/procedural", "temp_asset"));
 
     editor::Workspace workspace;
@@ -332,7 +339,7 @@ void verify_stateful_rebuild(const std::filesystem::path& root) {
     auto rebuilt = editor::load_project_scene(project, scene_text, editor::LoadPolicy::tolerant, false,
                                               editor::SessionRole::editor);
     require(rebuilt.session != nullptr && rebuilt.code != nullptr && !rebuilt.error,
-            rebuilt.error ? rebuilt.error->message : "Stateful rebuild failed to load scene.");
+            rebuilt.error ? StringView{rebuilt.error->message} : "Stateful rebuild failed to load scene.");
     if (scene_dirty)
         rebuilt.session->mark_modified();
     take(rebuilt.session->restore_open_graphs(&project, open_snapshots));
@@ -347,7 +354,7 @@ void verify_stateful_rebuild(const std::filesystem::path& root) {
 
     // Verify unsaved .procgraph draft, dirty flag, non-overwritten disk file, scratch graph, new field & Workspace state:
     const auto disk_after = take(project.assets().procedural_graph(graph_key));
-    require(disk_after.text.find("unsaved_out") == std::string::npos,
+    require(!disk_after.text.contains("unsaved_out"),
             "Stateful rebuild silently overwrote the unsaved .procgraph file on disk.");
     require(doc->graph_dirty(graph_key) && doc->graph_node(graph_key, "unsaved_out") != nullptr,
             "Stateful rebuild lost unsaved .procgraph edits or its dirty marker.");

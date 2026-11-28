@@ -12,8 +12,8 @@
 
 namespace atelier::application {
 namespace {
-auto failed(std::string message) {
-    return std::unexpected(Error{ErrorCode::invalid_storage, std::move(message)});
+auto failed(Utf8Text message) {
+    return std::unexpected(Error{ErrorCode::invalid_storage, std::move(message).into_string()});
 }
 
 constexpr const wchar_t* placeholder_notice =
@@ -86,7 +86,7 @@ Result<Optional<std::filesystem::path>> pick(HWND owner, Pick kind, const std::f
     if (hr == HRESULT_FROM_WIN32(ERROR_CANCELLED))
         return Optional<std::filesystem::path>{};
     if (FAILED(hr))
-        return failed("File dialog failed (HRESULT " + std::to_string(static_cast<unsigned long>(hr)) + ").");
+        return failed(String::concat("File dialog failed (HRESULT ", static_cast<unsigned long>(hr), ")."));
     Microsoft::WRL::ComPtr<IShellItem> item;
     if (FAILED(dialog->GetResult(&item)))
         return failed("Cannot read the selected location.");
@@ -106,11 +106,11 @@ Result<Optional<std::filesystem::path>> Application::choose_path(editor::PathPur
     return pick(window(), purpose, initial, filename.empty() ? L"Move.source" : std::wstring(filename).c_str());
 }
 
-void Application::asset_created(std::string_view key, bool inspect_material) {
+void Application::asset_created(StringView key, bool inspect_material) {
     if (const auto* entry = project_->entry(key))
         workspace_.assets.navigate(entry->path.parent_path());
     if (inspect_material) {
-        workspace_.material_inspection = key;
+        workspace_.material_inspection = String::from_utf8_validated(key);
         workspace_.inspecting_asset = true;
     }
     workspace_.status = inspect_material ? L"Material created" : L"Resource imported";
@@ -129,7 +129,8 @@ Result<bool> Application::confirm_discard(bool sources, bool interactive) {
         if (!effects(*edit))
             return failed("The active field could not be committed.");
     } else
-        return failed("Finish the active field before replacing the document. " + ui_error(edit.error()).message);
+        return failed(String::concat("Finish the active field before replacing the document. ",
+                                     ui_error(edit.error()).message));
     ATELIER_TRY(finish_color_edit(true));
     if (sources)
         for (const auto& file : workspace_.source_editor.files()) {
@@ -214,7 +215,7 @@ Result<void> Application::publish_document(std::unique_ptr<editor::Session> next
     auto cleared = ui_.set_controls({});
     if (!cleared) {
         auto error = ui_error(cleared.error());
-        error.message = "Cannot retire the previous document UI. " + error.message;
+        error.message = String::concat("Cannot retire the previous document UI. ", error.message);
         return std::unexpected(std::move(error));
     }
     effects(*cleared);
@@ -306,7 +307,7 @@ Result<void> Application::open_project(const std::filesystem::path& folder, bool
     return publish_project(std::move(*candidate));
 }
 
-Result<Application::ProjectCandidate> Application::prepare_project_scene(editor::Project project, std::string content,
+Result<Application::ProjectCandidate> Application::prepare_project_scene(editor::Project project, String content,
                                                                          ProjectOpenPolicy policy) {
     auto owner = std::make_unique<editor::Project>(std::move(project));
     const bool strict = policy == ProjectOpenPolicy::require_scene;
@@ -406,7 +407,7 @@ Result<void> Application::save_scene(const std::filesystem::path& relative) {
             "Repair the project build and reload its scene before saving. The original scene has been preserved.");
     const auto edit = ui_.commit_edit();
     if (!edit)
-        return failed("Correct the active field before saving. " + ui_error(edit.error()).message);
+        return failed(String::concat("Correct the active field before saving. ", ui_error(edit.error()).message));
     if (!effects(*edit))
         return failed("The active field could not be committed; the scene was not saved.");
     ATELIER_TRY(finish_color_edit(true));
@@ -436,7 +437,7 @@ Result<void> Application::save_scene(const std::filesystem::path& relative) {
     return {};
 }
 
-Result<void> Application::reimport_asset(std::string_view key, const std::filesystem::path& path) {
+Result<void> Application::reimport_asset(StringView key, const std::filesystem::path& path) {
     close_menu(false);
     const auto* entry = project_ ? project_->entry(key) : nullptr;
     if (!entry || (entry->kind != assets::AssetKind::texture && entry->kind != assets::AssetKind::mesh))
@@ -451,7 +452,7 @@ Result<void> Application::reimport_asset(std::string_view key, const std::filesy
     return {};
 }
 
-Result<std::string> Application::import_asset(editor::ImportKind kind, const std::filesystem::path& path) {
+Result<String> Application::import_asset(editor::ImportKind kind, const std::filesystem::path& path) {
     close_menu(false);
     if (kind == editor::ImportKind::texture) {
         ATELIER_TRY_BIND(created, project_->import_texture(path));
@@ -553,7 +554,7 @@ Result<void> Application::save_documents(const editor::Context& context, bool al
     auto* file = workspace_.source_editor.active();
     if (!all && context.region == editor::RegionKind::code && file)
         return save_source(*file, context.interactive);
-    const auto target_graph = all ? std::string{} : context.focused_graph();
+    const auto target_graph = all ? String{} : context.focused_graph();
     if (!all && target_graph.empty() && !material.empty()) {
         auto edit = ui_.commit_edit();
         if (!edit || !effects(*edit))

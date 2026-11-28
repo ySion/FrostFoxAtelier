@@ -8,8 +8,11 @@
 #include "foundation/map.hpp"
 #include "foundation/optional.hpp"
 #include "foundation/span.hpp"
+#include "foundation/string.hpp"
 #include "physics/physics.hpp"
 #include "presentation/presentation.hpp"
+#include <string>
+#include <string_view>
 
 namespace atelier::procedural {
 class Bvh;
@@ -44,11 +47,11 @@ struct Parameter {
 struct ComponentType {
     TypeId type;
 
-    std::string name;
+    String name;
 };
 
 struct Property {
-    std::string name;
+    String name;
 
     world::FieldPath path;
 
@@ -56,11 +59,11 @@ struct Property {
 
     Scalar value;
 
-    std::string label;
+    String label;
 
-    std::string category;
+    String category;
 
-    std::string description;
+    String description;
 
     FieldRange range{};
 
@@ -70,27 +73,27 @@ struct Property {
 
     bool is_string{};
 
-    std::string string_value{};
+    String string_value{};
 
-    std::string default_string_value{};
+    String default_string_value{};
 
     MetadataList metadata{};
 };
 
 struct GraphPromotedParameterView {
-    std::string name;
+    String name;
 
-    std::string label;
+    String label;
 
-    std::string category;
+    String category;
 
-    std::string description;
+    String description;
 
-    Array<std::string> targets;
+    Array<String> targets;
 
     bool valid{};
 
-    std::string invalid_reason;
+    String invalid_reason;
 
     TypeId value_type{};
 
@@ -104,13 +107,13 @@ struct GraphPromotedParameterView {
 
     Array<Scalar> default_scalars;
 
-    std::string default_string;
+    String default_string;
 };
 
 struct PromotedParameterTarget {
-    std::string_view graph_key{};
+    StringView graph_key{};
 
-    std::string_view node_name{}; // Empty for Graph Root parameter; non-empty for AssetNode override.
+    StringView node_name{}; // Empty for Graph Root parameter; non-empty for AssetNode override.
 
     ObjectId generator_component{}; // Non-null for Scene ProceduralGeneratorComponent override.
 };
@@ -139,15 +142,15 @@ enum class SessionRole { runtime, editor };
 // Saved scene data the loader could not apply, addressed by its scene record path
 // (for example properties.speed, space or name). It is written back on save.
 struct RetainedEntry {
-    Array<std::string> path;
+    Array<String> path;
 
-    std::string value;
+    String value;
 
     world::DiagnosticKind kind{};
 };
 
 struct RetainedView {
-    std::string type; // Original type of a placeholder object; empty when the type resolved.
+    String type; // Original type of a placeholder object; empty when the type resolved.
 
     Array<RetainedEntry> entries;
 };
@@ -157,7 +160,7 @@ struct RetainedView {
 // error preserved. A stand-in keeps its key, so saving writes the reference unchanged.
 // input names a material texture input.
 struct MissingResource {
-    std::string key;
+    String key;
 
     Error error;
 
@@ -168,12 +171,12 @@ struct MissingResource {
 
 // A key names one resource of each kind: a scene that names a material as a mesh
 // leaves only the mesh unavailable.
-using UnavailableResources = Map<std::pair<assets::AssetKind, std::string>, MissingResource>;
+using UnavailableResources = Map<std::pair<assets::AssetKind, String>, MissingResource>;
 
 // Resource publications own their exact content until sent; ordinary changes
 // carry only JSON text. Resource keys are part of that text.
 struct LiveChange {
-    std::string text;
+    String text;
 
     material::ImageRef texture;
 
@@ -182,7 +185,7 @@ struct LiveChange {
 
 // Owning inspection data; paths are declarations, never Runtime fields or slots.
 struct MaterialParameterView {
-    std::string path;
+    String path;
 
     std::uint32_t components{}; // 0 is a texture binding.
 
@@ -192,9 +195,9 @@ struct MaterialParameterView {
 };
 
 struct MaterialView {
-    std::string asset_key;
+    String asset_key;
 
-    std::string parent_key;
+    String parent_key;
 
     bool source{};
 
@@ -294,17 +297,17 @@ public:
 
     Result<world::Commit> create_static_mesh(const assets::MeshAsset&, math::Vector3 position = {}, Project* = nullptr);
 
-    Result<world::Commit> create_procedural_generator(std::string_view graph_key = {}, math::Vector3 position = {},
+    Result<world::Commit> create_procedural_generator(StringView graph_key = {}, math::Vector3 position = {},
                                                       Project* = nullptr);
 
-    Result<void> set_procedural_graph(Project* project, ObjectId component, std::string_view graph_key);
+    Result<void> set_procedural_graph(Project* project, ObjectId component, StringView graph_key);
 
     [[nodiscard]] json::Document generator_overrides(ObjectId component) const;
 
     Result<Array<GraphPromotedParameterView>> generator_promoted_parameters(ObjectId component,
                                                                             Project* project = nullptr) const;
 
-    Result<void> set_generator_override_json(Project* project, ObjectId component, std::string_view param_name,
+    Result<void> set_generator_override_json(Project* project, ObjectId component, StringView param_name,
                                              Optional<json::Value> value);
 
     Result<void> sync_procedural_generators(Project* project);
@@ -394,18 +397,18 @@ public:
 
     // Explicit import publication, never a parameter-history entry. Existing
     // resource roots retain identity and future captures resolve current pixels.
-    Result<void> reimport_texture(Project&, std::string_view key, const std::filesystem::path& source);
+    Result<void> reimport_texture(Project&, StringView key, const std::filesystem::path& source);
 
-    Result<void> publish_texture(std::string_view key, material::ImageRef);
+    Result<void> publish_texture(StringView key, material::ImageRef);
 
-    Result<void> reimport_mesh(Project&, std::string_view key, const std::filesystem::path& source);
+    Result<void> reimport_mesh(Project&, StringView key, const std::filesystem::path& source);
 
     Result<void> publish_mesh(assets::Reader&, const assets::MeshAsset&);
 
     // With a missing list, materials and textures the reader cannot provide become
     // stand-ins and are reported there; without one they fail. Stand-ins are never
     // edited or saved as assets.
-    Result<ObjectRoot> material_resource(assets::Reader&, std::string_view key,
+    Result<ObjectRoot> material_resource(assets::Reader&, StringView key,
                                          Array<MissingResource>* missing = nullptr);
 
     Result<ObjectRoot> material_resource(assets::Reader&, const assets::MaterialAsset&,
@@ -429,10 +432,10 @@ public:
 
     // Opens a material asset for inspection: the asset itself must read, while its
     // unavailable textures stand in so the material can be repaired.
-    Result<ObjectRoot> open_material(Project&, std::string_view key);
+    Result<ObjectRoot> open_material(Project&, StringView key);
 
     // The unavailable Mesh, Material, Texture or sky map a stand-in in this document replaces.
-    const MissingResource* unavailable(assets::AssetKind, std::string_view key) const;
+    const MissingResource* unavailable(assets::AssetKind, StringView key) const;
 
     Result<assets::MaterialAsset> material_asset(ObjectId) const;
 
@@ -454,54 +457,54 @@ public:
 
     Result<void> set_material_entry(ObjectId, material::Override, Project* = nullptr);
 
-    Result<void> set_material_texture(Project&, ObjectId, std::string_view path, std::string_view key);
+    Result<void> set_material_texture(Project&, ObjectId, StringView path, StringView key);
 
-    Result<void> assign_material(Project&, ObjectId component, std::string_view slot, std::string_view key);
+    Result<void> assign_material(Project&, ObjectId component, StringView slot, StringView key);
 
-    Result<void> clear_material(ObjectId component, std::string_view slot);
+    Result<void> clear_material(ObjectId component, StringView slot);
 
-    Result<ObjectRoot> create_scene_material(ObjectId component, std::string_view slot);
+    Result<ObjectRoot> create_scene_material(ObjectId component, StringView slot);
 
     // Project resolves a newly enabled texture that has not been loaded before.
-    Result<void> set_material_override(ObjectId, std::string_view path, bool, Project* = nullptr);
+    Result<void> set_material_override(ObjectId, StringView path, bool, Project* = nullptr);
 
-    Result<void> discard_material_override(ObjectId, std::string_view path);
+    Result<void> discard_material_override(ObjectId, StringView path);
 
-    Result<void> save_material(Project&, std::string_view key);
+    Result<void> save_material(Project&, StringView key);
 
     // The current Project resolves newly active texture keys; history owns no images.
-    Result<void> material_undo(std::string_view key, bool redo = false, Project* = nullptr);
+    Result<void> material_undo(StringView key, bool redo = false, Project* = nullptr);
 
-    bool material_dirty(std::string_view key) const;
+    bool material_dirty(StringView key) const;
 
-    Array<std::string> dirty_materials() const;
+    Array<String> dirty_materials() const;
 
     bool material_editing(std::uint64_t control_session) const noexcept;
 
-    ObjectId loaded_material(std::string_view key) const;
+    ObjectId loaded_material(StringView key) const;
 
     bool is_material(ObjectId) const;
 
     Result<bool> is_material_type(TypeId) const;
 
-    bool material_can_undo(std::string_view key, bool redo = false) const;
+    bool material_can_undo(StringView key, bool redo = false) const;
 
     void bind_project_code(const ProjectCode* code) noexcept;
 
-    Result<Optional<GraphNodeCatalogEntry>> procedural_node_type(std::string_view name, Project* project);
+    Result<Optional<GraphNodeCatalogEntry>> procedural_node_type(StringView name, Project* project);
 
     Result<Array<GraphNodeCatalogEntry>> procedural_node_types(Project* project = nullptr,
-                                                               std::string_view exclude_graph_key = {});
+                                                               StringView exclude_graph_key = {});
 
     Result<const source::Program*> procedural_source_program();
 
-    Result<ObjectId> open_graph(Project&, std::string_view key);
+    Result<ObjectId> open_graph(Project&, StringView key);
 
-    Result<ObjectId> create_scratch_graph(std::string_view key = "scratch/procedural");
+    Result<ObjectId> create_scratch_graph(StringView key = "scratch/procedural");
 
-    bool has_graph(std::string_view key) const noexcept;
+    bool has_graph(StringView key) const noexcept;
 
-    bool is_scratch_graph(std::string_view key) const noexcept;
+    bool is_scratch_graph(StringView key) const noexcept;
 
     bool has_graph_placeholders() const noexcept;
 
@@ -510,175 +513,175 @@ public:
     Result<void> restore_open_graphs(Project* project, Span<const OpenGraphSnapshot> snapshots);
 
     // Captures the open author graph for repro, checking effective session freezes against a cold replay.
-    Result<Optional<std::string>> procedural_graph_snapshot(std::string_view key) const;
+    Result<Optional<String>> procedural_graph_snapshot(StringView key) const;
 
     // Optional lookup returns a null identity for a selection without a generator. Read failures propagate.
     Result<ObjectId> resolve_procedural_generator(ObjectId target = {}, bool required = true) const;
 
-    ObjectId loaded_graph(std::string_view key) const noexcept;
+    ObjectId loaded_graph(StringView key) const noexcept;
 
     bool is_graph_object(ObjectId) const noexcept;
 
     Array<ObjectId> graph_objects() const;
 
-    Array<std::string> open_graphs() const;
+    Array<String> open_graphs() const;
 
-    Optional<std::string> graph_of_object(ObjectId) const;
+    Optional<String> graph_of_object(ObjectId) const;
 
-    Optional<std::string> graph_node_name(ObjectId) const;
+    Optional<String> graph_node_name(ObjectId) const;
 
-    const GraphNode* graph_node(std::string_view key, std::string_view name) const noexcept;
+    const GraphNode* graph_node(StringView key, StringView name) const noexcept;
 
-    ObjectId graph_node_id(std::string_view key, std::string_view name) const noexcept;
+    ObjectId graph_node_id(StringView key, StringView name) const noexcept;
 
-    const GraphDocument* graph_document(std::string_view key) const noexcept;
+    const GraphDocument* graph_document(StringView key) const noexcept;
 
-    bool graph_dirty(std::string_view key) const;
+    bool graph_dirty(StringView key) const;
 
-    Array<std::string> dirty_graphs() const;
+    Array<String> dirty_graphs() const;
 
-    bool graph_can_undo(std::string_view key, bool redo = false) const;
+    bool graph_can_undo(StringView key, bool redo = false) const;
 
-    Result<void> graph_undo(std::string_view key, bool redo = false);
+    Result<void> graph_undo(StringView key, bool redo = false);
 
-    Result<void> save_graph(Project&, std::string_view key);
+    Result<void> save_graph(Project&, StringView key);
 
-    Result<std::string> graph_add_node(std::string_view key, std::string_view type_name,
-                                       std::string_view desired_name = {}, std::array<float, 2> position = {},
-                                       Project* project = nullptr);
+    Result<String> graph_add_node(StringView key, StringView type_name,
+                                  StringView desired_name = {}, std::array<float, 2> position = {},
+                                  Project* project = nullptr);
 
-    Result<std::string> graph_place_node(std::string_view key, std::string_view type_name,
-                                         std::array<float, 2> position, std::string_view from_node = {},
-                                         std::string_view from_port = {}, std::string_view to_node = {},
-                                         std::string_view to_port = {}, bool set_display = false,
-                                         Project* project = nullptr);
+    Result<String> graph_place_node(StringView key, StringView type_name,
+                                    std::array<float, 2> position, StringView from_node = {},
+                                    StringView from_port = {}, StringView to_node = {},
+                                    StringView to_port = {}, bool set_display = false,
+                                    Project* project = nullptr);
 
-    Result<void> graph_remove_nodes(std::string_view key, Span<const std::string> names);
+    Result<void> graph_remove_nodes(StringView key, Span<const String> names);
 
-    Result<Array<std::string>> graph_duplicate_nodes(std::string_view key, Span<const std::string> names,
-                                                     std::array<float, 2> offset = {36.f, 36.f});
+    Result<Array<String>> graph_duplicate_nodes(StringView key, Span<const String> names,
+                                                std::array<float, 2> offset = {36.f, 36.f});
 
-    Result<void> graph_rename_node(std::string_view key, std::string_view old_name, std::string_view new_name);
+    Result<void> graph_rename_node(StringView key, StringView old_name, StringView new_name);
 
-    Result<void> graph_move_nodes(std::string_view key,
-                                  Span<const std::pair<std::string, std::array<float, 2>>> moves,
+    Result<void> graph_move_nodes(StringView key,
+                                  Span<const std::pair<String, std::array<float, 2>>> moves,
                                   bool amend_creation = false);
 
-    Result<void> graph_move_canvas_items(std::string_view key,
-                                         Span<const std::pair<std::string, std::array<float, 2>>> node_moves,
-                                         Span<const std::pair<std::string, std::array<float, 2>>> note_moves,
-                                         Span<const std::pair<std::string, std::array<float, 2>>> box_moves);
+    Result<void> graph_move_canvas_items(StringView key,
+                                         Span<const std::pair<String, std::array<float, 2>>> node_moves,
+                                         Span<const std::pair<String, std::array<float, 2>>> note_moves,
+                                         Span<const std::pair<String, std::array<float, 2>>> box_moves);
 
-    Result<void> graph_auto_layout(std::string_view key);
+    Result<void> graph_auto_layout(StringView key);
 
-    Result<void> graph_connect(std::string_view key, std::string_view from_node, std::string_view from_port,
-                               std::string_view to_node, std::string_view to_port);
+    Result<void> graph_connect(StringView key, StringView from_node, StringView from_port,
+                               StringView to_node, StringView to_port);
 
-    Result<void> graph_disconnect(std::string_view key, std::string_view to_node, std::string_view to_port,
-                                  std::string_view from_node = {}, std::string_view from_port = {});
+    Result<void> graph_disconnect(StringView key, StringView to_node, StringView to_port,
+                                  StringView from_node = {}, StringView from_port = {});
 
-    Result<void> graph_disconnect_edges(std::string_view key, Span<const GraphConnectionView> edges);
+    Result<void> graph_disconnect_edges(StringView key, Span<const GraphConnectionView> edges);
 
-    Result<void> graph_rewire(std::string_view key, const GraphConnectionView& remove_edge,
-                              std::string_view new_to_node, std::string_view new_to_port);
+    Result<void> graph_rewire(StringView key, const GraphConnectionView& remove_edge,
+                              StringView new_to_node, StringView new_to_port);
 
-    Result<void> graph_splice_node(std::string_view key, std::string_view node_name, std::array<float, 2> position,
+    Result<void> graph_splice_node(StringView key, StringView node_name, std::array<float, 2> position,
                                    const GraphConnectionView& wire);
 
-    Result<void> graph_set_display(std::string_view key, std::string_view node_name);
+    Result<void> graph_set_display(StringView key, StringView node_name);
 
-    Result<void> graph_set_template(std::string_view key, std::string_view node_name);
+    Result<void> graph_set_template(StringView key, StringView node_name);
 
-    Result<void> graph_set_bypass(std::string_view key, std::string_view node_name, bool bypassed);
+    Result<void> graph_set_bypass(StringView key, StringView node_name, bool bypassed);
 
-    Result<void> graph_set_frozen(std::string_view key, std::string_view node_name, bool frozen, Project* = nullptr);
+    Result<void> graph_set_frozen(StringView key, StringView node_name, bool frozen, Project* = nullptr);
 
-    Result<void> graph_set_node_appearance(std::string_view key, Span<const std::string> names,
+    Result<void> graph_set_node_appearance(StringView key, Span<const String> names,
                                            Optional<GraphNodeShape> shape = {},
                                            Optional<Optional<std::uint32_t>> color = {},
-                                           Optional<std::string> comment = {});
+                                           Optional<String> comment = {});
 
-    Result<std::string> graph_add_note(std::string_view key, std::array<float, 2> position,
-                                       std::array<float, 2> size = {210.f, 116.f}, std::string_view title = "Note",
-                                       std::string_view text = {}, std::uint32_t color = 0xd4a72c);
+    Result<String> graph_add_note(StringView key, std::array<float, 2> position,
+                                  std::array<float, 2> size = {210.f, 116.f}, StringView title = "Note",
+                                  StringView text = {}, std::uint32_t color = 0xd4a72c);
 
-    Result<void> graph_update_note(std::string_view key, std::string_view name,
+    Result<void> graph_update_note(StringView key, StringView name,
                                    Optional<std::array<float, 2>> position = {},
-                                   Optional<std::array<float, 2>> size = {}, Optional<std::string> title = {},
-                                   Optional<std::string> text = {}, Optional<std::uint32_t> color = {});
+                                   Optional<std::array<float, 2>> size = {}, Optional<String> title = {},
+                                   Optional<String> text = {}, Optional<std::uint32_t> color = {});
 
-    Result<void> graph_remove_notes(std::string_view key, Span<const std::string> names);
+    Result<void> graph_remove_notes(StringView key, Span<const String> names);
 
-    Result<std::string> graph_add_box(std::string_view key, std::array<float, 2> position,
-                                      std::array<float, 2> size = {320.f, 220.f},
-                                      std::string_view title = "Network Box", std::uint32_t color = 0x3b5b78);
+    Result<String> graph_add_box(StringView key, std::array<float, 2> position,
+                                 std::array<float, 2> size = {320.f, 220.f},
+                                 StringView title = "Network Box", std::uint32_t color = 0x3b5b78);
 
-    Result<void> graph_update_box(std::string_view key, std::string_view name,
+    Result<void> graph_update_box(StringView key, StringView name,
                                   Optional<std::array<float, 2>> position = {},
-                                  Optional<std::array<float, 2>> size = {}, Optional<std::string> title = {},
+                                  Optional<std::array<float, 2>> size = {}, Optional<String> title = {},
                                   Optional<std::uint32_t> color = {});
 
-    Result<void> graph_remove_boxes(std::string_view key, Span<const std::string> names);
+    Result<void> graph_remove_boxes(StringView key, Span<const String> names);
 
     // Apply one text edit to the open graph. Returns whether an undo step was published.
-    Result<bool> graph_apply(std::string_view key, json::Value patch, Project* project = nullptr);
+    Result<bool> graph_apply(StringView key, json::Value patch, Project* project = nullptr);
 
-    Result<std::shared_ptr<const procedural::Bvh>> graph_node_surface(std::string_view key, std::string_view name,
-                                                                      std::string_view output, Project* project);
+    Result<std::shared_ptr<const procedural::Bvh>> graph_node_surface(StringView key, StringView name,
+                                                                      StringView output, Project* project);
 
-    Result<procedural::NodeBindings> graph_node_bindings(std::string_view key, std::string_view name, Project* project);
+    Result<procedural::NodeBindings> graph_node_bindings(StringView key, StringView name, Project* project);
 
-    Result<json::Document> graph_node_properties(std::string_view key, std::string_view name);
+    Result<json::Document> graph_node_properties(StringView key, StringView name);
 
-    Result<void> graph_set_properties(std::string_view key, std::string_view node_name, json::Value properties);
+    Result<void> graph_set_properties(StringView key, StringView node_name, json::Value properties);
 
-    Result<Array<GraphPromotedParameterView>> graph_promoted_parameters(std::string_view key,
+    Result<Array<GraphPromotedParameterView>> graph_promoted_parameters(StringView key,
                                                                         Project* project = nullptr) const;
 
     Result<Array<GraphPromotedParameterView>>
-    graph_asset_node_parameters(std::string_view key, std::string_view node_name, Project* project = nullptr) const;
+    graph_asset_node_parameters(StringView key, StringView node_name, Project* project = nullptr) const;
 
-    Optional<std::string> graph_controlling_parameter(std::string_view key, std::string_view node_name,
-                                                      std::string_view field_path) const noexcept;
+    Optional<String> graph_controlling_parameter(StringView key, StringView node_name,
+                                                 StringView field_path) const noexcept;
 
-    Optional<std::string> graph_overlapping_parameter(std::string_view key, std::string_view node_name,
-                                                      std::string_view field_path) const noexcept;
+    Optional<String> graph_overlapping_parameter(StringView key, StringView node_name,
+                                                 StringView field_path) const noexcept;
 
-    Result<std::string> graph_expose_parameter(std::string_view key, std::string_view node_name,
-                                               std::string_view field_path, std::string_view desired_name = {},
-                                               std::string_view label = {}, std::string_view category = {},
-                                               std::string_view description = {});
+    Result<String> graph_expose_parameter(StringView key, StringView node_name,
+                                          StringView field_path, StringView desired_name = {},
+                                          StringView label = {}, StringView category = {},
+                                          StringView description = {});
 
-    Result<void> graph_bind_parameter_target(std::string_view key, std::string_view param_name,
-                                             std::string_view node_name, std::string_view field_path);
+    Result<void> graph_bind_parameter_target(StringView key, StringView param_name,
+                                             StringView node_name, StringView field_path);
 
-    Result<void> graph_unbind_parameter_target(std::string_view key, std::string_view node_name,
-                                               std::string_view field_path);
+    Result<void> graph_unbind_parameter_target(StringView key, StringView node_name,
+                                               StringView field_path);
 
-    Result<void> graph_update_parameter(std::string_view key, std::string_view param_name,
-                                        Optional<std::string> new_name = {}, Optional<std::string> label = {},
-                                        Optional<std::string> category = {},
-                                        Optional<std::string> description = {},
+    Result<void> graph_update_parameter(StringView key, StringView param_name,
+                                        Optional<String> new_name = {}, Optional<String> label = {},
+                                        Optional<String> category = {},
+                                        Optional<String> description = {},
                                         Optional<std::size_t> new_index = {});
 
-    Result<void> graph_remove_parameter(std::string_view key, std::string_view param_name);
+    Result<void> graph_remove_parameter(StringView key, StringView param_name);
 
-    Result<void> graph_set_parameter_json(std::string_view key, std::string_view param_name, json::Value value);
+    Result<void> graph_set_parameter_json(StringView key, StringView param_name, json::Value value);
 
-    Result<void> graph_set_asset_override_json(std::string_view key, std::string_view node_name,
-                                               std::string_view param_name, Optional<json::Value> value,
+    Result<void> graph_set_asset_override_json(StringView key, StringView node_name,
+                                               StringView param_name, Optional<json::Value> value,
                                                Project* project = nullptr);
 
-    Result<void> graph_set_node_asset(std::string_view key, std::string_view node_name,
-                                      std::string_view target_asset_key, Project* project = nullptr);
+    Result<void> graph_set_node_asset(StringView key, StringView node_name,
+                                      StringView target_asset_key, Project* project = nullptr);
 
-    Result<std::pair<std::string, std::string>> graph_extract_asset(Project& project, std::string_view key,
-                                                                    Span<const std::string> selected_nodes,
-                                                                    const std::filesystem::path& asset_relative_path,
-                                                                    std::string_view desired_node_name = {});
+    Result<std::pair<String, String>> graph_extract_asset(Project& project, StringView key,
+                                                          Span<const String> selected_nodes,
+                                                          const std::filesystem::path& asset_relative_path,
+                                                          StringView desired_node_name = {});
 
-    Result<void> begin_graph_parameter_edit(std::string_view key, std::string_view node_name,
-                                            std::string_view param_name, Optional<std::size_t> lane,
+    Result<void> begin_graph_parameter_edit(StringView key, StringView node_name,
+                                            StringView param_name, Optional<std::size_t> lane,
                                             std::uint64_t control_session, Project* project = nullptr,
                                             ObjectId generator_component = {});
 
@@ -690,27 +693,27 @@ public:
 
     bool graph_parameter_editing(std::uint64_t control_session) const noexcept;
 
-    Result<void> set_promoted_parameter_scalars(const PromotedParameterTarget& target, std::string_view param_name,
+    Result<void> set_promoted_parameter_scalars(const PromotedParameterTarget& target, StringView param_name,
                                                 Span<const Scalar> values, Project* project = nullptr);
 
-    Result<void> set_promoted_parameter_string(const PromotedParameterTarget& target, std::string_view param_name,
-                                               std::string_view value, Project* project = nullptr);
+    Result<void> set_promoted_parameter_string(const PromotedParameterTarget& target, StringView param_name,
+                                               StringView value, Project* project = nullptr);
 
-    Result<void> clear_promoted_parameter_override(const PromotedParameterTarget& target, std::string_view param_name,
+    Result<void> clear_promoted_parameter_override(const PromotedParameterTarget& target, StringView param_name,
                                                    Project* project = nullptr);
 
-    Result<void> set_string_property(ObjectId, Span<const FieldId>, std::string_view value);
+    Result<void> set_string_property(ObjectId, Span<const FieldId>, StringView value);
 
-    Result<GraphEvaluation> evaluate_graph(std::string_view key, Project* = nullptr, ObjectId inspected_node = {},
+    Result<GraphEvaluation> evaluate_graph(StringView key, Project* = nullptr, ObjectId inspected_node = {},
                                            bool record_timings = false);
 
     // Cached authoring topology and last cooked node status. Reading it never cooks or scans geometry.
-    Result<std::shared_ptr<const GraphInspectView>> graph_topology(std::string_view key);
+    Result<std::shared_ptr<const GraphInspectView>> graph_topology(StringView key);
 
-    Result<GraphInspectView> inspect_graph(std::string_view key, Project* = nullptr, ObjectId inspected_node = {},
+    Result<GraphInspectView> inspect_graph(StringView key, Project* = nullptr, ObjectId inspected_node = {},
                                            bool record_timings = false, std::size_t max_samples = 4,
                                            bool include_spatial = true, ObjectId reference_node = {},
-                                           std::string_view reference_name = {});
+                                           StringView reference_name = {});
 
     bool owns_edit(std::uint64_t control_session) const noexcept;
 
@@ -728,9 +731,9 @@ public:
 
     Result<void> collect_step();
 
-    Result<std::string> serialize() const;
+    Result<String> serialize() const;
 
-    Result<std::string> serialize_subtree(ObjectId) const;
+    Result<String> serialize_subtree(ObjectId) const;
 
     // Makes this loaded document a Play copy: objects keep the editor's document
     // identities, and this Session never assigns new ones.
@@ -742,13 +745,13 @@ public:
     // the game already destroyed the target, warning command_rejected when Play
     // cannot follow the edit, error command_rejected when Play diverged. See
     // docs/modules/editor/projects.md for the batch format.
-    Result<Array<world::Diagnostic>> apply_live(std::string_view batch, Project&);
+    Result<Array<world::Diagnostic>> apply_live(StringView batch, Project&);
 
     // Editor-side graphs for add and attach changes: identities are kept and
     // references leaving the graph are written as document identities.
-    Result<std::string> serialize_live_subtree(ObjectId root) const;
+    Result<String> serialize_live_subtree(ObjectId root) const;
 
-    Result<std::string> serialize_live_components(ObjectId entity, Span<const ObjectId> components) const;
+    Result<String> serialize_live_components(ObjectId entity, Span<const ObjectId> components) const;
 
     // While forwarding, each applied change, undo and redo of this document is also
     // recorded as Play change ops with the values it left. Previews and cancels are
@@ -762,9 +765,9 @@ public:
 
     // Imports a complete detached graph, remaps internal references and records
     // one creation history item. Document identities are always fresh.
-    Result<world::Commit> instantiate_subtree(std::string_view, Project&, ObjectId parent = {});
+    Result<world::Commit> instantiate_subtree(StringView, Project&, ObjectId parent = {});
 
-    static Result<std::unique_ptr<Session>> deserialize(std::string_view, Project&, Prepare = {},
+    static Result<std::unique_ptr<Session>> deserialize(StringView, Project&, Prepare = {},
                                                         LoadPolicy = LoadPolicy::tolerant,
                                                         SessionRole = SessionRole::runtime);
 
@@ -777,7 +780,7 @@ public:
     // ObjectId{} addresses document-level data (top-level keys and World settings).
     bool has_retained(ObjectId) const noexcept;
 
-    std::string_view placeholder_type(ObjectId) const noexcept;
+    StringView placeholder_type(ObjectId) const noexcept;
 
     Result<RetainedView> retained(ObjectId) const;
 
@@ -832,8 +835,8 @@ public:
     static constexpr std::size_t maximum_components = 1024;
 
 private:
-    friend ProjectDocument load_project_scene(Project&, std::string_view, LoadPolicy, bool, SessionRole);
-    static Result<std::unique_ptr<Session>> restore_scene(std::string_view, Project&, Prepare, LoadPolicy, SessionRole);
+    friend ProjectDocument load_project_scene(Project&, StringView, LoadPolicy, bool, SessionRole);
+    static Result<std::unique_ptr<Session>> restore_scene(StringView, Project&, Prepare, LoadPolicy, SessionRole);
     struct ReferenceFieldChange {
         ObjectRoot root;
 
@@ -993,7 +996,7 @@ private:
     };
 
     struct MaterialEntryChange {
-        std::string path;
+        String path;
 
         Optional<material::Override> before;
 
@@ -1022,9 +1025,9 @@ private:
 
         ObjectId entity;
 
-        std::string before;
+        String before;
 
-        std::string after;
+        String after;
 
         json::Document before_overrides;
 
@@ -1042,11 +1045,11 @@ private:
     // materials are unreferenced definitions kept for write-back; on a component, they
     // are the scene materials its kept binding table names.
     struct Retained {
-        std::string type;
+        String type;
 
-        std::string record;
+        String record;
 
-        std::string slots;
+        String slots;
 
         Array<ObjectRoot> materials;
 
@@ -1140,7 +1143,7 @@ private:
 
     // Document side of Play: pending ops; a keyed op is a preview its next preview replaces.
     struct LiveOp {
-        std::string key;
+        String key;
 
         LiveChange change;
     };
@@ -1176,7 +1179,7 @@ private:
         std::size_t cursor{};
     };
 
-    Map<std::string, MaterialDocument> materials_;
+    Map<String, MaterialDocument> materials_;
 
     struct OpenGraph;
 
@@ -1184,7 +1187,7 @@ private:
         void operator()(OpenGraph*) const noexcept;
     };
 
-    Map<std::string, std::unique_ptr<OpenGraph, OpenGraphDeleter>> graphs_;
+    Map<String, std::unique_ptr<OpenGraph, OpenGraphDeleter>> graphs_;
 
     struct GeneratorRuntimeCache;
 
@@ -1210,9 +1213,9 @@ private:
     struct GraphParameterEdit {
         std::uint64_t control{};
 
-        std::string graph_key;
+        String graph_key;
 
-        std::string node_name; // Empty when editing Graph Root promoted parameter; non-empty for AssetNode override.
+        String node_name; // Empty when editing Graph Root promoted parameter; non-empty for AssetNode override.
 
         ObjectRoot generator_root; // Non-empty when editing a Scene ProceduralGeneratorComponent override.
 
@@ -1220,7 +1223,7 @@ private:
 
         Project* edit_project{};
 
-        std::string param_name;
+        String param_name;
 
         Optional<std::size_t> lane; // Specific vector lane, or nullopt for scalar/enum or whole vector.
 
@@ -1253,17 +1256,17 @@ private:
 
     Result<void> reject_if_graph_controlled_field(ObjectId object, Span<const FieldId> path) const;
 
-    Result<const GraphDocument*> resolve_target_graph_document(std::string_view asset_key, Project* project) const;
+    Result<const GraphDocument*> resolve_target_graph_document(StringView asset_key, Project* project) const;
 
-    Map<ObjectId, std::string> scene_material_parents_; // Non-owning; survives parent loss.
+    Map<ObjectId, String> scene_material_parents_; // Non-owning; survives parent loss.
 
-    Array<std::string> loading_materials_; // Synchronous recursion guard, not a resource cache.
+    Array<String> loading_materials_; // Synchronous recursion guard, not a resource cache.
 
-    Map<std::string, ObjectRoot> textures_;
+    Map<String, ObjectRoot> textures_;
 
     UnavailableResources unavailable_;
 
-    const MissingResource& remember_unavailable(const assets::Reader&, assets::AssetKind, std::string_view key,
+    const MissingResource& remember_unavailable(const assets::Reader&, assets::AssetKind, StringView key,
                                                 const Error&);
 
     struct MaterialEdit {
@@ -1272,7 +1275,7 @@ private:
         std::uint64_t control{};
 
         // Empty for a scene material; asset key in `materials_` for a shared material asset.
-        std::string document_key;
+        String document_key;
 
         Array<MaterialEntryChange> entries;
     };
@@ -1282,7 +1285,7 @@ private:
     Result<void> apply_material_entries(ObjectId, Span<const MaterialEntryChange>, bool forward,
                                         Project* = nullptr);
 
-    Result<std::string> admit_material_edit(ObjectId);
+    Result<String> admit_material_edit(ObjectId);
 
     Result<MaterialEdit> prepare_material_edit(ObjectId, std::uint64_t control = 0);
 
@@ -1296,7 +1299,7 @@ private:
     Result<ObjectRoot> store_material(assets::Reader&, const assets::MaterialAsset&, Optional<source::SourceFile>,
                                       Array<MissingResource>*);
 
-    Result<ObjectRoot> texture_resource(assets::Reader&, std::string_view,
+    Result<ObjectRoot> texture_resource(assets::Reader&, StringView,
                                         Array<MissingResource>* missing = nullptr, std::size_t input = 0);
 
     Result<void> replace_material_bindings(ObjectId, Array<presentation::MaterialBinding>);
@@ -1352,7 +1355,7 @@ private:
     void forward_material(ObjectId);
 
     // A texture publication retains this exact immutable image, not its latest file.
-    void forward_texture(std::string_view key, material::ImageRef);
+    void forward_texture(StringView key, material::ImageRef);
 
     void forward_mesh(const assets::MeshAsset&);
 
@@ -1371,15 +1374,15 @@ private:
 
     Result<void> publish_procedural_mesh(assets::Reader&, const assets::MeshAsset&);
 
-    Result<OpenGraph*> editable_graph(std::string_view key, bool need_program = false);
+    Result<OpenGraph*> editable_graph(StringView key, bool need_program = false);
 
-    Result<void> apply_graph_patch(std::string_view key, json::Value patch, Project* project);
+    Result<void> apply_graph_patch(StringView key, json::Value patch, Project* project);
 
-    Result<std::string> add_graph_node_impl(std::string_view key, std::string_view type_name,
-                                            std::string_view desired_name, std::array<float, 2> position,
-                                            std::string_view from_node, std::string_view from_port,
-                                            std::string_view to_node, std::string_view to_port, bool set_display,
-                                            Project* project = nullptr);
+    Result<String> add_graph_node_impl(StringView key, StringView type_name,
+                                       StringView desired_name, std::array<float, 2> position,
+                                       StringView from_node, StringView from_port,
+                                       StringView to_node, StringView to_port, bool set_display,
+                                       Project* project = nullptr);
 
     std::shared_ptr<procedural::CachePool> ensure_procedural_cache_pool();
 
@@ -1389,8 +1392,8 @@ private:
 
     Result<void> sync_open_graph_assets(OpenGraph& open, Project* project, bool materialize_subgraphs);
 
-    Result<std::pair<std::string, std::wstring>> resolve_procedural_graph_asset(std::string_view graph_key,
-                                                                                Project* project) const;
+    Result<std::pair<String, std::wstring>> resolve_procedural_graph_asset(StringView graph_key,
+                                                                           Project* project) const;
 
     Result<void> remember_graph_scalar_edit(ObjectRoot target, Array<world::FieldPath> paths,
                                             Array<Scalar> before, Array<Scalar> after);

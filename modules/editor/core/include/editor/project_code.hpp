@@ -3,6 +3,7 @@
 #include "editor/session.hpp"
 #include "foundation/array.hpp"
 #include "foundation/optional.hpp"
+#include "foundation/string.hpp"
 #include "source/program.hpp"
 #include "physics/physics.hpp"
 #include <chrono>
@@ -43,9 +44,9 @@ public:
 
     static Result<Optional<source::SourceFile>> ui_snapshot(const Project&);
 
-    static std::string component_source(std::string_view name);
+    static String component_source(StringView name);
 
-    static std::string ui_source();
+    static String ui_source();
 
 private:
     struct Stamp {
@@ -92,9 +93,9 @@ struct ProjectDocument {
 
 // With allow_failed_build, a Source build failure still produces a document without
 // a code owner: project types are absent, so their objects load as placeholders.
-ProjectDocument load_project_scene(Project&, std::string_view, LoadPolicy = LoadPolicy::tolerant,
+ProjectDocument load_project_scene(Project&, StringView, LoadPolicy = LoadPolicy::tolerant,
                                    bool allow_failed_build = false, SessionRole = SessionRole::runtime);
 
 // One UTF-8 Project Output line; invalid entity text or diagnostic bytes are rejected.
-Result<std::string> describe_diagnostic(const Session&, const world::Diagnostic&);
+Result<String> describe_diagnostic(const Session&, const world::Diagnostic&);
 }

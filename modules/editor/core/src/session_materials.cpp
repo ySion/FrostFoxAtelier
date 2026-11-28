@@ -10,8 +10,10 @@
 #include <cstring>
 
 namespace atelier::editor {
+using namespace atelier::literals;
+
 namespace {
-auto failure(std::string text) {
+auto failure(Utf8Text text) {
     return std::unexpected(Error{ErrorCode::invalid_definition, std::move(text)});
 }
 
@@ -55,7 +57,7 @@ bool same(const Optional<material::Override>& a, const Optional<material::Overri
     return a.has_value() == b.has_value() && (!a || same(*a, *b));
 }
 
-Optional<material::Override> entry_at(Span<const material::Override> entries, std::string_view path) {
+Optional<material::Override> entry_at(Span<const material::Override> entries, StringView path) {
     const auto at = std::ranges::find(entries, path, &material::Override::path);
     return at == entries.end() ? Optional<material::Override>{} : Optional<material::Override>(*at);
 }
@@ -82,28 +84,30 @@ material::LocalValue parameter_value(const source::MaterialParameter& parameter,
 }
 
 const MissingResource& Session::remember_unavailable(const assets::Reader& reader, assets::AssetKind kind,
-                                                     std::string_view key, const Error& error) {
+                                                     StringView key, const Error& error) {
     const bool listed = reader.entry(key) != nullptr;
+
+    auto owned_key = String::from_utf8(key).value_or(String{});
     return *unavailable_
-                .insert_or_assign({kind, std::string(key)},
-                                  MissingResource{std::string(key), error, {},
+                .insert_or_assign({kind, owned_key},
+                                  MissingResource{owned_key, error, {},
                                                   listed ? world::DiagnosticKind::unreadable_resource
                                                          : world::DiagnosticKind::missing_resource})
                 .value;
 }
 
-const MissingResource* Session::unavailable(assets::AssetKind kind, std::string_view key) const {
+const MissingResource* Session::unavailable(assets::AssetKind kind, StringView key) const {
     return unavailable_.find(std::pair{kind, key});
 }
 
-Result<void> Session::publish_texture(std::string_view key, material::ImageRef image) {
+Result<void> Session::publish_texture(StringView key, material::ImageRef image) {
     if (world_.closed() || key.empty() || !image)
         return failure("Texture publication needs a live Session, asset key and complete image.");
     if (const auto* at = textures_.find(key)) {
         ATELIER_TRY_BIND(replaced, material::update_texture(runtime_, at->id(), image));
     } else {
         ATELIER_TRY_BIND(root, material::create_texture(runtime_, key, image));
-        textures_.try_emplace(key, std::move(*root));
+        textures_.try_emplace(String::from_utf8_validated(key), std::move(*root));
     }
     unavailable_.remove(std::pair{assets::AssetKind::texture, key});
     ++revision_;
@@ -111,7 +115,7 @@ Result<void> Session::publish_texture(std::string_view key, material::ImageRef i
     return {};
 }
 
-Result<void> Session::reimport_texture(Project& project, std::string_view key, const std::filesystem::path& source) {
+Result<void> Session::reimport_texture(Project& project, StringView key, const std::filesystem::path& source) {
     if (world_.closed() || world_.running() || editing())
         return failure("Finish the active edit and stop the editor World before reimporting.");
     // Validate an existing Runtime target before touching the committed file.
@@ -122,7 +126,7 @@ Result<void> Session::reimport_texture(Project& project, std::string_view key, c
     return publish_texture(imported->key, std::move(imported->image));
 }
 
-Result<ObjectRoot> Session::texture_resource(assets::Reader& reader, std::string_view key,
+Result<ObjectRoot> Session::texture_resource(assets::Reader& reader, StringView key,
                                              Array<MissingResource>* missing, std::size_t input) {
     if (const auto* at = textures_.find(key)) {
         if (const auto* item = unavailable(assets::AssetKind::texture, key)) {
@@ -137,7 +141,7 @@ Result<ObjectRoot> Session::texture_resource(assets::Reader& reader, std::string
     if (!asset && !missing)
         return std::unexpected(asset.error());
     ATELIER_TRY_BIND(root, material::create_texture(runtime_, key, asset ? asset->image : material::ImageRef{}));
-    textures_.try_emplace(key, *root);
+    textures_.try_emplace(String::from_utf8_validated(key), *root);
     if (!asset) {
         missing->add(remember_unavailable(reader, assets::AssetKind::texture, key, asset.error()));
         missing->back().input = input;
@@ -145,10 +149,10 @@ Result<ObjectRoot> Session::texture_resource(assets::Reader& reader, std::string
     return std::move(*root);
 }
 
-Result<ObjectRoot> Session::material_resource(assets::Reader& reader, std::string_view key,
+Result<ObjectRoot> Session::material_resource(assets::Reader& reader, StringView key,
                                               Array<MissingResource>* missing) {
     if (std::ranges::find(loading_materials_, key) != loading_materials_.end())
-        return failure("Material parent cycle at " + std::string(key));
+        return failure(String::concat("Material parent cycle at ", String::from_utf8(key).value_or(String{})));
     if (const auto* at = materials_.find(key)) {
         if (const auto* item = unavailable(assets::AssetKind::material, key)) {
             if (!missing)
@@ -162,9 +166,9 @@ Result<ObjectRoot> Session::material_resource(assets::Reader& reader, std::strin
             if (at->error) {
                 if (!missing)
                     return std::unexpected(*at->error);
-                missing->add({std::string(key), *at->error, {}, world::DiagnosticKind::unreadable_resource});
+                missing->add({at->author.key, *at->error, {}, world::DiagnosticKind::unreadable_resource});
             } else if (const auto* author = std::get_if<assets::MaterialInstanceAsset>(&at->author.author)) {
-                const std::string parent_key = author->parent_key;
+                const String parent_key = author->parent_key;
                 ATELIER_TRY_BIND(parent, material_resource(reader, parent_key, missing));
             }
         }
@@ -179,17 +183,19 @@ Result<ObjectRoot> Session::material_resource(assets::Reader& reader, std::strin
         (listed && (listed->kind != assets::AssetKind::material || !asset.error().message.starts_with("Cannot read "))))
         return std::unexpected(asset.error());
     ATELIER_TRY_BIND(root, material::create_source(runtime_, key, {}));
+    auto owned_key = String::from_utf8_validated(key);
+
     MaterialDocument document;
     document.root = *root;
-    document.author.key = key;
+    document.author.key = owned_key;
     document.author.author = assets::MaterialSourceAsset{};
     document.diagnostics.add({{}, asset.error().message});
-    materials_.try_emplace(key, std::move(document));
+    materials_.try_emplace(std::move(owned_key), std::move(document));
     missing->add(remember_unavailable(reader, assets::AssetKind::material, key, asset.error()));
     return std::move(*root);
 }
 
-Result<ObjectRoot> Session::open_material(Project& project, std::string_view key) {
+Result<ObjectRoot> Session::open_material(Project& project, StringView key) {
     if (const auto* item = unavailable(assets::AssetKind::material, key))
         return stand_in(*item);
     ATELIER_TRY_BIND(asset, project.assets().material(key));
@@ -223,7 +229,7 @@ Result<ObjectRoot> Session::store_material(assets::Reader& reader, const assets:
         return failure("Material publication requires a live Session.");
     if (!asset.key.empty()) {
         if (std::ranges::find(loading_materials_, asset.key) != loading_materials_.end())
-            return failure("Material parent cycle at " + asset.key);
+            return failure(String::concat("Material parent cycle at ", asset.key));
     }
     loading_materials_.add(asset.key);
     ScopeExit loading{[this]() noexcept { loading_materials_.pop(); }};
@@ -258,9 +264,10 @@ Result<ObjectRoot> Session::store_material(assets::Reader& reader, const assets:
     if (const auto* author = std::get_if<assets::MaterialSourceAsset>(&asset.author)) {
         if (asset.key.empty())
             return failure("A scene-local material must be an instance, not a Source.");
-        if (exact_source && exact_source->path != author->source_path)
+        if (exact_source && StringView{exact_source->path} != author->source_path)
             return failure("Material Source snapshot path does not match its author record.");
         material::SourceState state;
+
         auto source_file = exact_source ? Result<source::SourceFile>(std::move(*exact_source))
                                         : reader.source(platform::utf8_to_utf16_validated(author->source_path));
         if (!source_file)
@@ -272,8 +279,10 @@ Result<ObjectRoot> Session::store_material(assets::Reader& reader, const assets:
             ATELIER_TRY_BIND(context_type, compiler.native_type<material::Context>());
             ATELIER_TRY_BIND(output_type, compiler.native_type<material::Output>());
             ATELIER_TRY_BIND(texture_type, compiler.native_type<material::TextureInput>());
-            auto program = source::compile_material(compiler, *context_type, *output_type, *texture_type,
-                                                    document.source_file->path, document.source_file->source);
+            auto program =
+                source::compile_material(compiler, *context_type, *output_type, *texture_type,
+                                         StringView{document.source_file->path},
+                                         StringView{document.source_file->source});
             if (!program)
                 document.error = std::move(program.error());
             else {
@@ -573,7 +582,7 @@ Array<ObjectId> Session::material_objects() const {
     return result;
 }
 
-Result<std::string> Session::admit_material_edit(ObjectId object) {
+Result<String> Session::admit_material_edit(ObjectId object) {
     if (world_.closed() || world_.running())
         return failure("Stop the World before editing a material.");
     ATELIER_TRY_BIND(asset, material_asset(object));
@@ -753,17 +762,17 @@ Result<bool> Session::is_material_type(TypeId type) const {
     return runtime_.is_a(type, *base);
 }
 
-bool Session::material_can_undo(std::string_view key, bool redo) const {
+bool Session::material_can_undo(StringView key, bool redo) const {
     const auto* at = materials_.find(key);
     return at && (redo ? at->cursor < at->history.size() : at->cursor > 0);
 }
 
-ObjectId Session::loaded_material(std::string_view key) const {
+ObjectId Session::loaded_material(StringView key) const {
     const auto* at = materials_.find(key);
     return at ? at->root.id() : ObjectId{};
 }
 
-bool Session::material_dirty(std::string_view key) const {
+bool Session::material_dirty(StringView key) const {
     const auto* at = materials_.find(key);
     if (!at)
         return false;
@@ -778,8 +787,8 @@ bool Session::material_dirty(std::string_view key) const {
            });
 }
 
-Array<std::string> Session::dirty_materials() const {
-    Array<std::string> result;
+Array<String> Session::dirty_materials() const {
+    Array<String> result;
     for (const auto& [key, value] : materials_) {
         static_cast<void>(value);
         if (material_dirty(key))
@@ -788,7 +797,7 @@ Array<std::string> Session::dirty_materials() const {
     return result;
 }
 
-Result<void> Session::material_undo(std::string_view key, bool redo, Project* project) {
+Result<void> Session::material_undo(StringView key, bool redo, Project* project) {
     ATELIER_TRY(cancel_edit());
     const auto* existing = materials_.find(key);
     if (!existing)
@@ -796,7 +805,7 @@ Result<void> Session::material_undo(std::string_view key, bool redo, Project* pr
     ATELIER_TRY(admit_material_edit(existing->root.id()));
     if (!material_can_undo(key, redo))
         return {};
-    auto& doc = materials_.at(key);
+    auto& doc = *materials_.find(key);
     auto result =
         apply_material_entries(doc.root.id(), doc.history[redo ? doc.cursor : doc.cursor - 1].entries, redo, project);
     if (result) {
@@ -810,7 +819,7 @@ Result<void> Session::material_undo(std::string_view key, bool redo, Project* pr
     return result;
 }
 
-Result<void> Session::save_material(Project& project, std::string_view key) {
+Result<void> Session::save_material(Project& project, StringView key) {
     if (material_edit_)
         return failure("Finish the active material edit before saving.");
     auto* at = materials_.find(key);
@@ -826,8 +835,7 @@ Result<void> Session::save_material(Project& project, std::string_view key) {
     return {};
 }
 
-Result<void> Session::set_material_texture(Project& project, ObjectId object, std::string_view path,
-                                           std::string_view key) {
+Result<void> Session::set_material_texture(Project& project, ObjectId object, StringView path, StringView key) {
     ATELIER_TRY(cancel_edit());
     ATELIER_TRY_BIND(view, inspect_material(object));
     const auto field = std::ranges::find(view->declarations, path, &MaterialParameterView::path);
@@ -836,12 +844,16 @@ Result<void> Session::set_material_texture(Project& project, ObjectId object, st
     if (!key.empty()) {
         ATELIER_TRY_BIND(texture, texture_resource(project.assets(), key));
     }
+    auto owned_key = String::from_utf8(key);
+    if (!owned_key)
+        return failure("Invalid UTF-8 texture key.");
+
     auto value = std::get<material::TextureBinding>(field->value);
     if (const auto previous = entry_at(view->entries, path);
         previous && std::holds_alternative<material::TextureBinding>(previous->value))
         value = std::get<material::TextureBinding>(previous->value);
-    value.asset_key = key;
-    return set_material_entry(object, {std::string(path), std::move(value), true});
+    value.asset_key = std::move(*owned_key);
+    return set_material_entry(object, {field->path, std::move(value), true});
 }
 
 Result<void> Session::replace_material_bindings(ObjectId object, Array<presentation::MaterialBinding> after) {
@@ -859,20 +871,23 @@ Result<void> Session::replace_material_bindings(ObjectId object, Array<presentat
     return {};
 }
 
-Result<void> Session::assign_material(Project& project, ObjectId object, std::string_view slot, std::string_view key) {
+Result<void> Session::assign_material(Project& project, ObjectId object, StringView slot, StringView key) {
     ATELIER_TRY_BIND(resource, material_resource(project.assets(), key));
     ATELIER_TRY_BIND(bindings, presentation::read_material_bindings(runtime_, object));
     const auto at = std::ranges::find(*bindings, slot, &presentation::MaterialBinding::slot);
-    if (at == bindings->end())
-        bindings->add({std::string(slot), std::move(*resource), true});
-    else {
+    if (at == bindings->end()) {
+        auto owned_slot = String::from_utf8(slot);
+        if (!owned_slot)
+            return failure("Invalid UTF-8 material slot.");
+        bindings->add({std::move(*owned_slot), std::move(*resource), true});
+    } else {
         at->resource = std::move(*resource);
         at->overridden = true;
     }
     return replace_material_bindings(object, std::move(*bindings));
 }
 
-Result<void> Session::clear_material(ObjectId object, std::string_view slot) {
+Result<void> Session::clear_material(ObjectId object, StringView slot) {
     ATELIER_TRY_BIND(bindings, presentation::read_material_bindings(runtime_, object));
     ATELIER_TRY_BIND(type, runtime_.type_of(object));
     ATELIER_TRY_BIND(is_generator, runtime_.is_a(*type, presentation_types_.procedural_generator_component));
@@ -881,11 +896,12 @@ Result<void> Session::clear_material(ObjectId object, std::string_view slot) {
     return replace_material_bindings(object, std::move(*bindings));
 }
 
-Result<ObjectRoot> Session::create_scene_material(ObjectId component, std::string_view slot) {
+Result<ObjectRoot> Session::create_scene_material(ObjectId component, StringView slot) {
     ATELIER_TRY(cancel_edit());
     ATELIER_TRY_BIND(state, admit_component_edit(component));
     ATELIER_TRY_BIND(bindings, presentation::read_material_bindings(runtime_, component));
     const auto at = std::ranges::find(*bindings, slot, &presentation::MaterialBinding::slot);
+
     ObjectRoot parent;
     if (at != bindings->end())
         parent = at->resource;
@@ -906,9 +922,14 @@ Result<ObjectRoot> Session::create_scene_material(ObjectId component, std::strin
     ATELIER_TRY_BIND(parent_key, material::material_key(runtime_, parent.id()));
     ATELIER_TRY_BIND(instance, material::create_instance(runtime_, {}, material::InstanceState{parent, {}, {}}));
     scene_material_parents_.try_emplace(instance->id(), *parent_key);
-    if (at == bindings->end())
-        bindings->add({std::string(slot), *instance, true});
-    else {
+    if (at == bindings->end()) {
+        auto owned_slot = String::from_utf8(slot);
+        if (!owned_slot) {
+            scene_material_parents_.remove(instance->id());
+            return failure("Invalid UTF-8 material slot.");
+        }
+        bindings->add({std::move(*owned_slot), *instance, true});
+    } else {
         at->resource = *instance;
         at->overridden = true;
     }
@@ -920,9 +941,13 @@ Result<ObjectRoot> Session::create_scene_material(ObjectId component, std::strin
     return std::move(*instance);
 }
 
-Result<void> Session::set_material_override(ObjectId object, std::string_view path, bool enabled, Project* project) {
+Result<void> Session::set_material_override(ObjectId object, StringView path, bool enabled, Project* project) {
     ATELIER_TRY_BIND(edit, prepare_material_edit(object));
     ATELIER_TRY_BIND(view, inspect_material(object));
+    auto owned_path = String::from_utf8(path);
+    if (!owned_path)
+        return failure("Invalid UTF-8 material parameter path.");
+
     auto entry = entry_at(view->entries, path);
     if (!entry) {
         if (!enabled)
@@ -930,14 +955,17 @@ Result<void> Session::set_material_override(ObjectId object, std::string_view pa
         const auto field = std::ranges::find(view->declarations, path, &MaterialParameterView::path);
         if (field == view->declarations.end())
             return failure("Unknown material declaration.");
-        entry = material::Override{std::string(path), field->value, true};
+        entry = material::Override{*owned_path, field->value, true};
     }
     entry->enabled = enabled;
-    return change_material_entry(*edit, {std::string(path), {}, std::move(entry)}, project);
+    return change_material_entry(*edit, {std::move(*owned_path), {}, std::move(entry)}, project);
 }
 
-Result<void> Session::discard_material_override(ObjectId object, std::string_view path) {
+Result<void> Session::discard_material_override(ObjectId object, StringView path) {
     ATELIER_TRY_BIND(edit, prepare_material_edit(object));
-    return change_material_entry(*edit, {std::string(path), {}, {}}, nullptr);
+    auto owned_path = String::from_utf8(path);
+    if (!owned_path)
+        return failure("Invalid UTF-8 material parameter path.");
+    return change_material_entry(*edit, {std::move(*owned_path), {}, {}}, nullptr);
 }
 }

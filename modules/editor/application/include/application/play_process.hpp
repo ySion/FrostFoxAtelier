@@ -1,12 +1,12 @@
 #pragma once
 #include "application/play_link.hpp"
+#include "foundation/array.hpp"
 #include "foundation/optional.hpp"
 #include "runtime/runtime.hpp"
 #include <Windows.h>
 #include <array>
 #include <chrono>
 #include <filesystem>
-#include <string>
 
 namespace atelier::application {
 // Owns one project run and its descendants. Runtime identities and GPU objects
@@ -41,7 +41,7 @@ public:
     };
 
     struct RawStream {
-        std::string bytes; // Unmodified bytes: no decoding, line splitting, severity inference or newline insertion.
+        Array<char> bytes; // Unmodified bytes: no decoding, line splitting, severity inference or newline insertion.
 
         std::uint64_t offset{}; // Byte offset in this stream; gaps identify precisely where retention dropped bytes.
     };
@@ -103,7 +103,7 @@ private:
     struct OutputPipe {
         HANDLE handle{};
 
-        std::string bytes; // Capacity is reserved before launch; byte draining never allocates.
+        Array<char> bytes; // Capacity is reserved before launch; byte draining never allocates.
 
         StreamStatus status;
     };

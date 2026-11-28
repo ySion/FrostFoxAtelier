@@ -14,7 +14,7 @@ namespace detail {
 struct PropertyStorage;
 
 // Removes the retained subtree at path, or a retained leaf on its prefix.
-inline bool erase_path(json::Builder& builder, json::Value record, Span<const std::string> path) {
+inline bool erase_path(json::Builder& builder, json::Value record, Span<const String> path) {
     Array<json::Value> trail{record};
     for (std::size_t i = 0; i < path.size(); ++i) {
         const auto node = trail.back();
@@ -105,10 +105,10 @@ using EncodeReference = std::function<Result<json::Document>(ObjectId)>;
 // How a tolerant decode reports a saved leaf it does not apply as saved; paths start at the record.
 struct PropertyReport {
     // The saved value is kept; the field keeps its value, or takes the clamped value of a leaf outside its hard bounds.
-    std::function<Result<void>(Array<std::string>, json::Value, world::DiagnosticKind, const std::string&)> keep;
+    std::function<Result<void>(Array<String>, json::Value, world::DiagnosticKind, StringView)> keep;
 
     // An integral number written as a float was converted exactly.
-    std::function<Result<void>(Array<std::string>, json::Value)> converted;
+    std::function<Result<void>(Array<String>, json::Value)> converted;
 };
 
 // Tolerant decoding of a saved properties record, as scene loads do: fields now declared

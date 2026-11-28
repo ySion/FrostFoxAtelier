@@ -103,7 +103,7 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
     ATELIER_TRY(report.set(baseline, "dirty", dirty).transform_error(report_error));
     const auto write_report = [&] {
         const auto bytes = json::write(root, {true, true});
-        return editor::write_file(output / "render-performance.json", {bytes.data(), bytes.size()});
+        return editor::write_file(output / "render-performance.json", StringView{bytes.data(), bytes.size()});
     };
     ATELIER_TRY(write_report());
     const auto sample = [&]() -> Result<void> {
@@ -140,17 +140,19 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
             if (!(app.presented() && current_group_presented()))
                 return command_error("Accepted Scene View does not own the current adopted draw group.");
             const auto& record = app.frame_record();
-            if (record.structure_errors != 0 || record.count(renderer::phases::frame) != 1)
-                return command_error(
-                    "Accepted step did not record exactly one renderer frame phase: structure_errors=" +
-                    std::to_string(record.structure_errors) +
-                    " first_error=" + (record.first_error ? std::string(record.first_error->key()) : "none") +
-                    " render=" + std::to_string(record.count(renderer::phases::render)) +
-                    " prepare=" + std::to_string(record.count(renderer::phases::prepare)) +
-                    " encode=" + std::to_string(record.count(renderer::phases::encode)) +
-                    " frame=" + std::to_string(record.count(renderer::phases::frame)) +
-                    " accepted_frame=" + std::to_string(app.presented()->drawing->id) + " preparation=\"" +
-                    application::diagnostic_text(Access::render_notice(app)) + "\"");
+            if (record.structure_errors != 0 || record.count(renderer::phases::frame) != 1) {
+                const auto counts = String::concat(
+                    " render=", record.count(renderer::phases::render),
+                    " prepare=", record.count(renderer::phases::prepare),
+                    " encode=", record.count(renderer::phases::encode),
+                    " frame=", record.count(renderer::phases::frame));
+                return command_error(String::concat(
+                    "Accepted step did not record exactly one renderer frame phase: structure_errors=",
+                    record.structure_errors, " first_error=",
+                    String::validated(record.first_error ? record.first_error->key() : StringView{"none"}), counts,
+                    " accepted_frame=", app.presented()->drawing->id, " preparation=\"",
+                    application::diagnostic_text(Access::render_notice(app)), "\""));
+            }
             return frame_end(record);
         };
         // Let the product publish its loaded World into the accepted UI/view.
@@ -188,7 +190,7 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
             // the Dock ratios. Bypass the default tracking-size clamp, while
             // preserving WM_WINDOWPOSCHANGED/WM_SIZE and product resize work.
             constexpr UINT resize_flags = SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING;
-            const auto report_numbers = [&](json::Value node, std::string_view key, const auto& values) {
+            const auto report_numbers = [&](json::Value node, StringView key, const auto& values) {
                 return report.numbers(node, key, Span{values});
             };
             const auto calibration = report.object_validated(*root.at("calibration"), docked ? "docked" : "maximized");
@@ -272,9 +274,9 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
                     ATELIER_TRY(
                         report.set(sample, "resize_error", std::uint64_t{resize_error}).transform_error(report_error));
                     if (!resized)
-                        return command_error(
-                            "Performance window resize failed: " +
-                            platform::error_message(std::error_code(resize_error, std::system_category())));
+                        return command_error(String::concat(
+                            "Performance window resize failed: ",
+                            platform::error_message(std::error_code(resize_error, std::system_category()))));
                     if (!GetWindowRect(app.window(), &outer) || !GetClientRect(app.window(), &client))
                         return command_error("Cannot read the resized performance window rectangle.");
                     ATELIER_TRY(report_numbers(sample, "actual_outer_extent",
@@ -292,7 +294,7 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
             auto resized = resize();
             if (!resized) {
                 report.set_validated(calibration, "status", "failed");
-                report.set_validated(calibration, "error", application::diagnostic_utf8(resized.error().message));
+                report.set_validated(calibration, "error", resized.error().message);
             }
             return resized;
         };
@@ -304,8 +306,8 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
         const auto camera = Access::camera_state(app);
         auto accepted_camera = *Access::accepted_view(app);
         auto pixel_range = renderer::detail::raster_viewport(bounds).scissor;
-        std::string_view layout = "maximized";
-        const auto report_numbers = [&](json::Value node, std::string_view key, const auto& values) {
+        StringView layout = "maximized";
+        const auto report_numbers = [&](json::Value node, StringView key, const auto& values) {
             return report.numbers(node, key, Span{values});
         };
         const auto viewport_json = [&](json::Value parent) -> json::Result<void> {
@@ -325,7 +327,7 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
             ATELIER_TRY(report.set(value, "dpi_scale", dpi));
             return {};
         };
-        const auto settings_json = [&](json::Value parent, std::string_view key,
+        const auto settings_json = [&](json::Value parent, StringView key,
                                        const renderer::ViewSettings& settings) -> json::Result<void> {
             const auto values = report.object_validated(parent, key);
             for (const auto& option : editor::view_options()) {
@@ -505,7 +507,7 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
 
             std::uint32_t reflection_work_items{};
         };
-        const auto distribution = [&](json::Value parent, std::string_view key,
+        const auto distribution = [&](json::Value parent, StringView key,
                                       Array<double> values) -> Result<void> {
             if (values.empty())
                 return command_error("Performance distribution has no observations.");
@@ -657,7 +659,7 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
                 sequence = sample.sequence;
             }
             const auto elapsed = std::chrono::duration<double, std::milli>(previous - measurement_start).count();
-            const std::string name = orbit ? "clustered_orbit" : "clustered";
+            const StringView name = orbit ? "clustered_orbit" : "clustered";
             const auto result = report.append_object(*root.at("cases"));
             ATELIER_TRY(report.set(result, "name", name).transform_error(report_error));
             ATELIER_TRY(report.set(result, "layout", layout).transform_error(report_error));
@@ -740,11 +742,12 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
             ATELIER_TRY(unchanged_scene());
             ATELIER_TRY(report.set(root, "status", "sampling").transform_error(report_error));
             ATELIER_TRY(write_report());
-            ATELIER_TRY(capture(app, output / (name + ".png")));
+            const auto png_name = String::concat(String::validated(name), ".png");
+            ATELIER_TRY(capture(app, output / platform::utf8_to_utf16_validated(png_name)));
         }
         camera_fixed = true;
         ATELIER_TRY(Access::move_camera(app, camera));
-        const auto non_lit_case = [&](renderer::Shading shading, std::string_view name) -> Result<void> {
+        const auto non_lit_case = [&](renderer::Shading shading, StringView name) -> Result<void> {
             view.shading = shading;
             ATELIER_TRY(apply_view(view));
             ATELIER_TRY_BIND(fence, warmup(192));
@@ -787,7 +790,8 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
             ATELIER_TRY(unchanged_scene());
             ATELIER_TRY(report.set(root, "status", "sampling").transform_error(report_error));
             ATELIER_TRY(write_report());
-            ATELIER_TRY(capture(app, output / (std::string(name) + ".png")));
+            const auto png_name = String::concat(String::validated(name), ".png");
+            ATELIER_TRY(capture(app, output / platform::utf8_to_utf16_validated(png_name)));
             return {};
         };
         ATELIER_TRY(non_lit_case(renderer::Shading::smooth, "smooth"));
@@ -828,7 +832,7 @@ atelier::Result<void> profile_editor_render_performance(Application& app, const 
     auto sampled = sample();
     if (!sampled) {
         report.set_validated(root, "status", "failed");
-        report.set_validated(root, "error", application::diagnostic_utf8(sampled.error().message));
+        report.set_validated(root, "error", sampled.error().message);
         if (auto saved = write_report(); !saved)
             std::fprintf(stderr, "Cannot save failed performance report: %s\n", saved.error().message.c_str());
         return sampled;

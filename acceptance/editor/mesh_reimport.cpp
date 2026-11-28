@@ -14,33 +14,33 @@ using namespace atelier::acceptance::helpers;
 
 void fixture(const std::filesystem::path& source, int width, bool reversed, unsigned char red, unsigned char blue) {
     const auto geometry =
-        "mtllib model.mtl\nv 0 0 0\nv " + std::to_string(width) + " 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\n";
-    const auto faces = reversed ? "usemtl Trim\nf 1/1 2/2 3/3\nusemtl Paint\nf 1/1 2/2 3/3\n"
-                                : "usemtl Paint\nf 1/1 2/2 3/3\nusemtl Trim\nf 1/1 2/2 3/3\n";
-    take(editor::write_file(source / "model.obj", geometry + faces));
+        String::concat("mtllib model.mtl\nv 0 0 0\nv ", width, " 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\n");
+    const StringView faces = reversed ? "usemtl Trim\nf 1/1 2/2 3/3\nusemtl Paint\nf 1/1 2/2 3/3\n"
+                                      : "usemtl Paint\nf 1/1 2/2 3/3\nusemtl Trim\nf 1/1 2/2 3/3\n";
+    take(editor::write_file(source / "model.obj", String::concat(geometry, String::validated(faces))));
     take(editor::write_file(
         source / "model.mtl",
         "newmtl Paint\nKd .8 .7 .6\nmap_Kd color.bmp\nnewmtl Trim\nKd .8 .7 .6\nmap_Kd color.bmp\n"));
-    std::string bytes(70, '\0');
-    bytes[0] = 'B';
-    bytes[1] = 'M';
-    bytes[2] = 70;
-    bytes[10] = 54;
-    bytes[14] = 40;
-    bytes[18] = 2;
-    bytes[22] = 2;
-    bytes[26] = 1;
-    bytes[28] = 32;
+    Array<std::byte> bytes(70);
+    bytes[0] = std::byte{'B'};
+    bytes[1] = std::byte{'M'};
+    bytes[2] = std::byte{70};
+    bytes[10] = std::byte{54};
+    bytes[14] = std::byte{40};
+    bytes[18] = std::byte{2};
+    bytes[22] = std::byte{2};
+    bytes[26] = std::byte{1};
+    bytes[28] = std::byte{32};
     for (std::size_t i = 54; i < bytes.size(); i += 4) {
-        bytes[i] = char(blue);
-        bytes[i + 1] = 64;
-        bytes[i + 2] = char(red);
-        bytes[i + 3] = char(255);
+        bytes[i] = static_cast<std::byte>(blue);
+        bytes[i + 1] = std::byte{64};
+        bytes[i + 2] = static_cast<std::byte>(red);
+        bytes[i + 3] = std::byte{255};
     }
     take(editor::write_file(source / "color.bmp", bytes));
 }
 
-std::string binding(const assets::MeshAsset& mesh, std::string_view slot) {
+String binding(const assets::MeshAsset& mesh, StringView slot) {
     const auto at = std::ranges::find(mesh.materials, slot, &assets::SlotMaterial::slot);
     require(at != mesh.materials.end(), "Named mesh default is missing.");
     return at->key;
@@ -48,10 +48,11 @@ std::string binding(const assets::MeshAsset& mesh, std::string_view slot) {
 
 // Include empty directories as well as every file's exact bytes and modification time.
 auto content_snapshot(const std::filesystem::path& root) {
-    using File = std::pair<std::string, std::filesystem::file_time_type>;
+    using File = std::pair<Array<std::byte>, std::filesystem::file_time_type>;
     Map<std::filesystem::path, Optional<File>> result;
     std::error_code error;
-    std::filesystem::recursive_directory_iterator entry(root / "Content", error), end;
+    std::filesystem::recursive_directory_iterator entry(root / "Content", error);
+    std::filesystem::recursive_directory_iterator end;
     while (!error && entry != end) {
         auto& file = *result.try_emplace(entry->path().lexically_relative(root)).value;
         const auto status = entry->status(error);
@@ -110,12 +111,13 @@ void verify_failed_imports(editor::Project& project, const std::filesystem::path
     // WIC decodes these BMP bytes, while the project's catalogue classifies the unregistered suffix as a plain file.
     // The final Reader therefore rejects the prepared texture after the files have been written.
     const auto other = source.parent_path() / "unlisted-texture";
-    take(editor::write_file(other / "other.obj", take(assets::read_file(source / "model.obj"))));
-    std::string mtl = take(assets::read_file(source / "model.mtl"));
-    for (auto at = mtl.find("color.bmp"); at != mtl.npos; at = mtl.find("color.bmp"))
-        mtl.replace(at, sizeof("color.bmp") - 1, "nested/color.payload");
+    const auto model_obj_bytes = take(assets::read_file(source / "model.obj"));
+    take(editor::write_file(other / "other.obj", model_obj_bytes));
+    auto mtl = take(assets::read_utf8_file(source / "model.mtl"));
+    static_cast<void>(mtl.replace_all("color.bmp", "nested/color.payload"));
     take(editor::write_file(other / "model.mtl", mtl));
-    take(editor::write_file(other / "nested/color.payload", take(assets::read_file(source / "color.bmp"))));
+    const auto color_bmp_bytes = take(assets::read_file(source / "color.bmp"));
+    take(editor::write_file(other / "nested/color.payload", color_bmp_bytes));
     const auto check_publication = [&](const auto& rejected) {
         require(!rejected && rejected.error().code == ErrorCode::invalid_storage &&
                     rejected.error().message.starts_with("Missing resource or incorrect resource type: project/"),
@@ -135,7 +137,7 @@ Result<void> verify_catalog_refresh(editor::Project& project, const assets::Mesh
     auto metadata = candidate;
     metadata += L".asset.json";
     take(editor::write_file(candidate, "v 0 0 0\nv 3 0 0\nv 0 1 0\nf 1 2 3\n"));
-    const auto preserved = [&](std::string_view diagnostic) {
+    const auto preserved = [&](StringView diagnostic) {
         const auto refreshed = project.refresh();
         const auto opened = editor::Project::open(project.root());
         require(!refreshed && refreshed.error().message.contains(diagnostic) && !opened &&
@@ -156,7 +158,8 @@ Result<void> verify_catalog_refresh(editor::Project& project, const assets::Mesh
     preserved("CatalogCandidate.obj.asset.json");
     auto original_metadata = project.root() / original;
     original_metadata += L".asset.json";
-    take(editor::write_file(metadata, take(assets::read_file(original_metadata))));
+    const auto orig_meta_bytes = take(assets::read_file(original_metadata));
+    take(editor::write_file(metadata, orig_meta_bytes));
     preserved(published.key);
 
     ATELIER_TRY(acceptance::remove_file(metadata));
@@ -180,7 +183,7 @@ atelier::Result<void> verify_mesh_reimport() {
     ATELIER_TRY_BIND(directory,
                      acceptance::file_operation([](auto& error) { return std::filesystem::current_path(error); }));
     const auto root = *directory / "mesh-reimport-evidence" /
-                      std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+                      std::to_wstring(std::chrono::steady_clock::now().time_since_epoch().count());
     const auto source = root / "source";
     fixture(source, 1, false, 210, 30);
     auto project = take(editor::Project::create(root / "project"));

@@ -3,21 +3,21 @@
 #include "editor/graph_format.hpp"
 #include "foundation/array.hpp"
 #include "foundation/optional.hpp"
+#include "foundation/string.hpp"
 #include "procedural/evaluator.hpp"
 #include "procedural/geometry.hpp"
 #include <algorithm>
 #include <array>
-#include <string>
 #include <utility>
 
 namespace atelier::editor {
 
 struct GraphPortInfo {
-    Array<std::string> inputs;
+    Array<String> inputs;
 
     Array<bool> multiple;
 
-    Array<std::string> outputs;
+    Array<String> outputs;
 
     bool operator==(const GraphPortInfo&) const = default;
 };
@@ -27,21 +27,21 @@ struct GraphNodeHelp {
 
     Array<procedural::AttributeRule> attributes;
 
-    std::string text;
+    String text;
 };
 
 struct GraphNodeCatalogEntry {
     TypeId type{};
 
-    std::string name;
+    String name;
 
-    std::string description;
+    String description;
 
     bool native{};
 
-    std::string asset_key{};
+    String asset_key{};
 
-    std::string display_label{};
+    String display_label{};
 
     GraphPortInfo ports;
 
@@ -51,29 +51,29 @@ struct GraphNodeCatalogEntry {
 };
 
 struct GraphConnectionView {
-    std::string from_node;
+    String from_node;
 
-    std::string from_port;
+    String from_port;
 
     std::uint32_t from_index{};
 
-    std::string to_node;
+    String to_node;
 
-    std::string to_port;
+    String to_port;
 
     std::uint32_t to_index{};
 };
 
 struct GraphNodeView {
-    std::string name;
+    String name;
 
     ObjectId id{};
 
-    std::string type;
+    String type;
 
-    std::string asset_key{};
+    String asset_key{};
 
-    std::string asset_label{};
+    String asset_label{};
 
     json::Document overrides{};
 
@@ -93,21 +93,21 @@ struct GraphNodeView {
 
     Optional<std::uint32_t> color{};
 
-    std::string comment{};
+    String comment{};
 
     GraphPortInfo ports;
 
     Optional<procedural::NodeStatus> status;
 
-    std::string root_error_node{};
+    String root_error_node{};
 };
 
 struct GraphAttributeStats {
     Optional<std::size_t> selected_count; // Exact membership for boolean columns.
 
-    std::string name;
+    String name;
 
-    std::string type;
+    String type;
 
     std::uint32_t components{};
 
@@ -121,7 +121,7 @@ struct GraphAttributeStats {
 
     Array<double> mean;
 
-    Array<std::string> sample_values;
+    Array<String> sample_values;
 };
 
 struct GraphTopologyHealth {
@@ -139,7 +139,7 @@ struct GraphTopologyHealth {
 };
 
 struct GraphSpacingStats {
-    std::string domain;
+    String domain;
 
     std::size_t element_count{};
 
@@ -171,9 +171,9 @@ struct GraphInstanceOverlapStats {
 };
 
 struct GraphSurfaceClearanceStats {
-    std::string reference_node;
+    String reference_node;
 
-    std::string domain;
+    String domain;
 
     std::size_t tested_count{};
 
@@ -209,13 +209,13 @@ struct GraphSpatialDiagnostics {
 };
 
 struct OpenGraphSnapshot {
-    std::string key;
+    String key;
 
     bool scratch{};
 
-    std::string text;
+    String text;
 
-    std::string saved_text;
+    String saved_text;
 };
 
 struct GraphGeometrySummary {
@@ -231,7 +231,7 @@ struct GraphGeometrySummary {
 
     std::array<Array<GraphAttributeStats>, 5> attributes{};
 
-    Array<std::pair<std::string, std::size_t>> instance_references;
+    Array<std::pair<String, std::size_t>> instance_references;
 
     Optional<GraphSpatialDiagnostics> spatial;
 };
@@ -247,33 +247,33 @@ struct GraphEvaluation {
 
     ObjectId display_node{};
 
-    std::string display_name;
+    String display_name;
 
     ObjectId template_node{};
 
-    std::string template_name;
+    String template_name;
 
     std::uint64_t generation{};
 
     Optional<Error> display_error;
 
-    std::string display_error_node{};
+    String display_error_node{};
 
     Optional<Error> inspected_error;
 
-    std::string inspected_error_node{};
+    String inspected_error_node{};
 };
 
 struct GraphInspectView {
-    std::string key;
+    String key;
 
     ObjectId graph{};
 
     std::uint32_t seed{1};
 
-    std::string display;
+    String display;
 
-    std::string template_node;
+    String template_node;
 
     bool can_undo{};
 
@@ -285,21 +285,21 @@ struct GraphInspectView {
 
     Array<GraphNodeView> nodes; // Document name order.
 
-    const GraphNodeView* find_node(std::string_view name) const noexcept {
+    const GraphNodeView* find_node(StringView name) const noexcept {
         const auto it = std::ranges::lower_bound(nodes, name, {}, &GraphNodeView::name);
         return it != nodes.end() && it->name == name ? &*it : nullptr;
     }
 
     Array<GraphStickyNote> notes;
 
-    const GraphStickyNote* find_note(std::string_view name) const noexcept {
+    const GraphStickyNote* find_note(StringView name) const noexcept {
         const auto it = std::ranges::lower_bound(notes, name, {}, &GraphStickyNote::name);
         return it != notes.end() && it->name == name ? &*it : nullptr;
     }
 
     Array<GraphNetworkBox> boxes;
 
-    const GraphNetworkBox* find_box(std::string_view name) const noexcept {
+    const GraphNetworkBox* find_box(StringView name) const noexcept {
         const auto it = std::ranges::lower_bound(boxes, name, {}, &GraphNetworkBox::name);
         return it != boxes.end() && it->name == name ? &*it : nullptr;
     }
@@ -310,52 +310,56 @@ struct GraphInspectView {
 
     Optional<Error> display_error;
 
-    std::string display_error_node{};
+    String display_error_node{};
 
     Optional<Error> inspected_error;
 
-    std::string inspected_error_node{};
+    String inspected_error_node{};
 
     GraphGeometrySummary display_summary;
 
     Optional<GraphGeometrySummary> inspected_summary;
 };
 
-inline void append_error_coordinates(std::string& out, const Error& error) {
+inline void append_error_coordinates(String& out, const Error& error) {
     if (error.element) {
-        out += " [";
-        out += error.element->layer.empty() ? std::string_view{"element"} : error.element->layer.view();
-        out += ' ';
-        out += std::to_string(error.element->index);
-        out += ']';
+        out.append_literal<" [">();
+        const auto layer = error.element->layer.empty() ? StringView{"element"} : error.element->layer.view();
+        if (!out.append(layer))
+            out.append_literal<"(invalid UTF-8)">();
+        out.append_ascii(' ');
+        out.append_number(error.element->index);
+        out.append_ascii(']');
     }
     if (error.source && !error.source->path.empty()) {
-        std::string_view file = error.source->path;
-        if (const auto slash = file.find_last_of("/\\"); slash != std::string_view::npos)
-            file = file.substr(slash + 1);
-        out += " (";
-        out += file;
-        out += ':';
-        out += std::to_string(error.source->line);
-        out += ':';
-        out += std::to_string(error.source->column);
-        out += ')';
+        constexpr ByteSearchSet path_separators{"/\\"};
+
+        StringView file = error.source->path;
+        if (const auto slash = file.find_last_of(path_separators); slash != StringView::npos)
+            file = file.slice(slash + 1);
+        out.append_literal<" (">();
+        out.append_validated(file);
+        out.append_ascii(':');
+        out.append_number(error.source->line);
+        out.append_ascii(':');
+        out.append_number(error.source->column);
+        out.append_ascii(')');
     }
 }
 
-inline void append_error(std::string& out, const Error& error) {
+inline void append_error(String& out, const Error& error) {
     out += error.message;
     append_error_coordinates(out, error);
 }
 
-[[nodiscard]] inline std::string format_error_coordinates(const Error& error) {
-    std::string out;
+[[nodiscard]] inline String format_error_coordinates(const Error& error) {
+    String out;
     append_error_coordinates(out, error);
     return out;
 }
 
-[[nodiscard]] inline std::string format_error(const Error& error) {
-    std::string out;
+[[nodiscard]] inline String format_error(const Error& error) {
+    String out;
     out.reserve(error.message.size() + 32);
     append_error(out, error);
     return out;
@@ -364,6 +368,6 @@ inline void append_error(std::string& out, const Error& error) {
 [[nodiscard]] GraphGeometrySummary summarize_geometry(const procedural::Geometry* geometry, std::size_t max_samples = 4,
                                                       bool include_spatial = false,
                                                       const procedural::Geometry* reference_surface = nullptr,
-                                                      std::string_view reference_name = {});
+                                                      StringView reference_name = {});
 
 } // namespace atelier::editor

@@ -104,14 +104,8 @@ void AssetBrowser::reset(bool has_project) {
     invalidate_items(); // Keys remain monotonic.
 }
 
-ui::ControlKey AssetBrowser::key_for(const std::string& value) {
-    if (const auto* key = keys_.find(StringView{value}))
-        return *key;
-    auto owned = String::from_utf8(StringView{value});
-    // Directory producers validate UTF-8 before publishing; built-in keys are fixed ASCII.
-    if (!owned)
-        fatal("Asset Browser directory contains an invalid UTF-8 key.");
-    const auto [key, inserted] = keys_.try_emplace(std::move(*owned), next_key_);
+ui::ControlKey AssetBrowser::key_for(String value) {
+    const auto [key, inserted] = keys_.try_emplace(std::move(value), next_key_);
     if (inserted)
         ++next_key_;
     return *key;
@@ -123,8 +117,8 @@ ui::ControlKey AssetBrowser::directory_control(const std::filesystem::path& path
     const auto text = platform::utf16_to_utf8(path.generic_wstring());
     if (!text)
         return 0; // No published Project directory has an invalid Unicode key.
-    const auto name = "nav:" + *text;
-    const auto* key = keys_.find(StringView{name});
+    const auto name = String::concat("nav:", *text);
+    const auto* key = keys_.find(name.view());
     return key ? *key : 0;
 }
 
@@ -182,7 +176,7 @@ void AssetBrowser::update_directories(const Project* project) {
         for (const auto& entry : project->entries())
             if (entry.kind == assets::AssetKind::folder) {
                 directories_.add({entry.key, entry.path, entry.path.filename().wstring(), entry.kind, 0});
-                targets_.add({key_for("nav:" + entry.key), directories_.back()});
+                targets_.add({key_for(String::concat("nav:", entry.key)), directories_.back()});
                 // A directory first appears expanded when it is or holds the current directory.
                 if (!engine_ && !listed(previous, entry.path))
                     if (const auto relative = directory_.lexically_relative(entry.path);
@@ -297,7 +291,7 @@ void AssetBrowser::sort_items() {
     row_indices_.clear();
     row_indices_.reserve(items_.size());
     for (std::size_t i = 0; i < items_.size(); ++i)
-        row_indices_.try_emplace(key_for("item:" + items_[i].key), i);
+        row_indices_.try_emplace(key_for(String::concat("item:", items_[i].key)), i);
     table_dirty_ = true;
 }
 

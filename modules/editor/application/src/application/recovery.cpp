@@ -14,18 +14,19 @@ namespace atelier::application {
 namespace {
 constexpr std::size_t max_field_bytes = 4096;
 
-std::string_view bounded_utf8(std::string_view text, std::size_t limit) noexcept {
-    return StringView{diagnostic_utf8(text)}.utf8_prefix(limit).std_view();
+StringView bounded_utf8(StringView text, std::size_t limit) noexcept {
+    return diagnostic_utf8(text).utf8_prefix(limit);
 }
 
-std::string path_field_utf8(const std::filesystem::path& path) {
+String path_field_utf8(const std::filesystem::path& path) {
     const auto converted = platform::utf16_to_utf8(path.generic_wstring());
     if (!converted)
-        return "(invalid UTF-16 path)";
-    return std::string(StringView{*converted}.utf8_prefix(max_field_bytes).std_view());
+        return "(invalid UTF-16 path)"_s;
+    return String::from_utf8_validated(converted->view().utf8_prefix(max_field_bytes));
 }
+
 Result<void> write_metadata(const std::filesystem::path& folder, const std::filesystem::path& project,
-                            const std::filesystem::path& scene, std::string_view reason, bool unfinished,
+                            const std::filesystem::path& scene, StringView reason, bool unfinished,
                             const editor::Session& document) {
     const auto original_project = platform::utf16_to_utf8(project.generic_wstring());
     const auto original_scene = platform::utf16_to_utf8(scene.generic_wstring());
@@ -53,11 +54,12 @@ Result<void> write_metadata(const std::filesystem::path& folder, const std::file
     for (const auto& key : document.dirty_materials())
         ATELIER_TRY(metadata.append(*dirty, key).transform_error(json_error));
     const auto encoded = json::write(value, {true, true});
-    return editor::write_file(folder / "recovery.json", {encoded.data(), encoded.size()}, editor::WriteMode::create);
+    return editor::write_file(folder / "recovery.json", StringView{encoded.data(), encoded.size()},
+                              editor::WriteMode::create);
 }
 
 SceneRecovery::Outcome save_recovery(editor::Session& document, const std::filesystem::path& project,
-                                     const std::filesystem::path& scene, std::string_view reason,
+                                     const std::filesystem::path& scene, StringView reason,
                                      std::filesystem::path directory) {
     if (!document.dirty())
         return Optional<RecoveryRecord>{};
@@ -76,7 +78,7 @@ SceneRecovery::Outcome save_recovery(editor::Session& document, const std::files
     }
     ATELIER_TRY_BIND(id, control::unique_id().transform_error(storage_error));
     std::error_code error;
-    const auto folder = std::filesystem::absolute(directory / *id, error);
+    const auto folder = std::filesystem::absolute(directory / platform::utf8_to_utf16_validated(*id), error);
     if (error)
         return std::unexpected(Error{ErrorCode::invalid_storage, platform::error_message(error)});
     RecoveryRecord record{folder / "Scene.scene", {}};
@@ -86,13 +88,13 @@ SceneRecovery::Outcome save_recovery(editor::Session& document, const std::files
         record.warning = cancelled.error().message;
     if (auto metadata = write_metadata(folder, project, scene, reason, unfinished, document); !metadata) {
         if (!record.warning.empty())
-            record.warning += " ";
-        record.warning += "Recovery metadata: " + metadata.error().message;
+            record.warning.append_ascii(' ');
+        record.warning.append_validated("Recovery metadata: ");
+        record.warning.append(metadata.error().message);
     }
     return Optional<RecoveryRecord>{std::move(record)};
 }
 }
-
 
 Optional<logging::Field> SceneRecovery::diagnostic_field() const {
     if (!attempted_ || !outcome_ || !*outcome_)
@@ -100,7 +102,7 @@ Optional<logging::Field> SceneRecovery::diagnostic_field() const {
     const auto saved = platform::utf16_to_utf8((*outcome_)->scene.generic_wstring());
     if (!saved)
         return {};
-    return logging::Field{"recovery_scene", std::string(StringView{*saved}.utf8_prefix(max_field_bytes).std_view())};
+    return logging::Field{"recovery_scene", String::from_utf8_validated(saved->view().utf8_prefix(max_field_bytes))};
 }
 
 void SceneRecovery::report_stderr() const noexcept {
@@ -124,14 +126,14 @@ void SceneRecovery::report_stderr() const noexcept {
 }
 
 const SceneRecovery::Outcome& SceneRecovery::preserve(editor::Session& document, const std::filesystem::path& project,
-                                                      const std::filesystem::path& scene, std::string_view reason,
+                                                      const std::filesystem::path& scene, StringView reason,
                                                       const std::filesystem::path& directory) {
     if (attempted_)
         return outcome_;
     attempted_ = true;
     outcome_ = save_recovery(document, project, scene, reason, directory);
     const auto& outcome = outcome_;
-    std::string saved;
+    String saved;
     if (outcome && *outcome) {
         auto converted = platform::utf16_to_utf8((*outcome)->scene.generic_wstring());
         if (!converted) {
@@ -141,29 +143,32 @@ const SceneRecovery::Outcome& SceneRecovery::preserve(editor::Session& document,
         saved = std::move(*converted);
     }
     const bool warned = outcome && *outcome && !(*outcome)->warning.empty();
-    std::string message;
+    String message;
     if (!outcome)
-        message = std::string(bounded_utf8(outcome.error().message, logging::maximum_message_bytes));
+        message = String::from_utf8_validated(bounded_utf8(outcome.error().message, logging::maximum_message_bytes));
     else if (*outcome) {
-        message = "Scene recovery saved: ";
-        message += StringView{saved}.utf8_prefix(logging::maximum_message_bytes - message.size()).std_view();
+        constexpr StringView prefix = "Scene recovery saved: ";
+        message = String::concat(
+            String::validated(prefix),
+            String::validated(saved.view().utf8_prefix(logging::maximum_message_bytes - prefix.size())));
     } else
-        message = "No unsaved scene required recovery.";
+        message = "No unsaved scene required recovery."_s;
     logging::Entry entry{.severity = !outcome ? logging::Severity::error
                                      : warned ? logging::Severity::warning
                                               : logging::Severity::info,
-                         .category = "recovery",
-                         .event_code = !outcome   ? "recovery.failed"
-                                       : *outcome ? "recovery.saved"
-                                                  : "recovery.not_needed",
+                         .category = "recovery"_s,
+                         .event_code = !outcome   ? "recovery.failed"_s
+                                       : *outcome ? "recovery.saved"_s
+                                                  : "recovery.not_needed"_s,
                          .message = std::move(message)};
-    entry.fields = {{"reason", std::string(bounded_utf8(reason, max_field_bytes))},
+    entry.fields = {{"reason", String::from_utf8_validated(bounded_utf8(reason, max_field_bytes))},
                     {"project_root", path_field_utf8(project)},
                     {"original_scene", path_field_utf8(scene)}};
     if (outcome && *outcome) {
         entry.fields.add(
-            {"recovery_scene", std::string(StringView{saved}.utf8_prefix(max_field_bytes).std_view())});
-        entry.fields.add({"metadata_warning", std::string(bounded_utf8((*outcome)->warning, max_field_bytes))});
+            {"recovery_scene", String::from_utf8_validated(saved.view().utf8_prefix(max_field_bytes))});
+        entry.fields.add(
+            {"metadata_warning", String::from_utf8_validated(bounded_utf8((*outcome)->warning, max_field_bytes))});
     }
     logged_ = logging::submit(std::move(entry)).status == logging::SubmitStatus::accepted;
     if (!logged_)

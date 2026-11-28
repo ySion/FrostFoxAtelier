@@ -6,6 +6,7 @@
 #include "foundation/optional.hpp"
 #include "foundation/set.hpp"
 #include "foundation/span.hpp"
+#include "foundation/string.hpp"
 #include "editor/menu_bindings.hpp"
 #include "editor/operators.hpp"
 #include "editor/keymap.hpp"
@@ -354,16 +355,16 @@ struct Workspace {
 
         ObjectId component{};
 
-        std::string slot{};
+        String slot{};
 
         std::size_t index{};
 
         double color_maximum{}; // color_pick reuses the owning numeric property's range.
 
-        std::string
+        String
             material_path{}; // Stable MS declaration path or Graph parameter / field path; index is a vector lane.
 
-        std::string node_name{}; // Optional target node name inside a .procgraph.
+        String node_name{}; // Optional target node name inside a .procgraph.
 
         std::unique_ptr<OperatorBinding> call{}; // Retired with this binding, before the document closes.
     };
@@ -405,19 +406,19 @@ struct Workspace {
 
     bool inspecting_network{}; // Inspect the selected SOP node / graph root in Parameters while staying in World.
 
-    std::string material_inspection;
+    String material_inspection;
 
-    std::string active_graph; // Active Isolated SOP .procgraph key; empty in Scene World context.
+    String active_graph; // Active Isolated SOP .procgraph key; empty in Scene World context.
 
     bool network_pinned{}; // When true in World mode, Network pane stays locked to pinned_graph.
 
-    std::string pinned_graph;
+    String pinned_graph;
 
-    std::string selected_graph_node; // Decoupled from Display Flag; empty selects the Graph object itself.
+    String selected_graph_node; // Decoupled from Display Flag; empty selects the Graph object itself.
 
-    Array<std::string> selected_graph_nodes; // Multi-selection set on the 2D Network canvas.
+    Array<String> selected_graph_nodes; // Multi-selection set on the 2D Network canvas.
 
-    std::string network_context_node; // Target node for RMB context menu on Network canvas.
+    String network_context_node; // Target node for RMB context menu on Network canvas.
 
     std::array<float, 2> network_context_pos{}; // World position for RMB canvas context menu.
 
@@ -443,40 +444,40 @@ struct Workspace {
 
     NetworkCanvas network;
 
-    void set_single_graph_selection(std::string_view node_name) {
-        selected_graph_node = std::string(node_name);
+    void set_single_graph_selection(StringView node_name) {
+        selected_graph_node = String::from_utf8_validated(node_name);
         selected_graph_nodes.clear();
         if (!selected_graph_node.empty())
             selected_graph_nodes.add(selected_graph_node);
     }
 
     struct GraphBreadcrumb {
-        std::string graph_key;
+        String graph_key;
 
-        std::string asset_node_name;
+        String asset_node_name;
     };
 
     Array<GraphBreadcrumb> graph_breadcrumbs;
 
-    std::string dived_network_graph; // Active child asset graph when diving in while 3D Viewport stays in World.
+    String dived_network_graph; // Active child asset graph when diving in while 3D Viewport stays in World.
 
-    Map<std::string, bool> network_lock_overrides;
+    Map<String, bool> network_lock_overrides;
 
-    bool is_network_graph_locked(const Session& session, std::string_view net_graph) const;
+    bool is_network_graph_locked(const Session& session, StringView net_graph) const;
 
-    ObjectId inspected_graph_object(const Session&, std::string_view graph_key = {}) const noexcept;
+    ObjectId inspected_graph_object(const Session&, StringView graph_key = {}) const noexcept;
 
-    std::string default_selected_graph_node(const Session&, std::string_view graph_key) const;
+    String default_selected_graph_node(const Session&, StringView graph_key) const;
 
-    std::string selected_generator_graph(const Session&) const;
+    String selected_generator_graph(const Session&) const;
 
-    std::string current_network_graph(const Session&) const;
+    String current_network_graph(const Session&) const;
 
-    std::string effective_network_graph(Session&, Project*);
+    String effective_network_graph(Session&, Project*);
 
     std::wstring graph_path_title(const Project*) const;
 
-    std::wstring network_path_title(const Session&, const Project*, std::string_view net_graph) const;
+    std::wstring network_path_title(const Session&, const Project*, StringView net_graph) const;
 
     void bump_view_revision() noexcept { ++view_revision_; }
 
@@ -575,17 +576,17 @@ struct Workspace {
 
     Result<bool> apply_ui(const ui::Action&);
 
-    std::string_view ui_error() const noexcept {
-        return ui_document_ ? ui_document_->diagnostic() : std::string_view{};
+    StringView ui_error() const noexcept {
+        return ui_document_ ? ui_document_->diagnostic().view() : StringView{};
     }
 
-    Optional<ui_language::Statistics> ui_statistics(std::string_view component) const noexcept {
+    Optional<ui_language::Statistics> ui_statistics(StringView component) const noexcept {
         return ui_document_ ? ui_document_->statistics(component) : Optional<ui_language::Statistics>{};
     }
 
     [[nodiscard]] Result<void> commit_ui_controls();
 
-    bool reject_ui_controls(std::string message);
+    bool reject_ui_controls(String message);
 
     // Choose an authoring file before this document's first projection.
     [[nodiscard]] Result<void> set_ui_source(std::filesystem::path);
@@ -598,7 +599,7 @@ struct Workspace {
         return ui_document_ ? ui_document_->profile_reloads(profile) : nullptr;
     }
 
-    std::shared_ptr<ui_language::Component> ui_component(std::string_view name) const {
+    std::shared_ptr<ui_language::Component> ui_component(StringView name) const {
         return ui_document_ ? ui_document_->component(name) : nullptr;
     }
 
@@ -699,11 +700,11 @@ struct Workspace {
 
         ObjectId object;
 
-        std::string slot{};
+        String slot{};
 
-        std::string key{};
+        String key{};
 
-        std::string path{};
+        String path{};
     };
 
     Optional<MaterialChoice> material_choice(ui::ControlKey) const;
@@ -715,7 +716,7 @@ struct Workspace {
 
         ObjectId entity;
 
-        std::string graph_key;
+        String graph_key;
     };
 
     Optional<NetworkPathChoice> network_path_choice(ui::ControlKey) const;
@@ -723,7 +724,7 @@ struct Workspace {
     Selection menu_selection() const noexcept { return menu_selection_; }
 
 private:
-    Map<std::string, ui::ControlKey> category_keys_;
+    Map<String, ui::ControlKey> category_keys_;
 
     PropertyHelpCache property_help_;
 
@@ -737,7 +738,7 @@ private:
 
     std::filesystem::path ui_source_;
 
-    Optional<std::string> ui_checkpoint_; // Source only; never keeps another Runtime alive.
+    Optional<String> ui_checkpoint_; // Source only; never keeps another Runtime alive.
 
     Array<Binding> bindings_;
 
@@ -819,9 +820,9 @@ private:
 
     Array<NetworkPathChoice> network_path_choices_;
 
-    std::string last_network_graph_;
+    String last_network_graph_;
 
-    std::string failed_auto_open_graph_;
+    String failed_auto_open_graph_;
 
     std::uint64_t empty_network_canvas_revision_{ui::ControlList::new_region_revision()};
 
@@ -848,8 +849,8 @@ private:
         return bindings_[binding_cursor_++].key;
     }
 
-    Result<ui::ControlKey> bind_graph_param(std::string_view graph_key, std::string_view node_name,
-                                            std::string_view param_path, Binding::Kind kind, std::size_t lane = 0,
+    Result<ui::ControlKey> bind_graph_param(StringView graph_key, StringView node_name,
+                                            StringView param_path, Binding::Kind kind, std::size_t lane = 0,
                                             ObjectId object = {}, ObjectId component = {},
                                             Span<const FieldId> path = {});
 
@@ -857,8 +858,8 @@ private:
 
     Result<ui::ControlKey> bind_operator(OperatorCall);
 
-    Result<ui::ControlKey> bind_material(ObjectId, std::string_view, Binding::Kind, ObjectId component = {},
-                                         std::string_view slot = {}, std::size_t index = 0);
+    Result<ui::ControlKey> bind_material(ObjectId, StringView, Binding::Kind, ObjectId component = {},
+                                         StringView slot = {}, std::size_t index = 0);
 
     Result<Array<ui::MenuItem>> material_menu(const Binding&, const Session&, const Project*,
                                               Array<MaterialChoice>&) const;

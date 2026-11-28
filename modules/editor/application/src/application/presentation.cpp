@@ -16,11 +16,11 @@ Result<Array<std::wstring>> editor_fonts() {
 Result<std::shared_ptr<const ui::StyleSheet>> editor_styles() {
     ATELIER_TRY_BIND(root, editor::asset_directory());
     ATELIER_TRY_BIND(source, assets::read_file(*root / "editor.ss", 1024 * 1024));
-    auto parsed = ui::StyleSheet::parse(*source);
+    auto parsed = ui::StyleSheet::parse(as_chars(*source));
     if (!parsed)
-        return std::unexpected(Error{ErrorCode::invalid_definition, "editor.ss:" + std::to_string(parsed.error().line) +
-                                                                        ":" + std::to_string(parsed.error().column) +
-                                                                        ": " + parsed.error().message});
+        return std::unexpected(Error{ErrorCode::invalid_definition,
+                                     String::concat("editor.ss:", parsed.error().line, ":", parsed.error().column,
+                                                    ": ", parsed.error().message)});
     return std::move(*parsed);
 }
 }

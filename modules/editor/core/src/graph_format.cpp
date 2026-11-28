@@ -6,26 +6,27 @@
 #include "procedural/nodes.hpp"
 #include <algorithm>
 #include <cmath>
-#include <format>
-#include <map>
 
 namespace atelier::editor {
+using namespace atelier::literals;
+
 // "node.output", or nothing when malformed.
-Optional<std::pair<std::string_view, std::string_view>> graph_endpoint(json::Value value) {
+Optional<std::pair<StringView, StringView>> graph_endpoint(json::Value value) {
     if (value.kind() != json::Kind::string)
         return {};
-    const std::string_view text = *value.string();
+    const StringView text = *value.string();
+
     const auto dot = text.find('.');
-    if (dot == text.npos || !valid_graph_identifier(text.substr(0, dot)) ||
-        !valid_graph_identifier(text.substr(dot + 1)))
+    if (dot == StringView::npos || !valid_graph_identifier(text.slice(0, dot)) ||
+        !valid_graph_identifier(text.slice(dot + 1)))
         return {};
-    return std::pair{text.substr(0, dot), text.substr(dot + 1)};
+    return std::pair{text.slice(0, dot), text.slice(dot + 1)};
 }
 
 namespace {
 constexpr std::uint32_t graph_format_version = 4;
 
-Result<void> append_vec2(json::Builder& builder, json::Value parent, std::string_view key,
+Result<void> append_vec2(json::Builder& builder, json::Value parent, StringView key,
                          const std::array<float, 2>& v) {
     const auto arr = *builder.array(parent, key);
     for (const float coordinate : v) {
@@ -43,61 +44,72 @@ Scalar scalar_min(const Scalar& a, const Scalar& b) noexcept {
     return detail::scalar_less(b, a) ? b : a;
 }
 
-bool is_scratch_asset_key(std::string_view key) noexcept {
+bool is_scratch_asset_key(StringView key) noexcept {
     return key == "scratch" || key.starts_with("scratch/");
 }
 
 } // namespace
 
-bool valid_graph_identifier(std::string_view text) noexcept {
+bool valid_graph_identifier(StringView text) noexcept {
     const auto letter = [](char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_'; };
     return !text.empty() && text.size() <= 128 && letter(text.front()) &&
-           std::ranges::all_of(text.substr(1), [&](char c) { return letter(c) || (c >= '0' && c <= '9'); });
+           std::ranges::all_of(text.slice(1), [&](char c) { return letter(c) || (c >= '0' && c <= '9'); });
 }
 
-std::string make_unique_graph_identifier(std::string_view preferred, std::string_view fallback,
-                                         FunctionRef<bool(std::string_view)> is_taken) {
-    std::string base;
+String make_unique_graph_identifier(StringView preferred, StringView fallback,
+                                    FunctionRef<bool(StringView)> is_taken) {
+    String base;
     base.reserve(preferred.size());
     for (const char c : preferred) {
         if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')
-            base.push_back(c);
+            base.append_ascii(c);
         else
-            base.push_back('_');
+            base.append_ascii('_');
     }
     const auto head = [](char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_'; };
-    std::string safe_fb(fallback);
-    if (safe_fb.empty() || !head(safe_fb.front()))
-        safe_fb = "item";
+
+    String safe_fb;
+    for (const char c : fallback) {
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')
+            safe_fb.append_ascii(c);
+        else
+            safe_fb.append_ascii('_');
+    }
+    if (safe_fb.empty() || !head(safe_fb[0]))
+        safe_fb = "item"_s;
     if (base.empty())
         base = safe_fb;
-    else if (!head(base.front()))
-        base = safe_fb + "_" + base;
+    else if (!head(base[0]))
+        base = String::concat(safe_fb, "_", base);
     if (base.size() > 128)
-        base.resize(128);
+        base = String::from_utf8_validated(base.view().first(128));
     if (!is_taken(base))
         return base;
     for (std::uint32_t idx = 2;; ++idx) {
-        const std::string suffix = "_" + std::to_string(idx);
+        const String suffix = String::concat("_", String::from_number(idx));
+
         const std::size_t max_base = suffix.size() < 128 ? 128 - suffix.size() : 1;
-        std::string cand = base.substr(0, std::min(base.size(), max_base)) + suffix;
+
+        String cand = String::concat(String::validated(base.view().first(std::min(base.size(), max_base))), suffix);
         if (!is_taken(cand))
             return cand;
     }
 }
 
-bool valid_graph_target_path(std::string_view text) noexcept {
+bool valid_graph_target_path(StringView text) noexcept {
     if (text.empty())
         return false;
     std::size_t segments = 0;
-    std::string_view rem = text;
+
+    StringView rem = text;
     while (true) {
         const auto dot = rem.find('.');
-        const auto part = rem.substr(0, dot);
+
+        const auto part = rem.slice(0, dot);
         if (!valid_graph_identifier(part))
             return false;
         ++segments;
-        if (dot == std::string_view::npos)
+        if (dot == StringView::npos)
             break;
         rem.remove_prefix(dot + 1);
         if (segments > 17)
@@ -106,12 +118,13 @@ bool valid_graph_target_path(std::string_view text) noexcept {
     return segments >= 2 && segments <= 17;
 }
 
-bool graph_target_controls_path(std::string_view promoted_target, std::string_view candidate) noexcept {
+bool graph_target_controls_path(StringView promoted_target, StringView candidate) noexcept {
     const auto dot_a = promoted_target.find('.');
+
     const auto dot_b = candidate.find('.');
-    if (dot_a == std::string_view::npos || dot_b == std::string_view::npos)
+    if (dot_a == StringView::npos || dot_b == StringView::npos)
         return promoted_target == candidate;
-    if (promoted_target.substr(0, dot_a) != candidate.substr(0, dot_b))
+    if (promoted_target.slice(0, dot_a) != candidate.slice(0, dot_b))
         return false;
     if (promoted_target == candidate)
         return true;
@@ -119,11 +132,11 @@ bool graph_target_controls_path(std::string_view promoted_target, std::string_vi
            candidate[promoted_target.size()] == '.';
 }
 
-bool graph_targets_overlap(std::string_view a, std::string_view b) noexcept {
+bool graph_targets_overlap(StringView a, StringView b) noexcept {
     return graph_target_controls_path(a, b) || graph_target_controls_path(b, a);
 }
 
-std::string_view graph_node_shape_name(GraphNodeShape shape) noexcept {
+StringView graph_node_shape_name(GraphNodeShape shape) noexcept {
     switch (shape) {
     case GraphNodeShape::auto_role:
         return {};
@@ -147,7 +160,7 @@ std::string_view graph_node_shape_name(GraphNodeShape shape) noexcept {
     return {};
 }
 
-Optional<GraphNodeShape> parse_graph_node_shape(std::string_view text) noexcept {
+Optional<GraphNodeShape> parse_graph_node_shape(StringView text) noexcept {
     if (text.empty() || text == "auto")
         return GraphNodeShape::auto_role;
     if (text == "pill")
@@ -169,11 +182,11 @@ Optional<GraphNodeShape> parse_graph_node_shape(std::string_view text) noexcept 
     return {};
 }
 
-std::string format_graph_hex_color(std::uint32_t rgb) {
-    return std::format("#{:06x}", rgb & 0xffffffu);
+String format_graph_hex_color(std::uint32_t rgb) {
+    return String::concat("#", String::from_hex(rgb & 0xffffffu, 6));
 }
 
-Optional<std::uint32_t> parse_graph_hex_color(std::string_view text) noexcept {
+Optional<std::uint32_t> parse_graph_hex_color(StringView text) noexcept {
     if (text.size() != 7 || text.front() != '#')
         return {};
     text.remove_prefix(1);
@@ -239,18 +252,23 @@ Result<FieldRange> intersect_field_ranges(const FieldRange& a, const FieldRange&
 }
 
 Result<ResolvedGraphTarget> resolve_graph_parameter_target(Runtime& runtime, const GraphDocument& document,
-                                                           std::string_view target_spec) {
+                                                           StringView target_spec) {
     if (!valid_graph_target_path(target_spec))
-        return std::unexpected(
-            Error{ErrorCode::argument_mismatch, "Invalid parameter target path '" + std::string(target_spec) + "'."});
+        return std::unexpected(Error{
+            ErrorCode::argument_mismatch,
+            String::concat("Invalid parameter target path '", String::from_utf8(target_spec).value_or(String{}), "'.")});
     const auto dot = target_spec.find('.');
-    const std::string node_name(target_spec.substr(0, dot));
-    const std::string field_path(target_spec.substr(dot + 1));
+
+    const String node_name = String::from_utf8_validated(target_spec.slice(0, dot));
+
+    const String field_path = String::from_utf8_validated(target_spec.slice(dot + 1));
+
     const auto node_it = std::ranges::find(document.nodes, node_name, &GraphNode::name);
     if (node_it == document.nodes.end())
-        return std::unexpected(Error{ErrorCode::argument_mismatch, "No node named '" + node_name + "'."});
+        return std::unexpected(Error{ErrorCode::argument_mismatch, String::concat("No node named '", node_name, "'.")});
     if (!node_it->node.registered())
-        return std::unexpected(Error{ErrorCode::invalid_type, "Node '" + node_name + "' is unresolved."});
+        return std::unexpected(
+            Error{ErrorCode::invalid_type, String::concat("Node '", node_name, "' is unresolved.")});
 
     ATELIER_TRY_BIND(type, runtime.type_of(node_it->node.id()));
     ATELIER_TRY_BIND(fields, detail::author_fields(runtime, *type, false));
@@ -259,8 +277,9 @@ Result<ResolvedGraphTarget> resolve_graph_parameter_target(Runtime& runtime, con
             continue;
         if (leaf.read_only || leaf.form != ValueForm::inline_value || leaf.kind == TypeKind::array ||
             leaf.material_entries_json) {
-            return std::unexpected(Error{ErrorCode::argument_mismatch, "Field '" + std::string(target_spec) +
-                                                                           "' cannot be promoted as a parameter."});
+            return std::unexpected(Error{ErrorCode::argument_mismatch,
+                                         String::concat("Field '", String::validated(target_spec),
+                                                        "' cannot be promoted as a parameter.")});
         }
         return ResolvedGraphTarget{
             .node_name = node_name,
@@ -277,13 +296,17 @@ Result<ResolvedGraphTarget> resolve_graph_parameter_target(Runtime& runtime, con
 
     // Check math vector aggregate path (e.g. "grid1.size").
     TypeId cur_type = *type;
+
     const FieldInfo* matched_field = nullptr;
-    Array<std::string> segments;
-    std::string_view rem = field_path;
+
+    Array<String> segments;
+
+    StringView rem = field_path;
     while (true) {
         const auto next_dot = rem.find('.');
-        const auto part = rem.substr(0, next_dot);
-        segments.emplace(part);
+
+        const auto part = rem.slice(0, next_dot);
+        segments.add(String::from_utf8_validated(part));
         ATELIER_TRY_BIND(info, runtime.describe(cur_type));
         const auto f_it = std::ranges::find((*info)->fields, part, &FieldInfo::name);
         if (f_it == (*info)->fields.end() || f_it->transient || f_it->read_only ||
@@ -293,7 +316,7 @@ Result<ResolvedGraphTarget> resolve_graph_parameter_target(Runtime& runtime, con
         }
         matched_field = &*f_it;
         cur_type = f_it->value.type;
-        if (next_dot == std::string_view::npos)
+        if (next_dot == StringView::npos)
             break;
         rem.remove_prefix(next_dot + 1);
     }
@@ -306,8 +329,9 @@ Result<ResolvedGraphTarget> resolve_graph_parameter_target(Runtime& runtime, con
                 if (leaf.names.size() == segments.size() + 1 &&
                     std::equal(segments.begin(), segments.end(), leaf.names.begin())) {
                     if (leaf.read_only || leaf.form != ValueForm::inline_value)
-                        return std::unexpected(Error{ErrorCode::argument_mismatch,
-                                                     "Vector field '" + std::string(target_spec) + "' is read-only."});
+                        return std::unexpected(Error{
+                            ErrorCode::argument_mismatch,
+                            String::concat("Vector field '", String::validated(target_spec), "' is read-only.")});
                     lanes.add(leaf);
                 }
             }
@@ -327,8 +351,9 @@ Result<ResolvedGraphTarget> resolve_graph_parameter_target(Runtime& runtime, con
         }
     }
 
-    return std::unexpected(
-        Error{ErrorCode::argument_mismatch, "Node '" + node_name + "' has no promotable field '" + field_path + "'."});
+    return std::unexpected(Error{
+        ErrorCode::argument_mismatch,
+        String::concat("Node '", node_name, "' has no promotable field '", field_path, "'.")});
 }
 
 Result<procedural::Ports> extract_graph_ports(Runtime& runtime, const GraphDocument& document,
@@ -343,46 +368,49 @@ Result<procedural::Ports> extract_graph_ports(Runtime& runtime, const GraphDocum
     struct OrderedBoundary {
         std::int32_t order{};
 
-        std::string node_name;
+        String node_name;
 
-        std::string port_name;
+        String port_name;
 
         ObjectId id{};
     };
 
     Array<OrderedBoundary> inputs_list;
+
     Array<OrderedBoundary> outputs_list;
     for (const auto& item : document.nodes) {
         if (!item.node.registered())
             continue;
         ATELIER_TRY_BIND(type, runtime.type_of(item.node.id()));
         if (*type == *in_type) {
-            std::string port_name;
+            String port_name;
+
             std::int32_t order = 0;
             ATELIER_TRY(runtime.with_native<const procedural::GraphInput>(
                 item.node.id(), [&](const procedural::GraphInput& value) -> Result<void> {
-                    port_name = std::string(value.port_name.view().std_view());
+                    port_name = value.port_name;
                     order = value.order;
                     return {};
                 }));
             if (!valid_graph_identifier(port_name))
-                return std::unexpected(
-                    Error{ErrorCode::invalid_definition,
-                          "GraphInput node '" + item.name + "' has invalid port_name '" + port_name + "'."});
+                return std::unexpected(Error{
+                    ErrorCode::invalid_definition,
+                    String::concat("GraphInput node '", item.name, "' has invalid port_name '", port_name, "'.")});
             inputs_list.add({order, item.name, std::move(port_name), item.node.id()});
         } else if (*type == *out_type) {
-            std::string port_name;
+            String port_name;
+
             std::int32_t order = 0;
             ATELIER_TRY(runtime.with_native<const procedural::GraphOutput>(
                 item.node.id(), [&](const procedural::GraphOutput& value) -> Result<void> {
-                    port_name = std::string(value.port_name.view().std_view());
+                    port_name = value.port_name;
                     order = value.order;
                     return {};
                 }));
             if (!valid_graph_identifier(port_name))
-                return std::unexpected(
-                    Error{ErrorCode::invalid_definition,
-                          "GraphOutput node '" + item.name + "' has invalid port_name '" + port_name + "'."});
+                return std::unexpected(Error{
+                    ErrorCode::invalid_definition,
+                    String::concat("GraphOutput node '", item.name, "' has invalid port_name '", port_name, "'.")});
             outputs_list.add({order, item.name, std::move(port_name), item.node.id()});
         }
     }
@@ -394,11 +422,12 @@ Result<procedural::Ports> extract_graph_ports(Runtime& runtime, const GraphDocum
     std::ranges::sort(outputs_list, by_order_then_name);
 
     procedural::Ports ports;
-    Set<std::string_view> seen_in;
+
+    Set<StringView> seen_in;
     for (const auto& entry : inputs_list) {
         if (!seen_in.add(entry.port_name))
-            return std::unexpected(
-                Error{ErrorCode::invalid_definition, "Duplicate GraphInput port_name '" + entry.port_name + "'."});
+            return std::unexpected(Error{ErrorCode::invalid_definition,
+                                         String::concat("Duplicate GraphInput port_name '", entry.port_name, "'.")});
         ports.inputs.add(entry.port_name);
         ports.multiple.add(false);
         if (input_nodes)
@@ -406,11 +435,12 @@ Result<procedural::Ports> extract_graph_ports(Runtime& runtime, const GraphDocum
     }
 
     if (!outputs_list.empty()) {
-        Set<std::string_view> seen_out;
+        Set<StringView> seen_out;
         for (const auto& entry : outputs_list) {
             if (!seen_out.add(entry.port_name))
-                return std::unexpected(
-                    Error{ErrorCode::invalid_definition, "Duplicate GraphOutput port_name '" + entry.port_name + "'."});
+                return std::unexpected(Error{
+                    ErrorCode::invalid_definition,
+                    String::concat("Duplicate GraphOutput port_name '", entry.port_name, "'.")});
             ports.outputs.add(entry.port_name);
             if (output_nodes)
                 output_nodes->add(entry.id);
@@ -418,7 +448,7 @@ Result<procedural::Ports> extract_graph_ports(Runtime& runtime, const GraphDocum
     } else if (document.graph.registered()) {
         ATELIER_TRY_BIND(listed, procedural::contents(runtime, document.graph.id()));
         if (listed->display() != ObjectId{}) {
-            ports.outputs.add("output");
+            ports.outputs.add("output"_s);
             if (output_nodes)
                 output_nodes->add(listed->display());
         }
@@ -429,8 +459,8 @@ Result<procedural::Ports> extract_graph_ports(Runtime& runtime, const GraphDocum
 Result<ResolvedPromotedSchema> resolve_promoted_parameter_schema(Runtime& runtime, const GraphDocument& document,
                                                                  const GraphPromotedParameter& param) {
     if (param.targets.empty())
-        return std::unexpected(
-            Error{ErrorCode::argument_mismatch, "Promoted parameter '" + param.name + "' has no targets."});
+        return std::unexpected(Error{
+            ErrorCode::argument_mismatch, String::concat("Promoted parameter '", param.name, "' has no targets.")});
     ATELIER_TRY_BIND(primary, resolve_graph_parameter_target(runtime, document, param.targets.front()));
     ResolvedPromotedSchema schema;
     schema.primary = *primary;
@@ -441,8 +471,9 @@ Result<ResolvedPromotedSchema> resolve_promoted_parameter_schema(Runtime& runtim
     for (std::size_t i = 1; i < param.targets.size(); ++i) {
         ATELIER_TRY_BIND(next, resolve_graph_parameter_target(runtime, document, param.targets[i]));
         if (next->value_type != schema.primary.value_type || next->leaves.size() != schema.primary.leaves.size())
-            return std::unexpected(Error{ErrorCode::argument_mismatch,
-                                         "Target '" + param.targets[i] + "' does not match primary target TypeId."});
+            return std::unexpected(Error{
+                ErrorCode::argument_mismatch,
+                String::concat("Target '", param.targets[i], "' does not match primary target TypeId.")});
         for (std::size_t li = 0; li < schema.ranges.size(); ++li) {
             ATELIER_TRY_BIND(merged, intersect_field_ranges(schema.ranges[li], next->leaves[li].range));
             schema.ranges[li] = *merged;
@@ -602,7 +633,7 @@ Result<void> apply_saved_graph_node_inputs(Runtime& runtime, GraphDocument& docu
     ATELIER_TRY_BIND(type, runtime.type_of(to));
     ATELIER_TRY_BIND(info, runtime.describe(*type));
 
-    const auto named = [&](std::string_view name) -> const GraphNode* {
+    const auto named = [&](StringView name) -> const GraphNode* {
         const auto at = std::ranges::lower_bound(document.nodes, name, {}, &GraphNode::name);
         return at != document.nodes.end() && at->name == name ? &*at : nullptr;
     };
@@ -612,30 +643,38 @@ Result<void> apply_saved_graph_node_inputs(Runtime& runtime, GraphDocument& docu
 
     for (const auto& [pname, entry] : saved) {
         const auto& [was_array, eps] = entry;
-        std::string problem;
+
+        String problem;
+
         const auto at = std::ranges::find(ports->inputs, pname);
+
         const auto in_idx = static_cast<std::uint32_t>(at - ports->inputs.begin());
         if (at == ports->inputs.end()) {
-            problem = "The node has no input port " + pname + ".";
+            problem = String::concat("The node has no input port ", pname, ".");
         } else if (ports->multiple[in_idx] != was_array) {
-            problem =
-                ports->multiple[in_idx] ? "The port takes an array of connections." : "The port takes one connection.";
+            problem = ports->multiple[in_idx] ? "The port takes an array of connections."_s
+                                              : "The port takes one connection."_s;
         } else {
             for (const auto& ep : eps) {
                 const auto dot = ep.find('.');
-                const auto from_name = std::string_view(ep).substr(0, dot);
-                const auto out_name = std::string_view(ep).substr(dot + 1);
+
+                const auto from_name = ep.view().slice(0, dot);
+
+                const auto out_name = ep.view().slice(dot + 1);
+
                 const auto* src = named(from_name);
-                std::string failed;
+
+                String failed;
                 if (!src) {
-                    failed = "No node is named " + std::string(from_name) + ".";
+                    failed = String::concat("No node is named ", String::validated(from_name), ".");
                 } else if (!src->node.registered()) {
-                    failed = "Node " + std::string(from_name) + " is kept, not loaded.";
+                    failed = String::concat("Node ", String::validated(from_name), " is kept, not loaded.");
                 } else {
                     ATELIER_TRY_BIND(src_ports, procedural::ports(runtime, src->node.id()));
                     const auto out_it = std::ranges::find(src_ports->outputs, out_name);
                     if (out_it == src_ports->outputs.end()) {
-                        failed = "Node " + std::string(from_name) + " has no output " + std::string(out_name) + ".";
+                        failed = String::concat("Node ", String::validated(from_name), " has no output ",
+                                                String::validated(out_name), ".");
                     } else if (auto made = procedural::connect(
                                    runtime, graph, src->node.id(),
                                    static_cast<std::uint32_t>(out_it - src_ports->outputs.begin()), to, in_idx);
@@ -651,7 +690,8 @@ Result<void> apply_saved_graph_node_inputs(Runtime& runtime, GraphDocument& docu
         }
         if (problem.empty())
             continue;
-        const std::array<std::string, 1> path{"inputs"};
+        const std::array<String, 1> path{"inputs"_s};
+
         const auto inputs_obj = next_kept.object_path_validated(next_kept.root(), path);
         if (was_array) {
             const auto arr = *next_kept.array(inputs_obj, pname);
@@ -667,11 +707,11 @@ Result<void> apply_saved_graph_node_inputs(Runtime& runtime, GraphDocument& docu
             diag.kind = world::DiagnosticKind::reference_dropped;
             diag.phase = world::DiagnosticPhase::load;
             diag.object = to;
-            diag.type = std::string((*info)->name);
-            diag.field = {"nodes", target.name, "inputs", pname};
+            diag.type = String::from_utf8_validated((*info)->name);
+            diag.field = {"nodes"_s, target.name, "inputs"_s, pname};
             if (const auto kept_val = *inputs_obj.find(pname))
                 diag.value = assets::json_format::preview(*kept_val);
-            diag.message = detail::dotted(diag.field) + ": " + problem + " The saved connections are kept.";
+            diag.message = String::concat(detail::dotted(diag.field), ": ", problem, " The saved connections are kept.");
             issues->add(std::move(diag));
         }
     }
@@ -679,9 +719,9 @@ Result<void> apply_saved_graph_node_inputs(Runtime& runtime, GraphDocument& docu
     return {};
 }
 
-procedural::AssetSubgraph resolve_asset_binding(const AssetPortResolver& resolver, std::string_view asset_key) {
+procedural::AssetSubgraph resolve_asset_binding(const AssetPortResolver& resolver, StringView asset_key) {
     procedural::AssetSubgraph binding;
-    binding.asset_key = asset_key;
+    binding.asset_key = String::from_utf8(asset_key).value_or(String{});
     auto ports = resolver(asset_key);
     if (ports)
         binding.ports = std::move(*ports);
@@ -690,7 +730,7 @@ procedural::AssetSubgraph resolve_asset_binding(const AssetPortResolver& resolve
     return binding;
 }
 
-Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const AssetPortResolver& asset_ports) {
+Result<GraphDocument> load_graph(Runtime& runtime, StringView text, const AssetPortResolver& asset_ports) {
     const auto file = assets::json_format::parse(text);
     if (!file)
         return std::unexpected(Error{ErrorCode::argument_mismatch, file.error().describe()});
@@ -722,8 +762,9 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
                 boxes_json.error(json::Fault::type, "Graph boxes must be a record keyed by box name."));
         if (parameters_opt) {
             ATELIER_TRY_BIND(param_items, parameters_opt->array());
-            Set<std::string_view> seen_param_names;
-            Array<std::string_view> all_targets;
+            Set<StringView> seen_param_names;
+
+            Array<StringView> all_targets;
             for (const auto param : *param_items) {
                 ATELIER_TRY(param.allowed_members({"name", "targets", "label", "category", "description"}));
                 ATELIER_TRY_BIND(pname, param.string({"name"}));
@@ -836,16 +877,17 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
                         value.error(json::Fault::type, "A connection is \"node.output\", or an array of those."));
             }
         }
-        const auto validate_canvas_box = [](json::Value item, std::string_view kind_label,
-                                            std::initializer_list<std::string_view> fields) -> json::Result<void> {
+        const auto validate_canvas_box = [](json::Value item, StringView kind_label,
+                                            std::initializer_list<StringView> fields) -> json::Result<void> {
             ATELIER_TRY(item.allowed_members(fields));
             if (const auto pos = *item.find("position"))
                 ATELIER_TRY(assets::json_format::vector<2>(*pos));
             if (const auto sz = *item.find("size")) {
                 ATELIER_TRY_BIND(v, assets::json_format::vector<2>(*sz));
-                if ((*v)[0] <= 0.f || (*v)[1] <= 0.f)
-                    return std::unexpected(
-                        sz->error(json::Fault::range, std::string(kind_label) + " size must be positive."));
+                if ((*v)[0] <= 0.f || (*v)[1] <= 0.f) {
+                    const auto message = String::concat(String::validated(kind_label), " size must be positive.");
+                    return std::unexpected(sz->error(json::Fault::range, message));
+                }
             }
             if (const auto title = *item.find("title"))
                 ATELIER_TRY(title->string());
@@ -853,9 +895,10 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
                 ATELIER_TRY(body->string());
             if (const auto color = *item.find("color")) {
                 ATELIER_TRY_BIND(color_text, color->string());
-                if (!parse_graph_hex_color(*color_text))
-                    return std::unexpected(
-                        color->error(json::Fault::range, std::string(kind_label) + " color must be #RRGGBB."));
+                if (!parse_graph_hex_color(*color_text)) {
+                    const auto message = String::concat(String::validated(kind_label), " color must be #RRGGBB.");
+                    return std::unexpected(color->error(json::Fault::range, message));
+                }
             }
             return {};
         };
@@ -881,8 +924,8 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
     ATELIER_TRY_BIND(created, runtime.create(*graph_type));
     document.graph = std::move(*created);
     const auto graph = document.graph.id();
-    const auto report = [&](world::Severity severity, world::DiagnosticKind kind, ObjectId object, std::string type,
-                            Array<std::string> field, const json::Value* value, const std::string& detail) {
+    const auto report = [&](world::Severity severity, world::DiagnosticKind kind, ObjectId object, String type,
+                            Array<String> field, const json::Value* value, Utf8Text detail) {
         world::Diagnostic item;
         item.serial = document.issues.size() + 1;
         item.severity = severity;
@@ -892,24 +935,26 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
         item.type = std::move(type);
         if (value)
             item.value = assets::json_format::preview(*value);
-        item.message = detail::dotted(field) + ": " + detail;
+        const auto detail_text = std::move(detail).into_string();
+        item.message = String::concat(detail::dotted(field), ": ", detail_text);
         item.field = std::move(field);
         document.issues.add(std::move(item));
     };
     // Leaves that do not decode are kept at their path under `kept` and reported under `prefix`.
-    const auto keeping = [&](json::Builder& kept, json::Value target, ObjectId object, const std::string& type,
-                             Array<std::string> prefix) {
+    const auto keeping = [&](json::Builder& kept, json::Value target, ObjectId object, const String& type,
+                             Array<String> prefix) {
         return PropertyReport{
-            [&, target, object, type, prefix](Array<std::string> at, json::Value item, world::DiagnosticKind kind,
-                                              const std::string& detail) -> Result<void> {
+            [&, target, object, type, prefix](Array<String> at, json::Value item, world::DiagnosticKind kind,
+                                              StringView detail) -> Result<void> {
                 const auto slot = kept.object_path_validated(target, at);
                 kept.replace(slot, item);
                 auto field = prefix;
                 field.append(at);
-                report(world::Severity::warning, kind, object, type, std::move(field), &item, detail);
+                report(world::Severity::warning, kind, object, type, std::move(field), &item,
+                       String::from_utf8_validated(detail));
                 return {};
             },
-            [&, object, type, prefix](Array<std::string> at, json::Value item) -> Result<void> {
+            [&, object, type, prefix](Array<String> at, json::Value item) -> Result<void> {
                 auto field = prefix;
                 field.append(at);
                 report(world::Severity::info, world::DiagnosticKind::converted, object, type, std::move(field), &item,
@@ -923,11 +968,13 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
     // Parameters are public fields; graph membership, connections, display and template are hidden.
     ATELIER_TRY(
         decode_properties(runtime, {*graph_type, graph}, own.root(),
-                          keeping(kept_settings, kept_settings.root(), graph, "procedural.Graph", {"settings"})));
+                          keeping(kept_settings, kept_settings.root(), graph, "procedural.Graph"_s, {"settings"_s})));
 
     for (const auto& [key, entry] : *members) {
-        const std::string name(key);
+        const String name = String::from_utf8_validated(key);
+
         const auto position = *entry.find("position");
+
         GraphNode item;
         item.name = name;
         item.position = position ? *assets::json_format::vector<2>(*position) : std::array<float, 2>{};
@@ -940,14 +987,16 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
             item.color = *parsed_color;
         }
         if (const auto comment = *entry.find("comment"))
-            item.comment = std::string(*comment->string());
+            item.comment = String::from_utf8_validated(*comment->string());
         if (const auto asset_field = *entry.find("asset"))
-            item.asset_key = std::string(*asset_field->string());
+            item.asset_key = String::from_utf8_validated(*asset_field->string());
         if (const auto overrides_field = *entry.find("overrides"))
             item.overrides = json::Document(*overrides_field);
 
-        const std::string type_name(*entry.string({"type"}));
+        const String type_name = String::from_utf8_validated(*entry.string({"type"}));
+
         const auto type = runtime.find_type(type_name);
+
         auto added =
             type ? procedural::add_node(runtime, graph, *type) : Result<ObjectRoot>{std::unexpected(type.error())};
         // A type that is missing or cannot be a node is the file's problem; any other failure is the Runtime's.
@@ -956,8 +1005,8 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
             return std::unexpected(added.error());
         if (!added) {
             item.kept = json::Document(entry);
-            report(world::Severity::warning, world::DiagnosticKind::unknown_type, {}, type_name, {"nodes", name},
-                   nullptr, added.error().message + " The node is kept.");
+            report(world::Severity::warning, world::DiagnosticKind::unknown_type, {}, type_name, {"nodes"_s, name},
+                   nullptr, String::concat(added.error().message, " The node is kept."));
         } else {
             item.node = std::move(*added);
             if (const auto bypass = *entry.find("bypass")) {
@@ -968,10 +1017,12 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
                                                            resolve_asset_binding(asset_ports, item.asset_key)));
             }
             json::Builder kept;
+
             const auto properties = kept.object_validated(kept.root(), "properties");
-            ATELIER_TRY(
-                decode_properties(runtime, {*type, item.node.id()}, entry.find("properties")->value_or(empty.root()),
-                                  keeping(kept, properties, item.node.id(), type_name, {"nodes", name, "properties"})));
+            ATELIER_TRY(decode_properties(runtime, {*type, item.node.id()},
+                                          entry.find("properties")->value_or(empty.root()),
+                                          keeping(kept, properties, item.node.id(), type_name,
+                                                  {"nodes"_s, name, "properties"_s})));
             if (!properties.size())
                 kept.erase(kept.root(), "properties");
             item.kept = kept.finish();
@@ -982,15 +1033,15 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
 
     for (const auto& [key, note] : *notes_json.object_items()) {
         GraphStickyNote item;
-        item.name = std::string(key);
+        item.name = String::from_utf8_validated(key);
         if (const auto pos = *note.find("position"))
             item.position = *assets::json_format::vector<2>(*pos);
         if (const auto sz = *note.find("size"))
             item.size = *assets::json_format::vector<2>(*sz);
         if (const auto title = *note.find("title"))
-            item.title = std::string(*title->string());
+            item.title = String::from_utf8_validated(*title->string());
         if (const auto body = *note.find("text"))
-            item.text = std::string(*body->string());
+            item.text = String::from_utf8_validated(*body->string());
         if (const auto color = *note.find("color")) {
             const auto parsed_color = parse_graph_hex_color(*color->string());
             item.color = *parsed_color;
@@ -1001,13 +1052,13 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
 
     for (const auto& [key, box] : *boxes_json.object_items()) {
         GraphNetworkBox item;
-        item.name = std::string(key);
+        item.name = String::from_utf8_validated(key);
         if (const auto pos = *box.find("position"))
             item.position = *assets::json_format::vector<2>(*pos);
         if (const auto sz = *box.find("size"))
             item.size = *assets::json_format::vector<2>(*sz);
         if (const auto title = *box.find("title"))
-            item.title = std::string(*title->string());
+            item.title = String::from_utf8_validated(*title->string());
         if (const auto color = *box.find("color")) {
             const auto parsed_color = parse_graph_hex_color(*color->string());
             item.color = *parsed_color;
@@ -1017,27 +1068,29 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
     std::ranges::sort(document.boxes, {}, &GraphNetworkBox::name);
 
     // Nodes are in sorted name order.
-    const auto named = [&](std::string_view name) -> GraphNode* {
+    const auto named = [&](StringView name) -> GraphNode* {
         const auto at = std::ranges::lower_bound(document.nodes, name, {},
-                                                 [](const GraphNode& node) -> std::string_view { return node.name; });
+                                                 [](const GraphNode& node) -> StringView { return node.name; });
         return at != document.nodes.end() && at->name == name ? &*at : nullptr;
     };
     for (auto& item : document.nodes) {
         const auto entry = *entries.at(item.name);
+
         const auto inputs = *entry.find("inputs");
         if (!item.node.registered() || !inputs)
             continue;
         SavedGraphPortMap saved;
         for (const auto& [port_name, value] : *inputs->object_items()) {
-            Array<std::string> eps;
+            Array<String> eps;
+
             const bool is_arr = value.kind() == json::Kind::array;
             if (is_arr) {
                 for (const auto connection : *value.array())
-                    eps.emplace(*connection.string());
+                    eps.add(String::from_utf8_validated(*connection.string()));
             } else {
-                eps.emplace(*value.string());
+                eps.add(String::from_utf8_validated(*value.string()));
             }
-            saved.emplace(std::string(port_name), std::pair{is_arr, std::move(eps)});
+            saved.emplace(String::from_utf8_validated(port_name), std::pair{is_arr, std::move(eps)});
         }
         ATELIER_TRY(apply_saved_graph_node_inputs(runtime, document, item, saved, &document.issues));
     }
@@ -1045,26 +1098,28 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
     if (parameters_opt) {
         for (const auto param : *parameters_opt->array()) {
             GraphPromotedParameter item;
-            item.name = std::string(*param.string({"name"}));
+            item.name = String::from_utf8_validated(*param.string({"name"}));
             const auto targets_field = *param.find("targets");
             for (const auto t : *targets_field->array())
-                item.targets.emplace(*t.string());
+                item.targets.add(String::from_utf8_validated(*t.string()));
             if (const auto lbl = *param.find("label"))
-                item.label = std::string(*lbl->string());
+                item.label = String::from_utf8_validated(*lbl->string());
             if (const auto cat = *param.find("category"))
-                item.category = std::string(*cat->string());
+                item.category = String::from_utf8_validated(*cat->string());
             if (const auto dsc = *param.find("description"))
-                item.description = std::string(*dsc->string());
+                item.description = String::from_utf8_validated(*dsc->string());
 
             Optional<ResolvedGraphTarget> primary;
+
             Array<FieldRange> ranges;
             for (std::size_t ti = 0; ti < item.targets.size(); ++ti) {
                 const auto& tspec = item.targets[ti];
+
                 auto resolved = resolve_graph_parameter_target(runtime, document, tspec);
                 if (!resolved) {
                     report(world::Severity::warning, world::DiagnosticKind::reference_dropped, graph,
-                           "procedural.Graph", {"parameters", item.name, "targets"}, nullptr,
-                           resolved.error().message + " The parameter binding is kept.");
+                           "procedural.Graph"_s, {"parameters"_s, item.name, "targets"_s}, nullptr,
+                           String::concat(resolved.error().message, " The parameter binding is kept."));
                     continue;
                 }
                 if (!primary) {
@@ -1074,20 +1129,21 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
                     continue;
                 }
                 if (resolved->value_type != primary->value_type || resolved->leaves.size() != primary->leaves.size()) {
-                    report(world::Severity::warning, world::DiagnosticKind::mismatch, graph, "procedural.Graph",
-                           {"parameters", item.name, "targets"}, nullptr,
-                           "Target '" + tspec + "' does not match primary target '" + primary->node_name + "." +
-                               primary->field_path + "' TypeId.");
+                    report(world::Severity::warning, world::DiagnosticKind::mismatch, graph, "procedural.Graph"_s,
+                           {"parameters"_s, item.name, "targets"_s}, nullptr,
+                           String::concat("Target '", tspec, "' does not match primary target '", primary->node_name,
+                                          ".", primary->field_path, "' TypeId."));
                     continue;
                 }
                 bool range_ok = true;
+
                 Array<FieldRange> next_ranges = ranges;
                 for (std::size_t li = 0; li < ranges.size(); ++li) {
                     auto merged = intersect_field_ranges(next_ranges[li], resolved->leaves[li].range);
                     if (!merged) {
-                        report(world::Severity::warning, world::DiagnosticKind::mismatch, graph, "procedural.Graph",
-                               {"parameters", item.name, "targets"}, nullptr,
-                               "Target '" + tspec + "': " + merged.error().message);
+                        report(world::Severity::warning, world::DiagnosticKind::mismatch, graph, "procedural.Graph"_s,
+                               {"parameters"_s, item.name, "targets"_s}, nullptr,
+                               String::concat("Target '", tspec, "': ", merged.error().message));
                         range_ok = false;
                         break;
                     }
@@ -1100,6 +1156,7 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
                 // Synchronize secondary target leaf values to the primary target's value.
                 for (std::size_t li = 0; li < primary->leaves.size(); ++li) {
                     const auto& src_leaf = primary->leaves[li];
+
                     const auto& dst_leaf = resolved->leaves[li];
                     if (src_leaf.kind == TypeKind::string) {
                         String str_val;
@@ -1112,12 +1169,12 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
                             if (named(primary->node_name)) {
                                 ATELIER_TRY_BIND(ptype, runtime.type_of(primary->node));
                                 ATELIER_TRY_BIND(pinfo, runtime.describe(*ptype));
-                                Array<std::string> fpath = {"nodes", primary->node_name, "properties"};
+                                Array<String> fpath = {"nodes"_s, primary->node_name, "properties"_s};
                                 fpath.append(src_leaf.names);
                                 report(world::Severity::warning, world::DiagnosticKind::invalid_value, primary->node,
-                                       (*pinfo)->name, std::move(fpath), nullptr,
-                                       "Primary target value clamped to promoted parameter '" + item.name +
-                                           "' intersected hard bounds.");
+                                       String::from_utf8_validated((*pinfo)->name), std::move(fpath), nullptr,
+                                       String::concat("Primary target value clamped to promoted parameter '", item.name,
+                                                      "' intersected hard bounds."));
                             }
                             ATELIER_TRY(runtime.write(primary->node, src_leaf.path, synced));
                         }
@@ -1135,8 +1192,8 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
             ATELIER_TRY(procedural::set_display(runtime, graph, shown->node.id()));
         } else {
             kept_settings.set_validated(kept_settings.root(), "display", *at);
-            report(world::Severity::warning, world::DiagnosticKind::reference_dropped, graph, "procedural.Graph",
-                   {"settings", "display"}, &*at, "No loaded node has this name. The display is kept.");
+            report(world::Severity::warning, world::DiagnosticKind::reference_dropped, graph, "procedural.Graph"_s,
+                   {"settings"_s, "display"_s}, &*at, "No loaded node has this name. The display is kept."_s);
         }
     }
     if (const auto at = *settings.find("template")) {
@@ -1145,49 +1202,59 @@ Result<GraphDocument> load_graph(Runtime& runtime, std::string_view text, const 
             document.template_node = shown->node.id();
         } else {
             kept_settings.set_validated(kept_settings.root(), "template", *at);
-            report(world::Severity::warning, world::DiagnosticKind::reference_dropped, graph, "procedural.Graph",
-                   {"settings", "template"}, &*at, "No loaded node has this name. The template is kept.");
+            report(world::Severity::warning, world::DiagnosticKind::reference_dropped, graph, "procedural.Graph"_s,
+                   {"settings"_s, "template"_s}, &*at, "No loaded node has this name. The template is kept."_s);
         }
     }
     document.kept = kept_settings.finish();
     return document;
 }
 
-Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document) {
+Result<String> save_graph(Runtime& runtime, const GraphDocument& document) {
     const auto graph = document.graph.id();
     ATELIER_TRY_BIND(content_result, procedural::contents(runtime, graph));
     const auto& contents = *content_result;
-    std::map<std::string_view, const GraphNode*> by_name;
+
+    Set<StringView> seen_node_names;
+
+    Array<const GraphNode*> sorted_nodes;
+    sorted_nodes.reserve(document.nodes.size());
+
     Map<ObjectId, const GraphNode*> by_node;
     by_node.reserve(contents.nodes().size());
     for (const auto& item : document.nodes) {
-        if (!valid_graph_identifier(item.name) || !by_name.emplace(item.name, &item).second)
-            return std::unexpected(
-                Error{ErrorCode::argument_mismatch, "Graph node names must be valid and unique: " + item.name});
+        if (!valid_graph_identifier(item.name) || !seen_node_names.add(item.name))
+            return std::unexpected(Error{
+                ErrorCode::argument_mismatch, String::concat("Graph node names must be valid and unique: ", item.name)});
+        sorted_nodes.add(&item);
         if (!std::isfinite(item.position[0]) || !std::isfinite(item.position[1]))
-            return std::unexpected(Error{ErrorCode::argument_mismatch, item.name + ": node positions must be finite."});
-        if (static_cast<std::uint8_t>(item.shape) > static_cast<std::uint8_t>(GraphNodeShape::circle))
-            return std::unexpected(Error{ErrorCode::argument_mismatch, item.name + ": invalid node shape preset."});
-        if (!StringView(item.comment).is_valid_utf8() || !StringView(item.asset_key).is_valid_utf8())
-            return std::unexpected(Error{ErrorCode::argument_mismatch, item.name + ": node strings must be UTF-8."});
-        if (is_scratch_asset_key(item.asset_key))
             return std::unexpected(
-                Error{ErrorCode::argument_mismatch, item.name + ": AssetNode cannot save a scratch graph asset key."});
+                Error{ErrorCode::argument_mismatch, String::concat(item.name, ": node positions must be finite.")});
+        if (static_cast<std::uint8_t>(item.shape) > static_cast<std::uint8_t>(GraphNodeShape::circle))
+            return std::unexpected(
+                Error{ErrorCode::argument_mismatch, String::concat(item.name, ": invalid node shape preset.")});
+        if (is_scratch_asset_key(item.asset_key))
+            return std::unexpected(Error{
+                ErrorCode::argument_mismatch,
+                String::concat(item.name, ": AssetNode cannot save a scratch graph asset key.")});
         const auto saved_type = item.kept.root().find("type");
         if (item.node.registered() ? !by_node.try_emplace(item.node.id(), &item).inserted : !saved_type || !*saved_type)
-            return std::unexpected(Error{ErrorCode::argument_mismatch,
-                                         item.name + ": an entry names a loaded node once, or keeps a saved one."});
+            return std::unexpected(Error{
+                ErrorCode::argument_mismatch,
+                String::concat(item.name, ": an entry names a loaded node once, or keeps a saved one.")});
         if (!item.overrides.root().is_null() && item.overrides.root().kind() != json::Kind::object)
-            return std::unexpected(
-                Error{ErrorCode::argument_mismatch, item.name + ": node overrides must be a JSON object."});
+            return std::unexpected(Error{
+                ErrorCode::argument_mismatch, String::concat(item.name, ": node overrides must be a JSON object.")});
         if (item.overrides.root().kind() == json::Kind::object) {
             for (const auto& [ov_key, _] : *item.overrides.root().object_items()) {
                 if (!valid_graph_identifier(ov_key))
-                    return std::unexpected(
-                        Error{ErrorCode::argument_mismatch, item.name + ": invalid override parameter identifier."});
+                    return std::unexpected(Error{
+                        ErrorCode::argument_mismatch,
+                        String::concat(item.name, ": invalid override parameter identifier.")});
             }
         }
     }
+    std::ranges::sort(sorted_nodes, {}, [](const GraphNode* n) { return n->name.view(); });
     if (by_node.size() != contents.nodes().size() ||
         !std::ranges::all_of(contents.nodes(), [&](ObjectId node) { return by_node.contains(node); }))
         return std::unexpected(
@@ -1196,27 +1263,26 @@ Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document) 
         return std::unexpected(
             Error{ErrorCode::argument_mismatch, "Graph template node must belong to the saved graph."});
 
-    Set<std::string_view> seen_param_names;
-    Array<std::string_view> seen_targets;
+    Set<StringView> seen_param_names;
+
+    Array<StringView> seen_targets;
     for (const auto& param : document.parameters) {
         if (!valid_graph_identifier(param.name) || !seen_param_names.add(param.name))
-            return std::unexpected(
-                Error{ErrorCode::argument_mismatch, "Invalid or duplicate promoted parameter name: " + param.name});
+            return std::unexpected(Error{
+                ErrorCode::argument_mismatch,
+                String::concat("Invalid or duplicate promoted parameter name: ", param.name)});
         if (param.targets.empty())
-            return std::unexpected(
-                Error{ErrorCode::argument_mismatch, "Promoted parameter '" + param.name + "' has no targets."});
-        if (!StringView(param.label).is_valid_utf8() || !StringView(param.category).is_valid_utf8() ||
-            !StringView(param.description).is_valid_utf8())
-            return std::unexpected(
-                Error{ErrorCode::argument_mismatch, "Promoted parameter metadata must be valid UTF-8: " + param.name});
+            return std::unexpected(Error{
+                ErrorCode::argument_mismatch, String::concat("Promoted parameter '", param.name, "' has no targets.")});
         for (const auto& target : param.targets) {
             if (!valid_graph_target_path(target))
-                return std::unexpected(
-                    Error{ErrorCode::argument_mismatch, "Invalid promoted parameter target path: " + target});
+                return std::unexpected(Error{
+                    ErrorCode::argument_mismatch, String::concat("Invalid promoted parameter target path: ", target)});
             for (const auto prev : seen_targets) {
                 if (graph_targets_overlap(prev, target))
-                    return std::unexpected(
-                        Error{ErrorCode::argument_mismatch, "Overlapping promoted parameter target path: " + target});
+                    return std::unexpected(Error{
+                        ErrorCode::argument_mismatch,
+                        String::concat("Overlapping promoted parameter target path: ", target)});
             }
             seen_targets.add(target);
         }
@@ -1226,31 +1292,36 @@ Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document) 
         return std::isfinite(pos[0]) && std::isfinite(pos[1]) && std::isfinite(sz[0]) && std::isfinite(sz[1]) &&
                sz[0] > 0.f && sz[1] > 0.f;
     };
-    std::map<std::string_view, const GraphStickyNote*> notes_by_name;
-    for (const auto& note : document.notes) {
-        if (!valid_graph_identifier(note.name) || !notes_by_name.emplace(note.name, &note).second)
-            return std::unexpected(
-                Error{ErrorCode::argument_mismatch, "Sticky note names must be valid and unique: " + note.name});
-        if (!valid_box_rect(note.position, note.size))
-            return std::unexpected(
-                Error{ErrorCode::argument_mismatch, note.name + ": sticky note position and size must be valid."});
-        if (!StringView(note.title).is_valid_utf8() || !StringView(note.text).is_valid_utf8())
-            return std::unexpected(
-                Error{ErrorCode::argument_mismatch, note.name + ": sticky note text must be UTF-8."});
-    }
 
-    std::map<std::string_view, const GraphNetworkBox*> boxes_by_name;
-    for (const auto& box : document.boxes) {
-        if (!valid_graph_identifier(box.name) || !boxes_by_name.emplace(box.name, &box).second)
-            return std::unexpected(
-                Error{ErrorCode::argument_mismatch, "Network box names must be valid and unique: " + box.name});
-        if (!valid_box_rect(box.position, box.size))
-            return std::unexpected(
-                Error{ErrorCode::argument_mismatch, box.name + ": network box position and size must be valid."});
-        if (!StringView(box.title).is_valid_utf8())
-            return std::unexpected(
-                Error{ErrorCode::argument_mismatch, box.name + ": network box title must be UTF-8."});
+    Set<StringView> seen_note_names;
+
+    Array<const GraphStickyNote*> sorted_notes;
+    sorted_notes.reserve(document.notes.size());
+    for (const auto& note : document.notes) {
+        if (!valid_graph_identifier(note.name) || !seen_note_names.add(note.name))
+            return std::unexpected(Error{
+                ErrorCode::argument_mismatch, String::concat("Sticky note names must be valid and unique: ", note.name)});
+        if (!valid_box_rect(note.position, note.size))
+            return std::unexpected(Error{
+                ErrorCode::argument_mismatch, String::concat(note.name, ": sticky note position and size must be valid.")});
+        sorted_notes.add(&note);
     }
+    std::ranges::sort(sorted_notes, {}, [](const GraphStickyNote* n) { return n->name.view(); });
+
+    Set<StringView> seen_box_names;
+
+    Array<const GraphNetworkBox*> sorted_boxes;
+    sorted_boxes.reserve(document.boxes.size());
+    for (const auto& box : document.boxes) {
+        if (!valid_graph_identifier(box.name) || !seen_box_names.add(box.name))
+            return std::unexpected(Error{
+                ErrorCode::argument_mismatch, String::concat("Network box names must be valid and unique: ", box.name)});
+        if (!valid_box_rect(box.position, box.size))
+            return std::unexpected(Error{
+                ErrorCode::argument_mismatch, String::concat(box.name, ": network box position and size must be valid.")});
+        sorted_boxes.add(&box);
+    }
+    std::ranges::sort(sorted_boxes, {}, [](const GraphNetworkBox* b) { return b->name.view(); });
 
     // contents/inputs guarantee membership; the coverage above guarantees every by_node lookup below.
     const EncodeReference no_reference = [](ObjectId) -> Result<json::Document> {
@@ -1286,26 +1357,26 @@ Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document) 
         }
     }
 
-    if (!boxes_by_name.empty()) {
+    if (!sorted_boxes.empty()) {
         const auto boxes = result.object_validated(result.root(), "boxes");
-        for (const auto& [name, box] : boxes_by_name) {
-            const auto entry = result.object_validated(boxes, name);
+        for (const GraphNetworkBox* box : sorted_boxes) {
+            const auto entry = result.object_validated(boxes, box->name);
             result.set_validated(entry, "color", format_graph_hex_color(box->color));
             ATELIER_TRY(append_vec2(result, entry, "position", box->position));
             ATELIER_TRY(append_vec2(result, entry, "size", box->size));
-            if (auto added = result.set(entry, "title", box->title); !added)
-                return std::unexpected(Error{ErrorCode::argument_mismatch, added.error().describe()});
+            result.set_validated(entry, "title", box->title);
         }
     }
 
     const auto nodes = result.object_validated(result.root(), "nodes");
-    for (const auto& [name, item] : by_name) {
-        const auto entry = result.object_validated(nodes, name);
+    for (const GraphNode* item : sorted_nodes) {
+        const auto entry = result.object_validated(nodes, item->name);
         if (item->node.registered()) {
             const auto node = item->node.id();
             ATELIER_TRY_BIND(type, runtime.type_of(node));
             ATELIER_TRY_BIND(port_result, procedural::ports(runtime, node));
             const auto& ports = *port_result;
+
             const auto inputs = result.object_validated(entry, "inputs");
             ATELIER_TRY_BIND(connections, procedural::inputs(runtime, contents, node));
             for (const auto& input : *connections) {
@@ -1313,10 +1384,12 @@ Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document) 
                 if (input.output >= from->outputs.size())
                     return std::unexpected(
                         Error{ErrorCode::argument_mismatch, "Graph input names a missing output port."});
-                auto connection = (*by_node.find(input.from))->name + "." + from->outputs[input.output];
+                auto connection = String::concat((*by_node.find(input.from))->name, ".", from->outputs[input.output]);
+
                 const auto& port_name = ports.inputs[input.input];
                 if (ports.multiple[input.input]) {
                     const auto found = *inputs.find(port_name);
+
                     const auto port = found ? *found : *result.array(inputs, port_name);
                     if (auto added = result.append(port, connection); !added)
                         return std::unexpected(Error{ErrorCode::argument_mismatch, added.error().describe()});
@@ -1335,8 +1408,9 @@ Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document) 
                     result.set_validated(entry, "overrides", item->overrides.root());
             } else if (!item->asset_key.empty() ||
                        (item->overrides.root().kind() == json::Kind::object && item->overrides.root().size() > 0)) {
-                return std::unexpected(Error{ErrorCode::argument_mismatch,
-                                             item->name + ": only procedural.AssetNode may save 'asset'/'overrides'."});
+                return std::unexpected(Error{
+                    ErrorCode::argument_mismatch,
+                    String::concat(item->name, ": only procedural.AssetNode may save 'asset'/'overrides'.")});
             }
             ATELIER_TRY_BIND(is_bypassed, procedural::bypassed(runtime, node));
             if (*is_bypassed) {
@@ -1354,28 +1428,24 @@ Result<std::string> save_graph(Runtime& runtime, const GraphDocument& document) 
             result.set_validated(entry, "shape", shape_name);
         if (item->color)
             result.set_validated(entry, "color", format_graph_hex_color(*item->color));
-        if (!item->comment.empty()) {
-            if (auto added = result.set(entry, "comment", item->comment); !added)
-                return std::unexpected(Error{ErrorCode::argument_mismatch, added.error().describe()});
-        }
+        if (!item->comment.empty())
+            result.set_validated(entry, "comment", item->comment);
     }
 
-    if (!notes_by_name.empty()) {
+    if (!sorted_notes.empty()) {
         const auto notes = result.object_validated(result.root(), "notes");
-        for (const auto& [name, note] : notes_by_name) {
-            const auto entry = result.object_validated(notes, name);
+        for (const GraphStickyNote* note : sorted_notes) {
+            const auto entry = result.object_validated(notes, note->name);
             result.set_validated(entry, "color", format_graph_hex_color(note->color));
             ATELIER_TRY(append_vec2(result, entry, "position", note->position));
             ATELIER_TRY(append_vec2(result, entry, "size", note->size));
-            if (auto added = result.set(entry, "text", note->text); !added)
-                return std::unexpected(Error{ErrorCode::argument_mismatch, added.error().describe()});
-            if (auto added = result.set(entry, "title", note->title); !added)
-                return std::unexpected(Error{ErrorCode::argument_mismatch, added.error().describe()});
+            result.set_validated(entry, "text", note->text);
+            result.set_validated(entry, "title", note->title);
         }
     }
 
     const auto bytes = json::write(result.root(), {true, true});
-    return std::string(bytes.data(), bytes.size());
+    return String::from_utf8_validated({bytes.data(), bytes.size()});
 }
 
 } // namespace atelier::editor

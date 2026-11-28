@@ -4,6 +4,7 @@
 #include "foundation/array.hpp"
 #include "foundation/function_ref.hpp"
 #include "foundation/optional.hpp"
+#include "foundation/string.hpp"
 #include "ui_language/live_document.hpp"
 #include "logging/logging.hpp"
 #include <chrono>
@@ -40,12 +41,12 @@ public:
 
         bool conflict{};
 
-        std::string storage_error;
+        String storage_error;
 
     private:
         friend class SourceEditor;
 
-        std::string disk;
+        Array<std::byte> disk;
 
         std::wstring saved_text;
 
@@ -118,8 +119,8 @@ private:
 
     std::filesystem::path problem_path_;
 
-    std::string problem_source_;
+    String problem_source_;
 
-    static Result<void> load(File&, std::string);
+    static Result<void> load(File&, Array<std::byte>);
 };
 }

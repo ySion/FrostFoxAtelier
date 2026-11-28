@@ -2,6 +2,7 @@
 #include "control/control.hpp"
 #include "foundation/array.hpp"
 #include "foundation/optional.hpp"
+#include "foundation/string.hpp"
 #include "geometry/mesh.hpp"
 #include "renderer/renderer.hpp"
 #include "language/snapshot.hpp"
@@ -21,7 +22,7 @@ struct Repro {
 
     Array<std::filesystem::path> files;
 
-    std::string scene;
+    String scene;
 
     std::shared_ptr<const language::SourceSnapshot> sources;
 
@@ -32,12 +33,12 @@ struct Repro {
     // Distinct loaded versions, including slot defaults not serialized in the scene.
     Array<assets::MeshAsset> meshes;
 
-    Array<std::pair<std::string, rendering::SkyMapRef>> skies;
+    Array<std::pair<String, rendering::SkyMapRef>> skies;
 
     Array<assets::MaterialAsset> materials;
 
     // Open procedural graph snapshots so unsaved node/seed edits reproduce faithfully.
-    Array<std::pair<std::string, std::string>> procedural_graphs;
+    Array<std::pair<String, String>> procedural_graphs;
 
     // Exact loaded MS text and active input pixels, not file rereads or history.
     // These values have no Runtime roots and can outlive the source document.
@@ -47,7 +48,7 @@ struct Repro {
 
     // Typed scene/default/parent closure, including unavailable author references.
     // Dormant or declaration-mismatched texture entries are not dependencies.
-    Array<std::pair<assets::AssetKind, std::string>> references;
+    Array<std::pair<assets::AssetKind, String>> references;
 
     json::Document material_resources;
 
@@ -97,7 +98,7 @@ struct ReproBundle {
 
     editor::Project project;
 
-    std::string scene_text;
+    String scene_text;
 };
 
 std::expected<void, control::Failure> validate_candidate_assets(const editor::Session&, const ReproBundle&);

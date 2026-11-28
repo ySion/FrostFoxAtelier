@@ -4,12 +4,12 @@
 #include "foundation/optional.hpp"
 #include "foundation/ring_deque.hpp"
 #include "foundation/span.hpp"
+#include "foundation/string.hpp"
 #include "runtime/runtime.hpp"
 #include <Windows.h>
 #include <chrono>
 #include <filesystem>
 #include <memory>
-#include <string>
 
 namespace atelier::editor {
 class Project;
@@ -37,9 +37,11 @@ public:
 
     // Internal precondition: a nonempty frame of at most maximum_message bytes.
     // Protocol producers must reject oversized encoded replies before sending.
-    void send(std::string);
+    void send(Array<char>);
 
-    Array<std::string> receive();
+    void send(StringView);
+
+    Array<Array<char>> receive();
 
     // The peer closed its end, a transfer failed or a message broke the size limit.
     bool closed() const noexcept;
@@ -74,7 +76,7 @@ public:
     // Sends one step's ops in order, split at op boundaries into consecutive batches.
     void forward(Span<const editor::LiveChange> ops);
 
-    void fail(std::string reason);
+    void fail(Utf8Text reason);
 
     // Reads acknowledgements. running and stopping describe the Play process; a link
     // that closes while Play keeps running is divergence.
@@ -85,13 +87,13 @@ public:
 
     std::size_t unacknowledged() const noexcept { return pending_.size(); }
 
-    const std::string& divergence() const noexcept { return divergence_; }
+    const String& divergence() const noexcept { return divergence_; }
 
     // Internal and unstable, for acceptance: the Play graph of one Entity by document identity.
     std::uint64_t inspect(std::uint64_t identity);
 
     // The graph text, or an error message prefixed with "error: ".
-    Optional<std::string> inspected(std::uint64_t request);
+    Optional<String> inspected(std::uint64_t request);
 
 private:
     // Owns every spill file until ACK/close, or until an unsent batch is abandoned.
@@ -129,13 +131,13 @@ private:
 
     std::size_t pending_resource_bytes_{};
 
-    std::string divergence_;
+    String divergence_;
 
     Optional<std::chrono::steady_clock::time_point> closed_since_;
 
-    Map<std::uint64_t, std::string> inspected_;
+    Map<std::uint64_t, String> inspected_;
 
-    void send(std::string_view ops, Pending&&);
+    void send(StringView ops, Pending&&);
 };
 
 // Play end: applies arrived batches at the runner's host boundary and acknowledges

@@ -4,7 +4,10 @@
 #include "assets/reader.hpp"
 #include "foundation/array.hpp"
 #include "foundation/span.hpp"
+#include "foundation/string.hpp"
+#include <cstddef>
 #include <filesystem>
+#include <string>
 
 namespace atelier::editor {
 struct MeshImportPublication {
@@ -14,7 +17,7 @@ struct MeshImportPublication {
 
     Array<assets::TextureAsset> textures; // Exact pixels for inputs and touched existing texture assets.
 
-    Array<std::string> notes;
+    Array<String> notes;
 };
 
 // The folder is the project. Config/Project.json identifies it; all persisted
@@ -43,7 +46,7 @@ public:
 
     Span<const assets::ProjectEntry> entries() const noexcept { return assets_.entries(); }
 
-    const assets::ProjectEntry* entry(std::string_view key) const { return assets_.entry(key); }
+    const assets::ProjectEntry* entry(StringView key) const { return assets_.entry(key); }
 
     // The top-level folders the catalogue scans: Content, Source, Config.
     static Span<const std::filesystem::path> roots() noexcept;
@@ -54,10 +57,10 @@ public:
 
     Result<std::filesystem::path> resolve(const std::filesystem::path&) const;
 
-    Result<std::string> read_scene(const std::filesystem::path& relative) const;
+    Result<String> read_scene(const std::filesystem::path& relative) const;
 
     // Authored OBJ/glTF slots publish named MI assets; unbound slots use the engine grid.
-    Result<std::string> import_mesh(const std::filesystem::path&);
+    Result<String> import_mesh(const std::filesystem::path&);
 
     // Explicit same-format replacement at the mesh's current project location.
     // Same named slots retain their defaults and existing material files unchanged.
@@ -65,31 +68,31 @@ public:
     // their GUIDs. Removed slot defaults disappear, but their files remain.
     // No import history, source-value merge or rename inference. Unverified changed
     // dependencies/collisions fail; unchanged files may be reused without ownership.
-    Result<MeshImportPublication> reimport_mesh(std::string_view key, const std::filesystem::path& source);
+    Result<MeshImportPublication> reimport_mesh(StringView key, const std::filesystem::path& source);
 
-    Result<std::string> import_texture(const std::filesystem::path&);
+    Result<String> import_texture(const std::filesystem::path&);
 
     // Explicit author operation: decode before replacing the same asset file.
     // The identity sidecar is unchanged; returned pixels are this exact import.
-    Result<assets::TextureAsset> reimport_texture(std::string_view key, const std::filesystem::path& source);
+    Result<assets::TextureAsset> reimport_texture(StringView key, const std::filesystem::path& source);
 
-    Result<std::string> create_material(const std::filesystem::path&, const assets::MaterialAsset& = {});
+    Result<String> create_material(const std::filesystem::path&, const assets::MaterialAsset& = {});
 
     // Creates the MS and its sibling .source file together; empty text uses a
     // small editable shader. Material Source files stay outside gameplay Source.
-    Result<std::string> create_material_source(const std::filesystem::path&, std::string_view text = {});
+    Result<String> create_material_source(const std::filesystem::path&, StringView text = {});
 
     Result<void> save_material(const assets::MaterialAsset&);
 
-    Result<std::string> create_procedural_graph(const std::filesystem::path&, std::string_view text = {});
+    Result<String> create_procedural_graph(const std::filesystem::path&, StringView text = {});
 
-    Result<void> save_procedural_graph(std::string_view key, std::string_view text);
+    Result<void> save_procedural_graph(StringView key, StringView text);
 
     // Fresh, deterministic compiler inputs. UI declarations have their own
     // configured entry and are not parsed as gameplay Source functions.
     Result<Array<std::filesystem::path>> source_paths() const;
 
-    Result<void> create_source(const std::filesystem::path& relative, std::string_view);
+    Result<void> create_source(const std::filesystem::path& relative, StringView);
 
     Result<void> set_ui_source(const std::filesystem::path& relative);
 
@@ -98,15 +101,15 @@ public:
     // The startup scene, UI source and top-level folders are not renamed here.
     Result<std::filesystem::path> rename(const std::filesystem::path& relative, std::wstring_view name);
 
-    Result<std::filesystem::path> cook_collision(std::string_view mesh_key, math::Vector3 scale);
+    Result<std::filesystem::path> cook_collision(StringView mesh_key, math::Vector3 scale);
 
     // Cooked collision for the mesh at this scale; a missing or stale cache entry is rebuilt and written back.
-    Result<std::shared_ptr<const std::string>> collision(std::string_view mesh_key, math::Vector3 scale);
+    Result<std::shared_ptr<const Array<std::byte>>> collision(StringView mesh_key, math::Vector3 scale);
 
 private:
     Result<Array<assets::ProjectEntry>> scan_entries(bool create_identities) const;
 
-    Result<MeshImportPublication> import_mesh_files(const std::filesystem::path&, std::string_view existing_key);
+    Result<MeshImportPublication> import_mesh_files(const std::filesystem::path&, StringView existing_key);
 
     std::filesystem::path root_;
 
@@ -123,5 +126,15 @@ private:
 // file intact. Strings and on-disk paths use validated UTF-8.
 enum class WriteMode { replace, create };
 
-Result<void> write_file(const std::filesystem::path&, std::string_view, WriteMode = WriteMode::replace);
+Result<void> write_file(const std::filesystem::path&, Span<const std::byte>, WriteMode = WriteMode::replace);
+
+inline Result<void> write_file(const std::filesystem::path& path, StringView text,
+                               WriteMode mode = WriteMode::replace) {
+    return write_file(path, as_bytes(text), mode);
+}
+
+inline Result<void> write_file(const std::filesystem::path& path, const String& text,
+                               WriteMode mode = WriteMode::replace) {
+    return write_file(path, text.view(), mode);
+}
 }

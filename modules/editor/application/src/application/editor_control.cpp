@@ -20,7 +20,6 @@
 #include <charconv>
 #include <future>
 #include <limits>
-#include <set>
 
 namespace atelier::application {
 namespace {
@@ -29,8 +28,8 @@ using control::Failure;
 // Bumped whenever the frozen camera/view contract changes; repro.open accepts only this schema.
 constexpr unsigned repro_view_schema = 7;
 
-constexpr std::array<std::string_view, 3> removed_view_options{"direct_reference", "direct_clustered",
-                                                               "direct_shadow_cache"};
+constexpr std::array<StringView, 3> removed_view_options{"direct_reference", "direct_clustered",
+                                                         "direct_shadow_cache"};
 
 constexpr unsigned inspect_page_items = 256;
 
@@ -38,14 +37,14 @@ constexpr std::size_t graph_ray_limit = 32;
 
 constexpr std::size_t inspect_page_bytes = control::maximum_message / 4;
 
-json::Result<std::string> text(json::Value value, std::size_t maximum = 4096) {
+json::Result<String> text(json::Value value, std::size_t maximum = 4096) {
     ATELIER_TRY_BIND(result, value.string());
-    if (result->size() > maximum || result->find('\0') != result->npos)
+    if (result->size() > maximum || result->contains('\0'))
         return std::unexpected(value.error(json::Fault::range, "Invalid string length or NUL"));
-    return std::string(*result);
+    return String::from_utf8_validated(*result);
 }
 
-std::expected<std::string, Failure> utf8_text(std::wstring_view value) {
+std::expected<String, Failure> utf8_text(std::wstring_view value) {
     return platform::utf16_to_utf8(value).transform_error(
         [](platform::UtfError) { return Failure("invalid_request", "Invalid UTF-16 text"); });
 }
@@ -91,7 +90,7 @@ json::Result<json::Document> view_json(const renderer::ViewSettings& view) {
     return result.finish();
 }
 
-json::Result<void> numbers(json::Builder& result, json::Value node, std::string_view key, math::Vector3 value) {
+json::Result<void> numbers(json::Builder& result, json::Value node, StringView key, math::Vector3 value) {
     const std::array values{value.x, value.y, value.z};
     return result.numbers(node, key, Span{values});
 }
@@ -130,7 +129,7 @@ json::Result<json::Document> probe_inspection_json(const std::shared_ptr<const r
     ATELIER_TRY(result.set(root, "frame_id", v.frame_id));
     ATELIER_TRY(result.set(root, "scene_identity", v.scene_identity));
     ATELIER_TRY(result.numbers(root, "pixel", Span{v.pixel}));
-    ATELIER_TRY(result.set(root, "history", std::string_view{modes[static_cast<unsigned>(v.history)]}));
+    ATELIER_TRY(result.set(root, "history", StringView{modes[static_cast<unsigned>(v.history)]}));
     ATELIER_TRY(result.set(root, "rays", v.rays));
     ATELIER_TRY(result.set(root, "updates", v.updates));
     ATELIER_TRY_BIND(volumes, probe_volumes_json(v.volumes));
@@ -159,7 +158,7 @@ json::Result<json::Document> probe_inspection_json(const std::shared_ptr<const r
         ATELIER_TRY(result.numbers(item, "response_epoch_min_max_visits", Span{p.response}));
     }
     ATELIER_TRY(result.set(root, "requested_probe", static_cast<std::int64_t>(v.requested_probe)));
-    ATELIER_TRY(result.set(root, "probe_selection", std::string_view{selection}));
+    ATELIER_TRY(result.set(root, "probe_selection", StringView{selection}));
     ATELIER_TRY(result.set(root, "traced_probe", v.traced_probe));
     ATELIER_TRY_BIND(rays, result.array(root, "ray_samples"));
     for (const auto& ray : v.ray_samples) {
@@ -183,7 +182,7 @@ json::Result<json::Document> performance_json(const editor::FramePerformance& pe
     constexpr std::array aa_names{"off", "taa", "smaa", "smaa_t2x"};
     json::Builder result;
     const auto root = result.root();
-    ATELIER_TRY(result.set(root, "state", std::string_view{states[static_cast<unsigned>(sample.state)]}));
+    ATELIER_TRY(result.set(root, "state", StringView{states[static_cast<unsigned>(sample.state)]}));
     ATELIER_TRY(result.set(root, "window_capacity", std::uint64_t{editor::FramePerformance::window_size}));
     ATELIER_TRY(result.set(root, "publish_interval_ms", 250u));
     ATELIER_TRY(result.set(root, "samples", std::uint64_t{sample.samples}));
@@ -197,7 +196,7 @@ json::Result<json::Document> performance_json(const editor::FramePerformance& pe
     ATELIER_TRY(result.numbers(root, "viewport", Span{viewport}));
     const auto configuration = result.object_validated(root, "configuration");
     ATELIER_TRY(result.set(configuration, "antialiasing",
-                           std::string_view{aa_names[static_cast<unsigned>(sample.antialiasing)]}));
+                           StringView{aa_names[static_cast<unsigned>(sample.antialiasing)]}));
     ATELIER_TRY(result.set(configuration, "direct_candidates", sample.direct_candidates));
     ATELIER_TRY(result.set(configuration, "ddgi", sample.ddgi));
     if (sample.resource_bytes) {
@@ -342,15 +341,15 @@ enum class Argument {
 };
 
 struct Operation {
-    std::string_view name;
+    StringView name;
 
-    std::string_view description;
+    StringView description;
 
     bool changes;
 
-    Array<std::pair<std::string_view, Argument>> properties;
+    Array<std::pair<StringView, Argument>> properties;
 
-    Array<std::string> required;
+    Array<StringView> required;
 
     editor::OperatorKind kind{editor::OperatorKind::direct};
 };
@@ -670,11 +669,11 @@ json::Result<void> append_operation(json::Builder& result, json::Value entries, 
             ATELIER_TRY(result.set(field, "maximum", inspect_page_items));
         } else {
             ATELIER_TRY_BIND(choices, result.array(field, "enum"));
-            static constexpr std::string_view details[]{"full", "summary", "assets", "objects", "object"};
-            static constexpr std::string_view views[]{"catalog", "library", "topology", "node", "full"};
-            static constexpr std::string_view graph_scope[]{"graph"};
-            static constexpr std::string_view trace_scope[]{"scene_lit_post"};
-            Span<const std::string_view> names = trace_scope;
+            static constexpr StringView details[]{"full", "summary", "assets", "objects", "object"};
+            static constexpr StringView views[]{"catalog", "library", "topology", "node", "full"};
+            static constexpr StringView graph_scope[]{"graph"};
+            static constexpr StringView trace_scope[]{"scene_lit_post"};
+            Span<const StringView> names = trace_scope;
             if (kind == Argument::detail)
                 names = details;
             else if (kind == Argument::graph_view)
@@ -789,7 +788,7 @@ struct EditorControl::Impl {
         bool operator==(const Observation&) const = default;
     } observed;
 
-    static constexpr std::array<std::string_view, 12> observation_fields{
+    static constexpr std::array<StringView, 12> observation_fields{
         "document", "session", "input",  "project", "code",    "view_revision",
         "extent",   "dpi",     "camera", "view",    "editing", "running"};
 
@@ -801,14 +800,14 @@ struct EditorControl::Impl {
 
     std::array<ObservationChange, 16> observation_changes{};
 
-    Map<ObjectId, std::string> handles;
+    Map<ObjectId, String> handles;
 
-    Map<std::string, ObjectId> objects;
+    Map<String, ObjectId> objects;
 
     std::uint64_t pruned_revision{};
 
     struct Cached {
-        std::string id;
+        String id;
 
         Array<char> request;
 
@@ -822,17 +821,17 @@ struct EditorControl::Impl {
     std::size_t cache_bytes{};
 
     struct Case {
-        std::string name;
+        String name;
 
         renderer::ViewSettings view;
     };
 
     struct Job {
-        std::string id;
+        String id;
 
-        std::string_view kind;
+        StringView kind;
 
-        std::string token;
+        String token;
 
         std::shared_ptr<control::Peer> peer;
 
@@ -882,7 +881,7 @@ struct EditorControl::Impl {
 
         std::uint64_t history_resets{};
 
-        std::string_view phase() const noexcept {
+        StringView phase() const noexcept {
             return preparing ? "preparing" : rendering ? "rendering" : tracing ? "observing" : "writing";
         }
     };
@@ -1028,62 +1027,79 @@ struct EditorControl::Impl {
         }
     }
 
-    std::string token() const {
-        return std::string(*server.identity().root().string({"instance_id"})) + ":" + std::to_string(version);
+    String token() const {
+        return String::concat(String::validated(*server.identity().root().string({"instance_id"})), ":", version);
     }
 
-    std::string stale_message(std::string_view client_token, std::string_view op, json::Value args) const {
-        std::string message = "Inspect the editor again before changing its state; op=" + std::string(op);
+    String stale_message(StringView client_token, StringView op, json::Value args) const {
+        auto message = String::concat("Inspect the editor again before changing its state; op=", String::validated(op));
         if (op == "op.call") {
             const auto value = args.string({"id"});
-            message += " id=";
-            message += value && value->size() <= 80 &&
-                               std::ranges::all_of(*value, [](unsigned char c) { return c >= 0x20 && c <= 0x7e; })
-                           ? *value
-                           : "<invalid id>";
+            message.append_validated(" id=");
+            message.append_validated(
+                value && value->size() <= 80 &&
+                        std::ranges::all_of(*value, [](unsigned char c) { return c >= 0x20 && c <= 0x7e; })
+                    ? *value
+                    : StringView{"<invalid id>"});
         }
-        message += "; current_version=" + std::to_string(version);
+        message.append_validated("; current_version=");
+        message.append_number(version);
         const auto separator = client_token.rfind(':');
-        if (separator == client_token.npos)
-            return message + "; client_version=invalid; missing or invalid state_token";
-        const auto number = client_token.substr(separator + 1);
+        if (separator == StringView::npos) {
+            message.append_validated("; client_version=invalid; missing or invalid state_token");
+            return message;
+        }
+        const auto number = client_token.slice(separator + 1);
         std::uint64_t client_version{};
         const auto parsed = std::from_chars(number.data(), number.data() + number.size(), client_version);
         const bool valid = parsed.ec == std::errc{} && parsed.ptr == number.data() + number.size();
-        message += "; client_version=" + (valid ? std::to_string(client_version) : "invalid");
-        if (client_token.substr(0, separator) != *server.identity().root().string({"instance_id"}))
-            return message + "; state_token instance differs";
-        if (!valid)
-            return message + "; invalid state_token version";
+        message.append_validated("; client_version=");
+        if (valid)
+            message.append_number(client_version);
+        else
+            message.append_validated("invalid");
+        if (client_token.slice(0, separator) != *server.identity().root().string({"instance_id"})) {
+            message.append_validated("; state_token instance differs");
+            return message;
+        }
+        if (!valid) {
+            message.append_validated("; invalid state_token version");
+            return message;
+        }
         const auto first = version > observation_changes.size() ? version - observation_changes.size() + 1 : 2;
-        if (client_version < first - 1)
-            message += "; change history truncated before version " + std::to_string(first);
-        message += "; changes=";
+        if (client_version < first - 1) {
+            message.append_validated("; change history truncated before version ");
+            message.append_number(first);
+        }
+        message.append_validated("; changes=");
         bool any{};
         for (auto next = first; next <= version; ++next) {
             if (next <= client_version)
                 continue;
             const auto& change = observation_changes[next % observation_changes.size()];
-            message += (any ? "; " : "") + std::to_string(change.version) + ":[";
+            if (any)
+                message.append_validated("; ");
+            message.append_number(change.version);
+            message.append_validated(":[");
             bool field{};
             for (std::size_t i = 0; i < change.fields.size(); ++i)
                 if (change.fields[i]) {
                     if (field)
-                        message += ',';
-                    message += observation_fields[i];
+                        message.append_ascii(',');
+                    message.append_validated(observation_fields[i]);
                     field = true;
                 }
-            message += ']';
+            message.append_ascii(']');
             any = true;
         }
         if (!any)
-            message += "none (token differs without a recorded version change)";
+            message.append_validated("none (token differs without a recorded version change)");
         return message;
     }
 
     auto busy_states() const {
         const auto ui = app.ui_.interaction_state();
-        using State = std::pair<std::string_view, bool>;
+        using State = std::pair<StringView, bool>;
         return std::array{State{"document_edit", app.document_->editing()},
                           State{"viewport_tool", app.viewport_tool_.active()},
                           State{"network_gesture", app.workspace_.network.active_gesture()},
@@ -1139,17 +1155,20 @@ struct EditorControl::Impl {
         for (const auto& [name, value] : *items) {
             if (std::ranges::find(removed_view_options, name) != removed_view_options.end())
                 return std::unexpected(Failure(
-                    "invalid_request", "Display option was removed: " + std::string(name) +
-                                           "; direct light always uses clustered light lists with cached shadows"));
+                    "invalid_request",
+                    String::concat("Display option was removed: ", String::validated(name),
+                                   "; direct light always uses clustered light lists with cached shadows")));
             const auto* option = editor::view_option(name);
             if (!option)
-                return std::unexpected(Failure("invalid_request", "Unknown display option: " + std::string(name)));
+                return std::unexpected(
+                    Failure("invalid_request", String::concat("Unknown display option: ", String::validated(name))));
             double scalar{};
             if (option->kind == editor::ViewValueKind::enumeration) {
                 ATELIER_TRY_BIND(choice, text(value));
                 const auto found = std::ranges::find(option->choices, *choice);
                 if (found == option->choices.end())
-                    return std::unexpected(Failure("invalid_request", "Unsupported display choice: " + *choice));
+                    return std::unexpected(
+                        Failure("invalid_request", String::concat("Unsupported display choice: ", *choice)));
                 scalar = static_cast<double>(found - option->choices.begin());
             } else if (option->kind == editor::ViewValueKind::boolean) {
                 ATELIER_TRY_BIND(toggle, value.boolean());
@@ -1196,17 +1215,18 @@ struct EditorControl::Impl {
     }
 
     // Codes are application-owned UTF-8 identifiers; messages may be raw diagnostics.
-    void cancel(Job& job, std::string_view code, std::string_view message) {
+    void cancel(Job& job, StringView code, StringView message) {
         if (!job.complete && job.work->cancel())
             fail(job, code, message);
     }
 
-    void fail(Job& job, std::string_view code, std::string_view message) {
+    void fail(Job& job, StringView code, StringView message) {
         json::Builder response;
         response.set_validated(response.root(), "status", "error");
         const auto error = response.object_validated(response.root(), "error");
         response.set_validated(error, "code", code);
-        response.set_validated(error, "message", diagnostic_utf8(message));
+        const auto sanitized = diagnostic_utf8(message);
+        response.set_validated(error, "message", sanitized);
         job.rendering = false;
         job.preparing = false;
         job.tracing = false;
@@ -1239,7 +1259,8 @@ struct EditorControl::Impl {
             if (job->complete && !job->recorded) {
                 job->recorded = true;
                 json::Builder response(job->response);
-                response.set_validated(response.root(), "state_token", token());
+                const auto state = token();
+                response.set_validated(response.root(), "state_token", state);
                 response.set_validated(response.root(), "job_id", job->id);
                 job->response = response.finish();
                 for (auto& entry : cache)
@@ -1335,9 +1356,9 @@ struct EditorControl::Impl {
         return checked.has_value();
     }
 
-    std::expected<std::string_view, Failure> handle(ObjectId object) {
+    std::expected<StringView, Failure> handle(ObjectId object) {
         if (object == ObjectId{})
-            return std::string_view{};
+            return StringView{};
         if (handles.size() > editor::Session::maximum_entities + editor::Session::maximum_components &&
             pruned_revision != app.document_->revision()) {
             ATELIER_TRY_BIND(entities, operation(app.document_->world().members()));
@@ -1345,14 +1366,13 @@ struct EditorControl::Impl {
         }
         auto [found, added] = handles.try_emplace(object);
         if (added) {
-            *found = std::to_string(document_generation) + "/" + std::to_string(next_handle++);
+            *found = String::concat(document_generation, "/", next_handle++);
             objects.try_emplace(*found, object);
         }
-        return *found;
+        return found->view();
     }
 
-    std::expected<void, Failure> set_handle(json::Builder& output, json::Value parent, std::string_view key,
-                                            ObjectId id) {
+    std::expected<void, Failure> set_handle(json::Builder& output, json::Value parent, StringView key, ObjectId id) {
         ATELIER_TRY_BIND(value, handle(id));
         output.set_validated(parent, key, *value);
         return {};
@@ -1393,7 +1413,7 @@ struct EditorControl::Impl {
                 live.add(id);
                 return false;
             })));
-            handles.remove_if([&](ObjectId id, const std::string& handle_text) {
+            handles.remove_if([&](ObjectId id, const String& handle_text) {
                 if (live.contains(id))
                     return false;
                 objects.remove(handle_text);
@@ -1417,7 +1437,7 @@ struct EditorControl::Impl {
     }
 
     std::expected<void, Failure> write_object_header(json::Builder& header, json::Value root, ObjectId id,
-                                                     std::string_view type) {
+                                                     StringView type) {
         ATELIER_TRY_BIND(object_handle, handle(id));
         ATELIER_TRY_BIND(name, utf8_text(app.document_->name(id)));
         header.set_validated(root, "handle", *object_handle);
@@ -1522,9 +1542,12 @@ struct EditorControl::Impl {
         if (!saved->entries.empty()) {
             ATELIER_TRY_BIND(data, result.array(root, "saved_data"));
             for (const auto& entry : saved->entries) {
-                std::string path;
-                for (const auto& part : entry.path)
-                    path += (path.empty() ? "" : ".") + part;
+                String path;
+                for (const auto& part : entry.path) {
+                    if (!path.empty())
+                        path.append_ascii('.');
+                    path.append(part);
+                }
                 const auto item = result.append_object(*data);
                 ATELIER_TRY(result.set(item, "path", path));
                 ATELIER_TRY(result.set(item, "value", entry.value));
@@ -1634,7 +1657,7 @@ struct EditorControl::Impl {
     struct InspectionPage {
         Directory directory;
 
-        std::string_view instance;
+        StringView instance;
 
         std::uint64_t generation;
 
@@ -1648,17 +1671,17 @@ struct EditorControl::Impl {
 
         std::size_t remaining = inspect_page_bytes;
 
-        std::string_view revision_key() const {
+        StringView revision_key() const {
             return directory == Directory::assets ? "project_revision" : "revision";
         }
 
-        std::expected<void, Failure> check_version(std::string_view saved_instance, std::uint64_t saved_generation,
+        std::expected<void, Failure> check_version(StringView saved_instance, std::uint64_t saved_generation,
                                                    std::uint64_t saved_revision) const {
             if (saved_instance != instance || saved_generation != generation || saved_revision != revision)
                 return std::unexpected(
                     Failure("stale_cursor", directory == Directory::assets
-                                                ? "The asset directory changed; restart without a cursor"
-                                                : "The object directory changed; restart without a cursor"));
+                                                ? Utf8Text{"The asset directory changed; restart without a cursor"}
+                                                : Utf8Text{"The object directory changed; restart without a cursor"}));
             return {};
         }
 
@@ -1676,9 +1699,10 @@ struct EditorControl::Impl {
             const auto size = json::write(entry).size() + 1;
             if (size > inspect_page_bytes)
                 return std::unexpected(
-                    Failure("result_too_large", directory == Directory::assets
-                                                    ? "One asset directory entry exceeds the page byte limit"
-                                                    : "One object directory entry exceeds the page byte limit"));
+                    Failure("result_too_large",
+                            directory == Directory::assets
+                                ? Utf8Text{"One asset directory entry exceeds the page byte limit"}
+                                : Utf8Text{"One object directory entry exceeds the page byte limit"}));
             if (entries.size() == limit || size > remaining)
                 return false;
             result.append(entries, entry);
@@ -1769,7 +1793,7 @@ struct EditorControl::Impl {
             entity_index = *entity_number;
             object_index = *component_number;
         }
-        const auto filter = [&](std::string_view key) -> std::expected<Optional<std::string>, Failure> {
+        const auto filter = [&](StringView key) -> std::expected<Optional<String>, Failure> {
             ATELIER_TRY_BIND(argument, args.find(key));
             auto value = *argument;
             if (cursor) {
@@ -1781,9 +1805,9 @@ struct EditorControl::Impl {
             if (*argument && (**argument).is_null())
                 return std::unexpected(Failure("invalid_request", "Inspection filters must be strings"));
             if (!value || value->is_null())
-                return Optional<std::string>{};
+                return Optional<String>{};
             ATELIER_TRY_BIND(name, text(*value));
-            return Optional<std::string>{std::move(*name)};
+            return Optional<String>{std::move(*name)};
         };
         ATELIER_TRY_BIND(entity_filter, filter("entity_name"));
         ATELIER_TRY_BIND(type_filter, filter("type"));
@@ -1824,8 +1848,8 @@ struct EditorControl::Impl {
                     ATELIER_TRY_BIND(next, page->next_cursor());
                     ATELIER_TRY(page->result.set(*next, "entity", entity_index));
                     ATELIER_TRY(page->result.set(*next, "component", object_index));
-                    const auto save_filter = [&](std::string_view key,
-                                                 const Optional<std::string>& value) -> json::Result<void> {
+                    const auto save_filter = [&](StringView key,
+                                                 const Optional<String>& value) -> json::Result<void> {
                         if (!value)
                             return page->result.set_null(*next, key);
                         page->result.set_validated(*next, key, *value);
@@ -1966,7 +1990,7 @@ struct EditorControl::Impl {
         const auto root = result.root();
         ATELIER_TRY(result.set(root, "valid", summary.valid));
         const auto counts = result.object_validated(root, "counts");
-        constexpr std::array<std::string_view, 5> layer_names{"point", "vertex", "primitive", "detail", "instance"};
+        constexpr std::array<StringView, 5> layer_names{"point", "vertex", "primitive", "detail", "instance"};
         for (std::size_t i = 0; i < layer_names.size(); ++i)
             ATELIER_TRY(result.set(counts, layer_names[i], summary.counts[i]));
         ATELIER_TRY(result.set(root, "has_bounds", summary.has_bounds));
@@ -2076,8 +2100,8 @@ struct EditorControl::Impl {
         return result.finish();
     }
 
-    static json::Result<void> write_graph_diagnostic(json::Builder& result, json::Value parent, std::string_view key,
-                                                     const Optional<Error>& error, std::string_view node_name) {
+    static json::Result<void> write_graph_diagnostic(json::Builder& result, json::Value parent, StringView key,
+                                                     const Optional<Error>& error, StringView node_name) {
         if (!error)
             return result.set_null(parent, key);
         const auto diag = result.object_validated(parent, key);
@@ -2098,7 +2122,7 @@ struct EditorControl::Impl {
     }
 
     std::expected<json::Document, Failure> graph_inspect_json(const editor::GraphInspectView& view,
-                                                              std::string_view inspected_name,
+                                                              StringView inspected_name,
                                                               Span<const editor::GraphNodeCatalogEntry> catalog,
                                                               bool topology_only = false) {
         json::Builder result;
@@ -2125,11 +2149,9 @@ struct EditorControl::Impl {
                 ATELIER_TRY(result.set_null(root, "inspected_error"));
             const bool use_inspected = !inspected_name.empty();
             const auto& diag_error = use_inspected ? view.inspected_error : view.display_error;
-            const std::string_view diag_node =
-                use_inspected
-                    ? (view.inspected_error_node.empty() ? inspected_name : std::string_view{view.inspected_error_node})
-                    : (view.display_error_node.empty() ? std::string_view{view.display}
-                                                       : std::string_view{view.display_error_node});
+            const StringView diag_node =
+                use_inspected ? (view.inspected_error_node.empty() ? inspected_name : view.inspected_error_node.view())
+                              : (view.display_error_node.empty() ? view.display.view() : view.display_error_node.view());
             ATELIER_TRY(write_graph_diagnostic(result, root, "diagnostic", diag_error, diag_node));
             ATELIER_TRY_BIND(parameters, result.array(root, "parameters"));
             for (const auto& param : view.parameters) {
@@ -2172,10 +2194,11 @@ struct EditorControl::Impl {
             ATELIER_TRY(result.set(item, "bypass", node.is_bypassed));
             ATELIER_TRY(result.set(item, "frozen", node.is_frozen));
             const auto shape_name = editor::graph_node_shape_name(node.shape);
-            ATELIER_TRY(result.set(item, "shape", shape_name.empty() ? std::string_view{"auto"} : shape_name));
-            if (node.color)
-                ATELIER_TRY(result.set(item, "color", editor::format_graph_hex_color(*node.color)));
-            else
+            ATELIER_TRY(result.set(item, "shape", shape_name.empty() ? StringView{"auto"} : shape_name));
+            if (node.color) {
+                const auto hex = editor::format_graph_hex_color(*node.color);
+                ATELIER_TRY(result.set(item, "color", hex));
+            } else
                 ATELIER_TRY(result.set_null(item, "color"));
             ATELIER_TRY(result.set(item, "comment", node.comment));
             ATELIER_TRY(result.numbers(item, "position", Span{node.position}));
@@ -2204,8 +2227,8 @@ struct EditorControl::Impl {
                     ATELIER_TRY(result.set(st, "error", node.status->error->message));
                 else
                     ATELIER_TRY(result.set_null(st, "error"));
-                const std::string_view diag_node =
-                    node.root_error_node.empty() ? std::string_view{node.name} : std::string_view{node.root_error_node};
+                const StringView diag_node =
+                    node.root_error_node.empty() ? node.name.view() : node.root_error_node.view();
                 ATELIER_TRY(write_graph_diagnostic(result, st, "diagnostic", node.status->error, diag_node));
             } else {
                 ATELIER_TRY(result.set_null(item, "status"));
@@ -2229,7 +2252,8 @@ struct EditorControl::Impl {
             ATELIER_TRY(result.numbers(item, "size", Span{note.size}));
             ATELIER_TRY(result.set(item, "title", note.title));
             ATELIER_TRY(result.set(item, "text", note.text));
-            ATELIER_TRY(result.set(item, "color", editor::format_graph_hex_color(note.color)));
+            const auto hex = editor::format_graph_hex_color(note.color);
+            ATELIER_TRY(result.set(item, "color", hex));
         }
         ATELIER_TRY_BIND(boxes, result.array(root, "boxes"));
         for (const auto& box : view.boxes) {
@@ -2238,7 +2262,8 @@ struct EditorControl::Impl {
             ATELIER_TRY(result.numbers(item, "position", Span{box.position}));
             ATELIER_TRY(result.numbers(item, "size", Span{box.size}));
             ATELIER_TRY(result.set(item, "title", box.title));
-            ATELIER_TRY(result.set(item, "color", editor::format_graph_hex_color(box.color)));
+            const auto hex = editor::format_graph_hex_color(box.color);
+            ATELIER_TRY(result.set(item, "color", hex));
         }
         ATELIER_TRY_BIND(issues, result.array(root, "issues"));
         for (const auto& issue : view.issues) {
@@ -2257,7 +2282,7 @@ struct EditorControl::Impl {
         return result.finish();
     }
 
-    std::expected<std::unique_ptr<Job>, Failure> new_job(const std::string& id,
+    std::expected<std::unique_ptr<Job>, Failure> new_job(const String& id,
                                                          const std::shared_ptr<control::Peer>& peer) {
         if (active())
             return std::unexpected(Failure("busy", "Another control job is still active"));
@@ -2272,13 +2297,14 @@ struct EditorControl::Impl {
         job->started = std::chrono::steady_clock::now();
         job->deadline = job->started + std::chrono::seconds(120);
         ATELIER_TRY_BIND(directory_id, control::unique_id());
-        job->directory =
-            server.directory() / "artifacts" / *server.identity().root().string({"instance_id"}) / *directory_id;
+        job->directory = server.directory() / "artifacts" /
+                         platform::utf8_to_utf16_validated(*server.identity().root().string({"instance_id"})) /
+                         platform::utf8_to_utf16_validated(*directory_id);
         json::Builder manifest;
         const auto root = manifest.root();
         ATELIER_TRY(manifest.set(root, "protocol", control::protocol_version));
         manifest.set_validated(root, "identity", server.identity().root());
-        manifest.set_validated(root, "state_token", token());
+        manifest.set_validated(root, "state_token", job->token);
         manifest.set_validated(root, "request_id", id);
         ATELIER_TRY_BIND(camera, camera_json());
         manifest.set_validated(root, "camera", camera->root());
@@ -2296,7 +2322,7 @@ struct EditorControl::Impl {
         jobs.emplace_back(std::move(job));
     }
 
-    std::expected<json::Document, Failure> start_export(const std::string& id,
+    std::expected<json::Document, Failure> start_export(const String& id,
                                                         const std::shared_ptr<control::Peer>& peer) {
         if (app.project_ &&
             (!app.project_code_ || !app.project_code_->published_build() || !app.workspace_.scene_available))
@@ -2336,7 +2362,14 @@ struct EditorControl::Impl {
                 return CompareStringOrdinal(left.c_str(), -1, right.c_str(), -1, TRUE);
             };
             const auto less = [&](const auto& a, const auto& b) { return compare(a, b) == CSTR_LESS_THAN; };
-            std::set<std::filesystem::path, decltype(less)> listed(less);
+            Array<std::filesystem::path> listed;
+            const auto try_list = [&](const std::filesystem::path& p) {
+                const auto pos = std::ranges::lower_bound(listed, p, less);
+                if (pos != listed.end() && compare(*pos, p) == CSTR_EQUAL)
+                    return false;
+                listed.insert(static_cast<std::size_t>(pos - listed.begin()), p);
+                return true;
+            };
             const auto add = [&](const std::filesystem::path& named) -> std::expected<void, Failure> {
                 // Raw mesh references may use a different case than the catalogue.
                 // Copy each Windows file once, preserving keyed companions' identities.
@@ -2344,7 +2377,7 @@ struct EditorControl::Impl {
                 const auto at = std::ranges::find_if(
                     entries, [&](const auto& entry) { return compare(named, entry.path) == CSTR_EQUAL; });
                 const auto& path = at == entries.end() ? named : at->path;
-                if (!listed.insert(path).second)
+                if (!try_list(path))
                     return {};
                 data.files.add(path);
                 if (at != entries.end() &&
@@ -2362,9 +2395,9 @@ struct EditorControl::Impl {
                     if (error)
                         return std::unexpected(Failure("operation_failed", platform::error_message(error)));
                     if (!exists)
-                        return std::unexpected(
-                            Failure("dependency_mismatch", "Asset identity file is missing: " + at->key));
-                    if (listed.insert(sidecar).second)
+                        return std::unexpected(Failure(
+                            "dependency_mismatch", String::concat("Asset identity file is missing: ", at->key)));
+                    if (try_list(sidecar))
                         data.files.add(std::move(sidecar));
                 }
                 return {};
@@ -2376,8 +2409,9 @@ struct EditorControl::Impl {
                 if (!entry || entry->kind != kind) {
                     if (doc.unavailable(kind, key))
                         continue;
-                    return std::unexpected(
-                        Failure("dependency_mismatch", "A captured resource is no longer in the project: " + key));
+                    return std::unexpected(Failure(
+                        "dependency_mismatch",
+                        String::concat("A captured resource is no longer in the project: ", key)));
                 }
                 ATELIER_TRY(add(entry->path));
                 // Raw geometry companions are not MS/MI execution dependencies.
@@ -2431,7 +2465,7 @@ struct EditorControl::Impl {
         return response.finish();
     }
 
-    std::expected<json::Document, Failure> start_trace(const std::string& id,
+    std::expected<json::Document, Failure> start_trace(const String& id,
                                                        const std::shared_ptr<control::Peer>& peer, json::Value args) {
         ATELIER_TRY_BIND(scope_arg, args.find("scope"));
         if (*scope_arg) {
@@ -2467,7 +2501,7 @@ struct EditorControl::Impl {
         return response.finish();
     }
 
-    std::expected<json::Document, Failure> start_render(const std::string& id,
+    std::expected<json::Document, Failure> start_render(const String& id,
                                                         const std::shared_ptr<control::Peer>& peer, json::Value args,
                                                         bool compare, bool prepare = false) {
         if (!app.surface_.extent.width || !app.surface_.extent.height || !app.accepted_view_ ||
@@ -2479,7 +2513,7 @@ struct EditorControl::Impl {
             ATELIER_TRY_BIND(items, input->array());
             if (!items->size() || items->size() > 8)
                 return std::unexpected(Failure("invalid_request", "Expected 1 to 8 cases"));
-            Set<std::string> names;
+            Set<String> names;
             for (const auto item : *items) {
                 ATELIER_TRY(item.members({"name", "patch"}));
                 ATELIER_TRY_BIND(name_arg, item.at("name"));
@@ -2507,9 +2541,9 @@ struct EditorControl::Impl {
                 app.scene_.meshes.empty())
                 return std::unexpected(
                     Failure("not_ready", "Scene Lit preparation requires a filled view and a mesh instance"));
-            cases.add({"prepare", *view});
+            cases.add({"prepare"_s, *view});
         } else
-            cases.add({"current", app.workspace_.view});
+            cases.add({"current"_s, app.workspace_.view});
         ATELIER_TRY_BIND(points_arg, args.find("sample_frames"));
         Array<unsigned> points;
         if (*points_arg) {
@@ -2567,14 +2601,14 @@ struct EditorControl::Impl {
                                              {editor::OperatorFlag::history, "history"},
                                              {editor::OperatorFlag::replaces_document, "replaces_document"}}) {
                 if (has_any(info.flags, flag)) {
-                    ATELIER_TRY(output.append(*flags, std::string_view{name}));
+                    ATELIER_TRY(output.append(*flags, StringView{name}));
                 }
             }
             ATELIER_TRY_BIND(parameters, editor::parameter_schema(runtime, info).transform_error(operation_failure));
             ATELIER_TRY_BIND(result, editor::result_schema(runtime, info).transform_error(operation_failure));
             ATELIER_TRY_BIND(kinds, output.array(item, "kinds"));
             ATELIER_TRY(
-                output.append(*kinds, std::string_view{operator_kind_names[static_cast<std::size_t>(info.kind)]}));
+                output.append(*kinds, StringView{operator_kind_names[static_cast<std::size_t>(info.kind)]}));
             if (info.requires_interaction) {
                 ATELIER_TRY(output.append(*kinds, "interactive"));
             }
@@ -2813,8 +2847,8 @@ struct EditorControl::Impl {
         json::Builder result;
         result.set_validated(result.root(), "scope", "graph");
         ATELIER_TRY_BIND(entries, result.array(result.root(), "operations"));
-        for (std::string_view name : {"asset.new_procedural_graph", "graph.open", "graph.inspect", "graph.apply",
-                                      "graph.save", "graph.create_scratch"}) {
+        for (StringView name : {"asset.new_procedural_graph", "graph.open", "graph.inspect", "graph.apply",
+                                "graph.save", "graph.create_scratch"}) {
             const auto direct = std::ranges::find(operations(), name, &Operation::name);
             if (direct != operations().end()) {
                 ATELIER_TRY(append_operation(result, *entries, *direct));
@@ -2822,7 +2856,8 @@ struct EditorControl::Impl {
             }
             const auto* op = app.workspace_.operators.find(name);
             if (!op)
-                return std::unexpected(Failure("operation_failed", "Unregistered graph tool: " + std::string(name)));
+                return std::unexpected(
+                    Failure("operation_failed", String::concat("Unregistered graph tool: ", String::validated(name))));
             const auto item = result.append_object(*entries);
             result.set_validated(item, "op", "op.call");
             ATELIER_TRY(result.set(item, "id", op->id));
@@ -2838,7 +2873,7 @@ struct EditorControl::Impl {
         return result.finish();
     }
 
-    std::expected<void, Failure> graph_raycast(json::Builder& result, std::string_view key, std::string_view node_name,
+    std::expected<void, Failure> graph_raycast(json::Builder& result, StringView key, StringView node_name,
                                                json::Value request) {
         ATELIER_TRY(request.members({"output", "rays"}));
         ATELIER_TRY_BIND(port_value, request.at("output"));
@@ -2914,7 +2949,8 @@ struct EditorControl::Impl {
             ATELIER_TRY_BIND(entry, operation(doc.procedural_node_type(*name, app.project_.get())));
             const auto& found = *entry;
             if (!found)
-                return std::unexpected(Failure("invalid_request", "Unknown procedural node type: " + *name));
+                return std::unexpected(
+                    Failure("invalid_request", String::concat("Unknown procedural node type: ", *name)));
             ATELIER_TRY(write_graph_type(result, root, *found));
             ATELIER_TRY_BIND(attributes, result.array(root, "attribute_contracts"));
             if (found->help) {
@@ -2953,7 +2989,8 @@ struct EditorControl::Impl {
                         continue;
                     ATELIER_TRY_BIND(info, operation(runtime.describe(field.type)));
                     const auto item = result.append_object(*entries);
-                    ATELIER_TRY(result.set(item, "path", editor::detail::dotted(field.names)));
+                    const auto dotted = editor::detail::dotted(field.names);
+                    ATELIER_TRY(result.set(item, "path", dotted));
                     ATELIER_TRY(result.set(item, "type", (*info)->name));
                     ATELIER_TRY(result.set(item, "label", field.label));
                     ATELIER_TRY(result.set(item, "description", field.description));
@@ -2988,7 +3025,7 @@ struct EditorControl::Impl {
         return result.finish();
     }
 
-    static std::string_view passing_mode_name(ParameterPassing passing) noexcept {
+    static StringView passing_mode_name(ParameterPassing passing) noexcept {
         switch (passing) {
         case ParameterPassing::read_only:
             return "const_ref";
@@ -2999,17 +3036,17 @@ struct EditorControl::Impl {
         }
     }
 
-    static std::string format_param_clause(std::string_view type, ParameterPassing passing, std::string_view name) {
-        std::string clause;
+    static String format_param_clause(StringView type, ParameterPassing passing, StringView name) {
+        String clause;
         if (passing == ParameterPassing::read_only)
-            clause = "const " + std::string(type) + "&";
+            clause = String::concat("const ", String::validated(type), "&");
         else if (passing == ParameterPassing::reference)
-            clause = std::string(type) + "&";
+            clause = String::concat(String::validated(type), "&");
         else
-            clause = std::string(type);
+            clause = String::from_utf8_validated(type);
         if (!name.empty()) {
-            clause += " ";
-            clause += name;
+            clause.append_ascii(' ');
+            clause.append_validated(name);
         }
         return clause;
     }
@@ -3036,12 +3073,11 @@ struct EditorControl::Impl {
     }
 
     static std::expected<json::Value, Failure> append_library_parameter(json::Builder& result, json::Value params_arr,
-                                                                        std::string& sig, bool comma,
-                                                                        std::string_view name, std::string_view type,
-                                                                        ParameterPassing passing) {
+                                                                        String& sig, bool comma, StringView name,
+                                                                        StringView type, ParameterPassing passing) {
         if (comma)
-            sig += ", ";
-        sig += format_param_clause(type, passing, name);
+            sig.append_validated(", ");
+        sig.append(format_param_clause(type, passing, name));
         const auto p_obj = result.append_object(params_arr);
         ATELIER_TRY(result.set(p_obj, "name", name));
         ATELIER_TRY(result.set(p_obj, "type", type));
@@ -3050,9 +3086,9 @@ struct EditorControl::Impl {
     }
 
     static std::expected<void, Failure> finish_library_callable(json::Builder& result, json::Value item,
-                                                                std::string_view name, std::string_view return_type,
-                                                                std::string_view signature, bool parallel_safe,
-                                                                std::string_view description) {
+                                                                StringView name, StringView return_type,
+                                                                StringView signature, bool parallel_safe,
+                                                                StringView description) {
         ATELIER_TRY(result.set(item, "name", name));
         ATELIER_TRY(result.set(item, "return_type", return_type));
         ATELIER_TRY(result.set(item, "signature", signature));
@@ -3063,11 +3099,11 @@ struct EditorControl::Impl {
 
     std::expected<json::Document, Failure> graph_library(json::Value args) {
         ATELIER_TRY(args.allowed_members({"view", "prefix", "symbol"}));
-        std::string prefix;
+        String prefix;
         if (const auto p = *args.find("prefix")) {
             ATELIER_TRY_ASSIGN(prefix, text(*p, 256));
         }
-        Optional<std::string> symbol;
+        Optional<String> symbol;
         if (const auto s = *args.find("symbol")) {
             ATELIER_TRY_BIND(parsed, text(*s, 256));
             if (parsed->empty())
@@ -3098,8 +3134,9 @@ struct EditorControl::Impl {
             std::ranges::sort(matched_fns, {}, &source::FunctionInfo::name);
             for (const auto* fn : matched_fns) {
                 const auto item = result.append_object(*functions_arr);
-                ATELIER_TRY(result.set(item, "module", fn->engine_module.empty() ? "project" : fn->engine_module));
-                std::string sig = fn->return_type + " " + fn->name + "(";
+                ATELIER_TRY(
+                    result.set(item, "module", fn->engine_module.empty() ? StringView{"project"} : fn->engine_module.view()));
+                auto sig = String::concat(fn->return_type, " ", fn->name, "(");
                 ATELIER_TRY_BIND(params_arr, result.array(item, "parameters"));
                 for (std::size_t p = 0; p < fn->parameters.size(); ++p) {
                     const auto& param = fn->parameters[p];
@@ -3108,7 +3145,7 @@ struct EditorControl::Impl {
                     if (param.passing == ParameterPassing::reference && param.mutates_structure)
                         ATELIER_TRY(result.set(*p_obj, "mutates_structure", true));
                 }
-                sig += ')';
+                sig.append_ascii(')');
                 ATELIER_TRY(finish_library_callable(result, item, fn->name, fn->return_type, sig, fn->parallel_safe,
                                                     fn->description));
             }
@@ -3117,17 +3154,16 @@ struct EditorControl::Impl {
         ATELIER_TRY_BIND(methods_arr, result.array(root, "node_methods"));
         ATELIER_TRY_BIND(node_base, operation(runtime.native_type<procedural::Node>()));
         ATELIER_TRY_BIND(node_info, operation(runtime.describe(*node_base)));
-        const auto matches_qualified = [](std::string_view query, std::string_view qualifier, std::string_view member) {
+        const auto matches_qualified = [](StringView query, StringView qualifier, StringView member) {
             return query.size() == qualifier.size() + member.size() && query.starts_with(qualifier) &&
                    query.ends_with(member);
         };
-        const auto prefix_matches_qualified = [](std::string_view pref, std::string_view qualifier,
-                                                 std::string_view member) {
+        const auto prefix_matches_qualified = [](StringView pref, StringView qualifier, StringView member) {
             if (pref.size() <= qualifier.size())
                 return qualifier.starts_with(pref);
-            return pref.starts_with(qualifier) && member.starts_with(pref.substr(qualifier.size()));
+            return pref.starts_with(qualifier) && member.starts_with(pref.slice(qualifier.size()));
         };
-        Array<std::string> method_param_types;
+        Array<String> method_param_types;
         for (const auto& method : (*node_info)->methods) {
             if (!method.preserves_borrows)
                 continue;
@@ -3138,7 +3174,7 @@ struct EditorControl::Impl {
                 !prefix_matches_qualified(prefix, "self.", method.name) &&
                 !prefix_matches_qualified(prefix, "procedural.Node.", method.name))
                 continue;
-            std::string ret_type = "void";
+            String ret_type = "void"_s;
             if (method.signature.result) {
                 auto projected = source::source_type_name(runtime, method.signature.result->type);
                 if (!projected) {
@@ -3164,13 +3200,12 @@ struct EditorControl::Impl {
             if (native_only)
                 continue;
             const auto item = result.append_object(*methods_arr);
-            std::string sig = ret_type + " self." + method.name + "(";
+            auto sig = String::concat(ret_type, " self.", method.name, "(");
             ATELIER_TRY_BIND(params_arr, result.array(item, "parameters"));
             for (std::size_t p = 0; p < method.signature.parameters.size(); ++p) {
                 const auto& param = method.signature.parameters[p];
-                const std::string_view pname = p < method.parameter_names.size()
-                                                   ? std::string_view{method.parameter_names[p]}
-                                                   : std::string_view{};
+                const StringView pname =
+                    p < method.parameter_names.size() ? method.parameter_names[p].view() : StringView{};
                 ATELIER_TRY_BIND(p_obj, append_library_parameter(result, *params_arr, sig, p > 0, pname,
                                                                  method_param_types[p], param.passing));
                 if (p < method.parameter_defaults.size() && method.parameter_defaults[p]) {
@@ -3179,12 +3214,12 @@ struct EditorControl::Impl {
                     result.set_validated(*p_obj, "default", def_json->root());
                 }
             }
-            sig += ')';
+            sig.append_ascii(')');
             ATELIER_TRY(finish_library_callable(result, item, method.name, ret_type, sig, false, method.description));
         }
 
         ATELIER_TRY_BIND(types_arr, result.array(root, "value_types"));
-        const auto is_engine_namespace = [&](std::string_view type_name) {
+        const auto is_engine_namespace = [&](StringView type_name) {
             if (!program)
                 return false;
             for (const auto& mod : program->engine_modules())
@@ -3255,10 +3290,10 @@ struct EditorControl::Impl {
         return result.finish();
     }
 
-    std::expected<json::Document, Failure> graph_request(std::string_view op, json::Value args) {
+    std::expected<json::Document, Failure> graph_request(StringView op, json::Value args) {
         auto& doc = *app.document_;
         if (op == "graph.create_scratch") {
-            std::string key = "scratch/procedural";
+            String key = "scratch/procedural"_s;
             ATELIER_TRY_BIND(key_arg, args.find("key"));
             if (*key_arg) {
                 ATELIER_TRY_BIND(value, text(**key_arg, 256));
@@ -3287,7 +3322,7 @@ struct EditorControl::Impl {
                 return std::unexpected(Failure("invalid_request", "prefix and symbol require view=library"));
         }
         ATELIER_TRY_BIND(asset_arg, args.find("asset"));
-        std::string key = app.workspace_.active_graph;
+        String key = app.workspace_.active_graph;
         if (*asset_arg) {
             ATELIER_TRY_BIND(value, text(**asset_arg));
             key = std::move(*value);
@@ -3296,10 +3331,10 @@ struct EditorControl::Impl {
             return std::unexpected(
                 Failure("invalid_request",
                         op == "graph.inspect"
-                            ? "Open the procedural graph first (via op.call graph.open or graph.create_scratch)"
-                            : "Specify an open procedural graph or enter a graph context first"));
+                            ? Utf8Text{"Open the procedural graph first (via op.call graph.open or graph.create_scratch)"}
+                            : Utf8Text{"Specify an open procedural graph or enter a graph context first"}));
         ATELIER_TRY_BIND(node_arg, args.find("node"));
-        std::string node_name = key == app.workspace_.active_graph ? app.workspace_.selected_graph_node : std::string{};
+        String node_name = key == app.workspace_.active_graph ? app.workspace_.selected_graph_node : String{};
         if (*node_arg) {
             ATELIER_TRY_BIND(value, text(**node_arg, 256));
             node_name = std::move(*value);
@@ -3314,31 +3349,33 @@ struct EditorControl::Impl {
         if (const auto mode = *args.find("view")) {
             ATELIER_TRY_BIND(value, text(*mode));
             if (*value == "topology") {
-                for (const auto name : {"node", "timings", "samples", "spatial", "reference_node"})
+                for (const StringView name : {"node", "timings", "samples", "spatial", "reference_node"})
                     if (*args.find(name))
-                        return std::unexpected(Failure("invalid_request", std::string(name) + " requires view=full"));
+                        return std::unexpected(
+                            Failure("invalid_request", String::concat(String::validated(name), " requires view=full")));
                 ATELIER_TRY_BIND(view, operation(doc.graph_topology(key)));
                 return graph_inspect_json(**view, {}, {}, true);
             }
             if (*value == "node") {
                 if (node_name.empty())
                     return std::unexpected(Failure("invalid_request", "view=node requires a node name"));
-                for (const auto name : {"timings", "samples", "spatial", "reference_node"})
+                for (const StringView name : {"timings", "samples", "spatial", "reference_node"})
                     if (*args.find(name))
-                        return std::unexpected(Failure("invalid_request", std::string(name) + " requires view=full"));
+                        return std::unexpected(
+                            Failure("invalid_request", String::concat(String::validated(name), " requires view=full")));
                 ATELIER_TRY_BIND(props, operation(doc.graph_node_properties(key, node_name)));
                 json::Builder result;
                 ATELIER_TRY(result.set(result.root(), "asset", key));
                 ATELIER_TRY(result.set(result.root(), "node", node_name));
                 result.set_validated(result.root(), "properties", props->root());
-                const auto prefix = node_name + ".";
+                const auto prefix = String::concat(node_name, ".");
                 Optional<json::Value> controls;
                 for (const auto& parameter : doc.graph_document(key)->parameters)
-                    for (std::string_view target : parameter.targets)
+                    for (const auto& target : parameter.targets)
                         if (target.starts_with(prefix)) {
                             if (!controls)
                                 controls = result.object_validated(result.root(), "controlled_fields");
-                            ATELIER_TRY(result.set(*controls, target.substr(prefix.size()), parameter.name));
+                            ATELIER_TRY(result.set(*controls, target.view().slice(prefix.size()), parameter.name));
                         }
                 if (const auto rays = *args.find("raycast"))
                     ATELIER_TRY(graph_raycast(result, key, node_name, *rays));
@@ -3373,7 +3410,8 @@ struct EditorControl::Impl {
         if (!node_name.empty()) {
             const auto* node = doc.graph_node(key, node_name);
             if (!node)
-                return std::unexpected(Failure("invalid_request", "Unknown node in procedural graph: " + node_name));
+                return std::unexpected(
+                    Failure("invalid_request", String::concat("Unknown node in procedural graph: ", node_name)));
             inspected_id = node->node.id();
         }
         bool timings = false;
@@ -3394,7 +3432,7 @@ struct EditorControl::Impl {
             ATELIER_TRY_BIND(flag, (**spatial_arg).boolean());
             spatial = *flag;
         }
-        std::string ref_name;
+        String ref_name;
         ObjectId ref_id{};
         ATELIER_TRY_BIND(ref_arg, args.find("reference_node"));
         if (*ref_arg) {
@@ -3404,7 +3442,8 @@ struct EditorControl::Impl {
                 const auto* ref_node = doc.graph_node(key, ref_name);
                 if (!ref_node || !ref_node->node.registered())
                     return std::unexpected(Failure(
-                        "invalid_request", "Unknown or unresolved reference_node in procedural graph: " + ref_name));
+                        "invalid_request",
+                        String::concat("Unknown or unresolved reference_node in procedural graph: ", ref_name)));
                 ref_id = ref_node->node.id();
             }
         }
@@ -3424,7 +3463,7 @@ struct EditorControl::Impl {
         return *id;
     }
 
-    std::expected<json::Document, Failure> material_request(std::string_view op, json::Value args) {
+    std::expected<json::Document, Failure> material_request(StringView op, json::Value args) {
         auto& doc = *app.document_;
         auto* project = app.project_.get();
         json::Builder result;
@@ -3498,7 +3537,7 @@ struct EditorControl::Impl {
         return result.finish();
     }
 
-    std::expected<json::Document, Failure> dispatch(std::string_view op, json::Value args, const std::string& id,
+    std::expected<json::Document, Failure> dispatch(StringView op, json::Value args, const String& id,
                                                     const std::shared_ptr<control::Peer>& peer) {
         if (op == "capabilities") {
             if (const auto scope = *args.find("scope")) {
@@ -3512,7 +3551,7 @@ struct EditorControl::Impl {
             return operator_list();
         if (op == "editor.inspect") {
             ATELIER_TRY_BIND(detail_arg, args.find("detail"));
-            std::string detail = "full";
+            String detail = "full"_s;
             if (*detail_arg) {
                 ATELIER_TRY_BIND(name, text(**detail_arg));
                 detail = std::move(*name);
@@ -3584,7 +3623,7 @@ struct EditorControl::Impl {
     std::expected<json::Document, Failure> request(json::Value request, const std::shared_ptr<control::Peer>& peer) {
         app.sync_world_view();
         json::Document response;
-        std::string id;
+        String id;
         Array<char> canonical;
         bool remember{};
         bool replay{};
@@ -3625,7 +3664,8 @@ struct EditorControl::Impl {
             ATELIER_TRY_BIND(items, args.object_items());
             for (const auto& [key, value] : *items)
                 if (std::ranges::none_of(op->properties, [&](const auto& field) { return field.first == key; }))
-                    return std::unexpected(Failure("invalid_request", "Unknown argument: " + std::string(key)));
+                    return std::unexpected(
+                        Failure("invalid_request", String::concat("Unknown argument: ", String::validated(key))));
             for (const auto& field : op->required) {
                 ATELIER_TRY(args.at(field));
             }
@@ -3633,7 +3673,7 @@ struct EditorControl::Impl {
             remember = op->changes;
             if (op->changes) {
                 ATELIER_TRY_BIND(token_arg, request.find("state_token"));
-                std::string_view client_token;
+                StringView client_token;
                 if (*token_arg) {
                     ATELIER_TRY_BIND(value, (**token_arg).string());
                     client_token = *value;
@@ -3655,8 +3695,7 @@ struct EditorControl::Impl {
             response = std::move(*result);
         else {
             const auto& error = result.error();
-            ATELIER_TRY_BIND(failure, control::failure(error.code, diagnostic_utf8(error.message)));
-            response = std::move(*failure);
+            response = control::failure(error.code, error.message);
             if (error.code == "busy" && busy()) {
                 ATELIER_TRY_BIND(reasons, busy_reasons());
                 json::Builder output(response);
@@ -3668,7 +3707,8 @@ struct EditorControl::Impl {
             return response;
         observe();
         json::Builder output(response);
-        output.set_validated(output.root(), "state_token", token());
+        const auto state = token();
+        output.set_validated(output.root(), "state_token", state);
         response = output.finish();
         if (remember) {
             const auto bytes = canonical.size() + json::write(response.root()).size();
@@ -3688,8 +3728,9 @@ std::expected<EditorControl, control::Failure> EditorControl::create(Application
     auto server = control::Server::create(directory, build.finish());
     if (!server)
         return std::unexpected(std::move(server.error()));
-    const auto native = platform::windows_file_path(server->directory() / "artifacts" /
-                                                    *server->identity().root().string({"instance_id"}));
+    const auto native = platform::windows_file_path(
+        server->directory() / "artifacts" /
+        platform::utf8_to_utf16_validated(*server->identity().root().string({"instance_id"})));
     if (!native)
         return std::unexpected(Failure("storage_error", platform::error_message(native.error())));
     std::error_code error;
@@ -3786,14 +3827,15 @@ void EditorControl::traced(const renderer::Frame& frame, const renderer::Result<
             ATELIER_TRY(metadata.set(error, "code", static_cast<std::int64_t>(result.error().cause.code)));
             ATELIER_TRY(
                 metadata.set(error, "native_result", static_cast<std::int64_t>(result.error().cause.native_result)));
-            metadata.set_validated(error, "message", diagnostic_utf8(result.error().cause.message));
+            metadata.set_validated(error, "message", result.error().cause.message);
             ATELIER_TRY(metadata.set(error, "terminal", result.error().terminal));
         }
         return metadata.finish();
     };
     auto metadata = snapshot();
     if (!metadata) {
-        state.cancel(*job, "invalid_request", metadata.error().describe());
+        const auto desc = metadata.error().describe();
+        state.cancel(*job, "invalid_request", desc);
         return;
     }
     state.start_writer(*job, [path = job->directory, trace = std::move(job->trace),
@@ -3807,7 +3849,7 @@ void EditorControl::traced(const renderer::Frame& frame, const renderer::Result<
         job->writer.wait();
 }
 
-void EditorControl::render_failed(std::string_view message) {
+void EditorControl::render_failed(StringView message) {
     if (auto* job = impl_->active(); job && job->rendering)
         impl_->cancel(*job, "render_failure", message);
 }
@@ -3839,7 +3881,8 @@ void EditorControl::rendered(const renderer::Frame& frame, const renderer::Frame
     if (job->preparing) {
         const auto frame_info = state.frame_json();
         if (!frame_info) {
-            state.cancel(*job, "invalid_request", frame_info.error().describe());
+            const auto desc = frame_info.error().describe();
+            state.cancel(*job, "invalid_request", desc);
             return;
         }
         json::Builder response;
@@ -3873,7 +3916,8 @@ void EditorControl::rendered(const renderer::Frame& frame, const renderer::Frame
     };
     auto metadata = snapshot();
     if (!metadata) {
-        state.cancel(*job, "invalid_request", metadata.error().describe());
+        const auto desc = metadata.error().describe();
+        state.cancel(*job, "invalid_request", desc);
         return;
     }
     job->samples.add({std::move(*capture), std::move(*metadata)});

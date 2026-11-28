@@ -36,7 +36,7 @@ constexpr std::array<float, 6> minima{120, 60, 60, 60, 60, 55};
 
 constexpr std::array<std::wstring_view, 4> aa_names{L"Off", L"TAA", L"SMAA", L"SMAA T2x"};
 
-std::wstring wide(std::string_view value) {
+std::wstring wide(StringView value) {
     return {value.begin(), value.end()};
 }
 
