@@ -660,6 +660,87 @@ public:
         return view().contains_if(std::forward<Predicate>(predicate));
     }
 
+    template <class U = T>
+        requires detail::SpanEqualityComparable<T, U>
+    [[nodiscard]] std::size_t count(const U& value) const noexcept {
+        return view().count(value);
+    }
+
+    template <class Predicate>
+        requires std::predicate<Predicate&, const T&>
+    [[nodiscard]] std::size_t count_if(Predicate&& predicate) const noexcept {
+        return view().count_if(std::forward<Predicate>(predicate));
+    }
+
+    [[nodiscard]] std::size_t common_prefix_length(Span<const T> other) const noexcept
+        requires detail::SpanEqualityComparable<T, T>
+    {
+        return view().common_prefix_length(other);
+    }
+
+    template <class R>
+        requires(!std::is_convertible_v<R&&, Span<const T>>) && std::ranges::contiguous_range<R> &&
+                std::ranges::sized_range<R> &&
+                (!std::is_volatile_v<std::remove_reference_t<std::ranges::range_reference_t<R>>>) &&
+                detail::SpanEqualityComparable<T, std::remove_reference_t<std::ranges::range_reference_t<R>>>
+    [[nodiscard]] std::size_t common_prefix_length(R&& other) const noexcept {
+        return view().common_prefix_length(std::forward<R>(other));
+    }
+
+    template <class Compare = std::less<>>
+        requires std::strict_weak_order<Compare&, const T&, const T&>
+    [[nodiscard]] bool is_sorted(Compare&& compare = {}) const noexcept {
+        return view().is_sorted(std::forward<Compare>(compare));
+    }
+
+    template <class U = T, class Compare = std::less<>>
+        requires std::predicate<Compare&, const T&, const U&>
+    [[nodiscard]] std::size_t lower_bound(const U& value, Compare&& compare = {}) const noexcept {
+        return view().lower_bound(value, std::forward<Compare>(compare));
+    }
+
+    template <class U = T, class Compare = std::less<>>
+        requires std::predicate<Compare&, const U&, const T&>
+    [[nodiscard]] std::size_t upper_bound(const U& value, Compare&& compare = {}) const noexcept {
+        return view().upper_bound(value, std::forward<Compare>(compare));
+    }
+
+    template <class U = T, class Compare = std::less<>>
+        requires std::predicate<Compare&, const T&, const U&> && std::predicate<Compare&, const U&, const T&>
+    [[nodiscard]] bool binary_search(const U& value, Compare&& compare = {}) const noexcept {
+        return view().binary_search(value, std::forward<Compare>(compare));
+    }
+
+    void fill(const T& value) noexcept
+        requires std::is_copy_assignable_v<T>
+    {
+        view().fill(value);
+    }
+
+    void reverse() noexcept
+        requires std::swappable<T>
+    {
+        view().reverse();
+    }
+
+    std::size_t replace(const T& old_value, const T& new_value) noexcept
+        requires std::equality_comparable<T> && std::is_copy_constructible_v<T> && std::is_copy_assignable_v<T>
+    {
+        return view().replace(old_value, new_value);
+    }
+
+    void swap_elements(std::size_t first, std::size_t second) noexcept
+        requires std::swappable<T>
+    {
+        view().swap_elements(first, second);
+    }
+
+    template <class Compare = std::less<>>
+        requires std::sortable<T*, std::reference_wrapper<std::remove_reference_t<Compare>>>
+    void sort(Compare&& compare = {}) noexcept {
+        view().sort(std::forward<Compare>(compare));
+    }
+
     // Maps a live element address, not an equal value, back to its index.
     // Null, foreign, misaligned and one-past addresses are absent.
     [[nodiscard]] std::size_t index_of(const T* element) const noexcept { return view().index_of(element); }

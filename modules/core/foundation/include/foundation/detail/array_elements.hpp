@@ -1,5 +1,6 @@
 #pragma once
 
+#include "foundation/span.hpp"
 #include "memory/fatal.hpp"
 
 #include <mimalloc.h>
@@ -64,8 +65,7 @@ struct ArrayElements {
     // realloc implicitly creates objects in copied bytes; relocation must also be trivial.
     static constexpr bool byte_reallocate = std::is_implicit_lifetime_v<T> && byte_relocate;
 
-    static constexpr bool no_padding_bytes =
-        std::has_unique_object_representations_v<T> || std::is_floating_point_v<T> || std::same_as<T, bool>;
+    static constexpr bool no_padding_bytes = span_no_padding_v<T>;
 
     static constexpr bool zero_default_init = [] {
         if constexpr (!std::is_implicit_lifetime_v<T> || !std::is_trivially_default_constructible_v<T> ||
@@ -154,94 +154,10 @@ struct ArrayElements {
     static void fill_construct(T* destination, std::size_t count, const T& value) noexcept {
         if (!count)
             return;
-        if constexpr (byte_copy && std::is_implicit_lifetime_v<T>) {
-            if constexpr (sizeof(T) == 1 && no_padding_bytes) {
-                unsigned char byte;
-                std::memcpy(&byte, std::addressof(value), 1);
-                std::memset(destination, byte, count);
-                return;
-            } else if constexpr (sizeof(T) == 2 && no_padding_bytes) {
-                std::uint16_t pattern;
-                std::memcpy(&pattern, std::addressof(value), 2);
-                if (static_cast<std::uint16_t>(static_cast<std::uint8_t>(pattern) * UINT16_C(0x0101)) == pattern) {
-                    std::memset(destination, static_cast<unsigned char>(pattern), count * 2);
-                    return;
-                }
-                const auto vec = _mm_set1_epi16(static_cast<short>(pattern));
-                std::size_t i = 0;
-                while (count - i >= 16) {
-                    _mm_storeu_si128(reinterpret_cast<__m128i*>(destination + i), vec);
-                    _mm_storeu_si128(reinterpret_cast<__m128i*>(destination + i + 8), vec);
-                    i += 16;
-                }
-                if (count - i >= 8) {
-                    _mm_storeu_si128(reinterpret_cast<__m128i*>(destination + i), vec);
-                    i += 8;
-                }
-                for (; i != count; ++i)
-                    std::memcpy(destination + i, &pattern, 2);
-                return;
-            } else if constexpr (sizeof(T) == 4 && no_padding_bytes) {
-                std::uint32_t pattern;
-                std::memcpy(&pattern, std::addressof(value), 4);
-                if (static_cast<std::uint32_t>(static_cast<std::uint8_t>(pattern)) * UINT32_C(0x01010101) == pattern) {
-                    std::memset(destination, static_cast<unsigned char>(pattern), count * 4);
-                    return;
-                }
-                const auto vec = _mm_set1_epi32(static_cast<int>(pattern));
-                std::size_t i = 0;
-                while (count - i >= 8) {
-                    _mm_storeu_si128(reinterpret_cast<__m128i*>(destination + i), vec);
-                    _mm_storeu_si128(reinterpret_cast<__m128i*>(destination + i + 4), vec);
-                    i += 8;
-                }
-                if (count - i >= 4) {
-                    _mm_storeu_si128(reinterpret_cast<__m128i*>(destination + i), vec);
-                    i += 4;
-                }
-                for (; i != count; ++i)
-                    std::memcpy(destination + i, &pattern, 4);
-                return;
-            } else if constexpr (sizeof(T) == 8 && no_padding_bytes) {
-                std::uint64_t pattern;
-                std::memcpy(&pattern, std::addressof(value), 8);
-                if (static_cast<std::uint64_t>(static_cast<std::uint8_t>(pattern)) * UINT64_C(0x0101010101010101) ==
-                    pattern) {
-                    std::memset(destination, static_cast<unsigned char>(pattern), count * 8);
-                    return;
-                }
-                const auto vec = _mm_set1_epi64x(static_cast<long long>(pattern));
-                std::size_t i = 0;
-                while (count - i >= 4) {
-                    _mm_storeu_si128(reinterpret_cast<__m128i*>(destination + i), vec);
-                    _mm_storeu_si128(reinterpret_cast<__m128i*>(destination + i + 2), vec);
-                    i += 4;
-                }
-                if (count - i >= 2) {
-                    _mm_storeu_si128(reinterpret_cast<__m128i*>(destination + i), vec);
-                    i += 2;
-                }
-                if (i != count)
-                    std::memcpy(destination + i, &pattern, 8);
-                return;
-            } else if constexpr (sizeof(T) == 16 && no_padding_bytes) {
-                const auto vec = _mm_loadu_si128(reinterpret_cast<const __m128i*>(std::addressof(value)));
-                char byte0;
-                std::memcpy(&byte0, std::addressof(value), 1);
-                if (_mm_movemask_epi8(_mm_cmpeq_epi8(vec, _mm_set1_epi8(byte0))) == 0xffff) {
-                    std::memset(destination, static_cast<unsigned char>(byte0), count * 16);
-                    return;
-                }
-                std::size_t i = 0;
-                while (count - i >= 2) {
-                    _mm_storeu_si128(reinterpret_cast<__m128i*>(destination + i), vec);
-                    _mm_storeu_si128(reinterpret_cast<__m128i*>(destination + i + 1), vec);
-                    i += 2;
-                }
-                if (i != count)
-                    _mm_storeu_si128(reinterpret_cast<__m128i*>(destination + i), vec);
-                return;
-            }
+        if constexpr (byte_copy && std::is_implicit_lifetime_v<T> && no_padding_bytes &&
+                      (sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4 || sizeof(T) == 8 || sizeof(T) == 16)) {
+            simd_fill_trivial(destination, count, value);
+            return;
         }
         for (std::size_t index = 0; index != count; ++index)
             std::construct_at(destination + index, value);
