@@ -7,8 +7,8 @@
 namespace atelier::procedural {
 namespace {
 
-std::string text(StringView value) {
-    return std::string{value.std_view()};
+String text(StringView value) {
+    return String::from_utf8(value).value_or("<invalid utf-8>"_s);
 }
 
 std::size_t column_size(const ColumnData& data) noexcept {
@@ -236,11 +236,10 @@ std::size_t Geometry::bytes() const noexcept {
 }
 
 Result<void> Geometry::admit_name(StringView name) {
-    const auto value = name.std_view();
     const auto letter = [](char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; };
-    if (value.empty() || !letter(value[0]) ||
-        !std::ranges::all_of(value, [&](char c) { return letter(c) || (c >= '0' && c <= '9'); }))
-        return failure("Attribute name " + text(name) + " must be an identifier.");
+    if (name.empty() || !letter(name[0]) ||
+        !std::ranges::all_of(name, [&](char c) { return letter(c) || (c >= '0' && c <= '9'); }))
+        return failure(String::concat("Attribute name ", text(name), " must be an identifier."));
     return {};
 }
 
@@ -253,7 +252,7 @@ Result<void> Geometry::fits(Layer layer, const ColumnData& data) const {
 Result<void> Geometry::set(String name, Layer layer, ColumnData data, Optional<Usage> usage) {
     auto* existing = mutable_find(name);
     if (existing && (existing->layer != layer || existing->data.index() != data.index()))
-        return failure("Attribute " + text(name) + " has another layer or type.");
+        return failure(String::concat("Attribute ", name, " has another layer or type."));
     const auto resolved = usage ? *usage : (existing ? existing->usage : conventional_usage(name));
     auto valid = std::visit(
         [&](const auto& column) {
@@ -338,7 +337,7 @@ Result<Geometry> Geometry::remove_flagged(Layer layer, StringView flag) const {
     if (!flags)
         return std::unexpected(flags.error());
     if (!*flags)
-        return failure("Geometry has no attribute " + text(flag) + ".");
+        return failure(String::concat("Geometry has no attribute ", text(flag), "."));
     return remove_flagged(layer, (*flags)->view());
 }
 
@@ -446,7 +445,8 @@ Result<Geometry> Geometry::merge(Span<const Geometry> inputs) {
             }
             if (existing->layer != attribute.layer || existing->data.index() != attribute.data.index() ||
                 existing->usage != attribute.usage)
-                return failure("Merged attribute " + text(attribute.name) + " differs in layer, type or usage.");
+                return failure(
+                    String::concat("Merged attribute ", attribute.name, " differs in layer, type or usage."));
         }
     std::uint64_t vertices{};
     std::uint64_t primitives{};

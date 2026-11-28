@@ -38,7 +38,7 @@ private:
 };
 
 struct TextureState {
-    std::string source;
+    String source;
 
     ImageRef image;
 };
@@ -46,7 +46,7 @@ struct TextureState {
 Result<void> register_texture_types(Runtime&);
 
 // A null image retains the missing asset key; each MS input defines its fallback.
-Result<ObjectRoot> create_texture(Runtime&, std::string_view source, ImageRef);
+Result<ObjectRoot> create_texture(Runtime&, StringView source, ImageRef);
 
 Result<TextureState> read_texture(Runtime&, ObjectId);
 

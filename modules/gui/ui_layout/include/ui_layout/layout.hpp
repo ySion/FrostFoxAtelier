@@ -3,13 +3,13 @@
 #include "foundation/array.hpp"
 #include "foundation/optional.hpp"
 #include "foundation/span.hpp"
+#include "foundation/string.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <limits>
 #include <memory>
-#include <string_view>
 
 namespace atelier::ui_layout {
 
@@ -84,9 +84,9 @@ struct Error {
     Optional<std::size_t> tree_index{};
 };
 
-std::string_view describe(ErrorCode) noexcept;
+StringView describe(ErrorCode) noexcept;
 
-std::string_view describe(InputField) noexcept;
+StringView describe(InputField) noexcept;
 
 template <class T>
 using Result = std::expected<T, Error>;

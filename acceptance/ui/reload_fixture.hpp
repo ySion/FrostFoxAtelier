@@ -5,9 +5,9 @@
 #include <thread>
 
 namespace atelier::acceptance::ui_reload {
-inline void save(const std::filesystem::path& path, std::string_view source) {
+inline void save(const std::filesystem::path& path, StringView source) {
     std::ofstream file(path, std::ios::binary);
-    file << source;
+    file.write(source.data(), static_cast<std::streamsize>(source.size()));
     file.close();
     helpers::require(file.good(), "Cannot save UI authoring fixture.");
 }

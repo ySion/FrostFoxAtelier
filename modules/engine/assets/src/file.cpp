@@ -7,12 +7,12 @@
 
 namespace atelier::assets {
 namespace {
-auto failure(std::string text) {
+auto failure(Utf8Text text) {
     return std::unexpected(Error{ErrorCode::invalid_storage, std::move(text)});
 }
 }
 
-Result<std::string> read_file(const std::filesystem::path& path, std::size_t maximum) {
+Result<Array<std::byte>> read_file(const std::filesystem::path& path, std::size_t maximum) {
     auto native = platform::windows_file_path(path);
     if (!native)
         return failure(platform::error_message(native.error()));
@@ -21,16 +21,25 @@ Result<std::string> read_file(const std::filesystem::path& path, std::size_t max
         auto name = platform::utf16_to_utf8(path.native());
         if (!name)
             return failure("Invalid UTF-16 text.");
-        return failure("Cannot read " + *name);
+        return failure(String::concat("Cannot read ", *name));
     }
     const auto size = file.tellg();
     if (size < 0 || static_cast<std::uint64_t>(size) > maximum)
         return failure("File exceeds its size limit.");
-    std::string bytes(static_cast<std::size_t>(size), '\0');
+    Array<std::byte> bytes;
+    bytes.resize_uninitialized(static_cast<std::size_t>(size));
     file.seekg(0);
-    if (!file.read(bytes.data(), static_cast<std::streamsize>(bytes.size())))
+    if (!bytes.empty() && !file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size())))
         return failure("Could not read the complete file.");
     return bytes;
+}
+
+Result<String> read_utf8_file(const std::filesystem::path& path, std::size_t maximum) {
+    ATELIER_TRY_BIND(bytes, read_file(path, maximum));
+    auto text = String::from_utf8(as_chars(*bytes));
+    if (!text)
+        return failure("Invalid UTF-8 text.");
+    return std::move(*text);
 }
 
 Result<std::filesystem::path> resolve_project_path(const std::filesystem::path& root,

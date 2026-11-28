@@ -4,6 +4,7 @@
 #include "foundation/optional.hpp"
 #include "foundation/set.hpp"
 #include "foundation/span.hpp"
+#include "foundation/string.hpp"
 #include "material/program.hpp"
 #include "material/image.hpp"
 #include "source/material_program.hpp"
@@ -32,35 +33,57 @@ enum class TextureColor : std::uint32_t { linear, srgb };
 // Author data has no Runtime or compiled slot identity. Roots travel separately
 // in State, so the very same sparse values serve documents and pure resolution.
 struct TextureBinding {
-    std::string asset_key;
+    String asset_key;
 
     Address address{Address::repeat};
+
+    TextureBinding() = default;
+
+    TextureBinding(Utf8Text key, Address mode = Address::repeat)
+        : asset_key(std::move(key).into_string()), address(mode) {}
 };
 
 struct TextureDefault {
-    std::string path;
+    String path;
 
     TextureBinding binding;
 
     TextureColor color{TextureColor::linear};
 
     math::Vector4 empty_value{}; // Already linear; an explicit clear samples this.
+
+    TextureDefault() = default;
+
+    TextureDefault(Utf8Text input_path, TextureBinding input_binding = {},
+                   TextureColor input_color = TextureColor::linear, math::Vector4 fallback = {})
+        : path(std::move(input_path).into_string()), binding(std::move(input_binding)), color(input_color),
+          empty_value(fallback) {}
 };
 
 using LocalValue = std::variant<float, math::Vector2, math::Vector3, math::Vector4, TextureBinding>;
 
 struct Override {
-    std::string path;
+    String path;
 
     LocalValue value;
 
     bool enabled{true};
+
+    Override() = default;
+
+    Override(Utf8Text override_path, LocalValue override_value = {}, bool is_enabled = true)
+        : path(std::move(override_path).into_string()), value(std::move(override_value)), enabled(is_enabled) {}
 };
 
 struct AuthorDiagnostic {
-    std::string path;
+    String path;
 
-    std::string message;
+    String message;
+
+    AuthorDiagnostic() = default;
+
+    AuthorDiagnostic(Utf8Text diagnostic_path, Utf8Text diagnostic_message)
+        : path(std::move(diagnostic_path).into_string()), message(std::move(diagnostic_message).into_string()) {}
 
     bool operator==(const AuthorDiagnostic&) const = default;
 };
@@ -171,7 +194,7 @@ Result<ProgramSurfaceRef> default_program_surface();
 // source and policy; neither compiler nor Renderer has a grid special case.
 inline constexpr Policy default_world_policy{Coverage::opaque, true, true};
 
-std::string_view default_world_source() noexcept;
+StringView default_world_source() noexcept;
 
 Result<ProgramSurfaceRef> default_world_surface();
 
@@ -205,7 +228,7 @@ public:
 private:
     friend struct detail::ProgramAccess;
 
-    std::string asset_key_;
+    String asset_key_;
 
     ReferenceSequence textures_;
 
@@ -290,11 +313,11 @@ struct InstanceState {
 
 Result<void> register_resource_types(Runtime&);
 
-Result<ObjectRoot> create_source(Runtime&, std::string_view asset_key, const SourceState&);
+Result<ObjectRoot> create_source(Runtime&, StringView asset_key, const SourceState&);
 
-Result<ObjectRoot> create_instance(Runtime&, std::string_view asset_key, const InstanceState&);
+Result<ObjectRoot> create_instance(Runtime&, StringView asset_key, const InstanceState&);
 
-Result<std::string> material_key(Runtime&, ObjectId);
+Result<String> material_key(Runtime&, ObjectId);
 
 Result<SourceState> read_source(Runtime&, ObjectId);
 

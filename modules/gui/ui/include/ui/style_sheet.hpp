@@ -3,9 +3,9 @@
 #include "foundation/flags.hpp"
 #include "foundation/optional.hpp"
 #include "foundation/span.hpp"
+#include "foundation/string.hpp"
 #include "ui/style.hpp"
 #include <expected>
-#include <string_view>
 
 namespace atelier::ui {
 
@@ -123,7 +123,7 @@ struct StyleSelector {
 
     Optional<Role> role;
 
-    Array<std::string> classes;
+    Array<String> classes;
 
     StyleState states{};
 };
@@ -135,15 +135,25 @@ struct StyleRule {
 };
 
 struct StyleDiagnostic {
+    StyleDiagnostic() = default;
+
+    StyleDiagnostic(std::size_t error_line, std::size_t error_column, Utf8Text text)
+        : line(error_line), column(error_column), message(std::move(text).into_string()) {}
+
     std::size_t line{};
 
     std::size_t column{};
 
-    std::string message;
+    String message;
 };
 
 struct NamedImage {
-    std::string name;
+    NamedImage() = default;
+
+    NamedImage(Utf8Text resource_name, std::shared_ptr<const ColorImage> resource = {})
+        : name(std::move(resource_name).into_string()), image(std::move(resource)) {}
+
+    String name;
 
     std::shared_ptr<const ColorImage> image;
 };
@@ -237,11 +247,11 @@ public:
 
     static Result create(Array<StyleRule>);
 
-    static Result parse(std::string_view utf8, Span<const NamedImage> images = {});
+    static Result parse(StringView utf8, Span<const NamedImage> images = {});
 
     static bool valid_properties(const StyleProperties&) noexcept;
 
-    static bool valid_class(std::string_view) noexcept;
+    static bool valid_class(StringView) noexcept;
 
     Span<const StyleRule> rules() const noexcept { return rules_; }
 

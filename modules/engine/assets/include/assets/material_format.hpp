@@ -8,26 +8,26 @@ namespace atelier::assets::material_format {
 inline constexpr std::uint32_t version = 2;
 
 namespace detail {
-inline json::Result<void> text(std::string_view value, json::Value location, bool allow_empty = true) {
-    if ((!allow_empty && value.empty()) || value.size() > 4096 || value.find('\0') != value.npos)
+inline json::Result<void> text(StringView value, json::Value location, bool allow_empty = true) {
+    if ((!allow_empty && value.empty()) || value.size() > 4096 || value.contains('\0'))
         return std::unexpected(
             location.error(json::Fault::range, "Material keys and paths require no NUL and at most 4096 bytes."));
     return {};
 }
 
-inline json::Result<std::string_view> text_view(json::Value value, bool allow_empty = true) {
+inline json::Result<StringView> text_view(json::Value value, bool allow_empty = true) {
     ATELIER_TRY_BIND(result, value.string());
     ATELIER_TRY(text(*result, value, allow_empty));
     return *result;
 }
 
-inline json::Result<std::string> text(json::Value value, bool allow_empty = true) {
+inline json::Result<String> text(json::Value value, bool allow_empty = true) {
     ATELIER_TRY_BIND(result, text_view(value, allow_empty));
-    return std::string{*result};
+    return String::from_utf8_validated(*result);
 }
 
 template <std::size_t N>
-json::Result<void> vector(json::Builder& builder, json::Value parent, std::string_view key,
+json::Result<void> vector(json::Builder& builder, json::Value parent, StringView key,
                           const math::BasicVector<float, N>& value) {
     ATELIER_TRY_BIND(array, builder.array(parent, key));
     for (std::size_t i = 0; i < N; ++i)
@@ -104,7 +104,7 @@ inline json::Result<material::Policy> policy(json::Value value) {
 
 inline json::Result<void> inputs(json::Builder& builder, json::Value target,
                                  Span<const material::TextureDefault> values) {
-    Set<std::string_view> paths;
+    Set<StringView> paths;
     paths.reserve(values.size());
     for (const auto& value : values) {
         auto item = builder.append_object(target);
@@ -126,7 +126,7 @@ inline json::Result<Array<material::TextureDefault>> inputs(json::Value values) 
     ATELIER_TRY_BIND(items, values.array());
     Array<material::TextureDefault> result;
     result.reserve(items->size());
-    Set<std::string_view> paths;
+    Set<StringView> paths;
     paths.reserve(items->size());
     for (auto value : *items) {
         ATELIER_TRY(value.allowed_members({"path", "binding", "color", "empty_value"}));
@@ -140,7 +140,7 @@ inline json::Result<Array<material::TextureDefault>> inputs(json::Value values) 
         ATELIER_TRY_BIND(default_value, vector<4>(*empty));
         ATELIER_TRY_BIND(color, value.string({"color"}));
         material::TextureDefault input;
-        input.path = std::string{*name};
+        input.path = String::from_utf8_validated(*name);
         input.binding = std::move(*bound);
         input.empty_value = *default_value;
         if (*color == "linear")
@@ -159,7 +159,7 @@ inline json::Result<Array<material::TextureDefault>> inputs(json::Value values) 
 // no entry; disabled keeps its typed value; an empty texture key is a clear.
 inline json::Result<void> encode_entries(json::Builder& builder, json::Value target,
                                          Span<const material::Override> entries) {
-    Set<std::string_view> paths;
+    Set<StringView> paths;
     paths.reserve(entries.size());
     for (const auto& entry : entries) {
         auto item = builder.append_object(target);
@@ -202,7 +202,7 @@ inline json::Result<Array<material::Override>> decode_entries(json::Value entrie
     ATELIER_TRY_BIND(items, entries.array());
     Array<material::Override> result;
     result.reserve(items->size());
-    Set<std::string_view> paths;
+    Set<StringView> paths;
     paths.reserve(items->size());
     for (auto item : *items) {
         ATELIER_TRY(item.allowed_members({"path", "type", "enabled", "value"}));
@@ -214,7 +214,7 @@ inline json::Result<Array<material::Override>> decode_entries(json::Value entrie
         ATELIER_TRY_BIND(type, item.string({"type"}));
         ATELIER_TRY_BIND(value, item.at("value"));
         material::Override entry;
-        entry.path = std::string{*name};
+        entry.path = String::from_utf8_validated(*name);
         entry.enabled = *enabled;
         if (*type == "float") {
             ATELIER_TRY_BIND(number, value->f32());
@@ -240,9 +240,6 @@ inline json::Result<Array<material::Override>> decode_entries(json::Value entrie
 
 inline json::Result<void> encode(json::Builder& builder, json::Value target, const MaterialAsset& asset) {
     ATELIER_TRY(detail::text(asset.key, target));
-    // The catalog key is checked but is not emitted into this author document.
-    if (!StringView{asset.key}.is_valid_utf8())
-        return std::unexpected(target.error(json::Fault::encoding, "Invalid UTF-8 material key."));
     ATELIER_TRY(builder.set(target, "version", version));
     if (const auto* author = std::get_if<MaterialSourceAsset>(&asset.author)) {
         ATELIER_TRY(detail::text(author->source_path, target));

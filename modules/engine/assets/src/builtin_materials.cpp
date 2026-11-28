@@ -2,11 +2,11 @@
 
 namespace atelier::assets {
 namespace {
-constexpr std::string_view standard_path = "builtin/material/standard-pbr.source";
+constexpr StringView standard_path = "builtin/material/standard-pbr.source";
 
-constexpr std::string_view grid_path = "builtin/material/default-grid.source";
+constexpr StringView grid_path = "builtin/material/default-grid.source";
 
-constexpr std::string_view standard = R"source(
+constexpr StringView standard = R"source(
 
 struct UvTransform { vector2 scale; vector2 offset; float rotation; };
 struct Params {
@@ -96,18 +96,20 @@ material.Output shade(material.Context context,Params p,Textures textures) {
     return result;
 }
 )source";
-MaterialAsset standard_material(std::string key, std::wstring name, material::Policy policy) {
+MaterialAsset standard_material(Utf8Text key, std::wstring name, material::Policy policy) {
     MaterialSourceAsset source;
-    source.source_path = standard_path;
+    source.source_path = String::from_utf8_validated(standard_path);
     source.policy = policy;
-    for (const std::string_view input : {"base_color", "roughness", "metallic", "normal", "emissive", "opacity"}) {
+    for (const StringView input :
+         {StringView{"base_color"}, StringView{"roughness"}, StringView{"metallic"}, StringView{"normal"},
+          StringView{"emissive"}, StringView{"opacity"}}) {
         const bool color = input == "base_color" || input == "emissive";
-        source.inputs.add({std::string(input) + "_texture",
+        source.inputs.add({String::concat(String::validated(input), "_texture"),
                            {},
                            color ? material::TextureColor::srgb : material::TextureColor::linear,
                            input == "normal" ? math::Vector4{.5f, .5f, 1, 1} : math::Vector4{1, 1, 1, 1}});
     }
-    return {std::move(key), std::move(name), std::move(source)};
+    return {std::move(key).into_string(), std::move(name), std::move(source)};
 }
 }
 
@@ -121,17 +123,19 @@ Span<const MaterialAsset> material_assets() {
                           {material::Coverage::mask, true, true}),
         standard_material("builtin/material/standard-mask-single", L"Standard PBR · Masked / One Sided",
                           {material::Coverage::mask, false, false}),
-        MaterialAsset{"builtin/material/default-grid", L"Default World Grid",
-                      MaterialSourceAsset{std::string(grid_path), material::default_world_policy, {}}}};
+        MaterialAsset{"builtin/material/default-grid"_s, L"Default World Grid",
+                      MaterialSourceAsset{String::from_utf8_validated(grid_path), material::default_world_policy, {}}}};
     return assets;
 }
 
-Optional<source::SourceFile> builtin_material_source(std::string_view path) {
+Optional<source::SourceFile> builtin_material_source(StringView path) {
     if (path == standard_path)
-        return source::SourceFile{std::string(path), source::content_hash(standard), std::string(standard)};
+        return source::SourceFile{String::from_utf8_validated(standard_path), source::content_hash(standard),
+                                  String::from_utf8_validated(standard)};
     if (path == grid_path) {
         const auto text = material::default_world_source();
-        return source::SourceFile{std::string(path), source::content_hash(text), std::string(text)};
+        return source::SourceFile{String::from_utf8_validated(grid_path), source::content_hash(text),
+                                  String::from_utf8_validated(text)};
     }
     return {};
 }

@@ -10,9 +10,11 @@
 
 namespace atelier::renderer::detail {
 namespace {
-Result<void> invalid(bool valid, const char* message) {
+Result<void> invalid(bool valid, Utf8Text message) {
     if (!valid)
-        return std::unexpected(Error{{rhi::ErrorCode::invalid_argument, kGfxResult_InvalidParameter, message}, false});
+        return std::unexpected(
+            Error{{rhi::ErrorCode::invalid_argument, kGfxResult_InvalidParameter, std::move(message).into_string()},
+                  false});
     return {};
 }
 }
@@ -193,7 +195,7 @@ Result<void> MaterialBatchState::submit(Span<const material::ProgramSurfaceRef> 
 }
 
 Result<void> MaterialProgramSet::submit(rhi::Context& context) {
-    std::string prefix = R"hlsl(#define MATERIAL_PROGRAMS 1
+    String prefix = String::literal<R"hlsl(#define MATERIAL_PROGRAMS 1
 struct MaterialInput { uint slot; uint texture_index; uint address; uint count; float4 empty_value; };
 StructuredBuffer<MaterialInput> material_inputs;
 Texture2D<float4> material_textures[] : register(t0, space1);
@@ -242,21 +244,30 @@ float4 atelier_material_sample_grad(uint environment,uint local_slot,float2 uv,f
     if(binding.address==2)return material_textures[index].SampleGrad(material_mirror_sampler,uv,d0,d1);
     return material_textures[index].SampleGrad(material_repeat_sampler,uv,d0,d1);
 }
-)hlsl";
-    prefix += masked_programs.any() ? "#define MATERIAL_HAS_MASKED 1\n" : "#define MATERIAL_HAS_MASKED 0\n";
+)hlsl">();
+    if (masked_programs.any())
+        prefix.append_literal<"#define MATERIAL_HAS_MASKED 1\n">();
+    else
+        prefix.append_literal<"#define MATERIAL_HAS_MASKED 0\n">();
     for (std::size_t i = 0; i < definitions.size(); ++i) {
-        auto hlsl = definitions[i]->program().hlsl("MaterialProgram" + std::to_string(i));
+        const auto program_ns = String::concat("MaterialProgram", i);
+
+        auto hlsl = definitions[i]->program().hlsl(program_ns);
         if (!hlsl)
             return std::unexpected(
                 Error{{rhi::ErrorCode::invalid_argument, kGfxResult_InvalidParameter, hlsl.error().message}, false});
         prefix += *hlsl;
-        auto footprint = definitions[i]->program().hlsl_footprint("MaterialFootprint" + std::to_string(i));
+        const auto footprint_ns = String::concat("MaterialFootprint", i);
+
+        auto footprint = definitions[i]->program().hlsl_footprint(footprint_ns);
         if (!footprint)
             return std::unexpected(Error{
                 {rhi::ErrorCode::invalid_argument, kGfxResult_InvalidParameter, footprint.error().message}, false});
         prefix += *footprint;
         if (masked_programs[i]) {
-            auto coverage = definitions[i]->program().hlsl_coverage("MaterialCoverage" + std::to_string(i));
+            const auto coverage_ns = String::concat("MaterialCoverage", i);
+
+            auto coverage = definitions[i]->program().hlsl_coverage(coverage_ns);
             if (!coverage)
                 return std::unexpected(Error{
                     {rhi::ErrorCode::invalid_argument, kGfxResult_InvalidParameter, coverage.error().message}, false});
@@ -265,7 +276,7 @@ float4 atelier_material_sample_grad(uint environment,uint local_slot,float2 uv,f
     }
     // Reuse the actual generated engine value declarations, not parameter or
     // Context packing assumptions. Each MS still has its own Params layout.
-    prefix += R"hlsl(
+    prefix.append_literal<R"hlsl(
 typedef MaterialProgram0::ms_Context MaterialContext;
 typedef MaterialProgram0::ms_Output MaterialOutput;
 struct MaterialSurface { uint program; uint parameter_base; uint input_base; uint3 flags; };
@@ -273,47 +284,50 @@ StructuredBuffer<MaterialSurface> material_surfaces;
 StructuredBuffer<uint> material_indices;
 StructuredBuffer<uint> material_offsets;
 ByteAddressBuffer material_parameters;
-)hlsl";
-    prefix += "float material_coverage(MaterialSurface surface,MaterialContext input) {\n"
-              "if(surface.flags.x==0)return 1;\nswitch(surface.program) {\n";
+)hlsl">();
+    prefix.append_literal<"float material_coverage(MaterialSurface surface,MaterialContext input) {\n"
+                          "if(surface.flags.x==0)return 1;\nswitch(surface.program) {\n">();
     for (std::size_t i = 0; i < definitions.size(); ++i) {
         if (!masked_programs[i])
             continue;
-        const auto ns = "MaterialCoverage" + std::to_string(i);
-        prefix += "case " + std::to_string(i) + ": {\n" + ns + "::ms_Context c;\n";
-        for (const auto* field : {"uv", "position_world", "normal_world", "geometric_normal_world", "tangent_world"})
-            prefix += "c.ms_" + std::string(field) + "=input.ms_" + field + ";\n";
-        prefix += "return " + ns + "::ms_coverage(surface.input_base,c," + ns +
-                  "::ms_load_parameters(material_parameters,surface.parameter_base)); }\n";
+        const auto ns = String::concat("MaterialCoverage", i);
+        prefix.append(String::concat("case ", i, ": {\n", ns, "::ms_Context c;\n"));
+        for (const StringView field :
+             {"uv", "position_world", "normal_world", "geometric_normal_world", "tangent_world"})
+            prefix.append(String::concat("c.ms_", String::validated(field), "=input.ms_", String::validated(field), ";\n"));
+        prefix.append(String::concat("return ", ns, "::ms_coverage(surface.input_base,c,", ns,
+                                     "::ms_load_parameters(material_parameters,surface.parameter_base)); }\n"));
     }
-    prefix += "}\nreturn 1;\n}\n";
+    prefix.append_literal<"}\nreturn 1;\n}\n">();
     for (bool footprint : {false, true}) {
-        prefix +=
-            footprint
-                ? "MaterialOutput material_shade_footprint(MaterialSurface surface,MaterialContext input,MaterialContext dx,MaterialContext dy) {\n"
-                : "MaterialOutput material_shade(MaterialSurface surface,MaterialContext input) {\n";
-        prefix += "switch(surface.program) {\n";
+        if (footprint)
+            prefix.append_literal<"MaterialOutput material_shade_footprint(MaterialSurface surface,MaterialContext input,MaterialContext dx,MaterialContext dy) {\n">();
+        else
+            prefix.append_literal<"MaterialOutput material_shade(MaterialSurface surface,MaterialContext input) {\n">();
+        prefix.append_literal<"switch(surface.program) {\n">();
         for (std::size_t i = 0; i < definitions.size(); ++i) {
-            const auto ns = std::string(footprint ? "MaterialFootprint" : "MaterialProgram") + std::to_string(i);
-            prefix += "case " + std::to_string(i) + ": {\n";
-            for (const auto* name : {"input", "dx", "dy"}) {
-                if (!footprint && std::string_view(name) != "input")
+            const auto ns = String::concat(footprint ? "MaterialFootprint"_s : "MaterialProgram"_s, i);
+            prefix.append(String::concat("case ", i, ": {\n"));
+            for (const StringView name : {"input", "dx", "dy"}) {
+                if (!footprint && name != "input")
                     break;
-                prefix += ns + "::ms_Context c_" + name + ";\n";
-                for (const auto* field :
+                prefix.append(String::concat(ns, "::ms_Context c_", String::validated(name), ";\n"));
+                for (const StringView field :
                      {"uv", "position_world", "normal_world", "geometric_normal_world", "tangent_world"})
-                    prefix += "c_" + std::string(name) + ".ms_" + field + "=" + name + ".ms_" + field + ";\n";
+                    prefix.append(String::concat("c_", String::validated(name), ".ms_", String::validated(field), "=",
+                                                 String::validated(name), ".ms_", String::validated(field), ";\n"));
             }
-            prefix += ns + "::ms_Output o=" + ns +
-                      (footprint ? "::ms_shade_footprint(surface.input_base,c_input,c_dx,c_dy,"
-                                 : "::ms_shade(surface.input_base,c_input,") +
-                      ns +
-                      "::ms_load_parameters(material_parameters,surface.parameter_base));\nMaterialOutput result;\n";
-            for (const auto* field : {"base_color", "emissive", "roughness", "metallic", "coverage", "normal_world"})
-                prefix += "result.ms_" + std::string(field) + "=o.ms_" + field + ";\n";
-            prefix += "return result; }\n";
+            prefix.append(String::concat(
+                ns, "::ms_Output o=", ns,
+                footprint ? "::ms_shade_footprint(surface.input_base,c_input,c_dx,c_dy,"_s
+                          : "::ms_shade(surface.input_base,c_input,"_s,
+                ns, "::ms_load_parameters(material_parameters,surface.parameter_base));\nMaterialOutput result;\n"));
+            for (const StringView field :
+                 {"base_color", "emissive", "roughness", "metallic", "coverage", "normal_world"})
+                prefix.append(String::concat("result.ms_", String::validated(field), "=o.ms_", String::validated(field), ";\n"));
+            prefix.append_literal<"return result; }\n">();
         }
-        prefix += "}\nreturn (MaterialOutput)0;\n}\n";
+        prefix.append_literal<"}\nreturn (MaterialOutput)0;\n}\n">();
     }
     const auto submit = [&](MaterialPass pass, const rhi::PipelineDesc& desc) -> Result<void> {
         auto job = context.submit(desc);
@@ -322,13 +336,13 @@ ByteAddressBuffer material_parameters;
         pending.add({pass, std::move(*job)});
         return {};
     };
-    const auto compute = [&](MaterialPass pass, const char* source, const char* entry) {
+    const auto compute = [&](MaterialPass pass, const String::ConcatPiece& source, const char* entry) {
         // Only probe transport/inspection approximates Mask as solid geometry.
         // Camera direct lighting and receiver gathers retain LOD0 candidates.
         const bool gi_internal = pass == MaterialPass::probe_trace || pass == MaterialPass::probe_update ||
                                  pass == MaterialPass::inspect || pass == MaterialPass::inspect_update;
-        const std::string text =
-            prefix + (gi_internal ? "#define MATERIAL_DDGI_INTERNAL_FORCE_OPAQUE 1\n" : "") + source;
+        const auto text =
+            String::concat(prefix, gi_internal ? "#define MATERIAL_DDGI_INTERNAL_FORCE_OPAQUE 1\n"_s : ""_s, source);
         rhi::PipelineDesc desc;
         desc.source.cs = text.c_str();
         desc.entry_point = entry;
@@ -345,9 +359,9 @@ ByteAddressBuffer material_parameters;
     ATELIER_TRY(compute(MaterialPass::probe_exact, shaders::lit_ddgi, "DDGIExact"));
     ATELIER_TRY(compute(MaterialPass::inspect, shaders::lit_ddgi, "DDGIInspect"));
     ATELIER_TRY(compute(MaterialPass::inspect_update, shaders::lit_ddgi, "DDGIUpdateInspect"));
-    const auto studio_vs = prefix + shaders::scene_vs;
-    const auto studio_ps = prefix + shaders::scene_ps;
-    const auto cavity_ps = prefix + shaders::cavity_surface_ps;
+    const auto studio_vs = String::concat(prefix, shaders::scene_vs);
+    const auto studio_ps = String::concat(prefix, shaders::scene_ps);
+    const auto cavity_ps = String::concat(prefix, shaders::cavity_surface_ps);
     for (const auto& [pass, style] : {std::pair{MaterialPass::studio, PipelineStyle::surface},
                                       {MaterialPass::cavity, PipelineStyle::cavity_surface},
                                       {MaterialPass::depth, PipelineStyle::depth},
@@ -356,19 +370,22 @@ ByteAddressBuffer material_parameters;
         ATELIER_TRY(
             submit(pass, studio_pipeline("Programmable studio", studio_vs.c_str(),
                                          pass == MaterialPass::cavity ? cavity_ps.c_str() : studio_ps.c_str(), style)));
-    const auto gbuffer = prefix + shaders::lit_gbuffer;
-    const auto vs = gbuffer + "\nLitRaster main(uint v:SV_VertexID,uint i:SV_InstanceID){return lit_gbuffer_vs(v,i);}";
-    const auto ps =
-        gbuffer +
-        "\nLitGBuffer main(LitRaster i,uint p:SV_PrimitiveID,float3 b:SV_Barycentrics){return lit_gbuffer_ps(i,p,b);}";
+    const auto gbuffer = String::concat(prefix, shaders::lit_gbuffer);
+    const auto vs =
+        String::concat(gbuffer, "\nLitRaster main(uint v:SV_VertexID,uint i:SV_InstanceID){return lit_gbuffer_vs(v,i);}");
+    const auto ps = String::concat(
+        gbuffer,
+        "\nLitGBuffer main(LitRaster i,uint p:SV_PrimitiveID,float3 b:SV_Barycentrics){return lit_gbuffer_ps(i,p,b);}");
     ATELIER_TRY(submit(MaterialPass::gbuffer, gbuffer_pipeline(vs.c_str(), ps.c_str())));
-    const auto shadow = prefix + shaders::lit_shadow;
-    const auto shadow_vs =
-        shadow + "\nLitShadowRaster main(uint v:SV_VertexID,uint i:SV_InstanceID){return lit_shadow_vs(v,i);}";
-    const auto shadow_ps = shadow + "\nvoid main(LitShadowRaster i,uint p:SV_PrimitiveID){lit_shadow_ps(i,p);}";
+    const auto shadow = String::concat(prefix, shaders::lit_shadow);
+    const auto shadow_vs = String::concat(
+        shadow, "\nLitShadowRaster main(uint v:SV_VertexID,uint i:SV_InstanceID){return lit_shadow_vs(v,i);}");
+    const auto shadow_ps =
+        String::concat(shadow, "\nvoid main(LitShadowRaster i,uint p:SV_PrimitiveID){lit_shadow_ps(i,p);}");
     ATELIER_TRY(submit(MaterialPass::shadow, shadow_pipeline(shadow_vs.c_str(), shadow_ps.c_str())));
-    const auto coverage = prefix + shaders::lit_ddgi_debug +
-                          "\nfloat4 main(float4 p:SV_Position):SV_Target{return ddgi_debug_coverage_ps(p);}";
+    const auto coverage = String::concat(
+        prefix, shaders::lit_ddgi_debug,
+        "\nfloat4 main(float4 p:SV_Position):SV_Target{return ddgi_debug_coverage_ps(p);}");
     rhi::PipelineDesc desc;
     desc.kind = rhi::PipelineKind::vertex;
     desc.source.vs = shaders::viewport_vs;

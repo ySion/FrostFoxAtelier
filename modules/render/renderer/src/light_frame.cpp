@@ -8,9 +8,11 @@
 
 namespace atelier::renderer::detail {
 namespace {
-Result<void> check(bool condition, const char* message) {
+Result<void> check(bool condition, Utf8Text message) {
     if (!condition)
-        return std::unexpected(Error{{rhi::ErrorCode::invalid_argument, kGfxResult_InvalidParameter, message}, false});
+        return std::unexpected(
+            Error{{rhi::ErrorCode::invalid_argument, kGfxResult_InvalidParameter, std::move(message).into_string()},
+                  false});
     return {};
 }
 

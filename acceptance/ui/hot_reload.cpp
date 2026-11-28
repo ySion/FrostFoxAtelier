@@ -1,4 +1,5 @@
 #include "reload_fixture.hpp"
+#include "platform/utf.hpp"
 #include "source/snapshot.hpp"
 #include <algorithm>
 #include <array>
@@ -12,25 +13,25 @@ void verify_ui_error_recovery() {
     using acceptance::helpers::require;
     using acceptance::helpers::take;
     auto now = LiveDocument::Clock::now();
-    const auto path = std::filesystem::temp_directory_path() /
-                      ("ui-errors-" + std::to_string(now.time_since_epoch().count()) + ".ui.source");
+    const auto file_name = String::concat("ui-errors-", now.time_since_epoch().count(), ".ui.source");
+    const auto path = std::filesystem::temp_directory_path() / file_name.c_str();
     Runtime runtime;
     take(register_types(runtime));
     ui::ControlKey next = 100;
     LiveDocument document(runtime, path, next);
     using namespace acceptance::ui_reload;
-    const auto reload = [&](std::string_view text) {
-        save(path, text);
+    const auto reload = [&](const auto& text) {
+        save(path, StringView{text});
         begin(document, now);
         drain(document, now);
     };
-    std::string source = R"(ui Probe(in double divisor) {
+    String source = R"(ui Probe(in double divisor) {
     state double count = 7.0d;
     Button run { text: "Run"; width: 120; height: 30.0d + state.count; on activate {
         state.count = 12.0d;
         state.count = 1.0d / input.divisor;
     } }
-})";
+})"_s;
     reload(source);
     ui::Session session;
     take(session.initialize());
@@ -53,18 +54,18 @@ void verify_ui_error_recovery() {
         document.commit_controls();
     };
     const auto click = [&] { return document.event({ui::ActionKind::activate, 42, {}}); };
-    const auto check_failure = [&](std::string_view current) {
+    const auto check_failure = [&](StringView current) {
         auto failed = click();
         require(!failed && failed.error().source.has_value(), "Failed UI event lost its source.");
         const auto offset = current.rfind("state.count = ");
-        const auto line = static_cast<std::size_t>(std::ranges::count(current.substr(0, offset), '\n')) + 1;
+        const auto line = current.slice(0, offset).count('\n') + 1;
         const auto column = offset - current.rfind('\n', offset);
         const auto& location = *failed.error().source;
-        const auto name = path.filename().string();
+        const auto name = take(platform::utf16_to_utf8(path.filename().native()));
         require(location.path == name && location.version == source::content_hash(current) &&
                     location.offset == offset && location.line == line && location.column == column &&
-                    failed.error().message == name + ":" + std::to_string(line) + ":" + std::to_string(column) +
-                                                  ": Invalid component state write.",
+                    failed.error().message ==
+                        String::concat(name, ":", line, ":", column, ": Invalid component state write."),
                 failed.error().message);
         take(stage(0));
         present(7);
@@ -76,7 +77,8 @@ void verify_ui_error_recovery() {
     const auto initial_stats = document.statistics("Probe");
     require(initial_stats.has_value(), "Missing initial Probe statistics.");
     const auto identity = initial_stats->instance;
-    source.insert(source.find("state.count = 1.0d"), "// moved within the same handler\n            ");
+    require(source.insert(source.find("state.count = 1.0d"), "// moved within the same handler\n            ").has_value(),
+            "insert comment into Probe source");
     reload(source);
     take(stage(0));
     present(7);
@@ -85,11 +87,11 @@ void verify_ui_error_recovery() {
                 moved_stats && moved_stats->instance == identity,
             "Position-only edit changed the dispatch or instance.");
     check_failure(source);
-    reload("\n\n" + source);
+    reload(String::concat("\n\n", source));
     require(document.reject_controls("Refused UI revision."), "Expected a staged UI revision.");
     check_failure(source);
-    source.replace(source.find("1.0d /"), 4, "2.0d");
-    source.insert(0, "// recompiled\n");
+    require(source.replace(source.find("1.0d /"), 4, "2.0d").has_value(), "replace divisor numerator");
+    require(source.insert(0, "// recompiled\n").has_value(), "insert recompiled header");
     reload(source);
     take(stage(0));
     present(7);
@@ -103,9 +105,12 @@ void verify_ui_error_recovery() {
     require(document.diagnostic().empty() && take(click()), "Valid input did not recover the UI.");
     take(stage(2));
     present(1);
-    source.replace(source.find("2.0d / input.divisor"), std::string_view("2.0d / input.divisor").size(),
-                   "double(divide(int(input.divisor)))");
-    source.insert(0, "int unused(){ return 1; }\nint divide(int value){ return 9 / value; }\n");
+    require(source.replace(source.find("2.0d / input.divisor"), StringView{"2.0d / input.divisor"}.size(),
+                           "double(divide(int(input.divisor)))")
+                .has_value(),
+            "replace divide call");
+    require(source.insert(0, "int unused(){ return 1; }\nint divide(int value){ return 9 / value; }\n").has_value(),
+            "insert divide helpers");
     const auto divide_failure = [&](Component::Compilation expected) {
         reload(source);
         take(stage(0));
@@ -116,15 +121,15 @@ void verify_ui_error_recovery() {
         require(!error && error.error().source && error.error().message.contains("nonzero divisor") &&
                     error.error().source->offset == slash &&
                     error.error().source->version == source::content_hash(source) &&
-                    error.error().source->line ==
-                        static_cast<std::size_t>(std::ranges::count(source.substr(0, slash), '\n')) + 1 &&
+                    error.error().source->line == source.slice(0, slash).count('\n') + 1 &&
                     error.error().source->column == slash - source.rfind('\n', slash),
                 "Division fault points to stale source.");
     };
     divide_failure(Component::Compilation::compiled);
-    source.replace(source.find("return 1;"), 9, "int longer = 1234567;\n return longer + 2;");
+    require(source.replace(source.find("return 1;"), 9, "int longer = 1234567;\n return longer + 2;").has_value(),
+            "replace unused helper body");
     divide_failure(Component::Compilation::reused_dependencies);
-    source.insert(0, "// same code, move the fault again\n");
+    require(source.insert(0, "// same code, move the fault again\n").has_value(), "insert comment before helpers");
     divide_failure(Component::Compilation::reused_source);
     take(stage(-1.0));
     present(1);
@@ -178,8 +183,8 @@ void verify_ui_error_recovery() {
         require(stats_after.control_batches == stats_before.control_batches &&
                     stats_after.controls_updated == stats_before.controls_updated,
                 "Unchanged split ControlRegion triggered Session control updates.");
-        reload("// candidate reload\n" +
-               std::string(R"(ui Probe(in double divisor) { Button run { width: 140; height: 42.0d; } })"));
+        reload("// candidate reload\n"
+               "ui Probe(in double divisor) { Button run { width: 140; height: 42.0d; } }");
         stage_split(-0.0, decorated);
         require(decorated == 1 && session.set_controls(split_controls).has_value(),
                 "Candidate reload through ControlRegion did not refresh Probe.");

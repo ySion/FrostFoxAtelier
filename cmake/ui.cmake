@@ -16,7 +16,7 @@ function(atelier_add_ui)
         "${_root}/modules/gui/ui/src/style_sheet.cpp" "${_root}/modules/gui/ui/src/controls.cpp" "${_root}/modules/gui/ui/src/docking.cpp")
     target_include_directories(atelier_ui PUBLIC "${PROJECT_SOURCE_DIR}/modules/gui/ui/include"
         PRIVATE "${PROJECT_SOURCE_DIR}/modules/gui/ui/internal")
-    target_link_libraries(atelier_ui PUBLIC atelier_ui_protocol atelier_ui_layout atelier_foundation_headers PRIVATE atelier_platform dwrite icu)
+    target_link_libraries(atelier_ui PUBLIC atelier_ui_protocol atelier_ui_layout atelier_foundation PRIVATE atelier_platform dwrite icu)
     atelier_target(atelier_ui)
     add_library(atelier_ui_language STATIC "${_root}/modules/gui/ui_language/src/declaration.cpp" "${_root}/modules/gui/ui_language/src/component.cpp"
         "${_root}/modules/gui/ui_language/src/live_document.cpp")

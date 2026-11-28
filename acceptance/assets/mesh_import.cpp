@@ -7,9 +7,10 @@
 void verify_mesh_import() {
     using namespace atelier;
     using namespace acceptance::helpers;
-    const auto path =
-        std::filesystem::temp_directory_path() /
-        ("atelier-import-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".obj");
+    const auto file_name =
+        String::concat("atelier-import-", std::chrono::steady_clock::now().time_since_epoch().count(), ".obj");
+
+    const auto path = std::filesystem::temp_directory_path() / file_name.c_str();
     {
         std::ofstream output(path, std::ios::binary);
         output << "v 0 0 0\nv 2 0 0\nv 0 3 0\nf 1 2 3\n";

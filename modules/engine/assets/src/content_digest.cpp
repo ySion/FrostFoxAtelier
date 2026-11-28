@@ -52,12 +52,12 @@ public:
         u32(std::bit_cast<std::uint32_t>(value.z));
     }
 
-    void text(std::string_view value) {
+    void text(StringView value) {
         size(value.size());
-        bytes(as_bytes(Span{value.data(), value.size()}));
+        bytes(as_bytes(value));
     }
 
-    std::string finish() {
+    String finish() {
         flush();
         return hash_.finish();
     }
@@ -77,26 +77,27 @@ private:
 };
 }
 
-Result<std::string> mesh_content_sha256(const MeshAsset& asset) {
+Result<String> mesh_content_sha256(const MeshAsset& asset) {
     if (!asset.mesh)
         return std::unexpected(Error{ErrorCode::invalid_definition, "Cannot digest an unresolved mesh."});
     const auto& mesh = *asset.mesh;
-    Map<std::string, std::size_t> slots;
+    Map<String, std::size_t> slots;
     slots.reserve(mesh.materials().size());
     for (std::size_t i = 0; i < mesh.materials().size(); ++i)
         if (auto [at, inserted] = slots.try_emplace(geometry::material_slot_name(mesh, i), i); !inserted)
             *at = mesh.materials().size();
-    Array<const std::string*> defaults(mesh.materials().size());
+    Array<const String*> defaults(mesh.materials().size());
     for (const auto& binding : asset.materials) {
         const auto* at = slots.find(binding.slot);
         if (!at || *at == defaults.size() || defaults[*at])
-            return std::unexpected(Error{ErrorCode::invalid_definition,
-                                         "Mesh default names a missing, ambiguous or duplicate slot: " + binding.slot});
+            return std::unexpected(
+                Error{ErrorCode::invalid_definition,
+                      String::concat("Mesh default names a missing, ambiguous or duplicate slot: ", binding.slot)});
         defaults[*at] = &binding.key;
     }
     Encoding out;
-    constexpr std::string_view domain = "Atelier.Mesh";
-    out.bytes(as_bytes(Span{domain.data(), domain.size()}));
+    constexpr StringView domain = "Atelier.Mesh";
+    out.bytes(as_bytes(domain));
     out.u32(mesh_digest_version);
     out.size(mesh.vertices().size());
     for (const auto& v : mesh.vertices()) {

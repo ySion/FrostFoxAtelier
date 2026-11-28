@@ -3,9 +3,8 @@
 #include "runtime/runtime.hpp"
 #include "foundation/array.hpp"
 #include "foundation/optional.hpp"
+#include "foundation/string.hpp"
 #include <cstdint>
-#include <string>
-#include <string_view>
 
 namespace atelier::world {
 
@@ -46,7 +45,7 @@ enum class DiagnosticPhase : std::uint8_t {
 };
 
 // Stable spellings for logs, reports and Control. Never localized.
-[[nodiscard]] constexpr std::string_view name(Severity value) noexcept {
+[[nodiscard]] constexpr StringView name(Severity value) noexcept {
     switch (value) {
     case Severity::info:
         return "info";
@@ -58,7 +57,7 @@ enum class DiagnosticPhase : std::uint8_t {
     return "unknown";
 }
 
-[[nodiscard]] constexpr std::string_view name(DiagnosticKind value) noexcept {
+[[nodiscard]] constexpr StringView name(DiagnosticKind value) noexcept {
     switch (value) {
     case DiagnosticKind::behavior_failed:
         return "behavior_failed";
@@ -94,7 +93,7 @@ enum class DiagnosticPhase : std::uint8_t {
     return "unknown";
 }
 
-[[nodiscard]] constexpr std::string_view name(DiagnosticPhase value) noexcept {
+[[nodiscard]] constexpr StringView name(DiagnosticPhase value) noexcept {
     switch (value) {
     case DiagnosticPhase::load:
         return "load";
@@ -137,17 +136,17 @@ struct Diagnostic {
 
     ObjectId entity;
 
-    std::string type; // Qualified type name, e.g. world.StaticMeshComponent.
+    String type; // Qualified type name, e.g. world.StaticMeshComponent.
 
-    Array<std::string> field; // Field path names; empty when not field-specific.
+    Array<String> field; // Field path names; empty when not field-specific.
 
     Optional<SourceLocation> source; // Script failures, when the Source program recorded one.
 
     Optional<ErrorElement> element; // Element-level coordinates when recorded by the producer.
 
-    std::string value; // Truncated preview of the offending value; may be empty.
+    String value; // Truncated preview of the offending value; may be empty.
 
-    std::string message;
+    String message;
 
     std::uint32_t repeats{1}; // Coalesced identical per-frame failures.
 

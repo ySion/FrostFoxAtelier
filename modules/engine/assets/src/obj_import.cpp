@@ -7,25 +7,36 @@
 #include "platform/error.hpp"
 #include "platform/utf.hpp"
 #include <charconv>
-#include <sstream>
 
 namespace atelier::assets {
 namespace {
-Result<void> require(bool ok, const char* message) {
+Result<void> require(bool ok, Utf8Text message) {
     if (!ok)
-        return std::unexpected(Error{ErrorCode::invalid_storage, message});
+        return std::unexpected(Error{ErrorCode::invalid_storage, std::move(message)});
     return {};
 }
 
-std::string rest(std::istringstream& row) {
-    std::string value;
-    std::getline(row >> std::ws, value);
-    const auto end = value.find_last_not_of(" \t\r");
-    if (end == value.npos)
-        return {};
-    value.resize(end + 1);
-    return value;
+constexpr bool is_obj_whitespace(char c) noexcept {
+    return c == ' ' || (static_cast<unsigned char>(c - '\t') < 5u);
 }
+
+struct LineCursor {
+    StringView remaining;
+
+    StringView next_token() noexcept {
+        remaining = remaining.trim_start();
+        if (remaining.empty())
+            return {};
+        std::size_t i = 0;
+        while (i < remaining.size() && !is_obj_whitespace(remaining[i]))
+            ++i;
+        const auto token = remaining.slice(0, i);
+        remaining = remaining.slice(i);
+        return token;
+    }
+
+    StringView rest() const noexcept { return remaining.trim_start().trim_end(" \t\r"); }
+};
 
 Result<std::filesystem::path> relative_path(std::wstring value) {
     std::ranges::replace(value, L'\\', L'/');
@@ -39,7 +50,7 @@ Result<std::filesystem::path> relative_path(std::wstring value) {
     return path.lexically_normal();
 }
 
-Result<std::size_t> index(std::string_view text, std::size_t count) {
+Result<std::size_t> index(StringView text, std::size_t count) {
     std::int64_t value{};
     auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
     ATELIER_TRY(require(ec == std::errc{} && end == text.data() + text.size() && value != 0, "Invalid OBJ index."));
@@ -48,9 +59,15 @@ Result<std::size_t> index(std::string_view text, std::size_t count) {
     return static_cast<std::size_t>(value);
 }
 
-Result<float> scalar(std::istringstream& row) {
+Result<float> scalar(LineCursor& row) {
+    auto token = row.next_token();
+    if (token.size() > 1 && token.front() == '+' && token[1] != '-')
+        token.remove_prefix(1);
+    ATELIER_TRY(require(!token.empty(), "Invalid OBJ/MTL number."));
     float v{};
-    ATELIER_TRY(require(bool(row >> v) && std::isfinite(v), "Invalid OBJ/MTL number."));
+    const auto [end, ec] = std::from_chars(token.data(), token.data() + token.size(), v);
+    ATELIER_TRY(
+        require(ec == std::errc{} && end == token.data() + token.size() && std::isfinite(v), "Invalid OBJ/MTL number."));
     return v;
 }
 
@@ -119,11 +136,11 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
     const auto root = std::filesystem::canonical(source.parent_path(), error);
     if (error)
         return std::unexpected(Error{ErrorCode::invalid_storage, platform::error_message(error)});
-    Map<std::string, std::size_t> files;
-    Map<std::string, material::ImageRef> images;
+    Map<String, std::size_t> files;
+    Map<String, material::ImageRef> images;
     std::size_t total_bytes{};
     std::size_t image_bytes{};
-    const auto read_with_key = [&](const std::filesystem::path& relative, std::string key) -> Result<std::size_t> {
+    const auto read_with_key = [&](const std::filesystem::path& relative, String key) -> Result<std::size_t> {
         if (const auto* found = files.find(key))
             return *found;
         ATELIER_TRY(require(files.size() < 512, "OBJ has too many dependencies."));
@@ -155,7 +172,7 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
         if (const auto* found = images.find(*key))
             return *found;
         ATELIER_TRY_BIND(slot, read_with_key(relative, *key));
-        const std::string_view bytes = result.files[*slot].bytes;
+        const Span<const std::byte> bytes = result.files[*slot].bytes;
         ATELIER_TRY_BIND(decoded, decode_images(Span{&bytes, 1}, shared_images));
         auto loaded = decoded->front();
         ATELIER_TRY(require(image_bytes + loaded->pixels().size() <= 768ull * 1024 * 1024,
@@ -173,33 +190,31 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
     Array<AuthorMaterial> authors(1);
     result.materials.emplace();
     result.textures.emplace();
-    Map<std::string, std::uint32_t> material_names;
+    Map<String, std::uint32_t> material_names;
     const auto mtl = [&](const std::filesystem::path& relative) -> Result<void> {
         ATELIER_TRY_BIND(slot, read(relative));
-        std::istringstream input(result.files[*slot].bytes);
-        input.imbue(std::locale::classic());
-        std::string line;
-        std::string kind;
+        const auto source_text = as_chars(result.files[*slot].bytes);
         AuthorMaterial* current = nullptr;
         std::size_t current_slot{};
-        while (std::getline(input, line)) {
-            if (auto p = line.find('#'); p != line.npos)
-                line.resize(p);
-            std::istringstream row(line);
-            row.imbue(std::locale::classic());
-            if (!(row >> kind))
+        for (auto line : source_text.lines()) {
+            if (const auto p = line.find('#'); p != StringView::npos)
+                line = line.slice(0, p);
+            LineCursor row{line};
+            const auto kind = row.next_token();
+            if (kind.empty())
                 continue;
             if (kind == "newmtl") {
-                auto name = rest(row);
-                ATELIER_TRY(
-                    require(!name.empty() && material_names.size() < 1024, "Invalid or excessive MTL material names."));
-                if (!StringView(name).is_valid_utf8())
+                const auto raw_name = row.rest();
+                ATELIER_TRY(require(!raw_name.empty() && material_names.size() < 1024,
+                                    "Invalid or excessive MTL material names."));
+                auto name = String::from_utf8(raw_name);
+                if (!name)
                     return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-8 MTL material name."});
                 ATELIER_TRY(
-                    require(material_names.try_emplace(name, static_cast<std::uint32_t>(materials.size())).inserted,
+                    require(material_names.try_emplace(*name, static_cast<std::uint32_t>(materials.size())).inserted,
                             "Duplicate MTL material name."));
                 current_slot = materials.size();
-                materials.add({std::move(name)});
+                materials.add({std::move(*name)});
                 authors.emplace();
                 current = &authors.back();
                 result.materials.emplace(MaterialInstanceAsset{});
@@ -215,7 +230,7 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
                     ATELIER_TRY_BIND(v, scalar(row));
                     current->color[3] = kind == "d" ? *v : 1 - *v;
                 } else if (kind.starts_with("map_") || kind == "bump") {
-                    auto name = rest(row);
+                    const auto name = row.rest();
                     ATELIER_TRY(require(!name.empty() && name.front() != '-', "MTL map options are not supported."));
                     auto dependency = platform::utf8_to_utf16(name);
                     if (!dependency)
@@ -233,15 +248,16 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
                         ATELIER_TRY(read(path)); // Preserve unrendered source maps during import.
                 } else if (kind != "Ka" && kind != "Ks" && kind != "Ke" && kind != "Ns" && kind != "Ni" &&
                            kind != "Tf" && kind != "illum")
-                    return std::unexpected(Error{ErrorCode::invalid_storage, "Unsupported MTL record: " + kind});
+                    return std::unexpected(Error{
+                        ErrorCode::invalid_storage,
+                        String::concat("Unsupported MTL record: ", String::from_utf8(kind).value_or("<invalid utf-8>"_s))});
             }
         }
         return {};
     };
     ATELIER_TRY_BIND(source_path, relative_path(source.filename().native()));
     ATELIER_TRY_BIND(source_slot, read(*source_path));
-    std::istringstream input(result.files[*source_slot].bytes);
-    input.imbue(std::locale::classic());
+    const auto obj_text = as_chars(result.files[*source_slot].bytes);
     Array<std::array<float, 3>> positions;
     Array<std::array<float, 3>> normals;
     Array<std::array<float, 2>> uv;
@@ -249,14 +265,12 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
     Array<std::uint8_t> masks;
     Array<geometry::MeshPart> parts;
     std::uint32_t material{};
-    std::string line;
-    std::string kind;
-    while (std::getline(input, line)) {
-        if (auto p = line.find('#'); p != line.npos)
-            line.resize(p);
-        std::istringstream row(line);
-        row.imbue(std::locale::classic());
-        if (!(row >> kind))
+    for (auto line : obj_text.lines()) {
+        if (const auto p = line.find('#'); p != StringView::npos)
+            line = line.slice(0, p);
+        LineCursor row{line};
+        const auto kind = row.next_token();
+        if (kind.empty())
             continue;
         if (kind == "v" || kind == "vn") {
             auto& target = kind == "v" ? positions : normals;
@@ -271,30 +285,30 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
             ATELIER_TRY_BIND(v, scalar(row));
             uv.add({*u, 1 - *v});
         } else if (kind == "mtllib") {
-            auto path = platform::utf8_to_utf16(rest(row));
+            auto path = platform::utf8_to_utf16(row.rest());
             if (!path)
                 return std::unexpected(Error{ErrorCode::invalid_storage, "Invalid UTF-8 text."});
             ATELIER_TRY_BIND(relative, relative_path(std::move(*path)));
             ATELIER_TRY(mtl(*relative));
         } else if (kind == "usemtl") {
-            const auto* found = material_names.find(rest(row));
+            const auto* found = material_names.find(row.rest());
             ATELIER_TRY(require(found != nullptr, "OBJ references an unknown material."));
             material = *found;
         } else if (kind == "f") {
             Array<geometry::Vertex> face;
             std::uint64_t has_normal = 0;
-            std::string token;
-            while (row >> token) {
+            for (auto token = row.next_token(); !token.empty(); token = row.next_token()) {
                 ATELIER_TRY(require(face.size() < 64, "OBJ polygon exceeds 64 corners."));
                 geometry::Vertex vertex{};
                 const auto a = token.find('/');
-                const auto b = a == token.npos ? token.npos : token.find('/', a + 1);
-                ATELIER_TRY_BIND(position, index(std::string_view(token).substr(0, a), positions.size()));
+                const auto b = a == StringView::npos ? StringView::npos : token.find('/', a + 1);
+                ATELIER_TRY_BIND(position,
+                                 index(a == StringView::npos ? token : token.slice(0, a), positions.size()));
                 std::ranges::copy(positions[*position], vertex.position);
-                if (a != token.npos && a + 1 < (b == token.npos ? token.size() : b)) {
-                    ATELIER_TRY_BIND(
-                        texcoord, index(std::string_view(token).substr(a + 1, b == token.npos ? token.npos : b - a - 1),
-                                        uv.size()));
+                if (a != StringView::npos && a + 1 < (b == StringView::npos ? token.size() : b)) {
+                    ATELIER_TRY_BIND(texcoord,
+                                     index(b == StringView::npos ? token.slice(a + 1) : token.slice(a + 1, b - a - 1),
+                                           uv.size()));
                     std::ranges::copy(uv[*texcoord], vertex.uv);
                 } else {
                     const auto valid = require(
@@ -303,9 +317,9 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
                     if (!valid)
                         return std::unexpected(valid.error());
                 }
-                const bool normal = b != token.npos && b + 1 < token.size();
+                const bool normal = b != StringView::npos && b + 1 < token.size();
                 if (normal) {
-                    ATELIER_TRY_BIND(direction, index(std::string_view(token).substr(b + 1), normals.size()));
+                    ATELIER_TRY_BIND(direction, index(token.slice(b + 1), normals.size()));
                     std::ranges::copy(normals[*direction], vertex.normal);
                     has_normal |= std::uint64_t{1} << face.size();
                 }
@@ -344,7 +358,9 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
                 parts.back().vertex_count += 3;
             }
         } else if (kind != "o" && kind != "g" && kind != "s")
-            return std::unexpected(Error{ErrorCode::invalid_storage, "Unsupported OBJ record: " + kind});
+            return std::unexpected(
+                Error{ErrorCode::invalid_storage,
+                      String::concat("Unsupported OBJ record: ", String::from_utf8(kind).value_or("<invalid utf-8>"_s))});
     }
     for (std::size_t i = 1; i < materials.size(); ++i) {
         const auto& value = authors[i];
@@ -356,7 +372,7 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
             return std::unexpected(valid.error());
         const bool alpha = color[3] < 1 || value.color_alpha || !result.textures[i][5].empty();
         instance.parent_key =
-            alpha ? "builtin/material/standard-mask-double" : "builtin/material/standard-opaque-double";
+            alpha ? "builtin/material/standard-mask-double"_s : "builtin/material/standard-opaque-double"_s;
         // MTL's supported appearance is authored data, including explicit white.
         // Keep the import's established PBR defaults independently of the mesh.
         instance.entries = {{"base_color", math::Vector4{color[0], color[1], color[2], color[3]}},
@@ -368,12 +384,12 @@ Result<MeshImport> load_obj(const std::filesystem::path& source, ImageCache* sha
                             {"alpha_cutoff", .5f}};
         for (std::size_t input = 0; input < imported_material_inputs.size(); ++input)
             if (!result.textures[i][input].empty()) {
-                const auto name = std::string(imported_material_inputs[input]);
+                const auto name = String::validated(imported_material_inputs[input]);
                 instance.entries.add(
-                    {name + "_texture", material::TextureBinding{{}, material::Address::repeat}});
-                instance.entries.add({name + "_uv.scale", math::Vector2{1, 1}});
-                instance.entries.add({name + "_uv.offset", math::Vector2{}});
-                instance.entries.add({name + "_uv.rotation", 0.f});
+                    {String::concat(name, "_texture"), material::TextureBinding{{}, material::Address::repeat}});
+                instance.entries.add({String::concat(name, "_uv.scale"), math::Vector2{1, 1}});
+                instance.entries.add({String::concat(name, "_uv.offset"), math::Vector2{}});
+                instance.entries.add({String::concat(name, "_uv.rotation"), 0.f});
                 if (input == 5)
                     instance.entries.add({"opacity_channel", 0.f});
             }

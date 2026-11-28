@@ -11,8 +11,6 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
-#include <iterator>
-#include <string_view>
 
 namespace {
 
@@ -21,7 +19,7 @@ using namespace atelier::acceptance::helpers;
 void committed(atelier::Result<atelier::world::Commit> result) {
     const auto value = take(std::move(result));
     if (value.notification_error)
-        atelier::fatal(value.notification_error->message);
+        atelier::fatal(value.notification_error->message.c_str());
 }
 
 atelier::ObjectId mesh_component(atelier::Runtime& runtime, atelier::ObjectId entity) {
@@ -36,7 +34,7 @@ atelier::ObjectId mesh_component(atelier::Runtime& runtime, atelier::ObjectId en
 #include "scenarios.inl"
 
 struct Scenario {
-    std::string_view name;
+    atelier::StringView name;
 
     void (*run)();
 };
@@ -50,13 +48,13 @@ const Scenario scenarios[]{
 
 int main(int argc, char** argv) {
     atelier::install_fatal_handler();
-    std::string_view selected;
-    if (argc == 2 && std::string_view(argv[1]) == "--list") {
+    atelier::StringView selected;
+    if (argc == 2 && atelier::StringView{argv[1]} == "--list") {
         for (const auto& scenario : scenarios)
             std::printf("%.*s\n", int(scenario.name.size()), scenario.name.data());
         return EXIT_SUCCESS;
     }
-    if (argc == 3 && std::string_view(argv[1]) == "--scenario")
+    if (argc == 3 && atelier::StringView{argv[1]} == "--scenario")
         selected = argv[2];
     else
         require(argc == 1, "Usage: atelier_physics_acceptance [--list | --scenario NAME]");

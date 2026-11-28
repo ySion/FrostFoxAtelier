@@ -26,7 +26,7 @@ bool button_node(NodeKind kind) {
            kind == NodeKind::checkbox || kind == NodeKind::foldout;
 }
 
-auto failure(std::string message) {
+auto failure(Utf8Text message) {
     return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)});
 }
 
@@ -41,10 +41,10 @@ bool same_declaration_shape(const Declaration& a, const Declaration& b) noexcept
 }
 
 // Single-file compiler diagnostics carry a request-tagged line/column in the message.
-Optional<std::size_t> compiler_offset(std::string_view generated, std::string_view& message) {
+Optional<std::size_t> compiler_offset(StringView generated, StringView& message) {
     auto colon = message.rfind("[request#");
-    colon = colon == message.npos ? message.rfind("]:") : message.find("]:", colon);
-    if (colon == message.npos)
+    colon = colon == StringView::npos ? message.rfind("]:") : message.find("]:", colon);
+    if (colon == StringView::npos)
         return {};
     colon += 2;
     std::size_t line{};
@@ -71,11 +71,10 @@ Optional<std::size_t> compiler_offset(std::string_view generated, std::string_vi
     return offset + column - 1;
 }
 
-Error map_diagnostic(Error error, std::string_view source_name, std::uint64_t source_version,
-                     std::string_view generated, Span<const SourceMapping> mappings,
-                     Optional<std::size_t> translated_offset = {},
+Error map_diagnostic(Error error, const String& source_name, std::uint64_t source_version, StringView generated,
+                     Span<const SourceMapping> mappings, Optional<std::size_t> translated_offset = {},
                      const language::SourcePosition* fallback = nullptr) {
-    std::string_view message = error.message;
+    StringView message = error.message.view();
     auto offset = translated_offset ? translated_offset
                   : error.source    ? Optional<std::size_t>{error.source->offset}
                                     : compiler_offset(generated, message);
@@ -87,17 +86,16 @@ Error map_diagnostic(Error error, std::string_view source_name, std::uint64_t so
             fallback = &mappings.back().origin;
     }
     if (fallback) {
-        error.source = SourceLocation{std::string(source_name), source_version, fallback->offset, fallback->line,
-                                      fallback->column};
-        error.message = std::string(source_name) + ":" + std::to_string(fallback->line) + ":" +
-                        std::to_string(fallback->column) + ": " + std::string(message);
+        error.source = SourceLocation{source_name, source_version, fallback->offset, fallback->line, fallback->column};
+        error.message =
+            String::concat(source_name, ":", fallback->line, ":", fallback->column, ": ", String::validated(message));
     } else if (offset) {
-        error.message = std::string(source_name) + ": " + std::string(message);
+        error.message = String::concat(source_name, ": ", String::validated(message));
     }
     return error;
 }
 
-Result<std::wstring> wide_utf8(std::string_view text) noexcept {
+Result<std::wstring> wide_utf8(StringView text) noexcept {
     if (text.empty())
         return {};
     if (text.size() > 4096 * 4)
@@ -109,7 +107,7 @@ Result<std::wstring> wide_utf8(std::string_view text) noexcept {
 }
 
 Result<std::wstring> wide(const String& value) noexcept {
-    return wide_utf8(value.view().std_view());
+    return wide_utf8(value.view());
 }
 
 struct EditReference {
@@ -583,19 +581,12 @@ struct Context {
                 value.find_first_not_of(L"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_- ") !=
                     value.npos)
                 return failure("Invalid UI style classes.");
-            const std::string names(value.begin(), value.end());
-            Array<std::string> classes;
-            std::size_t begin{};
-            while (begin < names.size()) {
-                while (begin < names.size() && names[begin] == ' ')
-                    ++begin;
-                const auto end = names.find(' ', begin);
-                if (begin < names.size())
-                    classes.emplace(names.substr(begin, end == names.npos ? names.size() - begin : end - begin));
-                if (end == names.npos)
-                    break;
-                begin = end + 1;
-            }
+            char ascii[128]{};
+            for (std::size_t i = 0; i < value.size(); ++i)
+                ascii[i] = static_cast<char>(value[i]);
+            Array<String> classes;
+            for (const auto item : StringView{ascii, value.size()}.split_any(ByteSearchSet{" "}, true))
+                classes.add(String::from_utf8_validated(item));
             node.classes = std::move(classes);
         }
         return {};
@@ -956,17 +947,18 @@ struct DispatchLayout {
 
         std::size_t end;
 
-        std::string_view text(std::string_view source) const { return source.substr(begin, end - begin); }
+        StringView text(StringView source) const { return source.slice(begin, end - begin); }
     };
 
     Array<SpanRange> spans;
 
-    DispatchLayout(std::string_view source, Span<const source::EntryFunction> functions) {
+    DispatchLayout(StringView source, Span<const source::EntryFunction> functions) {
+        constexpr ByteSearchSet whitespace{" \r\n\t"};
         const auto keep_declarations = [&](std::size_t begin, std::size_t end) {
-            const auto gap = source.substr(begin, end - begin);
-            const auto first = gap.find_first_not_of(" \r\n\t");
-            if (first != gap.npos)
-                spans.add({begin + first, begin + gap.find_last_not_of(" \r\n\t") + 1});
+            const auto gap = source.slice(begin, end - begin);
+            const auto first = gap.find_first_not_of(whitespace);
+            if (first != StringView::npos)
+                spans.add({begin + first, begin + gap.find_last_not_of(whitespace) + 1});
         };
         std::size_t cursor{};
         for (const auto& function : functions) {
@@ -978,7 +970,7 @@ struct DispatchLayout {
         keep_declarations(cursor, source.size());
     }
 
-    bool matches(std::string_view source, const DispatchLayout& previous, std::string_view prior_source) const {
+    bool matches(StringView source, const DispatchLayout& previous, StringView prior_source) const {
         return std::ranges::equal(spans, previous.spans, [&](SpanRange current, SpanRange prior) {
             return current.text(source) == prior.text(prior_source);
         });
@@ -1104,13 +1096,13 @@ struct Module::Build {
 
         std::shared_ptr<const PreparedHelpers> helpers;
 
-        std::string generated_source;
+        String generated_source;
 
         Result<void> emit() {
             auto compiled = source::Program::emit_entry(request);
             if (!compiled)
                 return std::unexpected(map_diagnostic(std::move(compiled.error()), owner.declaration.source_name,
-                                                      owner.source_version, generated_source, helpers->mappings));
+                                                      owner.source_version, generated_source.view(), helpers->mappings));
             return {};
         }
     };
@@ -1145,12 +1137,10 @@ struct Module::Build {
             prior.reset();
         if (!next.declaration.needs_jit) {
             if (prior && same_declaration_shape(next.declaration, prior->declaration())) {
-                const auto a_helpers = next.declaration.helpers
-                                           ? std::string_view(next.declaration.helpers->generated_source)
-                                           : std::string_view{};
-                const auto b_helpers = prior->declaration().helpers
-                                           ? std::string_view(prior->declaration().helpers->generated_source)
-                                           : std::string_view{};
+                const auto a_helpers =
+                    next.declaration.helpers ? next.declaration.helpers->generated_source.view() : StringView{};
+                const auto b_helpers =
+                    prior->declaration().helpers ? prior->declaration().helpers->generated_source.view() : StringView{};
                 next.compilation = a_helpers == b_helpers ? Component::Compilation::reused_source
                                                           : Component::Compilation::reused_dependencies;
             }
@@ -1211,7 +1201,7 @@ Result<void> detail::DefinitionState::apply_literal(const Binding& binding) {
             node.arguments[binding.argument] = *n;
             return {};
         }
-        ATELIER_TRY_BIND(converted, wide_utf8(std::get<std::string>(binding.literal)));
+        ATELIER_TRY_BIND(converted, wide_utf8(std::get<String>(binding.literal).view()));
         node.arguments[binding.argument] = std::move(*converted);
         return {};
     }
@@ -1221,7 +1211,7 @@ Result<void> detail::DefinitionState::apply_literal(const Binding& binding) {
     }
     if (const auto* n = std::get_if<double>(&binding.literal))
         return Context::apply_number(node, binding.property, *n);
-    ATELIER_TRY_BIND(converted, wide_utf8(std::get<std::string>(binding.literal)));
+    ATELIER_TRY_BIND(converted, wide_utf8(std::get<String>(binding.literal).view()));
     return Context::text(node.control, static_cast<std::uint32_t>(binding.property), std::move(*converted));
 }
 
@@ -1342,9 +1332,9 @@ Component::Compilation Component::compilation() const noexcept {
     return impl_->compilation;
 }
 
-Result<ui::ControlKey> allocate_control_key(ui::ControlKey& next_key, std::string_view exhausted) {
+Result<ui::ControlKey> allocate_control_key(ui::ControlKey& next_key, Utf8Text exhausted) {
     if (!next_key || next_key == std::numeric_limits<ui::ControlKey>::max())
-        return std::unexpected(Error{ErrorCode::capacity_exceeded, std::string(exhausted)});
+        return std::unexpected(Error{ErrorCode::capacity_exceeded, std::move(exhausted)});
     return next_key++;
 }
 
@@ -1463,31 +1453,37 @@ bool ItemList::operator==(const ItemList& other) const {
     return std::ranges::equal(a, b);
 }
 
-std::shared_ptr<Component> Module::find(std::string_view name) const {
+std::shared_ptr<Component> Module::find(StringView name) const {
     const auto found =
         std::ranges::find_if(components_, [&](const auto& item) { return item->declaration().name == name; });
     return found == components_.end() ? nullptr : *found;
 }
 
-Result<std::shared_ptr<Module>> Module::compile(Runtime& runtime, std::string_view name, std::string_view source,
+Result<std::shared_ptr<Module>> Module::compile(Runtime& runtime, StringView name, StringView source,
                                                 const Module* previous, CompileTiming* timing) {
     ATELIER_TRY_BIND(build, start(runtime, name, source, previous, timing, false));
     return finish(**build);
 }
 
-Result<std::shared_ptr<Module::Build>> Module::start(Runtime& runtime, std::string_view name, std::string_view source,
+Result<std::shared_ptr<Module::Build>> Module::start(Runtime& runtime, StringView name, StringView source,
                                                      const Module* previous, CompileTiming* timing, bool background,
                                                      WorkerTiming* worker_timing) {
     if (timing)
         *timing = {};
-    const auto text = source.starts_with("\xef\xbb\xbf") ? source.substr(3) : source;
+    const auto valid_name = String::from_utf8(name);
+    if (!valid_name)
+        return failure("UI source name is not valid UTF-8.");
+    const auto text = source.starts_with("\xef\xbb\xbf") ? source.slice(3) : source;
     const source::detail::CompileTimer lowering(timing != nullptr);
-    auto declarations = lower_module(name, text);
+    auto declarations = lower_module(valid_name->view(), text);
     if (timing)
         timing->lower_ns = lowering.elapsed_ns();
-    if (!declarations)
-        return failure(std::string(name) + ":" + std::to_string(declarations.error().position.line) + ":" +
-                       std::to_string(declarations.error().position.column) + ": " + declarations.error().message);
+    if (!declarations) {
+        const auto& diag = declarations.error();
+        const auto msg =
+            String::from_utf8(StringView{diag.message.data(), diag.message.size()}).value_or("Invalid UI declaration."_s);
+        return failure(String::concat(*valid_name, ":", diag.position.line, ":", diag.position.column, ": ", msg));
+    }
     const auto type = runtime.native_type<detail::Context>();
     if (!type)
         return failure("Register UI language types during Runtime bootstrap before creating objects.");
@@ -1510,7 +1506,7 @@ Result<std::shared_ptr<Module::Build>> Module::start(Runtime& runtime, std::stri
         if (states[index] == 2)
             return {};
         if (states[index] == 1)
-            return failure(std::string(name) + ": Recursive UI composition is not supported.");
+            return failure(String::concat(*valid_name, ": Recursive UI composition is not supported."));
         states[index] = 1;
         auto& impl = *module->components_[index]->impl_;
         const auto& declaration = impl.declaration;
@@ -1521,7 +1517,7 @@ Result<std::shared_ptr<Module::Build>> Module::start(Runtime& runtime, std::stri
                 const auto at = std::ranges::find_if(
                     module->components_, [&](const auto& item) { return item->declaration().name == child_name; });
                 if (at == module->components_.end())
-                    return failure(std::string(name) + ": Unknown child component " + child_name);
+                    return failure(String::concat(*valid_name, ": Unknown child component ", child_name));
                 ATELIER_TRY(self(static_cast<std::size_t>(at - module->components_.begin())));
                 const auto& child = *at;
                 if (declaration.nodes[i].kind == NodeKind::repeat &&
@@ -1529,10 +1525,11 @@ Result<std::shared_ptr<Module::Build>> Module::start(Runtime& runtime, std::stri
                                            [](const auto& node) { return node.parent == 0; }) != 1 ||
                      child->declaration().nodes.front().kind == NodeKind::component ||
                      child->declaration().nodes.front().kind == NodeKind::repeat))
-                    return failure(std::string(name) + ": Repeated components require one concrete root node.");
+                    return failure(
+                        String::concat(*valid_name, ": Repeated components require one concrete root node."));
                 impl.children[i] = child;
             }
-        const auto prior = previous ? previous->find(declaration.name) : nullptr;
+        const auto prior = previous ? previous->find(declaration.name.view()) : nullptr;
         auto* sample = timing ? &timing->components.emplace() : nullptr;
         if (sample)
             sample->name = declaration.name;
@@ -1553,9 +1550,9 @@ Result<std::shared_ptr<Module::Build>> Module::start(Runtime& runtime, std::stri
         const bool already_checked = prior_helpers && prior_helpers->generated_source == helpers->generated_source;
         if (!already_checked) {
             ATELIER_TRY_BIND(owner, build->allocate_program(runtime, *type));
-            auto check_source = helpers->generated_source + "\nvoid __ui_helpers() {}\n";
-            ATELIER_TRY_BIND(
-                request, (*owner)->request(name, check_source, "__ui_helpers", source::CompileOptions{.fast = true}));
+            auto check_source = String::concat(helpers->generated_source, "\nvoid __ui_helpers() {}\n");
+            ATELIER_TRY_BIND(request, (*owner)->request(valid_name->view(), check_source.view(), "__ui_helpers",
+                                                        source::CompileOptions{.fast = true}));
             build->helper_check.emplace(Build::HelperCheck{std::move(*owner), std::move(*request),
                                                            *module->components_.front()->impl_, helpers,
                                                            std::move(check_source)});
@@ -1624,8 +1621,8 @@ Result<std::shared_ptr<Module>> Module::finish(Build& build) {
     return std::move(build.module);
 }
 
-Result<std::shared_ptr<Component>> Component::compile(Runtime& runtime, std::string_view name, std::string_view source,
-                                                      std::string_view entry) {
+Result<std::shared_ptr<Component>> Component::compile(Runtime& runtime, StringView name, StringView source,
+                                                      StringView entry) {
     ATELIER_TRY_BIND(module, Module::compile(runtime, name, source));
     if (entry.empty()) {
         if ((*module)->components_.size() != 1)
@@ -1634,7 +1631,8 @@ Result<std::shared_ptr<Component>> Component::compile(Runtime& runtime, std::str
     }
     auto result = (*module)->find(entry);
     if (!result)
-        return failure(std::string(name) + ": Unknown component " + std::string(entry));
+        return failure(String::concat(String::validated(name), ": Unknown component ",
+                                      String::from_utf8(entry).value_or("<invalid utf-8>"_s)));
     return result;
 }
 
@@ -1875,15 +1873,16 @@ Result<void> detail::DefinitionState::publish(Span<const InputValue> values) {
         return failure("UI component input count does not match its declaration.");
     for (std::size_t i = 0; i < values.size(); ++i) {
         if (values[i].index() != static_cast<std::size_t>(definitions[i].kind))
-            return failure("UI component input type mismatch: " + definitions[i].name);
+            return failure(String::concat("UI component input type mismatch: ", definitions[i].name));
         if (const auto* number = std::get_if<double>(&values[i]); number && !std::isfinite(*number))
             return failure("UI numeric inputs must be finite.");
         if (const auto* action = std::get_if<ActionBinding>(&values[i]); action && !action->target)
-            return failure("UI action bindings require a nonzero host target: " + definitions[i].name);
+            return failure(String::concat("UI action bindings require a nonzero host target: ", definitions[i].name));
         if (const auto* code = std::get_if<CodeBinding>(&values[i]); code && !code->document)
             return failure("CodeBinding requires a live document.");
         if (const auto* table = std::get_if<TableBinding>(&values[i]); table && !table->data)
-            return failure("UI table bindings require an immutable data snapshot: " + definitions[i].name);
+            return failure(
+                String::concat("UI table bindings require an immutable data snapshot: ", definitions[i].name));
     }
     if (inputs.size() != values.size()) {
         inputs.assign(values);
@@ -1917,31 +1916,32 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
     const bool source_changed = value && definition != value->component;
     const bool aliases_changed = !value || !std::ranges::equal(aliases, value->aliases);
     if (source_changed || aliases_changed) {
-        Array<std::string_view> paths;
+        Array<StringView> paths;
         paths.reserve(aliases.size());
         for (const auto& alias : aliases) {
-            const std::string_view path = alias.node;
+            const StringView path = alias.node.view();
             if (std::ranges::find(paths, path) != paths.end())
-                return failure("Duplicate UI key alias path: " + alias.node);
+                return failure(String::concat("Duplicate UI key alias path: ", alias.node));
             paths.add(path);
             auto remaining = path;
             const auto* component = definition.get();
             for (;;) {
                 const auto dot = remaining.find('.');
-                const auto name = remaining.substr(0, dot);
+                const auto name = remaining.slice(0, dot);
                 const auto& nodes = component->declaration().nodes;
                 const auto node = std::ranges::find_if(nodes, [&](const auto& item) { return item.name == name; });
                 if (node == nodes.end())
-                    return failure("Unknown UI key alias path: " + alias.node);
-                if (dot == remaining.npos) {
+                    return failure(String::concat("Unknown UI key alias path: ", alias.node));
+                if (dot == StringView::npos) {
                     if (node->kind == NodeKind::component || node->kind == NodeKind::repeat ||
-                        (node->kind == NodeKind::text_field && path.find('.') != path.npos))
-                        return failure("UI key alias requires a concrete node with a declaration-owned key: " +
-                                       alias.node);
+                        (node->kind == NodeKind::text_field && path.contains('.')))
+                        return failure(String::concat(
+                            "UI key alias requires a concrete node with a declaration-owned key: ", alias.node));
                     break;
                 }
                 if (node->kind != NodeKind::component)
-                    return failure("UI key alias paths may cross only static component instances: " + alias.node);
+                    return failure(
+                        String::concat("UI key alias paths may cross only static component instances: ", alias.node));
                 component = component->impl_->children[static_cast<std::size_t>(node - nodes.begin())].get();
                 remaining.remove_prefix(dot + 1);
             }
@@ -1983,10 +1983,11 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
                 for (const auto& input : type->declaration().inputs)
                     node.arguments.add(initial(input.kind));
             if (declared.kind == NodeKind::component) {
-                const auto prefix = declared.name + '.';
+                const auto prefix = String::concat(declared.name, ".");
                 for (const auto& key : aliases)
                     if (key.node.starts_with(prefix))
-                        node.aliases.add({key.node.substr(prefix.size()), key.key, key.label, key.body});
+                        node.aliases.add(
+                            {String::from_utf8_validated(key.node.slice(prefix.size())), key.key, key.label, key.body});
             }
             if (declared.kind == NodeKind::number_row || declared.kind == NodeKind::parameter_row) {
                 if (alias != aliases.end() && alias->label)
@@ -2205,18 +2206,18 @@ Result<std::unique_ptr<detail::PreparedUpdate>> detail::InstanceData::prepare(st
                                        node.control.text, node.control.enabled, node.edit.enabled, node.edit.modified},
                                       node.edit.fields);
             if (!appended)
-                return failure(declaration.source_name + ": " + declaration.nodes[i].name + ": " +
-                               std::string(appended.error().message));
+                return failure(String::concat(declaration.source_name, ": ", declaration.nodes[i].name, ": ",
+                                              String::validated(appended.error().message)));
             output.front().layout.collapsed = node.control.layout.collapsed;
             output.front().tooltip = node.control.tooltip;
             output.front().classes.append(node.control.classes);
         }
         for (const auto& control : output)
             if (auto valid = ui::validate_control_properties(control); !valid)
-                return failure(declaration.source_name + ": " + declaration.nodes[i].name +
-                               (valid.error().code == ui::ErrorCode::invalid_style
-                                    ? ": Invalid UI style."
-                                    : ": Invalid UI text or numeric properties."));
+                return failure(String::concat(declaration.source_name, ": ", declaration.nodes[i].name,
+                                              valid.error().code == ui::ErrorCode::invalid_style
+                                                  ? ": Invalid UI style."_s
+                                                  : ": Invalid UI text or numeric properties."_s));
         const auto previous = Span<const ui::Control>{data.published}.slice(node.begin, node.count);
         change.next_count = output.size();
         change.descendants = child_budget - remaining;
@@ -2389,8 +2390,8 @@ Result<bool> Instance::event(const ui::Action& action) {
     if (kind == NodeKind::foldout || kind == NodeKind::toggle_button || kind == NodeKind::checkbox) {
         const auto* value = std::get_if<bool>(&action.value);
         if (!value)
-            return failure(kind == NodeKind::foldout ? "Foldout activation requires a bool value."
-                                                     : "ToggleButton activation requires a bool value.");
+            return failure(kind == NodeKind::foldout ? "Foldout activation requires a bool value."_s
+                                                     : "ToggleButton activation requires a bool value."_s);
         checked = *value;
     } else if (!std::holds_alternative<std::monostate>(action.value))
         return failure("Button activation does not accept a value.");

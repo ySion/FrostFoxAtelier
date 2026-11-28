@@ -22,7 +22,9 @@ namespace atelier::procedural {
 namespace {
 
 using math::Vector3d;
+
 using Index = std::uint32_t;
+
 constexpr Index missing = std::numeric_limits<Index>::max();
 
 std::uint64_t pair_key(Index a, Index b) {
@@ -31,18 +33,27 @@ std::uint64_t pair_key(Index a, Index b) {
 
 struct Component {
     Array<Index> points;
+
     Array<Index> faces;
 };
 
 struct Source {
     explicit Source(const Geometry& geometry) : surface(geometry) {}
+
     const Geometry& surface;
+
     Array<Index> around;
+
     Array<Index> face_at;
+
     Array<Index> first_corner;
+
     Array<Index> local_point;
+
     Array<Index> face_patch;
+
     Array<Vector3d> normals;
+
     Array<Component> components;
 };
 
@@ -89,7 +100,9 @@ Result<Source> read_source(const Geometry& surface) {
 
 struct Support {
     Vector3d normal;
+
     double offset;
+
     Index donor;
 };
 
@@ -98,12 +111,21 @@ struct Support {
 // shells. Small components use the same comparison in a contiguous scan.
 class SupportPoints {
     struct Block {
-        Vector3d lo, hi;
-        Index begin, end;
+        Vector3d lo;
+
+        Vector3d hi;
+
+        Index begin;
+
+        Index end;
+
         std::size_t after;
     };
+
     Span<const Vector3d> points_;
+
     Array<Index> order_;
+
     Array<Block> blocks_;
 
     void partition(Index begin, Index end) {
@@ -165,19 +187,29 @@ public:
 
 struct Cut {
     Vector3d normal;
+
     double offset;
+
     Index donor;
+
     Index feature;
 };
 
 struct Piece {
     Vector3d origin;
+
     double tolerance;
+
     double clip_tolerance;
+
     detail::BevelHull hull;
+
     Array<Support> supports;
+
     Array<Cut> cuts;
+
     Set<std::uint64_t> contacts;
+
     Index features{};
 };
 
@@ -245,8 +277,8 @@ Result<Piece> prepare(Source& source, const Component& component) {
     const SupportPoints queries(hull.points, piece.supports.size());
     for (const auto& support : piece.supports)
         if (queries.outside(support, piece.tolerance))
-            return failure("Bevel requires outward-facing convex components; primitive " +
-                           std::to_string(support.donor) + " is not a supporting face.");
+            return failure(String::concat("Bevel requires outward-facing convex components; primitive ", support.donor,
+                                          " is not a supporting face."));
     // A support can contain many authored faces (material and UV seams).
     // Keep all of them; they only share the identity of their geometric plane.
     for (auto f : component.faces) {
@@ -299,6 +331,7 @@ Result<void> edge_cuts(Piece& piece, Index a, Index b, Vector3d center, const Be
 
 struct Vertex {
     Vector3d position;
+
     Array<Index> patches;
 };
 
@@ -422,7 +455,8 @@ Result<void> resolve_short_edges(Piece& piece) {
                     parent.resize(hull.points.size());
                     std::iota(parent.begin(), parent.end(), 0u);
                 }
-                const auto a = root(id), b = root(prev);
+                const auto a = root(id);
+                const auto b = root(prev);
                 parent[std::max(a, b)] = std::min(a, b);
             }
             prev = id;
@@ -457,8 +491,8 @@ Result<void> cut_piece(Piece& piece) {
     for (const auto& cut : piece.cuts) {
         auto clipped = piece.hull.clip(cut.normal, cut.offset, piece.clip_tolerance, cut.donor, cut.feature);
         if (!clipped) {
-            clipped.error().message = "Bevel radius could not preserve the solid at primitive " +
-                                      std::to_string(cut.donor) + ": " + clipped.error().message;
+            clipped.error().message = String::concat("Bevel radius could not preserve the solid at primitive ",
+                                                     cut.donor, ": ", clipped.error().message);
             return std::unexpected(std::move(clipped.error()));
         }
     }
@@ -485,17 +519,23 @@ Result<void> cut_piece(Piece& piece) {
         const auto donor = feature < piece.supports.size()
                                ? piece.supports[feature].donor
                                : std::ranges::find(piece.cuts, feature, &Cut::feature)->donor;
-        return failure("Bevel radius collapses a face or ridge near source primitive " + std::to_string(donor) + ".");
+        return failure(
+            String::concat("Bevel radius collapses a face or ridge near source primitive ", donor, "."));
     }
     return {};
 }
 
 struct Output {
     Array<math::Vector3> positions;
+
     Array<Index> points;
+
     Array<Index> offsets{0};
+
     Array<Index> face_donors;
+
     Array<std::uint8_t> original;
+
     Array<Index> point_donors;
 
     Result<void> face(Span<const Index> ids, Index donor, bool retained) {
@@ -537,8 +577,8 @@ struct Output {
                 continue;
             }
             const auto unresolved = [&] {
-                return failure("Bevel radius is unresolved at output float precision near source primitive " +
-                               std::to_string(patch.donor) + ": " + valid.error().message);
+                return failure(String::concat("Bevel radius is unresolved at output float precision near source primitive ",
+                                              patch.donor, ": ", valid.error().message));
             };
             if (ids.size() == 3)
                 return unresolved();
@@ -547,7 +587,8 @@ struct Output {
             // the certified convex double face around an interior float point.
             // Each triangle must remain resolvable and have the original winding.
             const auto anchor = piece.hull.points[patch.points.front()];
-            Vector3d area{}, sum{};
+            Vector3d area{};
+            Vector3d sum{};
             for (std::size_t i = 0; i < ids.size(); ++i) {
                 const auto relative = piece.hull.points[patch.points[i]] - anchor;
                 sum += relative;

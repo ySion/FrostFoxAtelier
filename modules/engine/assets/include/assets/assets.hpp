@@ -1,10 +1,10 @@
 #pragma once
+#include "foundation/string.hpp"
 #include "geometry/mesh.hpp"
 #include "material/program_resources.hpp"
 #include "rendering/sky_map.hpp"
 #include <filesystem>
 #include <string>
-#include <string_view>
 #include <variant>
 
 namespace atelier::assets {
@@ -13,7 +13,7 @@ enum class AssetKind { folder, mesh, scene, source, file, texture, material, sky
 // An installed producer's compatibility declaration and actual immutable content.
 // Neither the digest nor the semantic version authenticates executable code.
 struct EngineDependency {
-    std::string key;
+    String key;
 
     AssetKind kind;
 
@@ -21,7 +21,7 @@ struct EngineDependency {
 
     std::uint32_t digest_version;
 
-    std::string content_sha256;
+    String content_sha256;
 
     bool operator==(const EngineDependency&) const = default;
 };
@@ -32,9 +32,14 @@ inline constexpr std::uint32_t material_digest_version = 2;
 
 // A mesh slot's default material: the material asset key its sidecar names for the slot.
 struct SlotMaterial {
-    std::string slot;
+    String slot;
 
-    std::string key;
+    String key;
+
+    SlotMaterial() = default;
+
+    SlotMaterial(Utf8Text slot_name, Utf8Text material_key)
+        : slot(std::move(slot_name).into_string()), key(std::move(material_key).into_string()) {}
 
     bool operator==(const SlotMaterial&) const = default;
 };
@@ -42,7 +47,7 @@ struct SlotMaterial {
 // Resolved resource data shared by engine and project catalogs. Keys identify
 // persistent catalog entries, never Runtime objects or GPU allocations.
 struct MeshAsset {
-    std::string key;
+    String key;
 
     std::wstring name;
 
@@ -53,7 +58,7 @@ struct MeshAsset {
 
 // A key and the sky map it resolved to; an empty key with a null map clears an Environment's sky map.
 struct SkyAsset {
-    std::string key;
+    String key;
 
     std::wstring name;
 
@@ -61,7 +66,7 @@ struct SkyAsset {
 };
 
 struct TextureAsset {
-    std::string key;
+    String key;
 
     std::wstring name;
 
@@ -69,7 +74,7 @@ struct TextureAsset {
 };
 
 struct MaterialSourceAsset {
-    std::string source_path; // Explicit project-relative Source path, or a reserved builtin/ Source path.
+    String source_path; // Explicit project-relative Source path, or a reserved builtin/ Source path.
 
     material::Policy policy;
 
@@ -77,14 +82,14 @@ struct MaterialSourceAsset {
 };
 
 struct MaterialInstanceAsset {
-    std::string parent_key{"builtin/material/standard-opaque-double"};
+    String parent_key{"builtin/material/standard-opaque-double"_s};
 
     Array<material::Override> entries;
 };
 
 // Author values only: no compiled program, resolved texture or Runtime owner.
 struct MaterialAsset {
-    std::string key;
+    String key;
 
     std::wstring name;
 
@@ -92,17 +97,17 @@ struct MaterialAsset {
 };
 
 struct ProceduralGraphAsset {
-    std::string key;
+    String key;
 
     std::wstring name;
 
-    std::string text;
+    String text;
 };
 
 struct ProjectEntry {
     std::filesystem::path path; // Relative to the project root; never a Runtime ID.
 
-    std::string key;
+    String key;
 
     AssetKind kind{};
 

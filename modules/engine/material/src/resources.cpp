@@ -16,7 +16,7 @@ struct Access {
 namespace {
 using detail::Access;
 
-auto failure(std::string message) {
+auto failure(Utf8Text message) {
     return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)});
 }
 }
@@ -28,13 +28,13 @@ Result<void> register_texture_types(Runtime& runtime) {
     return {};
 }
 
-Result<ObjectRoot> create_texture(Runtime& runtime, std::string_view source, ImageRef image) {
+Result<ObjectRoot> create_texture(Runtime& runtime, StringView source, ImageRef image) {
     ATELIER_TRY(runtime.check_code_publication());
-    if (source.size() > 4096 || source.find('\0') != source.npos)
+    if (source.size() > 4096 || source.contains('\0'))
         return failure("Invalid texture resource source.");
     if (!image && source.empty())
         return failure("A texture without image content requires the persistent source it stands in for.");
-    auto text = String::from_utf8(StringView{source});
+    auto text = String::from_utf8(source);
     if (!text)
         return failure("Texture resource source requires valid UTF-8.");
     ATELIER_TRY_BIND(type, runtime.native_type<TextureResource>());
@@ -51,7 +51,7 @@ Result<ObjectRoot> create_texture(Runtime& runtime, std::string_view source, Ima
 
 Result<TextureState> read_texture(Runtime& runtime, ObjectId id) {
     return runtime.with_native<const TextureResource>(id, [](const auto& value) -> Result<TextureState> {
-        return TextureState{std::string(Access::source(value).view().std_view()), Access::image(value)};
+        return TextureState{Access::source(value), Access::image(value)};
     });
 }
 

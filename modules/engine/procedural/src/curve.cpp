@@ -18,7 +18,7 @@ using math::Vector3;
 using math::Vector3d;
 
 namespace {
-std::unexpected<Error> primitive_failure(std::uint32_t p, std::string message) {
+std::unexpected<Error> primitive_failure(std::uint32_t p, Utf8Text message) {
     Optional<ErrorElement> element;
     if (p != 0xffffffffu)
         element = ErrorElement{"primitive", p};
@@ -27,10 +27,10 @@ std::unexpected<Error> primitive_failure(std::uint32_t p, std::string message) {
 
 Result<double> measure_polyline(const Geometry& input, std::uint32_t p, Array<ArcEdge>* edges) {
     if (p >= input.count(Layer::primitive))
-        return primitive_failure(p, "Polyline primitive index " + std::to_string(p) + " is out of bounds.");
+        return primitive_failure(p, String::concat("Polyline primitive index ", p, " is out of bounds."));
     const auto prim = input.primitive(p);
     if (prim.kind != PrimitiveKind::polyline)
-        return primitive_failure(p, "Expected a polyline at primitive " + std::to_string(p) + ".");
+        return primitive_failure(p, String::concat("Expected a polyline at primitive ", p, "."));
     const auto points = input.vertex_points();
     const auto& pos = input.positions();
     double length = 0.;
@@ -40,14 +40,14 @@ Result<double> measure_polyline(const Geometry& input, std::uint32_t p, Array<Ar
             continue;
         const double next = length + d;
         if (!(next > length && next <= std::numeric_limits<float>::max()))
-            return primitive_failure(p, "Polyline arc length exceeds representable precision at primitive " +
-                                            std::to_string(p) + ".");
+            return primitive_failure(
+                p, String::concat("Polyline arc length exceeds representable precision at primitive ", p, "."));
         length = next;
         if (edges)
             edges->add({v, length});
     }
     if (length == 0.)
-        return primitive_failure(p, "Zero-length polyline at primitive " + std::to_string(p) + ".");
+        return primitive_failure(p, String::concat("Zero-length polyline at primitive ", p, "."));
     return length;
 }
 
@@ -240,8 +240,7 @@ Result<Geometry> sample_curves(const Geometry& input, float distance, bool from_
         const auto arc = curves[p];
         const double d = from_end ? arc.length() - arc.distance(distance) : arc.distance(distance);
         if (!(d >= 0. && d <= arc.length()))
-            return primitive_failure(p, "Curve sample distance exceeds the length of primitive " + std::to_string(p) +
-                                            ".");
+            return primitive_failure(p, String::concat("Curve sample distance exceeds the length of primitive ", p, "."));
         const auto i = arc.edge_at(d);
         ATELIER_TRY(output.emit(arc, arc.station(i, d), d, arc.tangent(i)));
         output.finish_primitive();

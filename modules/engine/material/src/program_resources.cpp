@@ -8,12 +8,12 @@ namespace atelier::material {
 namespace {
 static_assert(std::is_nothrow_move_assignable_v<ReferenceField>);
 
-auto failure(std::string message) {
+auto failure(Utf8Text message) {
     return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)});
 }
 
-bool valid_key(std::string_view value) {
-    return value.size() <= 4096 && value.find('\0') == value.npos;
+bool valid_key(StringView value) {
+    return value.size() <= 4096 && !value.contains('\0') && value.is_valid_utf8();
 }
 
 bool finite(math::Vector4 value) {
@@ -153,9 +153,9 @@ struct ProgramAccess {
         return {};
     }
 
-    static Result<ImageRef> image(Runtime& runtime, ObjectId id, std::string_view key) {
+    static Result<ImageRef> image(Runtime& runtime, ObjectId id, StringView key) {
         return runtime.with_native<const TextureResource>(id, [&](const auto& value) -> Result<ImageRef> {
-            if (value.source_.view().std_view() != key)
+            if (value.source_.view() != key)
                 return failure("Texture root does not match the authored key.");
             return value.image_;
         });
@@ -301,7 +301,7 @@ struct ProgramAccess {
     }
 
     template <class T, class State>
-    static Result<ObjectRoot> create(Runtime& runtime, std::string_view key, const State& state) {
+    static Result<ObjectRoot> create(Runtime& runtime, StringView key, const State& state) {
         ATELIER_TRY(runtime.check_code_publication());
         // The publishing asset directory owns key authority. Native creation
         // also serves installed engine Sources, not only project author files.
@@ -310,7 +310,7 @@ struct ProgramAccess {
         ATELIER_TRY_BIND(type, runtime.native_type<T>());
         ATELIER_TRY_BIND(root, runtime.create(*type));
         auto initialized = runtime.with_native<T>(root->id(), [&](auto& value) -> Result<void> {
-            value.asset_key_ = key;
+            value.asset_key_ = String::from_utf8_validated(key);
             return {};
         });
         if (!initialized)
@@ -325,8 +325,8 @@ struct ProgramAccess {
         return std::move(*root);
     }
 
-    static Result<std::string> key(Runtime& runtime, ObjectId id) {
-        return runtime.with_native<const Material>(id, [](const auto& value) -> Result<std::string> {
+    static Result<String> key(Runtime& runtime, ObjectId id) {
+        return runtime.with_native<const Material>(id, [](const auto& value) -> Result<String> {
             if (!value.published_)
                 return failure("Material has no valid publication.");
             return value.asset_key_;
@@ -524,10 +524,10 @@ Result<DefinitionRef> make_definition(std::shared_ptr<const source::MaterialProg
     for (const auto& input : program->textures()) {
         auto found = std::ranges::find(textures, input.key, &TextureDefault::path);
         if (found == textures.end() || std::ranges::count(textures, input.key, &TextureDefault::path) != 1)
-            return failure("Missing or repeated material texture default: " + input.key);
+            return failure(String::concat("Missing or repeated material texture default: ", input.key));
         if (!valid_key(found->binding.asset_key) || found->binding.address > Address::mirror ||
             found->color > TextureColor::srgb || !finite(found->empty_value))
-            return failure("Invalid material texture default: " + input.key);
+            return failure(String::concat("Invalid material texture default: ", input.key));
         ordered.add(*found);
     }
     return DefinitionRef(new SourceDefinition(std::move(program), policy, std::move(ordered)));
@@ -549,7 +549,7 @@ Result<Output> ProgramSurface::evaluate(const Context& context) const {
     return output;
 }
 
-std::string_view default_world_source() noexcept {
+StringView default_world_source() noexcept {
     return R"(
 struct Params { float cell_size; vector3 light; vector3 dark; };
 Params defaults() {
@@ -630,11 +630,11 @@ Result<ProgramSurfaceRef> resolve_source(DefinitionRef definition, Span<const Im
     for (std::size_t i = 0; i < images.size(); ++i) {
         const auto& input = definition->textures()[i];
         if (auto valid = validate_binding(input.binding, images[i]); !valid)
-            return failure(input.path + ": " + valid.error().message);
+            return failure(String::concat(input.path, ": ", valid.error().message));
         if (!input.binding.asset_key.empty() && !images[i])
-            diagnostics.add(
-                {input.path, "Texture '" + input.binding.asset_key +
-                                 "' has no available image content; using the MS typed empty/default sample."});
+            diagnostics.add({input.path, String::concat("Texture '", input.binding.asset_key,
+                                                        "' has no available image content; using the MS typed "
+                                                        "empty/default sample.")});
         inputs.add({images[i], input.binding.address, input.color, input.empty_value});
     }
     const auto defaults = definition->program().default_parameters();
@@ -664,15 +664,15 @@ Result<ProgramSurfaceRef> resolve_instance(ProgramSurfaceRef parent, Span<const 
             return failure("Author override paths must be nonempty and unique.");
         const auto parameter = std::ranges::find(numeric, entry.path, &source::MaterialParameter::key);
         const auto texture = std::ranges::find(textures, entry.path, &source::MaterialTextureInput::key);
-        std::string issue;
+        String issue;
         const auto* binding = std::get_if<TextureBinding>(&entry.value);
         if (binding) {
             if (auto valid = validate_binding(*binding, images[i]); !valid)
-                return failure(entry.path + ": " + valid.error().message);
+                return failure(String::concat(entry.path, ": ", valid.error().message));
             if (texture == textures.end())
-                issue = "Texture declaration is absent or has a different type.";
+                issue = "Texture declaration is absent or has a different type."_s;
             else if (!binding->asset_key.empty() && !images[i])
-                issue = "Texture '" + binding->asset_key + "' has no available image content.";
+                issue = String::concat("Texture '", binding->asset_key, "' has no available image content.");
             if (issue.empty() && entry.enabled) {
                 auto& input = inputs[static_cast<std::size_t>(texture - textures.begin())];
                 input.image = images[i];
@@ -680,7 +680,7 @@ Result<ProgramSurfaceRef> resolve_instance(ProgramSurfaceRef parent, Span<const 
             }
         } else {
             if (images[i])
-                return failure(entry.path + ": numeric author entry cannot carry image content.");
+                return failure(String::concat(entry.path, ": numeric author entry cannot carry image content."));
             std::visit(
                 [&](const auto& value) {
                     using T = std::decay_t<decltype(value)>;
@@ -693,9 +693,9 @@ Result<ProgramSurfaceRef> resolve_instance(ProgramSurfaceRef parent, Span<const 
                             for (std::size_t c = 0; c < count; ++c)
                                 valid &= std::isfinite(value[c]);
                         if (!valid)
-                            issue = "Numeric author values must be finite.";
+                            issue = "Numeric author values must be finite."_s;
                         else if (parameter == numeric.end() || parameter->components != count)
-                            issue = "Numeric declaration is absent or has a different type.";
+                            issue = "Numeric declaration is absent or has a different type."_s;
                         else if (entry.enabled)
                             std::memcpy(parameters.data() + parameter->offset, &value, sizeof(T));
                     }
@@ -704,15 +704,17 @@ Result<ProgramSurfaceRef> resolve_instance(ProgramSurfaceRef parent, Span<const 
         }
         if (!issue.empty()) {
             if (!entry.enabled)
-                issue += " Override is disabled; using the current inherited value.";
+                issue.append_literal<" Override is disabled; using the current inherited value.">();
             else if (texture != textures.end()) {
                 const auto& input = inputs[static_cast<std::size_t>(texture - textures.begin())];
-                issue += input.image ? " Using the current inherited texture input."
-                                     : " Using the MS typed empty/default sample.";
+                if (input.image)
+                    issue.append_literal<" Using the current inherited texture input.">();
+                else
+                    issue.append_literal<" Using the MS typed empty/default sample.">();
             } else if (parameter != numeric.end())
-                issue += " Using the current inherited/default parameter value.";
+                issue.append_literal<" Using the current inherited/default parameter value.">();
             else
-                issue += " Override is ignored by the current declaration.";
+                issue.append_literal<" Override is ignored by the current declaration.">();
             diagnostics.add({entry.path, std::move(issue)});
         }
     }
@@ -731,15 +733,15 @@ Result<void> register_resource_types(Runtime& runtime) {
     return detail::ProgramAccess::register_objects(runtime);
 }
 
-Result<ObjectRoot> create_source(Runtime& runtime, std::string_view key, const SourceState& state) {
+Result<ObjectRoot> create_source(Runtime& runtime, StringView key, const SourceState& state) {
     return detail::ProgramAccess::create<MaterialSource>(runtime, key, state);
 }
 
-Result<ObjectRoot> create_instance(Runtime& runtime, std::string_view key, const InstanceState& state) {
+Result<ObjectRoot> create_instance(Runtime& runtime, StringView key, const InstanceState& state) {
     return detail::ProgramAccess::create<MaterialInstance>(runtime, key, state);
 }
 
-Result<std::string> material_key(Runtime& runtime, ObjectId id) {
+Result<String> material_key(Runtime& runtime, ObjectId id) {
     ATELIER_TRY(source_role(runtime, id));
     return detail::ProgramAccess::key(runtime, id);
 }

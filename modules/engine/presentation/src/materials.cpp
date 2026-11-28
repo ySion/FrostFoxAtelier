@@ -21,7 +21,7 @@ Result<Array<MaterialBinding>> read_bindings_of(Runtime& runtime, ObjectId id, c
 }
 
 template <class ComponentT>
-Result<void> write_bindings_of(Runtime& runtime, ObjectId id, ComponentT& value, Array<std::string> names,
+Result<void> write_bindings_of(Runtime& runtime, ObjectId id, ComponentT& value, Array<String> names,
                                BitVector flags, Span<const ObjectReference> references) {
     ATELIER_TRY_BIND(field, runtime.reference_field(id, Access::materials(value)));
     ATELIER_TRY_BIND(size, runtime.sequence_size(*field));
@@ -67,13 +67,13 @@ Result<void> set_material_bindings(Runtime& runtime, ObjectId id, Span<const Mat
         return runtime.with_native<ProceduralGeneratorComponent>(id, [&](auto& value) -> Result<void> {
             if (bindings.size() > 1)
                 return error(ErrorCode::argument_mismatch, "Too many material slot bindings.");
-            Array<std::string> names;
+            Array<String> names;
             BitVector flags;
             Array<ObjectReference> references;
             for (const auto& binding : bindings) {
                 if (binding.slot != "default")
                     return error(ErrorCode::argument_mismatch,
-                                 "Material slot is missing or ambiguous: " + binding.slot);
+                                 String::concat("Material slot is missing or ambiguous: ", binding.slot));
                 ATELIER_TRY_BIND(held, runtime.hold(binding.resource.reference()));
                 ATELIER_TRY(material::capture_program(runtime, held->id()));
                 names.add(binding.slot);
@@ -87,13 +87,13 @@ Result<void> set_material_bindings(Runtime& runtime, ObjectId id, Span<const Mat
         const auto& mesh = Access::geometry(value);
         if (bindings.size() > (mesh ? mesh->materials().size() : 0))
             return error(ErrorCode::argument_mismatch, "Too many material slot bindings.");
-        Array<std::string> names;
+        Array<String> names;
         BitVector flags;
         Array<ObjectReference> references;
         names.reserve(bindings.size());
         flags.reserve(bindings.size());
         references.reserve(bindings.size());
-        Set<std::string_view> unique;
+        Set<StringView> unique;
         unique.reserve(bindings.size());
         for (const auto& binding : bindings) {
             if (!unique.add(binding.slot))
@@ -102,7 +102,8 @@ Result<void> set_material_bindings(Runtime& runtime, ObjectId id, Span<const Mat
             for (std::size_t i = 0; i < mesh->materials().size(); ++i)
                 matches += material_slot_name(*mesh, i) == binding.slot;
             if (matches != 1)
-                return error(ErrorCode::argument_mismatch, "Material slot is missing or ambiguous: " + binding.slot);
+                return error(ErrorCode::argument_mismatch,
+                             String::concat("Material slot is missing or ambiguous: ", binding.slot));
             ATELIER_TRY_BIND(held, runtime.hold(binding.resource.reference()));
             ATELIER_TRY(material::capture_program(runtime, held->id()));
             names.add(binding.slot);

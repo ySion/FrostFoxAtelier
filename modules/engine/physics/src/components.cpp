@@ -654,7 +654,7 @@ Result<void> ComponentSimulation::reconcile() {
                 Array<RagdollPart> parts;
                 for (auto metadata : desired.metadata) {
                     auto part = read<RagdollPartComponent>(runtime, metadata, [&](const auto& v) {
-                        return RagdollPart{std::to_string(parts.size()), v.parent_index, v.rest_position, v.radius,
+                        return RagdollPart{String::from_number(parts.size()), v.parent_index, v.rest_position, v.radius,
                                            v.capsule_half_height};
                     });
                     ATELIER_TRY(part);

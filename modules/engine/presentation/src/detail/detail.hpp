@@ -17,11 +17,11 @@ struct Access {
 
     static const ReferenceSequence& materials(const StaticMeshComponent& value) noexcept { return value.materials_; }
 
-    static Array<std::string>& material_slots(StaticMeshComponent& value) noexcept {
+    static Array<String>& material_slots(StaticMeshComponent& value) noexcept {
         return value.material_slots_;
     }
 
-    static const Array<std::string>& material_slots(const StaticMeshComponent& value) noexcept {
+    static const Array<String>& material_slots(const StaticMeshComponent& value) noexcept {
         return value.material_slots_;
     }
 
@@ -41,9 +41,9 @@ struct Access {
         return value.default_materials_;
     }
 
-    static Array<std::string>& default_slots(StaticMeshComponent& value) noexcept { return value.default_slots_; }
+    static Array<String>& default_slots(StaticMeshComponent& value) noexcept { return value.default_slots_; }
 
-    static const Array<std::string>& default_slots(const StaticMeshComponent& value) noexcept {
+    static const Array<String>& default_slots(const StaticMeshComponent& value) noexcept {
         return value.default_slots_;
     }
 
@@ -83,11 +83,11 @@ struct Access {
         return value.materials_;
     }
 
-    static Array<std::string>& material_slots(ProceduralGeneratorComponent& value) noexcept {
+    static Array<String>& material_slots(ProceduralGeneratorComponent& value) noexcept {
         return value.material_slots_;
     }
 
-    static const Array<std::string>& material_slots(const ProceduralGeneratorComponent& value) noexcept {
+    static const Array<String>& material_slots(const ProceduralGeneratorComponent& value) noexcept {
         return value.material_slots_;
     }
 
@@ -136,7 +136,7 @@ struct Access {
     return output && (output->surface_mesh || !output->publication.collections.empty());
 }
 
-inline std::unexpected<Error> error(ErrorCode code, std::string message) {
+inline std::unexpected<Error> error(ErrorCode code, Utf8Text message) {
     return std::unexpected(Error{code, std::move(message)});
 }
 
@@ -180,7 +180,7 @@ world::World::Admission unique_camera(world::CapabilityId cameras);
 
 // The diagnostic of an extraction item failure, for World::contain.
 world::Diagnostic diagnostic(world::DiagnosticKind, world::DiagnosticPhase, ObjectId object, ObjectId entity,
-                             Array<std::string> field = {});
+                             Array<String> field = {});
 
 // The presented poses of one update as rigid offsets of world space.
 class Presented {

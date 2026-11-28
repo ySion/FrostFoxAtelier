@@ -19,11 +19,11 @@ using world::BodySettings;
 // The required reader must not mutate the World or return material/Runtime roots.
 using MeshReader = Result<geometry::MeshSource> (&)(Runtime&, ObjectId component);
 
-[[nodiscard]] Result<std::string> cook_triangle_mesh(const geometry::MeshRef& mesh, math::Vector3 scale,
-                                                     std::string_view source_key);
+[[nodiscard]] Result<Array<std::byte>> cook_triangle_mesh(const geometry::MeshRef& mesh, math::Vector3 scale,
+                                                          StringView source_key);
 
-[[nodiscard]] Result<void> validate_cooked_triangle_mesh(std::string_view bytes, const geometry::MeshRef& mesh,
-                                                         math::Vector3 scale, std::string_view source_key);
+[[nodiscard]] Result<void> validate_cooked_triangle_mesh(Span<const std::byte> bytes, const geometry::MeshRef& mesh,
+                                                         math::Vector3 scale, StringView source_key);
 
 struct Types {
     TypeId character_component{};
@@ -138,7 +138,7 @@ struct CharacterState {
 };
 
 struct RagdollPart {
-    std::string name;
+    String name;
 
     int parent{-1};
 
@@ -147,6 +147,13 @@ struct RagdollPart {
     float radius{.2f};
 
     float capsule_half_height{.25f};
+
+    RagdollPart() = default;
+
+    RagdollPart(Utf8Text part_name, int parent_index = -1, math::Vector3 position = {}, float part_radius = .2f,
+                float half_height = .25f)
+        : name(std::move(part_name).into_string()), parent(parent_index), local_position(position), radius(part_radius),
+          capsule_half_height(half_height) {}
 };
 
 struct RagdollPose {

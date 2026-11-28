@@ -37,7 +37,7 @@ struct ArgPlan {
 
     bool optional{};
 
-    std::string purpose{};
+    String purpose{};
 };
 
 struct NodePlan {
@@ -57,7 +57,7 @@ struct NodePlan {
 };
 
 Array<AttributeRule> attribute_rules(const NodePlan& plan, const TypeInfo& type);
-void append_native_rules(Array<AttributeRule>& rules, std::string_view type);
+void append_native_rules(Array<AttributeRule>& rules, StringView type);
 
 Result<NodePlan> inspect_node(Runtime& runtime, TypeId type, Array<PortDescription>* port_descriptions = nullptr);
 

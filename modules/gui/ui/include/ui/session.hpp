@@ -199,7 +199,7 @@ struct Control {
 
     DragAxis drag_axis{DragAxis::horizontal};
 
-    Array<std::string> classes;
+    Array<String> classes;
 
     StyleProperties style;
 

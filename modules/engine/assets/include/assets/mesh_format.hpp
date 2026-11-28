@@ -14,26 +14,26 @@ inline constexpr std::size_t maximum_bytes = 256 * 1024 * 1024;
 inline constexpr std::size_t maximum_text_bytes = 4096;
 
 namespace detail {
-inline Result<void> text(std::string_view value) {
-    if (value.size() > maximum_text_bytes || value.find('\0') != value.npos || !StringView(value).is_valid_utf8())
+inline Result<void> text(StringView value) {
+    if (value.size() > maximum_text_bytes || value.contains('\0') || !value.is_valid_utf8())
         return std::unexpected(Error{ErrorCode::invalid_storage,
                                      "Mesh snapshot text requires valid UTF-8, no NUL, and at most 4096 bytes."});
     return {};
 }
 
-inline Result<void> key(std::string_view value) {
+inline Result<void> key(StringView value) {
     ATELIER_TRY(text(value));
-    if (value.empty() || value.find_first_of("\\:\"<>|?*") != value.npos ||
+    if (value.empty() || value.contains_any("\\:\"<>|?*") ||
         std::ranges::any_of(value, [](unsigned char c) { return c < 32 || c == 127; }))
         return std::unexpected(
             Error{ErrorCode::invalid_storage, "Mesh snapshot requires a nonempty relative asset key."});
     while (!value.empty()) {
         const auto slash = value.find('/');
-        const auto part = value.substr(0, slash);
+        const auto part = slash == StringView::npos ? value : value.slice(0, slash);
         if (part.empty() || part == "." || part == "..")
             return std::unexpected(
                 Error{ErrorCode::invalid_storage, "Mesh snapshot asset key has an invalid path segment."});
-        if (slash == value.npos)
+        if (slash == StringView::npos)
             return {};
         value.remove_prefix(slash + 1);
     }
@@ -41,19 +41,20 @@ inline Result<void> key(std::string_view value) {
 }
 
 inline Result<void> bindings(const MeshAsset& asset) {
-    Map<std::string_view, unsigned> matches;
+    Map<StringView, unsigned> matches;
     matches.reserve(asset.materials.size());
     for (const auto& binding : asset.materials) {
         ATELIER_TRY(text(binding.slot));
         ATELIER_TRY(key(binding.key));
-        if (binding.slot.empty() || !matches.try_emplace(binding.slot, 0u).inserted)
+        if (binding.slot.empty() || !matches.try_emplace(binding.slot.view(), 0u).inserted)
             return std::unexpected(
                 Error{ErrorCode::invalid_storage, "Mesh snapshot has an empty or duplicate default material slot."});
     }
     if (matches.empty())
         return {};
     for (std::size_t i = 0; i < asset.mesh->materials().size(); ++i) {
-        if (auto* count = matches.find(geometry::material_slot_name(*asset.mesh, i)); count && ++*count > 1)
+        const auto slot_name = geometry::material_slot_name(*asset.mesh, i);
+        if (auto* count = matches.find(slot_name.view()); count && ++*count > 1)
             return std::unexpected(
                 Error{ErrorCode::invalid_storage, "Mesh snapshot default names an ambiguous material slot."});
     }
@@ -83,7 +84,7 @@ inline Result<void> array_size(std::size_t& size, std::size_t count, std::size_t
     return add_size(size, count, stride, maximum);
 }
 
-inline Result<void> text_size(std::size_t& size, std::string_view value, std::size_t maximum) {
+inline Result<void> text_size(std::size_t& size, StringView value, std::size_t maximum) {
     ATELIER_TRY(text(value));
     ATELIER_TRY(add_size(size, 1, 4, maximum));
     return add_size(size, value.size(), 1, maximum);
@@ -93,7 +94,7 @@ class Writer {
 public:
     explicit Writer(std::size_t size) { bytes_.reserve(size); }
 
-    void u8(std::uint8_t value) { bytes_.push_back(static_cast<char>(value)); }
+    void u8(std::uint8_t value) { bytes_.add(static_cast<std::byte>(value)); }
 
     void u32(std::uint32_t value) {
         for (unsigned i = 0; i < 4; ++i) {
@@ -109,26 +110,26 @@ public:
             u32(std::bit_cast<std::uint32_t>(value));
     }
 
-    void text(std::string_view value) {
+    void text(StringView value) {
         count(value.size());
-        bytes_.append(value);
+        bytes_.append(as_bytes(value));
     }
 
-    std::string finish() { return std::move(bytes_); }
+    Array<std::byte> finish() { return std::move(bytes_); }
 
 private:
-    std::string bytes_;
+    Array<std::byte> bytes_;
 };
 
 class Reader {
 public:
-    explicit Reader(std::string_view bytes) : bytes_(bytes) {}
+    explicit Reader(Span<const std::byte> bytes) : bytes_(bytes) {}
 
     Result<std::uint8_t> u8() {
         if (bytes_.empty())
             return std::unexpected(Error{ErrorCode::invalid_storage, "Truncated mesh snapshot."});
-        const auto value = static_cast<std::uint8_t>(bytes_.front());
-        bytes_.remove_prefix(1);
+        const auto value = std::to_integer<std::uint8_t>(bytes_.front());
+        bytes_ = bytes_.slice(1);
         return value;
     }
 
@@ -163,14 +164,14 @@ public:
         return {};
     }
 
-    Result<std::string> text() {
+    Result<String> text() {
         ATELIER_TRY_BIND(size, u32());
         if (*size > maximum_text_bytes || *size > bytes_.size())
             return std::unexpected(Error{ErrorCode::invalid_storage, "Mesh snapshot text length is invalid."});
-        const auto value = bytes_.substr(0, *size);
+        const auto value = as_chars(bytes_.slice(0, *size));
         ATELIER_TRY(detail::text(value));
-        bytes_.remove_prefix(*size);
-        return std::string(value);
+        bytes_ = bytes_.slice(*size);
+        return String::from_utf8_validated(value);
     }
 
     Result<void> finish() const {
@@ -180,7 +181,7 @@ public:
     }
 
 private:
-    std::string_view bytes_;
+    Span<const std::byte> bytes_;
 };
 
 inline constexpr std::uint32_t magic = 0x534d5441; // ATMS, little endian.
@@ -193,7 +194,7 @@ inline constexpr std::uint32_t magic = 0x534d5441; // ATMS, little endian.
 // and array has a uint32 count; bounds are derived again from unchanged positions.
 // Malformed or oversized content returns invalid_storage; no project reads or roots.
 // maximum can lower the encoder's limit to the caller's remaining spill budget.
-inline Result<std::string> encode(const MeshAsset& asset, std::size_t maximum = maximum_bytes) {
+inline Result<Array<std::byte>> encode(const MeshAsset& asset, std::size_t maximum = maximum_bytes) {
     if (!asset.mesh)
         return std::unexpected(Error{ErrorCode::invalid_storage, "Cannot encode an unresolved mesh snapshot."});
     maximum = std::min(maximum, maximum_bytes);
@@ -258,7 +259,7 @@ inline Result<std::string> encode(const MeshAsset& asset, std::size_t maximum = 
     return out.finish();
 }
 
-inline Result<MeshAsset> decode(std::string_view bytes) {
+inline Result<MeshAsset> decode(Span<const std::byte> bytes) {
     if (bytes.size() > maximum_bytes)
         return std::unexpected(Error{ErrorCode::invalid_storage, "Mesh snapshot exceeds the 256 MiB byte limit."});
     detail::Reader in(bytes);

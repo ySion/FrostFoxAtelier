@@ -48,19 +48,19 @@ int main() {
         require(take(program->hlsl_coverage("test_ns")).contains("float ms_coverage("),
                 "A material with a valid coverage projection must expose its shader.");
         // Reuse the same material after its coverage projection exceeds the node budget.
-        std::string diamond =
+        String diamond =
             "struct Textures { material.TextureInput color; };\n"
             "struct Params { float gain; };\n"
             "Params defaults() { Params p; p.gain = 1.0; return p; }\n"
-            "float d0(material.TextureInput t, vector2 uv) { vector4 s = sample(t, uv); return s.x; }\n";
+            "float d0(material.TextureInput t, vector2 uv) { vector4 s = sample(t, uv); return s.x; }\n"_s;
         for (int i = 1; i <= 16; ++i) {
-            const auto prev = "d" + std::to_string(i - 1);
-            diamond += "float d" + std::to_string(i) + "(material.TextureInput t, vector2 uv) { return " + prev +
-                       "(t, uv) + " + prev + "(t, uv * 0.5); }\n";
+            const auto prev = String::concat("d", i - 1);
+            diamond.append(String::concat("float d", i, "(material.TextureInput t, vector2 uv) { return ", prev,
+                                          "(t, uv) + ", prev, "(t, uv * 0.5); }\n"));
         }
-        diamond += "material.Output shade(material.Context c, Params p, Textures t) {\n"
-                   "    material.Output o; o.coverage = d16(t.color, c.uv) * p.gain;\n"
-                   "    o.normal_world = c.normal_world; return o;\n}";
+        diamond.append_literal<"material.Output shade(material.Context c, Params p, Textures t) {\n"
+                               "    material.Output o; o.coverage = d16(t.color, c.uv) * p.gain;\n"
+                               "    o.normal_world = c.normal_world; return o;\n}">();
         const auto over_budget = take(
             source::compile_material(runtime, take(runtime.native_type<Context>()), take(runtime.native_type<Output>()),
                                      take(runtime.native_type<TextureInput>()), "diamond.source", diamond));
@@ -181,7 +181,7 @@ int main() {
                     "MaterialProgram::evaluate failed on unaligned (+1 byte) input/output spans.");
         }
 
-        for (const auto& [bad_mat_src, expected_msg] : std::array<std::pair<std::string_view, std::string_view>, 5>{{
+        for (const auto& [bad_mat_src, expected_msg] : std::array<std::pair<StringView, StringView>, 5>{{
                  {R"(
                     const int BAD = 1;
                     struct Params { float x; };
@@ -222,7 +222,7 @@ int main() {
                 runtime, take(runtime.native_type<Context>()), take(runtime.native_type<Output>()),
                 take(runtime.native_type<TextureInput>()), "bad_const_mat.source", bad_mat_src);
             require(!res && res.error().message.contains(expected_msg),
-                    res ? "Invalid material constant or TextureInput.slot leak compiled." : res.error().message);
+                    res ? "Invalid material constant or TextureInput.slot leak compiled."_s : res.error().message);
         }
     }
     const auto output = take(surviving->evaluate({}));

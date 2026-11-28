@@ -46,7 +46,7 @@ private:
     AFIELD(Name = "materials", Hidden, Sequence = "material.Resource")
     ReferenceSequence materials_;
 
-    Array<std::string> material_slots_;
+    Array<String> material_slots_;
 
     BitVector material_overrides_;
 
@@ -54,7 +54,7 @@ private:
     AFIELD(Name = "default_materials", Hidden, Sequence = "material.Resource")
     ReferenceSequence default_materials_;
 
-    Array<std::string> default_slots_;
+    Array<String> default_slots_;
 
     std::shared_ptr<const Array<material::ProgramSurfaceRef>> surfaces_;
 
@@ -102,7 +102,7 @@ private:
     AFIELD(Name = "materials", Hidden, Sequence = "material.Resource")
     ReferenceSequence materials_;
 
-    Array<std::string> material_slots_;
+    Array<String> material_slots_;
 
     BitVector material_overrides_;
 
@@ -415,11 +415,16 @@ struct Types {
 [[nodiscard]] Result<Types> register_types(Runtime&);
 
 struct MaterialBinding {
-    std::string slot;
+    String slot;
 
     ObjectRoot resource;
 
     bool overridden{true}; // Explicit instance assignment; false is a mesh default.
+
+    MaterialBinding() = default;
+
+    MaterialBinding(Utf8Text slot_name, ObjectRoot bound_resource = {}, bool is_overridden = true)
+        : slot(std::move(slot_name).into_string()), resource(std::move(bound_resource)), overridden(is_overridden) {}
 };
 
 struct StaticMeshEntityDesc {
@@ -427,7 +432,7 @@ struct StaticMeshEntityDesc {
 
     world::Trs transform{};
 
-    std::string_view mesh_source{};
+    StringView mesh_source{};
 
     Array<MaterialBinding> default_materials{}; // See MeshBinding::defaults.
 };
@@ -471,7 +476,7 @@ inline math::Matrix4 procedural_affine_matrix(const procedural::Affine& a) noexc
 }
 
 struct ProceduralAssetSlotRange {
-    std::string key;
+    String key;
 
     geometry::MeshRef mesh;
 
@@ -479,17 +484,17 @@ struct ProceduralAssetSlotRange {
 
     std::size_t default_count{};
 
-    Array<std::string> default_slots{};
+    Array<String> default_slots{};
 
     bool operator==(const ProceduralAssetSlotRange&) const = default;
 };
 
 struct ProceduralMeshDependency {
-    std::string key;
+    String key;
 
     geometry::MeshRef mesh;
 
-    Array<std::pair<std::string, std::string>> slot_materials{};
+    Array<std::pair<String, String>> slot_materials{};
 
     bool operator==(const ProceduralMeshDependency&) const = default;
 };
@@ -509,7 +514,7 @@ struct ProceduralOutput {
 };
 
 struct ProceduralInstanceAsset {
-    std::string key;
+    String key;
 
     geometry::MeshRef mesh;
 
@@ -517,23 +522,30 @@ struct ProceduralInstanceAsset {
 };
 
 struct ProceduralSource {
-    std::string source;
+    String source;
 
     std::shared_ptr<const ProceduralOutput> output;
 };
 
 struct ProceduralBinding {
-    std::string source;
+    String source;
 
     std::shared_ptr<const ProceduralOutput> output;
 
     Array<ProceduralInstanceAsset> resolved_assets{};
+
+    ProceduralBinding() = default;
+
+    ProceduralBinding(Utf8Text graph_source, std::shared_ptr<const ProceduralOutput> graph_output = {},
+                      Array<ProceduralInstanceAsset> assets = {})
+        : source(std::move(graph_source).into_string()), output(std::move(graph_output)),
+          resolved_assets(std::move(assets)) {}
 };
 
 struct ProceduralGeneratorEntityDesc {
     world::Trs transform{};
 
-    std::string_view graph_source{};
+    StringView graph_source{};
 
     std::shared_ptr<const ProceduralOutput> output{};
 
@@ -546,7 +558,7 @@ struct ProceduralGeneratorEntityDesc {
 [[nodiscard]] Result<void> set_procedural_binding(Runtime&, ObjectId generator_component, ProceduralBinding);
 
 [[nodiscard]] Result<std::shared_ptr<const ProceduralOutput>>
-publish_procedural_binding(Runtime&, ObjectId generator_component, std::string source, ProceduralOutput output,
+publish_procedural_binding(Runtime&, ObjectId generator_component, StringView source, ProceduralOutput output,
                            Span<const ProceduralInstanceAsset> resolved_assets);
 
 // Reads the graph key and published output handle without reading or rooting instance materials.
@@ -624,11 +636,17 @@ struct CameraSnapshot {
 // `defaults` are the mesh asset's slot materials (overridden false). They are not saved: hosts
 // resolve them from the mesh source wherever they resolve the mesh. An explicit binding wins.
 struct MeshBinding {
-    std::string source;
+    String source;
 
     geometry::MeshRef resolved;
 
     Array<MaterialBinding> defaults{};
+
+    MeshBinding() = default;
+
+    MeshBinding(Utf8Text mesh_source, geometry::MeshRef mesh_resolved = {}, Array<MaterialBinding> mesh_defaults = {})
+        : source(std::move(mesh_source).into_string()), resolved(std::move(mesh_resolved)),
+          defaults(std::move(mesh_defaults)) {}
 };
 
 struct StaticMeshState {
@@ -648,9 +666,14 @@ struct StaticMeshState {
 // the key is empty or did not resolve (the sky then renders as map = 1). Only this pair
 // changes the key; it is hidden from field paths.
 struct SkyMapBinding {
-    std::string source;
+    String source;
 
     rendering::SkyMapRef resolved;
+
+    SkyMapBinding() = default;
+
+    SkyMapBinding(Utf8Text sky_source, rendering::SkyMapRef sky_resolved = {})
+        : source(std::move(sky_source).into_string()), resolved(std::move(sky_resolved)) {}
 };
 
 [[nodiscard]] Result<void> set_sky_map_binding(Runtime&, ObjectId environment_component, SkyMapBinding);

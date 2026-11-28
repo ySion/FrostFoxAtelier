@@ -88,7 +88,7 @@ atelier::material::ProgramSurfaceRef capture(const Description& value) {
     const auto parent = take(m::resolve_source(definition, default_images));
     atelier::Array<m::Override> entries;
     atelier::Array<ImageRef> images;
-    const auto add = [&](std::string path, m::LocalValue v, ImageRef image = {}) {
+    const auto add = [&](atelier::Utf8Text path, m::LocalValue v, ImageRef image = {}) {
         entries.add({std::move(path), std::move(v), true});
         images.add(std::move(image));
     };
@@ -99,16 +99,18 @@ atelier::material::ProgramSurfaceRef capture(const Description& value) {
     add("alpha_cutoff", p.alpha_cutoff);
     add("normal_scale", p.normal_scale);
     add("normal_y_sign", p.normal_y_sign);
-    constexpr const char* names[]{"base_color", "roughness", "metallic", "normal", "emissive", "opacity"};
+    constexpr atelier::StringView names[]{"base_color", "roughness", "metallic", "normal", "emissive", "opacity"};
     for (std::size_t i = 0; i < value.textures.size(); ++i) {
+        using namespace atelier::literals;
         const auto& t = value.textures[i];
-        const std::string name = names[i];
-        add(name + "_texture", m::TextureBinding{t.image ? "acceptance/texture" : "", t.address}, t.image);
-        add(name + "_uv.scale", math::Vector2{t.scale[0], t.scale[1]});
-        add(name + "_uv.offset", math::Vector2{t.offset[0], t.offset[1]});
-        add(name + "_uv.rotation", t.rotation);
+        const auto name = atelier::String::validated(names[i]);
+        add(atelier::String::concat(name, "_texture"),
+            m::TextureBinding{t.image ? "acceptance/texture"_s : ""_s, t.address}, t.image);
+        add(atelier::String::concat(name, "_uv.scale"), math::Vector2{t.scale[0], t.scale[1]});
+        add(atelier::String::concat(name, "_uv.offset"), math::Vector2{t.offset[0], t.offset[1]});
+        add(atelier::String::concat(name, "_uv.rotation"), t.rotation);
         if (i == 1 || i == 2 || i == 5)
-            add(name + "_channel", float(t.channel));
+            add(atelier::String::concat(name, "_channel"), float(t.channel));
     }
     auto result = take(m::resolve_instance(parent, entries, images));
     check(result->diagnostics().empty(), "fixture StandardPBR MI resolves every typed author entry");

@@ -15,7 +15,7 @@ geometry::MeshRef plane() {
                                                                {{1, 0, -1}, {0, 1, 0}, {1, 1}}},
                                        Array<std::uint8_t>{5, 3});
     if (!mesh)
-        fatal(mesh.error().message);
+        fatal(mesh.error().message.c_str());
     return std::move(*mesh);
 }
 
@@ -52,12 +52,12 @@ geometry::MeshRef sphere() {
         }
     auto mesh = geometry::Mesh::create(std::move(vertices), std::move(edges));
     if (!mesh)
-        fatal(mesh.error().message);
+        fatal(mesh.error().message.c_str());
     return std::move(*mesh);
 }
 
 struct Producer {
-    const char* key;
+    StringView key;
 
     const wchar_t* name;
 
@@ -77,28 +77,30 @@ Span<const MeshAsset> mesh_assets() {
         std::array<MeshAsset, producers.size()> result;
         for (std::size_t i = 0; i < producers.size(); ++i) {
             const auto& p = producers[i];
-            result[i] = {p.key, p.name, p.make()};
+            result[i] = {String::from_utf8_validated(p.key), p.name, p.make()};
         }
         return result;
     }();
     return assets;
 }
 
-Result<EngineDependency> Reader::engine_dependency(std::string_view key, AssetKind expected) const {
+Result<EngineDependency> Reader::engine_dependency(StringView key, AssetKind expected) const {
+    const auto safe_key = [&] { return String::from_utf8(key).value_or("<invalid utf-8>"_s); };
     for (const auto& asset : material_assets())
         if (asset.key == key) {
             if (expected != AssetKind::material)
                 return std::unexpected(
                     Error{ErrorCode::invalid_definition,
-                          "Installed engine asset is a material, not the requested kind: " + std::string(key)});
+                          String::concat("Installed engine asset is a material, not the requested kind: ", safe_key())});
             const auto* author = std::get_if<MaterialSourceAsset>(&asset.author);
             if (!author)
                 return std::unexpected(
                     Error{ErrorCode::invalid_definition, "Installed material catalogue requires an MS definition."});
             const auto source_file = builtin_material_source(author->source_path);
             if (!source_file)
-                return std::unexpected(Error{ErrorCode::invalid_definition,
-                                             "Installed material Source is missing: " + author->source_path});
+                return std::unexpected(
+                    Error{ErrorCode::invalid_definition,
+                          String::concat("Installed material Source is missing: ", author->source_path)});
             // v2 canonical JSON author data plus actual Source bytes; no runtime IDs.
             auto encoded = [&]() -> json::Result<Array<char>> {
                 json::Builder builder;
@@ -120,13 +122,15 @@ Result<EngineDependency> Reader::engine_dependency(std::string_view key, AssetKi
     const auto at = std::ranges::find(producers, key, &Producer::key);
     if (at == producers.end())
         return std::unexpected(
-            Error{ErrorCode::invalid_definition, "Unknown installed engine asset: " + std::string(key)});
+            Error{ErrorCode::invalid_definition, String::concat("Unknown installed engine asset: ", safe_key())});
     if (expected != AssetKind::mesh)
-        return std::unexpected(Error{ErrorCode::invalid_definition,
-                                     "Installed engine asset is a mesh, not the requested kind: " + std::string(key)});
+        return std::unexpected(
+            Error{ErrorCode::invalid_definition,
+                  String::concat("Installed engine asset is a mesh, not the requested kind: ", safe_key())});
     const auto digest = mesh_content_sha256(mesh_assets()[static_cast<std::size_t>(at - producers.begin())]);
     if (!digest)
         return std::unexpected(digest.error());
-    return EngineDependency{std::string(key), AssetKind::mesh, at->semantic_version, mesh_digest_version, *digest};
+    return EngineDependency{String::from_utf8_validated(at->key), AssetKind::mesh, at->semantic_version,
+                            mesh_digest_version, *digest};
 }
 }

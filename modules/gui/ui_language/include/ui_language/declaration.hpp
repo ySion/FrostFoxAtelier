@@ -1,11 +1,11 @@
 #pragma once
 
 #include "foundation/array.hpp"
+#include "foundation/string.hpp"
 #include "language/source.hpp"
 #include "ui/detail/number_bits.hpp"
 #include <cstdint>
 #include <memory>
-#include <string>
 #include <variant>
 
 namespace atelier::ui_language {
@@ -23,17 +23,17 @@ inline constexpr auto same_binding_value = []<class... T>(const std::variant<T..
 enum class InputKind { boolean, number, edit, text, text_edit, key, items, action, table, code, tooltip, tree_row };
 
 struct Input {
-    std::string name;
+    String name;
 
     InputKind kind;
 
-    std::string item_type;
+    String item_type;
 
     bool operator==(const Input&) const = default;
 };
 
 struct State {
-    std::string name;
+    String name;
 
     InputKind kind;
 
@@ -146,13 +146,13 @@ enum class Property {
 };
 
 struct Node {
-    std::string name;
+    String name;
 
     NodeKind kind;
 
     std::uint32_t parent{}; // Parent slot + 1; zero is the host parent.
 
-    std::string component_type;
+    String component_type;
 
     bool operator==(const Node&) const = default;
 };
@@ -169,7 +169,7 @@ struct DirectSource {
     bool operator==(const DirectSource&) const = default;
 };
 
-using LiteralValue = std::variant<std::monostate, bool, double, std::string>;
+using LiteralValue = std::variant<std::monostate, bool, double, String>;
 
 struct Binding {
     enum class Mode : std::uint8_t { jit, literal, direct };
@@ -216,7 +216,7 @@ struct SourceMapping {
 };
 
 struct PreparedHelpers {
-    std::string generated_source;
+    String generated_source;
 
     Array<SourceMapping> mappings;
 };
@@ -225,11 +225,11 @@ struct PreparedHelpers {
 // expressions and handlers are typed and compiled by the ordinary Source
 // compiler when needs_jit is true.
 struct Declaration {
-    std::string name;
+    String name;
 
-    std::string source_name;
+    String source_name;
 
-    std::string generated_source;
+    String generated_source;
 
     std::shared_ptr<const PreparedHelpers> helpers;
 
@@ -250,10 +250,9 @@ struct Declaration {
     Array<SourceMapping> mappings;
 };
 
-[[nodiscard]] std::expected<Declaration, language::Diagnostic> lower(std::string_view source_name,
-                                                                     std::string_view source);
+[[nodiscard]] std::expected<Declaration, language::Diagnostic> lower(StringView source_name, StringView source);
 
-[[nodiscard]] std::expected<Array<Declaration>, language::Diagnostic> lower_module(std::string_view source_name,
-                                                                                   std::string_view source);
+[[nodiscard]] std::expected<Array<Declaration>, language::Diagnostic> lower_module(StringView source_name,
+                                                                                   StringView source);
 
 } // namespace atelier::ui_language

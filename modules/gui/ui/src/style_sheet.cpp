@@ -41,10 +41,10 @@ unsigned specificity(const StyleSelector& s) {
     return static_cast<unsigned>(s.classes.size()) * 100 + states * 100 + (s.kind ? 1 : 0) + (s.role ? 1 : 0);
 }
 
-std::string_view trim(std::string_view value) {
-    constexpr auto space = " \t\r\n";
-    const auto first = value.find_first_not_of(space);
-    return first == value.npos ? std::string_view{} : value.substr(first, value.find_last_not_of(space) - first + 1);
+constexpr ByteSearchSet style_space{" \t\r\n"};
+
+StringView trim(StringView value) {
+    return value.trim(style_space);
 }
 
 template <class T>
@@ -52,13 +52,13 @@ using ParseResult = std::expected<T, StyleDiagnostic>;
 
 class Parser {
     struct Value {
-        std::string_view text;
+        StringView text;
 
         std::size_t position;
     };
 
     struct Declaration {
-        std::string name;
+        String name;
 
         Value value;
     };
@@ -69,19 +69,21 @@ class Parser {
         Array<Declaration> declarations;
     };
 
-    std::string source_;
+    Array<char> source_;
 
     Span<const NamedImage> images_;
 
     std::size_t at_{};
 
-    Map<std::string, Value> tokens_;
+    Map<String, Value> tokens_;
 
-    Map<std::string, std::shared_ptr<const ColorImage>> gradients_;
+    Map<String, std::shared_ptr<const ColorImage>> gradients_;
 
     Array<Block> blocks_;
 
-    std::unexpected<StyleDiagnostic> fail(std::string message, std::size_t position) const {
+    StringView view() const noexcept { return {source_.data(), source_.size()}; }
+
+    std::unexpected<StyleDiagnostic> fail(Utf8Text message, std::size_t position) const {
         StyleDiagnostic error{1, 1, std::move(message)};
         for (std::size_t i = 0; i < std::min(position, source_.size()); ++i) {
             if (source_[i] == '\n') {
@@ -93,10 +95,10 @@ class Parser {
         return std::unexpected(std::move(error));
     }
 
-    std::unexpected<StyleDiagnostic> fail(std::string message) const { return fail(std::move(message), at_); }
+    std::unexpected<StyleDiagnostic> fail(Utf8Text message) const { return fail(std::move(message), at_); }
 
     void space() {
-        while (at_ < source_.size() && std::string_view(" \t\r\n").find(source_[at_]) != std::string_view::npos)
+        while (at_ < source_.size() && style_space.contains(source_[at_]))
             ++at_;
     }
 
@@ -110,12 +112,16 @@ class Parser {
     }
 
     ParseResult<void> expect(char c) {
-        if (!take(c))
-            return fail(std::string("Expected '") + c + "'");
+        if (!take(c)) {
+            String message = "Expected '"_s;
+            message.append_ascii(c);
+            message.append_ascii('\'');
+            return fail(std::move(message));
+        }
         return {};
     }
 
-    ParseResult<std::string> identifier() {
+    ParseResult<String> identifier() {
         space();
         const auto start = at_;
         while (at_ < source_.size()) {
@@ -124,10 +130,10 @@ class Parser {
                 break;
             ++at_;
         }
-        auto value = source_.substr(start, at_ - start);
-        if (!StyleSheet::valid_class(value))
+        const auto slice = view().slice(start, at_ - start);
+        if (!StyleSheet::valid_class(slice))
             return fail("Expected an identifier", start);
-        return value;
+        return String::from_utf8_validated(slice);
     }
 
     ParseResult<Value> value() {
@@ -157,7 +163,7 @@ class Parser {
         }
         if (quoted || depth)
             return fail("Unterminated value", start);
-        auto text = trim(std::string_view(source_).substr(start, at_ - start));
+        auto text = trim(view().slice(start, at_ - start));
         if (text.empty() || text.size() > 4096)
             return fail("Empty or oversized value", start);
         ATELIER_TRY(expect(';'));
@@ -174,13 +180,13 @@ class Parser {
             else {
                 ATELIER_TRY_BIND(type, identifier());
                 any = true;
-                constexpr std::string_view kinds[] = {"container", "label",    "button",    "list",      "item",
-                                                      "number",    "splitter", "viewport",  "text_edit", "checkbox",
-                                                      "foldout",   "popup",    "menu_item", "combo",     "tab",
-                                                      "slider",    "tree",     "tree_item", "table",     "code_editor"};
-                const auto found = std::find(std::begin(kinds), std::end(kinds), *type);
+                constexpr StringView kinds[] = {"container", "label",    "button",    "list",      "item",
+                                                "number",    "splitter", "viewport",  "text_edit", "checkbox",
+                                                "foldout",   "popup",    "menu_item", "combo",     "tab",
+                                                "slider",    "tree",     "tree_item", "table",     "code_editor"};
+                const auto found = std::find(std::begin(kinds), std::end(kinds), type->view());
                 if (found == std::end(kinds))
-                    return fail("Unknown control type: " + *type);
+                    return fail(String::concat("Unknown control type: ", *type));
                 result.kind = static_cast<ControlKind>(found - std::begin(kinds));
             }
         }
@@ -195,13 +201,13 @@ class Parser {
                 ATELIER_TRY(expect('('));
                 ATELIER_TRY_BIND(role, identifier());
                 ATELIER_TRY(expect(')'));
-                constexpr std::string_view roles[] = {"normal", "panel", "title", "caption"};
-                const auto found = std::find(std::begin(roles), std::end(roles), *role);
+                constexpr StringView roles[] = {"normal", "panel", "title", "caption"};
+                const auto found = std::find(std::begin(roles), std::end(roles), role->view());
                 if (found == std::end(roles) || result.role)
                     return fail("Unknown or duplicate role");
                 result.role = static_cast<Role>(found - std::begin(roles));
             } else {
-                constexpr std::pair<std::string_view, StyleState> names[] = {
+                constexpr std::pair<StringView, StyleState> names[] = {
                     {"enabled", StyleState::enabled}, {"disabled", StyleState::disabled},
                     {"hover", StyleState::hover},     {"pressed", StyleState::pressed},
                     {"focus", StyleState::focus},     {"selected", StyleState::selected},
@@ -209,10 +215,10 @@ class Parser {
                 const auto found = std::find_if(std::begin(names), std::end(names),
                                                 [&](const auto& name) { return name.first == *id; });
                 if (found == std::end(names))
-                    return fail("Unknown state: " + *id);
+                    return fail(String::concat("Unknown state: ", *id));
                 const auto bit = found->second;
                 if (has_any(result.states, bit))
-                    return fail("Duplicate state: " + *id);
+                    return fail(String::concat("Duplicate state: ", *id));
                 result.states = flags_or(result.states, bit);
             }
         }
@@ -230,10 +236,11 @@ class Parser {
             return input;
         if (depth >= 32 || !input.text.ends_with(')'))
             return fail("Invalid or cyclic token reference", input.position);
-        const auto key = trim(input.text.substr(6, input.text.size() - 7));
+        const auto key = trim(input.text.slice(6, input.text.size() - 7));
         const auto* found = tokens_.find(key);
         if (!found)
-            return fail("Unknown token: " + std::string(key), input.position);
+            return fail(String::concat("Unknown token: ", String::from_utf8(key).value_or("<invalid utf-8>"_s)),
+                        input.position);
         return resolve(*found, depth + 1);
     }
 
@@ -256,12 +263,12 @@ class Parser {
         auto remaining = input.text;
         InlineArray<float, 4> values;
         while (!remaining.empty()) {
-            const auto end = remaining.find_first_of(" \t\r\n");
-            ATELIER_TRY_BIND(value, number({remaining.substr(0, end), input.position}));
+            const auto end = remaining.find_first_of(style_space);
+            ATELIER_TRY_BIND(value, number({remaining.slice(0, end), input.position}));
             if (values.size() == 4)
                 return fail("Expected one, two or four lengths", input.position);
             values.add(*value);
-            remaining = end == remaining.npos ? std::string_view{} : trim(remaining.substr(end));
+            remaining = end == StringView::npos ? StringView{} : trim(remaining.slice(end));
         }
         if (values.size() != 1 && values.size() != 2 && values.size() != 4)
             return fail("Expected one, two or four lengths", input.position);
@@ -277,7 +284,7 @@ class Parser {
             return fail("Expected #RRGGBB, #RRGGBBAA or transparent", input.position);
         unsigned channels[4] = {0, 0, 0, 255};
         for (std::size_t i = 0; i < (input.text.size() - 1) / 2; ++i) {
-            const auto piece = input.text.substr(1 + i * 2, 2);
+            const auto piece = input.text.slice(1 + i * 2, 2);
             const auto parsed = std::from_chars(piece.data(), piece.data() + 2, channels[i], 16);
             if (parsed.ec != std::errc{} || parsed.ptr != piece.data() + 2)
                 return fail("Invalid hexadecimal color", input.position);
@@ -297,7 +304,7 @@ class Parser {
             return fail("Expected a quoted UTF-8 string", input.position);
         text.remove_prefix(1);
         text.remove_suffix(1);
-        if (text.find('\\') != text.npos)
+        if (text.contains('\\'))
             return fail("String escapes are not supported", input.position);
         auto result = platform::utf8_to_utf16(text);
         if (text.empty() || !result)
@@ -309,18 +316,18 @@ class Parser {
         ATELIER_TRY_BIND(input, resolve(value));
         if (const auto* found = gradients_.find(input->text))
             return *found;
-        auto stops = trim(input->text.substr(16, input->text.size() - 17));
+        auto stops = trim(input->text.slice(16, input->text.size() - 17));
         bool horizontal = false;
         if (stops.starts_with("to right,")) {
             horizontal = true;
-            stops = trim(stops.substr(9));
+            stops = trim(stops.slice(9));
         } else if (stops.starts_with("to bottom,"))
-            stops = trim(stops.substr(10));
+            stops = trim(stops.slice(10));
         const auto comma = stops.find(',');
-        if (comma == stops.npos || stops.find(',', comma + 1) != stops.npos)
+        if (comma == StringView::npos || stops.find(',', comma + 1) != StringView::npos)
             return fail("Expected two gradient colors", input->position);
-        ATELIER_TRY_BIND(a, color({trim(stops.substr(0, comma)), input->position}));
-        ATELIER_TRY_BIND(b, color({trim(stops.substr(comma + 1)), input->position}));
+        ATELIER_TRY_BIND(a, color({trim(stops.slice(0, comma)), input->position}));
+        ATELIER_TRY_BIND(b, color({trim(stops.slice(comma + 1)), input->position}));
         auto image = std::make_shared<ColorImage>();
         image->identity = detail::new_identity();
         image->revision = 1;
@@ -339,7 +346,7 @@ class Parser {
                 image->pixels.add(encode(std::lerp(pair.first, pair.second, t)));
             image->pixels.add(static_cast<std::uint8_t>(std::lround(std::lerp(a->a, b->a, t) * 255)));
         }
-        gradients_.try_emplace(std::string(input->text), image);
+        gradients_.try_emplace(String::from_utf8_validated(input->text), image);
         return image;
     }
 
@@ -372,8 +379,8 @@ class Parser {
                 edges = 15;
             else if (input != "none")
                 while (!input.empty()) {
-                    const auto end = input.find_first_of(" \t\r\n");
-                    const auto word = input.substr(0, end);
+                    const auto end = input.find_first_of(style_space);
+                    const auto word = input.slice(0, end);
                     const unsigned bit = word == "top"      ? 1
                                          : word == "right"  ? 2
                                          : word == "bottom" ? 4
@@ -382,7 +389,7 @@ class Parser {
                     if (!bit || (edges & bit))
                         return fail("Expected unique top/right/bottom/left edges, all or none", v.position);
                     edges |= bit;
-                    input = end == input.npos ? std::string_view{} : trim(input.substr(end));
+                    input = end == StringView::npos ? StringView{} : trim(input.slice(end));
                 }
             p.border_edges = static_cast<BorderEdges>(edges);
         } else if (name == "combo-indicator") {
@@ -550,22 +557,26 @@ class Parser {
             } else {
                 if (!input->text.starts_with("image(") || !input->text.ends_with(')'))
                     return fail("Expected image(name) or none", v.position);
-                const auto id = trim(input->text.substr(6, input->text.size() - 7));
+                const auto id = trim(input->text.slice(6, input->text.size() - 7));
                 const auto found =
                     std::find_if(images_.begin(), images_.end(), [&](const auto& image) { return image.name == id; });
                 if (found == images_.end() || !found->image)
-                    return fail("Unknown image resource: " + std::string(id), v.position);
+                    return fail(
+                        String::concat("Unknown image resource: ", String::from_utf8(id).value_or("<invalid utf-8>"_s)),
+                        v.position);
                 image_property = found->image;
             }
         } else
-            return fail("Unknown property: " + name, v.position);
+            return fail(String::concat("Unknown property: ", name), v.position);
         if (!StyleSheet::valid_properties(p))
-            return fail("Property value is outside the supported range: " + name, v.position);
+            return fail(String::concat("Property value is outside the supported range: ", name), v.position);
         return {};
     }
 
 public:
-    Parser(std::string_view source, Span<const NamedImage> images) : source_(source), images_(images) {}
+    Parser(StringView source, Span<const NamedImage> images) : images_(images) {
+        source_.assign(Span<const char>{source.data(), source.size()});
+    }
 
     ParseResult<Array<StyleRule>> run() {
         // Replace comments with spaces to retain exact source locations and value views.
@@ -584,8 +595,8 @@ public:
                 continue;
             }
             if (c == '/' && i + 1 < source_.size() && source_[i + 1] == '*') {
-                const auto end = source_.find("*/", i + 2);
-                if (end == source_.npos)
+                const auto end = view().find("*/", i + 2);
+                if (end == StringView::npos)
                     return fail("Unterminated comment", i);
                 for (auto j = i; j < end + 2; ++j)
                     if (source_[j] != '\n' && source_[j] != '\r')
@@ -607,7 +618,7 @@ public:
                     ATELIER_TRY(expect(':'));
                     ATELIER_TRY_BIND(item, value());
                     if (!tokens_.try_emplace(*id, *item).inserted)
-                        return fail("Duplicate token: " + *id, item->position);
+                        return fail(String::concat("Duplicate token: ", *id), item->position);
                 }
                 continue;
             }
@@ -650,7 +661,7 @@ public:
 };
 }
 
-bool StyleSheet::valid_class(std::string_view name) noexcept {
+bool StyleSheet::valid_class(StringView name) noexcept {
     if (name.empty() || name.size() > 64 || (name.front() >= '0' && name.front() <= '9'))
         return false;
     return std::all_of(name.begin(), name.end(), [](char c) {
@@ -742,8 +753,8 @@ StyleSheet::Result StyleSheet::create(Array<StyleRule> rules) {
     return std::shared_ptr<const StyleSheet>(new StyleSheet(std::move(rules)));
 }
 
-StyleSheet::Result StyleSheet::parse(std::string_view source, Span<const NamedImage> images) {
-    if (source.size() > 1024 * 1024 || source.find('\0') != source.npos)
+StyleSheet::Result StyleSheet::parse(StringView source, Span<const NamedImage> images) {
+    if (source.size() > 1024 * 1024 || source.contains('\0'))
         return std::unexpected(StyleDiagnostic{1, 1, "Invalid or oversized style source"});
     ATELIER_TRY_BIND(rules, Parser(source, images).run());
     return create(std::move(*rules));

@@ -14,6 +14,14 @@ using namespace language;
 
 using namespace language::detail;
 
+constexpr StringView view_of(std::string_view text) noexcept {
+    return {text.data(), text.size()};
+}
+
+std::unexpected<Diagnostic> reject_text(SourcePosition position, const String& message) {
+    return std::unexpected(Diagnostic{position, std::string(message.c_str(), message.size())});
+}
+
 struct Fragment {
     SourcePosition position;
 
@@ -81,7 +89,7 @@ Optional<double> try_number_literal(Span<const Token> tokens, bool double_only) 
     const auto& token = tokens[index];
     if (token.kind != Token::Kind::number || token.text.empty())
         return {};
-    auto text = token.text;
+    auto text = view_of(token.text);
     const char suffix = text.back();
     const bool is_double = suffix == 'd' || suffix == 'D';
     const bool is_float = suffix == 'f' || suffix == 'F';
@@ -96,7 +104,7 @@ Optional<double> try_number_literal(Span<const Token> tokens, bool double_only) 
             return {};
         return negative ? -value : value;
     }
-    if (is_float || text.find_first_of(".eE") != std::string_view::npos) {
+    if (is_float || text.find_first_of(ByteSearchSet{".eE"}) != StringView::npos) {
         float value{};
         const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
         if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || !std::isfinite(value))
@@ -113,41 +121,41 @@ Optional<double> try_number_literal(Span<const Token> tokens, bool double_only) 
     return static_cast<double>(value);
 }
 
-constexpr std::pair<std::string_view, NodeKind> builtin_nodes[]{{"Column", NodeKind::column},
-                                                                {"Row", NodeKind::row},
-                                                                {"Text", NodeKind::text},
-                                                                {"Foldout", NodeKind::foldout},
-                                                                {"NumberRow", NodeKind::number_row},
-                                                                {"TextField", NodeKind::text_field},
-                                                                {"Tree", NodeKind::tree},
-                                                                {"TreeItem", NodeKind::tree_item},
-                                                                {"Repeat", NodeKind::repeat},
-                                                                {"Button", NodeKind::button},
-                                                                {"List", NodeKind::list},
-                                                                {"Combo", NodeKind::combo},
-                                                                {"ChoiceButton", NodeKind::choice_button},
-                                                                {"ToggleButton", NodeKind::toggle_button},
-                                                                {"Table", NodeKind::table},
-                                                                {"Checkbox", NodeKind::checkbox},
-                                                                {"ParameterRow", NodeKind::parameter_row},
-                                                                {"Viewport", NodeKind::viewport},
-                                                                {"Tab", NodeKind::tab},
-                                                                {"Splitter", NodeKind::splitter},
-                                                                {"Popup", NodeKind::popup},
-                                                                {"MenuItem", NodeKind::menu_item},
-                                                                {"Overlay", NodeKind::overlay},
-                                                                {"CodeEditor", NodeKind::code_editor}};
+constexpr std::pair<StringView, NodeKind> builtin_nodes[]{{"Column", NodeKind::column},
+                                                          {"Row", NodeKind::row},
+                                                          {"Text", NodeKind::text},
+                                                          {"Foldout", NodeKind::foldout},
+                                                          {"NumberRow", NodeKind::number_row},
+                                                          {"TextField", NodeKind::text_field},
+                                                          {"Tree", NodeKind::tree},
+                                                          {"TreeItem", NodeKind::tree_item},
+                                                          {"Repeat", NodeKind::repeat},
+                                                          {"Button", NodeKind::button},
+                                                          {"List", NodeKind::list},
+                                                          {"Combo", NodeKind::combo},
+                                                          {"ChoiceButton", NodeKind::choice_button},
+                                                          {"ToggleButton", NodeKind::toggle_button},
+                                                          {"Table", NodeKind::table},
+                                                          {"Checkbox", NodeKind::checkbox},
+                                                          {"ParameterRow", NodeKind::parameter_row},
+                                                          {"Viewport", NodeKind::viewport},
+                                                          {"Tab", NodeKind::tab},
+                                                          {"Splitter", NodeKind::splitter},
+                                                          {"Popup", NodeKind::popup},
+                                                          {"MenuItem", NodeKind::menu_item},
+                                                          {"Overlay", NodeKind::overlay},
+                                                          {"CodeEditor", NodeKind::code_editor}};
 
-Optional<NodeKind> builtin_node(std::string_view name) {
+Optional<NodeKind> builtin_node(StringView name) {
     const auto at = std::ranges::find_if(builtin_nodes, [&](const auto& item) { return item.first == name; });
     return at == std::end(builtin_nodes) ? Optional<NodeKind>{} : Optional<NodeKind>{at->second};
 }
 
-bool height_strategy(std::string_view name) {
+bool height_strategy(StringView name) {
     return name == "height" || name == "expand_height" || name == "single_line" || name == "content_height";
 }
 
-bool width_strategy(std::string_view name) {
+bool width_strategy(StringView name) {
     return name == "width" || name == "expand_width" || name == "content_width" || name == "shrink_width" ||
            name == "flex_width" || name == "grow_width";
 }
@@ -163,7 +171,7 @@ bool container_node(NodeKind kind) {
 }
 
 struct Header {
-    std::string name;
+    String name;
 
     Array<Input> inputs;
 
@@ -205,21 +213,21 @@ std::expected<Input, Diagnostic> parse_input(Tokens& tokens) {
             value.kind = InputKind::items;
             ATELIER_TRY(tokens.expect("<"));
             ATELIER_TRY_BIND(item, tokens.identifier());
-            value.item_type = item->text;
+            value.item_type = String::from_utf8_validated(view_of(item->text));
             ATELIER_TRY(tokens.expect(">"));
         } else
             return reject(type.position, "Unknown UI input type.");
     }
     ATELIER_TRY_BIND(name, tokens.identifier());
-    value.name = name->text;
+    value.name = String::from_utf8_validated(view_of(name->text));
     if (name->text == "input" || name->text == "state" || name->text == "event" || name->text == "node" ||
         name->text == "mounted" || name->text.starts_with("__ui_"))
         return reject(name->position, "Reserved UI input name.");
     return value;
 }
 
-std::expected<Array<Header>, Diagnostic> headers(std::string_view source) {
-    ATELIER_TRY_BIND(created, Tokens::create(source));
+std::expected<Array<Header>, Diagnostic> headers(StringView source) {
+    ATELIER_TRY_BIND(created, Tokens::create(source.std_view()));
     auto& tokens = *created;
     std::size_t braces{};
     bool declaration_start = true;
@@ -244,10 +252,11 @@ std::expected<Array<Header>, Diagnostic> headers(std::string_view source) {
     while (tokens.token_.kind != Token::Kind::end) {
         ATELIER_TRY_BIND(begin, tokens.expect("ui"));
         ATELIER_TRY_BIND(name, tokens.identifier());
-        if (builtin_node(name->text))
+        const auto name_view = view_of(name->text);
+        if (builtin_node(name_view))
             return reject(name->position, "UI component names cannot replace built-in node types.");
         if (result.size() >= 64 ||
-            std::ranges::any_of(result, [&](const auto& item) { return item.name == name->text; }))
+            std::ranges::any_of(result, [&](const auto& item) { return item.name == name_view; }))
             return reject(begin->position, "Duplicate or excessive UI component type.");
         Array<Input> inputs;
         ATELIER_TRY(tokens.expect("("));
@@ -266,7 +275,7 @@ std::expected<Array<Header>, Diagnostic> headers(std::string_view source) {
                 ATELIER_TRY(tokens.expect(","));
             }
         ATELIER_TRY(tokens.expect("{"));
-        result.add({std::string(name->text), std::move(inputs), begin->position, tokens});
+        result.add({String::from_utf8_validated(name_view), std::move(inputs), begin->position, tokens});
         braces = 1;
         while (braces && tokens.token_.kind != Token::Kind::end) {
             ATELIER_TRY_BIND(token, tokens.consume());
@@ -284,40 +293,42 @@ std::expected<Array<Header>, Diagnostic> headers(std::string_view source) {
         for (const auto& input : header.inputs)
             if (input.kind == InputKind::items &&
                 std::ranges::none_of(result, [&](const auto& item) { return item.name == input.item_type; }))
-                return reject(header.begin, "Unknown item component type: " + input.item_type);
+                return reject_text(header.begin, String::concat("Unknown item component type: ", input.item_type));
     return result;
 }
 
-std::expected<std::shared_ptr<const PreparedHelpers>, Diagnostic> prepare_helpers(std::string_view source,
-                                                                                  std::size_t end) {
+std::expected<std::shared_ptr<const PreparedHelpers>, Diagnostic> prepare_helpers(StringView source, std::size_t end) {
     auto prepared = std::make_shared<PreparedHelpers>();
-    ATELIER_TRY_BIND(created, Tokens::create(source.substr(0, end)));
+    ATELIER_TRY_BIND(created, Tokens::create(source.slice(0, end).std_view()));
     auto& tokens = *created;
-    std::string_view previous;
+    StringView previous;
     while (tokens.token_.kind != Token::Kind::end) {
         ATELIER_TRY_BIND(parsed_token, tokens.consume());
         const auto token = *parsed_token;
+        const auto text = view_of(token.text);
+        if (token.kind == Token::Kind::string && !text.is_valid_utf8())
+            return reject(token.position, "String literal is not valid UTF-8.");
         const bool member = previous == "." || previous == "::";
-        if (!member && (token.text == "self" || token.text == "new" || token.text == "yield" || token.text == "async" ||
-                        token.text.starts_with("__ui_")))
+        if (!member && (text == "self" || text == "new" || text == "yield" || text == "async" ||
+                        text.starts_with("__ui_")))
             return reject(
                 token.position,
                 "UI helpers use explicit parameters; native context access and asynchronous effects are not permitted.");
         const auto begin = prepared->generated_source.size();
-        prepared->generated_source += token.text;
+        prepared->generated_source.append_validated(text);
         prepared->mappings.add({begin, prepared->generated_source.size(), token.position});
-        prepared->generated_source += ' ';
-        previous = token.text;
+        prepared->generated_source.append_ascii(' ');
+        previous = text;
     }
     return prepared->generated_source.empty() ? std::shared_ptr<const PreparedHelpers>{} : std::move(prepared);
 }
 
 class Parser : private Tokens {
 public:
-    Parser(std::string_view name, const Header& header, const Array<Header>& all,
+    Parser(String name, const Header& header, const Array<Header>& all,
            std::shared_ptr<const PreparedHelpers> helpers)
         : Tokens(header.body), headers_(all) {
-        result_.source_name = name;
+        result_.source_name = std::move(name);
         result_.name = header.name;
         result_.inputs = header.inputs;
         result_.helpers = std::move(helpers);
@@ -334,7 +345,7 @@ public:
             ATELIER_TRY(expect("="));
             ATELIER_TRY_BIND(initial, fragment(";"));
             ATELIER_TRY(expect(";"));
-            State declared{std::string(name->text), *kind, {}};
+            State declared{String::from_utf8_validated(view_of(name->text)), *kind, {}};
             // Only the leading literals can run before the JIT initializer. A dynamic
             // initializer may read a later state, which must still hold its type default.
             if (initializers_.empty()) {
@@ -385,7 +396,7 @@ public:
                 result_.mappings = result_.helpers->mappings;
             }
             append("\nvoid __ui_dispatch(uint __ui_operation) {\n", {});
-            append("if (__ui_operation >= " + std::to_string(operation_count) + ") { return; }\n", {});
+            append(String::concat("if (__ui_operation >= ", operation_count, ") { return; }\n"), {});
             ATELIER_TRY(emit_dispatch(0, operation_count));
             append("}\n", {});
         }
@@ -406,7 +417,7 @@ private:
     Optional<DirectSource> try_direct_source(Span<const Token> tokens) const {
         if (tokens.size() != 3 || tokens[1].text != "." || tokens[2].kind != Token::Kind::identifier)
             return {};
-        const auto member = tokens[2].text;
+        const auto member = view_of(tokens[2].text);
         if (tokens[0].text == "input") {
             for (std::uint32_t i = 0; i < result_.inputs.size(); ++i)
                 if (result_.inputs[i].name == member)
@@ -491,7 +502,7 @@ private:
         if (accepts_text && tokens.size() == 1 && tokens[0].kind == Token::Kind::string) {
             ATELIER_TRY_BIND(decoded, string_value(tokens[0]));
             binding.mode = Binding::Mode::literal;
-            binding.literal = std::move(*decoded);
+            binding.literal = String::from_utf8_validated(view_of(*decoded));
             return true;
         }
         const bool accepts_number =
@@ -523,7 +534,8 @@ private:
     std::expected<void, Diagnostic> emit_operation(std::size_t index) {
         if (result_.has_jit_init && index == 0) {
             for (const auto& init : initializers_) {
-                append("self.write_" + suffix(result_.states[init.slot].kind) + "(" + std::to_string(init.slot) + ", ",
+                append(String::concat("self.write_", String::validated(suffix(result_.states[init.slot].kind)), "(",
+                                      init.slot, ", "),
                        init.source.position);
                 ATELIER_TRY(rewrite(init.source, false));
                 append(");\n", init.source.position);
@@ -539,41 +551,41 @@ private:
                               (property == Property::argument && evaluation.kind == InputKind::text);
             const bool numeric = is_numeric_property(property) ||
                                  (property == Property::argument && evaluation.kind == InputKind::number);
-            std::string sink;
+            String sink;
             if (property == Property::argument)
-                sink = "set_argument_" + suffix(evaluation.kind);
+                sink = String::concat("set_argument_", String::validated(suffix(evaluation.kind)));
             else if (text)
-                sink = "set_text";
+                sink = "set_text"_s;
             else if (property == Property::edit)
-                sink = result_.nodes[evaluation.node].kind == NodeKind::text_field ? "set_text_edit" : "set_edit";
+                sink = result_.nodes[evaluation.node].kind == NodeKind::text_field ? "set_text_edit"_s : "set_edit"_s;
             else if (property == Property::action)
-                sink = "set_action";
+                sink = "set_action"_s;
             else if (property == Property::model)
-                sink = "set_model";
+                sink = "set_model"_s;
             else if (property == Property::document)
-                sink = "set_document";
+                sink = "set_document"_s;
             else if (property == Property::tooltip)
-                sink = "set_tooltip";
+                sink = "set_tooltip"_s;
             else if (property == Property::context)
-                sink = reference == InputKind::text_edit ? "set_context_from_edit" : "set_context";
+                sink = reference == InputKind::text_edit ? "set_context_from_edit"_s : "set_context"_s;
             else if (property == Property::items)
-                sink = "set_items";
+                sink = "set_items"_s;
             else if (property == Property::tree_row)
-                sink = "set_tree_row";
+                sink = "set_tree_row"_s;
             else if (property == Property::radio_group)
-                sink = "set_radio_group";
+                sink = "set_radio_group"_s;
             else if (property == Property::selection_group)
-                sink = "set_selection_group";
+                sink = "set_selection_group"_s;
             else
-                sink = numeric ? "set_number" : "set_bool";
+                sink = numeric ? "set_number"_s : "set_bool"_s;
             if (text && reference == InputKind::text)
-                sink += "_reference";
+                sink.append_literal<"_reference">();
             else if (text && reference == InputKind::text_edit)
-                sink += "_from_edit";
-            append("self." + sink + "(" + std::to_string(evaluation.node) + ", " +
-                       std::to_string(property == Property::argument ? evaluation.argument
-                                                                     : static_cast<unsigned>(property)) +
-                       ", ",
+                sink.append_literal<"_from_edit">();
+            append(String::concat("self.", sink, "(", evaluation.node, ", ",
+                                  property == Property::argument ? evaluation.argument
+                                                                 : static_cast<unsigned>(property),
+                                  ", "),
                    evaluation.source.position);
             if (numeric)
                 append("double(", evaluation.source.position);
@@ -595,7 +607,7 @@ private:
         if (last - first == 1)
             return emit_operation(first);
         const std::size_t middle = first + (last - first) / 2;
-        append("if (__ui_operation < " + std::to_string(middle) + ") {\n", {});
+        append(String::concat("if (__ui_operation < ", middle, ") {\n"), {});
         ATELIER_TRY(emit_dispatch(first, middle));
         append("} else {\n", {});
         ATELIER_TRY(emit_dispatch(middle, last));
@@ -605,8 +617,9 @@ private:
 
     template <class T>
     std::expected<void, Diagnostic> unique(Token name, const Array<T>& items) {
-        if (items.size() >= 1024 || name.text.starts_with("__ui_") ||
-            std::ranges::any_of(items, [&](const auto& item) { return item.name == name.text; }))
+        const auto name_view = view_of(name.text);
+        if (items.size() >= 1024 || name_view.starts_with("__ui_") ||
+            std::ranges::any_of(items, [&](const auto& item) { return item.name == name_view; }))
             return reject(name.position, "Duplicate, reserved or excessive UI declaration.");
         return {};
     }
@@ -622,20 +635,20 @@ private:
         return reject(token->position, "Component state requires bool or double.");
     }
 
-    static std::string suffix(InputKind kind) {
-        constexpr std::string_view names[]{"bool",  "number", "edit",  "text", "text_edit", "key",
-                                           "items", "action", "table", "code", "tooltip",   "tree_row"};
-        return std::string(names[static_cast<std::size_t>(kind)]);
+    static StringView suffix(InputKind kind) {
+        constexpr StringView names[]{"bool",  "number", "edit",  "text", "text_edit", "key",
+                                     "items", "action", "table", "code", "tooltip",   "tree_row"};
+        return names[static_cast<std::size_t>(kind)];
     }
 
-    std::expected<Fragment, Diagnostic> fragment(std::string_view terminator) {
+    std::expected<Fragment, Diagnostic> fragment(StringView terminator) {
         const auto begin = token_.position;
         Array<Token> tokens;
         std::size_t parentheses{};
         std::size_t brackets{};
         std::size_t braces{};
         while (token_.kind != Token::Kind::end) {
-            if (!parentheses && !brackets && !braces && token_.text == terminator) {
+            if (!parentheses && !brackets && !braces && view_of(token_.text) == terminator) {
                 if (terminator == ";" && tokens.empty())
                     return reject(begin, "Expected a UI expression.");
                 return Fragment{begin, token_.position, std::move(tokens)};
@@ -668,8 +681,8 @@ private:
     Optional<InputKind> reference_kind(const Fragment& source) const {
         if (source.tokens.size() != 3 || source.tokens[0].text != "input" || source.tokens[1].text != ".")
             return {};
-        const auto at = std::ranges::find_if(result_.inputs,
-                                             [&](const auto& input) { return input.name == source.tokens[2].text; });
+        const auto target = view_of(source.tokens[2].text);
+        const auto at = std::ranges::find_if(result_.inputs, [&](const auto& input) { return input.name == target; });
         return at == result_.inputs.end() ? Optional<InputKind>{} : Optional<InputKind>{at->kind};
     }
 
@@ -678,8 +691,9 @@ private:
             return reject(token_.position, "UI nesting exceeds 64 levels.");
         ATELIER_TRY_BIND(parsed_type, identifier());
         const auto type = *parsed_type;
-        const auto builtin = builtin_node(type.text);
-        const auto child = std::ranges::find_if(headers_, [&](const auto& value) { return value.name == type.text; });
+        const auto type_view = view_of(type.text);
+        const auto builtin = builtin_node(type_view);
+        const auto child = std::ranges::find_if(headers_, [&](const auto& value) { return value.name == type_view; });
         const auto kind = builtin.value_or(NodeKind::component);
         if (kind == NodeKind::component && child == headers_.end())
             return reject(type.position, "Unknown UI node or component type.");
@@ -687,10 +701,10 @@ private:
         const auto name = *parsed_name;
         ATELIER_TRY(unique(name, result_.nodes));
         const auto slot = static_cast<std::uint32_t>(result_.nodes.size());
-        result_.nodes.add({std::string(name.text), kind, parent,
-                           kind == NodeKind::component ? std::string(type.text) : std::string{}});
+        result_.nodes.add({String::from_utf8_validated(view_of(name.text)), kind, parent,
+                           kind == NodeKind::component ? String::from_utf8_validated(type_view) : String{}});
         ATELIER_TRY(expect("{"));
-        Array<std::string_view> properties;
+        Array<StringView> properties;
         bool has_event{};
         bool tooltip_binding{};
         for (;;) {
@@ -715,6 +729,7 @@ private:
             const auto saved_token = token_;
             ATELIER_TRY_BIND(parsed_property, identifier());
             const auto property = *parsed_property;
+            const auto property_view = view_of(property.text);
             ATELIER_TRY_BIND(binding, accept(":"));
             if (!*binding) {
                 lexer_ = saved_lexer;
@@ -724,69 +739,69 @@ private:
                 ATELIER_TRY(node(slot + 1, depth + 1));
                 continue;
             }
-            if (std::ranges::find(properties, property.text) != properties.end())
+            if (std::ranges::find(properties, property_view) != properties.end())
                 return reject(property.position, "Duplicate UI property or argument.");
-            if (kind != NodeKind::component && height_strategy(property.text) &&
+            if (kind != NodeKind::component && height_strategy(property_view) &&
                 std::ranges::any_of(properties, height_strategy))
                 return reject(
                     property.position,
                     "height, expand_height, content_height and single_line are mutually exclusive height strategies.");
-            if (kind != NodeKind::component && width_strategy(property.text) &&
+            if (kind != NodeKind::component && width_strategy(property_view) &&
                 std::ranges::any_of(properties, width_strategy))
                 return reject(
                     property.position,
                     "width, expand_width, content_width, shrink_width, flex_width and grow_width are mutually exclusive width strategies.");
-            if (kind != NodeKind::component && (property.text == "panel" || property.text == "caption") &&
-                std::ranges::any_of(properties, [](auto name) { return name == "panel" || name == "caption"; }))
+            if (kind != NodeKind::component && (property_view == "panel" || property_view == "caption") &&
+                std::ranges::any_of(properties, [](auto item) { return item == "panel" || item == "caption"; }))
                 return reject(property.position, "panel and caption are mutually exclusive roles.");
-            properties.add(property.text);
+            properties.add(property_view);
             Property value{};
             InputKind value_kind{InputKind::boolean};
             std::uint32_t argument{};
-            if (kind == NodeKind::component && property.text != "mounted") {
-                const auto at =
-                    std::ranges::find_if(child->inputs, [&](const auto& input) { return input.name == property.text; });
+            if (kind == NodeKind::component && property_view != "mounted") {
+                const auto at = std::ranges::find_if(child->inputs,
+                                                     [&](const auto& input) { return input.name == property_view; });
                 if (at == child->inputs.end())
                     return reject(property.position, "Unknown component input.");
                 value = Property::argument;
                 value_kind = at->kind;
                 argument = static_cast<std::uint32_t>(at - child->inputs.begin());
             } else {
-                constexpr std::string_view names[]{"text",          "classes",
-                                                   "gap",           "height",
-                                                   "width",         "padding_left",
-                                                   "enabled",       "selected",
-                                                   "collapsed",     "caption",
-                                                   "edit",          "expand_height",
-                                                   "icon",          "row",
-                                                   "rows",          "mounted",
-                                                   "items",         "padding_top",
-                                                   "padding_right", "padding_bottom",
-                                                   "align_center",  "single_line",
-                                                   "action",        "selection_group",
-                                                   "content_width", "content_height",
-                                                   "expand_width",  "min_width",
-                                                   "wrap",          "panel",
-                                                   "model",         "context",
-                                                   "shrink_width",  "view",
-                                                   "row_height",    "header_height",
-                                                   "tile_width",    "tile_height",
-                                                   "item_gap",      "empty_text",
-                                                   "modified",      "out_of_flow",
-                                                   "offset_x",      "offset_y",
-                                                   "anchor_x",      "anchor_y",
-                                                   "pivot_x",       "pivot_y",
-                                                   "flex_width",    "grow_width",
-                                                   "red",           "green",
-                                                   "blue",          "value",
-                                                   "minimum",       "maximum",
-                                                   "step",          "vertical",
-                                                   "click_action",  "menu_branch",
-                                                   "menu_behavior", "radio_group",
-                                                   "document",      "tooltip",
-                                                   "tooltip_title", "tooltip_identity",
-                                                   "draggable"};
-                const auto at = std::ranges::find(names, property.text);
+                constexpr StringView names[]{"text",          "classes",
+                                             "gap",           "height",
+                                             "width",         "padding_left",
+                                             "enabled",       "selected",
+                                             "collapsed",     "caption",
+                                             "edit",          "expand_height",
+                                             "icon",          "row",
+                                             "rows",          "mounted",
+                                             "items",         "padding_top",
+                                             "padding_right", "padding_bottom",
+                                             "align_center",  "single_line",
+                                             "action",        "selection_group",
+                                             "content_width", "content_height",
+                                             "expand_width",  "min_width",
+                                             "wrap",          "panel",
+                                             "model",         "context",
+                                             "shrink_width",  "view",
+                                             "row_height",    "header_height",
+                                             "tile_width",    "tile_height",
+                                             "item_gap",      "empty_text",
+                                             "modified",      "out_of_flow",
+                                             "offset_x",      "offset_y",
+                                             "anchor_x",      "anchor_y",
+                                             "pivot_x",       "pivot_y",
+                                             "flex_width",    "grow_width",
+                                             "red",           "green",
+                                             "blue",          "value",
+                                             "minimum",       "maximum",
+                                             "step",          "vertical",
+                                             "click_action",  "menu_branch",
+                                             "menu_behavior", "radio_group",
+                                             "document",      "tooltip",
+                                             "tooltip_title", "tooltip_identity",
+                                             "draggable"};
+                const auto at = std::ranges::find(names, property_view);
                 if (at == std::end(names))
                     return reject(property.position, "Unknown UI property.");
                 value = static_cast<Property>(at - std::begin(names));
@@ -870,8 +885,9 @@ private:
                 reference != InputKind::key && !(value == Property::context && reference == InputKind::text_edit)) {
                 if (expression.tokens.size() != 3 || expression.tokens[0].text != "node" ||
                     expression.tokens[1].text != "." || expression.tokens[2].kind != Token::Kind::identifier)
-                    return reject(expression.position,
-                                  std::string(property.text) + " requires node.name or a direct Key input.");
+                    return reject_text(
+                        expression.position,
+                        String::concat(String::validated(property_view), " requires node.name or a direct Key input."));
             }
             if ((value == Property::action || (value == Property::argument && value_kind == InputKind::action)) &&
                 reference != InputKind::action)
@@ -890,8 +906,9 @@ private:
                     return reject(expression.position, value == Property::items
                                                            ? "Repeat requires a direct Items input."
                                                            : "Items arguments require a direct typed input.");
-                const auto at = std::ranges::find_if(
-                    result_.inputs, [&](const auto& item) { return item.name == expression.tokens[2].text; });
+                const auto target = view_of(expression.tokens[2].text);
+                const auto at =
+                    std::ranges::find_if(result_.inputs, [&](const auto& item) { return item.name == target; });
                 if (value == Property::items)
                     result_.nodes[slot].component_type = at->item_type;
                 else if (at->item_type != child->inputs[argument].item_type)
@@ -917,17 +934,19 @@ private:
             return reject(name.position, "Repeat requires items.");
         if (kind == NodeKind::component)
             for (const auto& input : child->inputs)
-                if (std::ranges::find(properties, input.name) == properties.end())
-                    return reject(name.position, "Missing component input: " + input.name);
+                if (std::ranges::find(properties, input.name.view()) == properties.end())
+                    return reject_text(name.position, String::concat("Missing component input: ", input.name));
         return {};
     }
 
-    void append(std::string_view value, SourcePosition origin) {
+    void append(StringView value, SourcePosition origin) {
         const auto begin = result_.generated_source.size();
-        result_.generated_source += value;
+        result_.generated_source.append_validated(value);
         if (!value.empty())
             result_.mappings.add({begin, result_.generated_source.size(), origin});
     }
+
+    void append(const String& value, SourcePosition origin) { append(value.view(), origin); }
 
     std::expected<void, Diagnostic> rewrite(const Fragment& fragment, bool event, bool checked = false) {
         const auto& tokens = fragment.tokens;
@@ -947,93 +966,99 @@ private:
         };
         Optional<std::size_t> assignment;
         std::size_t parentheses{};
-        std::string_view previous;
+        StringView previous;
         while (cursor < tokens.size()) {
             const auto token = tokens[cursor++];
+            const auto text = view_of(token.text);
             const auto origin = token.position;
+            if (token.kind == Token::Kind::string && !text.is_valid_utf8())
+                return reject(origin, "String literal is not valid UTF-8.");
             const bool member = previous == "." || previous == "::";
             // Source permits assignments in for's step, whose terminator is ')'.
             // Calls within the value must close before the generated write call.
-            if (assignment && parentheses == *assignment && (token.text == ";" || token.text == ")")) {
+            if (assignment && parentheses == *assignment && (text == ";" || text == ")")) {
                 append(")", origin);
                 assignment.reset();
             }
-            if (token.text == "(")
+            if (text == "(")
                 ++parentheses;
-            else if (token.text == ")") {
+            else if (text == ")") {
                 if (!parentheses)
-                    return reject(token.position, "Unbalanced expression.");
+                    return reject(origin, "Unbalanced expression.");
                 --parentheses;
             }
-            if (!member && (token.text == "self" || token.text == "new" || token.text == "yield" ||
-                            token.text == "async" || token.text.starts_with("__ui_")))
+            if (!member &&
+                (text == "self" || text == "new" || text == "yield" || text == "async" || text.starts_with("__ui_")))
                 return reject(
-                    token.position,
+                    origin,
                     "UI expressions use typed inputs/state; native context access and asynchronous effects are not permitted.");
-            if (!member && (token.text == "input" || token.text == "state")) {
+            if (!member && (text == "input" || text == "state")) {
                 if (cursor >= tokens.size() || tokens[cursor].text != ".")
-                    return reject(token.position,
+                    return reject(origin,
                                   "input, state and event are reserved UI identifiers; use a member after '.'.");
                 ++cursor;
                 ATELIER_TRY_BIND(name, expect_identifier());
-                const auto state = token.text == "state";
+                const auto name_view = view_of(name->text);
+                const auto state = text == "state";
                 Optional<std::uint32_t> index;
                 InputKind kind{};
                 if (state) {
                     for (std::uint32_t i = 0; i < result_.states.size(); ++i)
-                        if (result_.states[i].name == name->text) {
+                        if (result_.states[i].name == name_view) {
                             index = i;
                             kind = result_.states[i].kind;
                         }
                 } else
                     for (std::uint32_t i = 0; i < result_.inputs.size(); ++i)
-                        if (result_.inputs[i].name == name->text) {
+                        if (result_.inputs[i].name == name_view) {
                             index = i;
                             kind = result_.inputs[i].kind;
                         }
                 if (!index)
-                    return reject(token.position, "Unknown UI input or state.");
+                    return reject(origin, "Unknown UI input or state.");
                 if (cursor < tokens.size() && tokens[cursor].text == "=") {
                     ++cursor;
                     if (!state || !event || assignment)
-                        return reject(token.position,
+                        return reject(origin,
                                       "Only event blocks may assign component state; inputs are read-only.");
                     assignment = parentheses;
-                    append("self.write_" + suffix(kind) + "(" + std::to_string(*index) + ", ", origin);
+                    append(String::concat("self.write_", String::validated(suffix(kind)), "(", *index, ", "), origin);
                     previous = "=";
                 } else {
-                    append("self." + std::string(state ? "state_" : "read_") + suffix(kind) + "(" +
-                               std::to_string(*index) + ") ",
+                    append(String::concat("self.", state ? "state_"_s : "read_"_s, String::validated(suffix(kind)), "(",
+                                          *index, ") "),
                            origin);
-                    previous = name->text;
+                    previous = name_view;
                 }
-            } else if (!member && token.text == "node") {
+            } else if (!member && text == "node") {
                 ATELIER_TRY(expect_dot());
                 ATELIER_TRY_BIND(name, expect_identifier());
+                const auto name_view = view_of(name->text);
                 const auto at =
-                    std::ranges::find_if(result_.nodes, [&](const auto& item) { return item.name == name->text; });
+                    std::ranges::find_if(result_.nodes, [&](const auto& item) { return item.name == name_view; });
                 if (at == result_.nodes.end())
                     return reject(name->position, "Unknown declaration node.");
                 if (at->kind == NodeKind::component || at->kind == NodeKind::repeat || at->kind == NodeKind::text_field)
                     return reject(name->position,
                                   "node references require a concrete node with a declaration-owned key.");
-                append("self.node_key(" + std::to_string(at - result_.nodes.begin()) + ") ", origin);
-                previous = name->text;
-            } else if (!member && token.text == "event") {
+                append(String::concat("self.node_key(", static_cast<std::size_t>(at - result_.nodes.begin()), ") "),
+                       origin);
+                previous = name_view;
+            } else if (!member && text == "event") {
                 if (!event)
-                    return reject(token.position, "event is reserved and only available inside an event handler.");
+                    return reject(origin, "event is reserved and only available inside an event handler.");
                 if (!checked)
-                    return reject(token.position, "Button and ChoiceButton activation do not expose event values.");
+                    return reject(origin, "Button and ChoiceButton activation do not expose event values.");
                 ATELIER_TRY(expect_dot());
                 ATELIER_TRY_BIND(name, expect_identifier());
                 if (name->text != "checked")
                     return reject(name->position, "This event exposes checked: bool.");
                 append("self.event_bool() ", origin);
-                previous = name->text;
+                previous = view_of(name->text);
             } else {
-                append(token.text, origin);
-                result_.generated_source += ' ';
-                previous = token.text;
+                append(text, origin);
+                result_.generated_source.append_ascii(' ');
+                previous = text;
             }
         }
         if (assignment)
@@ -1043,20 +1068,22 @@ private:
 };
 }
 
-std::expected<Array<Declaration>, language::Diagnostic> lower_module(std::string_view name,
-                                                                     std::string_view source) {
+std::expected<Array<Declaration>, language::Diagnostic> lower_module(StringView name, StringView source) {
+    auto valid_name = String::from_utf8(name);
+    if (!valid_name)
+        return std::unexpected(language::Diagnostic{{}, "UI source name is not valid UTF-8."});
     ATELIER_TRY_BIND(all, headers(source));
     ATELIER_TRY_BIND(helpers, prepare_helpers(source, all->front().begin.offset));
     Array<Declaration> result;
     result.reserve(all->size());
     for (const auto& header : *all) {
-        ATELIER_TRY_BIND(declaration, Parser(name, header, *all, *helpers).run());
+        ATELIER_TRY_BIND(declaration, Parser(*valid_name, header, *all, *helpers).run());
         result.add(std::move(*declaration));
     }
     return result;
 }
 
-std::expected<Declaration, language::Diagnostic> lower(std::string_view name, std::string_view source) {
+std::expected<Declaration, language::Diagnostic> lower(StringView name, StringView source) {
     ATELIER_TRY_BIND(all, lower_module(name, source));
     if (all->size() != 1)
         return std::unexpected(language::Diagnostic{{}, "Choose a named component from this UI module."});

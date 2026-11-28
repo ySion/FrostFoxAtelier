@@ -21,18 +21,18 @@ struct PixelBudget {
         for (auto value = left.load();;) {
             if (value < bytes)
                 return std::unexpected(Error{ErrorCode::invalid_storage,
-                                             "Decoded textures exceed " + std::to_string(limit >> 20) + " MiB."});
+                                             String::concat("Decoded textures exceed ", limit >> 20, " MiB.")});
             if (left.compare_exchange_weak(value, value - bytes))
                 return {};
         }
     }
 };
 
-Result<material::ImageRef> decode(std::string_view bytes, PixelBudget* budget) {
+Result<material::ImageRef> decode(Span<const std::byte> bytes, PixelBudget* budget) {
     using Microsoft::WRL::ComPtr;
-    const auto require = [](bool valid, const char* message) -> Result<void> {
+    const auto require = [](bool valid, Utf8Text message) -> Result<void> {
         if (!valid)
-            return std::unexpected(Error{ErrorCode::invalid_storage, message});
+            return std::unexpected(Error{ErrorCode::invalid_storage, std::move(message)});
         return {};
     };
     ATELIER_TRY(require(bytes.size() <= 128 * 1024 * 1024, "Texture source exceeds 128 MiB."));
@@ -53,7 +53,7 @@ Result<material::ImageRef> decode(std::string_view bytes, PixelBudget* budget) {
         "Cannot create texture decoder."));
     const auto opened =
         require(SUCCEEDED(factory->CreateStream(&stream)) &&
-                    SUCCEEDED(stream->InitializeFromMemory(reinterpret_cast<BYTE*>(const_cast<char*>(bytes.data())),
+                    SUCCEEDED(stream->InitializeFromMemory(reinterpret_cast<BYTE*>(const_cast<std::byte*>(bytes.data())),
                                                            static_cast<DWORD>(bytes.size()))) &&
                     SUCCEEDED(factory->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnLoad,
                                                                &decoder)) &&
@@ -84,11 +84,11 @@ Result<material::ImageRef> decode(std::string_view bytes, PixelBudget* budget) {
 }
 }
 
-Result<material::ImageRef> decode_image(std::string_view bytes) {
+Result<material::ImageRef> decode_image(Span<const std::byte> bytes) {
     return decode(bytes, nullptr);
 }
 
-Result<Array<material::ImageRef>> decode_images(Span<const std::string_view> sources, ImageCache* cache,
+Result<Array<material::ImageRef>> decode_images(Span<const Span<const std::byte>> sources, ImageCache* cache,
                                                 std::uint64_t pixel_budget) {
     Array<material::ImageRef> result(sources.size());
     if (sources.empty())
@@ -102,9 +102,9 @@ Result<Array<material::ImageRef>> decode_images(Span<const std::string_view> sou
     const auto work = [&] {
         for (std::size_t i{}; !stopped && (i = next++) < sources.size();) {
             auto completed = [&]() -> Result<void> {
-                std::string digest;
+                String digest;
                 if (cache) {
-                    digest = foundation::sha256(as_bytes(Span{sources[i]}));
+                    digest = foundation::sha256(sources[i]);
                     std::scoped_lock lock(guard);
                     if (const auto* found = cache->entries.find(digest))
                         result[i] = found->lock();

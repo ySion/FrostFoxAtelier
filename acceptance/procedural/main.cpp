@@ -230,9 +230,9 @@ void grouped_wall_surfaces() {
     const auto wrong_type = build_group(points, {.criterion = GroupCriterion::existing, .source_group = "P"});
     const auto degenerate = take(Geometry::polygons({{0, 0, 0}, {1, 0, 0}, {2, 0, 0}}, {0, 1, 2}, {0, 3}));
     const auto bad_face = build_group(degenerate);
-    require(!mismatch && mismatch.error().message.find("different layer") != std::string::npos && !missing &&
-                missing.error().message.find("missing") != std::string::npos && !wrong_type &&
-                wrong_type.error().message.find("bool") != std::string::npos &&
+    require(!mismatch && mismatch.error().message.contains("different layer") && !missing &&
+                missing.error().message.contains("missing") && !wrong_type &&
+                wrong_type.error().message.contains("bool") &&
                 !build_group(points, {.group = "keep"}) && !build_group(points, {.direction = {}}) &&
                 !build_group(points, {.max_angle = 181.f}) && !bad_face &&
                 bad_face.error().message == "Group primitive 0: Polygon has zero area." && count(points, "upper") == 5,
@@ -519,7 +519,7 @@ void beveled_stonework() {
     auto dent = sphere_shell;
     take(dent.write<Vector3>("P", Layer::point))->front().y -= .2f;
     const auto nonconvex = bevel(dent, no_ridges);
-    require(!nonconvex && nonconvex.error().message.find("primitive 0 is not a supporting face") != std::string::npos,
+    require(!nonconvex && nonconvex.error().message.contains("primitive 0 is not a supporting face"),
             "Bevel missed the first non-supporting face around a dented pole when no edges were selected.");
 }
 
@@ -855,7 +855,7 @@ void boolean_contact_sweep() {
         auto solve = [&](BooleanOperation op) {
             auto result = solid_boolean(stock, cutter, op);
             if (!result)
-                fatal("Rotating cutter at " + std::to_string(degrees) + " degrees: " + result.error().message);
+                fatal(String::concat("Rotating cutter at ", degrees, " degrees: ", result.error().message).c_str());
             return std::move(*result);
         };
         const auto clipped = solve(BooleanOperation::intersect);
@@ -1042,8 +1042,8 @@ class game.FrameInputs : procedural.Node {
     const auto remap_type = take(runtime.find_type("procedural.Remap"));
     const auto wave_type = take(runtime.find_type("game.Wave"));
     const auto jitter_ports = take(ports(runtime, jitter_type));
-    require(jitter_ports.inputs == Array<std::string>{"input"} &&
-                jitter_ports.outputs == Array<std::string>{"output"},
+    require(jitter_ports.inputs == Array<String>{"input"_s} &&
+                jitter_ports.outputs == Array<String>{"output"_s},
             "Source Node ports(runtime, type) failed without Program.");
 
     Meshes resources;
@@ -1062,9 +1062,9 @@ class game.FrameInputs : procedural.Node {
     const auto xform_n = add(type<Transform>(runtime));
     const auto copy_n = add(type<CopyToPoints>(runtime));
 
-    const auto write_str = [&](ObjectId obj, TypeId owner, const char* name, std::string_view text) {
+    const auto write_str = [&](ObjectId obj, TypeId owner, const char* name, StringView text) {
         String s;
-        require(s.assign(StringView{text}).has_value(), "Invalid UTF-8 string.");
+        require(s.assign(text).has_value(), "Invalid UTF-8 string.");
         take(runtime.write(obj, field(runtime, owner, name), ValueInput{type<String>(runtime), &s}));
     };
     const auto write_v3 = [&](ObjectId obj, TypeId owner, const char* name, Vector3 v) {
@@ -1263,13 +1263,14 @@ class game.FrameInputs : procedural.Node {
             "Restoring valid parameter did not recover from cache.");
 
     // 4. Native column-binding length tampering (both attribute column and P) must be rejected before publishing.
-    const auto bad_type = take(NativeRegistration<BadLengthNode>{runtime, "test.BadLengthNode", TypeKind::object}
-                                   .base<Node>()
-                                   .field<&BadLengthNode::mutate_positions>("mutate_positions")
-                                   .method<&BadLengthNode::process>("process")
-                                   .parameter_names({"P", "weights"})
-                                   .parameter_metadata({{{"procedural.role", "inout"}}, {{"procedural.role", "out"}}})
-                                   .publish());
+    const auto bad_type =
+        take(NativeRegistration<BadLengthNode>{runtime, "test.BadLengthNode", TypeKind::object}
+                 .base<Node>()
+                 .field<&BadLengthNode::mutate_positions>("mutate_positions")
+                 .method<&BadLengthNode::process>("process")
+                 .parameter_names({"P"_s, "weights"_s})
+                 .parameter_metadata({{{"procedural.role"_s, "inout"_s}}, {{"procedural.role"_s, "out"_s}}})
+                 .publish());
     const auto bad_n = add(bad_type);
     take(connect(runtime, graph, grid_n.id(), 0, bad_n.id(), 0));
     take(set_display(runtime, graph, bad_n.id()));
@@ -1417,21 +1418,24 @@ void profile(const char* path) {
     const std::filesystem::path output{path};
     require(output.is_absolute() && !std::filesystem::exists(output), "Choose a new absolute profile file.");
     constexpr int samples = 9;
-    std::string report = "{\n  \"schema\": \"atelier.procedural.profile.v1\",\n";
+    String report = "{\n  \"schema\": \"atelier.procedural.profile.v1\",\n"_s;
 #ifdef NDEBUG
-    report += "  \"configuration\": \"release\",\n";
+    report.append_literal<"  \"configuration\": \"release\",\n">();
 #else
-    report += "  \"configuration\": \"dev\",\n";
+    report.append_literal<"  \"configuration\": \"dev\",\n">();
 #endif
-    const auto number = [&](const char* name, double value) {
-        report += "  \"" + std::string{name} + "\": " + std::to_string(value) + ",\n";
+    const auto number = [&](StringView name, double value) {
+        report += String::concat("  \"", String::validated(name), "\": ", value, ",\n");
     };
 
     // Closed workload, not the open terrain below. Kept out of ordinary acceptance.
     timing::install({phases::all});
     for (const auto resolution : {32u, 128u}) {
-        const std::string prefix = resolution == 32 ? "volume_" : "volume_large_";
-        const auto metric = [&](const std::string& key, double value) { number((prefix + key).c_str(), value); };
+        const String prefix = resolution == 32 ? "volume_"_s : "volume_large_"_s;
+        const auto metric = [&](StringView key, double value) {
+            const auto full_key = String::concat(prefix, String::validated(key));
+            number(full_key, value);
+        };
         const auto volume_surface = take(sphere(5, resolution, resolution));
         Array<double> volume_times;
         Array<double> build_times;
@@ -1465,8 +1469,8 @@ void profile(const char* path) {
         std::ranges::sort(build_times);
         std::ranges::sort(classify_times);
         std::ranges::sort(remaining_times);
-        report += "  \"" + prefix + "input\": \"Sphere(radius=5,segments=" + std::to_string(resolution) +
-                  ",latitudes=" + std::to_string(resolution) + "); origin=0,h=1,density=10,seed=3\",\n";
+        report += String::concat("  \"", prefix, "input\": \"Sphere(radius=5,segments=", resolution,
+                                 ",latitudes=", resolution, "); origin=0,h=1,density=10,seed=3\",\n");
         metric("samples", samples);
         metric("warmups", 2);
         metric("cells", 10 * 10 * 10);
@@ -1481,8 +1485,10 @@ void profile(const char* path) {
         metric("remaining_ms", remaining_times[remaining_times.size() / 2]);
         metric("classify_ns_per_candidate", classify_times[classify_times.size() / 2] * 1e6 / candidates);
         for (std::size_t i = 0; i < phases::attempts.size(); ++i) {
-            metric("attempt" + std::to_string(i), volume_record.count(phases::attempts[i]));
-            metric("retry" + std::to_string(i), volume_record.count(phases::retries[i]));
+            const auto attempt_key = String::concat("attempt", i);
+            metric(attempt_key, volume_record.count(phases::attempts[i]));
+            const auto retry_key = String::concat("retry", i);
+            metric(retry_key, volume_record.count(phases::retries[i]));
         }
         metric("retry_rate", static_cast<double>(volume_record.count(phases::retries[0])) / candidates);
         metric("fallbacks", volume_record.count(phases::fallback));
@@ -1645,8 +1651,8 @@ void profile(const char* path) {
     for (const auto& [name, node] : nodes) {
         const auto elapsed = evaluator->status(node)->time;
         require(elapsed.has_value(), "The profile node was not timed.");
-        number((std::string{"node_"} + name + "_ms").c_str(),
-               std::chrono::duration<double, std::milli>(*elapsed).count());
+        const auto node_key = String::concat("node_", String::validated(StringView{name}), "_ms");
+        number(node_key, std::chrono::duration<double, std::milli>(*elapsed).count());
     }
     const auto* result = evaluator->output();
     require(result != nullptr, "The profile graph failed.");
@@ -1670,8 +1676,7 @@ void profile(const char* path) {
                samples,
                [&](int i) {
                    take(runtime.with_native<CopyToPoints>(copied.id(), [&](CopyToPoints& node) -> Result<void> {
-                       if (!node.variant.assign(StringView{"v" + std::to_string(i + 2)}))
-                           return failure("Variant name requires valid UTF-8.");
+                       node.variant = String::concat("v", i + 2);
                        return {};
                    }));
                },
@@ -1682,10 +1687,10 @@ void profile(const char* path) {
     number("republish_ms", median_ms(samples, [](int) {}, [&] { (void)take(publish(*published_from, 32, &first)); }));
     number("instances", published_from->count(Layer::instance));
     number("collections", double(first.collections.size()));
-    report.erase(report.size() - 2);
-    report += "\n}\n";
+    (void)report.erase(report.size() - 2, 2);
+    report.append_literal<"\n}\n">();
     std::ofstream file{output, std::ios::binary};
-    file << report;
+    file.write(report.c_str(), static_cast<std::streamsize>(report.size()));
     require(static_cast<bool>(file), "The profile file cannot be written.");
     std::fputs(report.c_str(), stdout);
 }
@@ -2029,13 +2034,13 @@ void asset_subgraph_and_cache_pool_contracts() {
 
     auto sub_a = make_sub();
     auto sub_b = make_sub();
-    const Ports sub_ports{{"surface"}, {false}, {"points", "instances"}};
+    const Ports sub_ports{{"surface"_s}, {false}, {"points"_s, "instances"_s}};
     take(set_asset_subgraph(
         runtime, asset_a.id(),
-        {"project/scatter_pillars", sub_ports, sub_a.graph, {sub_a.gin}, {sub_a.gout_pts, sub_a.gout_inst}, {}, 1}));
+        {"project/scatter_pillars"_s, sub_ports, sub_a.graph, {sub_a.gin}, {sub_a.gout_pts, sub_a.gout_inst}, {}, 1}));
     take(set_asset_subgraph(
         runtime, asset_b.id(),
-        {"project/scatter_pillars", sub_ports, sub_b.graph, {sub_b.gin}, {sub_b.gout_pts, sub_b.gout_inst}, {}, 1}));
+        {"project/scatter_pillars"_s, sub_ports, sub_b.graph, {sub_b.gin}, {sub_b.gout_pts, sub_b.gout_inst}, {}, 1}));
 
     const auto dyn_ports = take(ports(runtime, asset_a.id()));
     require(dyn_ports == sub_ports, "Instance-level ports(runtime, ObjectId) did not return AssetNode dynamic ports.");
@@ -2086,7 +2091,7 @@ void asset_subgraph_and_cache_pool_contracts() {
             const auto prev_nodes = take(contents(runtime, chain_graphs.back().id()));
             take(set_asset_subgraph(
                 runtime, prev_nodes.nodes().front(),
-                {"project/depth_" + std::to_string(d), {{}, {}, {"output"}}, g, {}, {n.id()}, {}, 1}));
+                {String::concat("project/depth_", d), {{}, {}, {"output"_s}}, g, {}, {n.id()}, {}, 1}));
         }
         chain_graphs.add(std::move(g));
     }
@@ -2434,10 +2439,10 @@ void source_sop_batch2_contracts() {
     take(procedural::register_types(runtime));
 
     // 1. Compile-time enforcement of read-only self.<String> invariants.
-    const auto expect_compile_reject = [&](std::string_view snippet, const char* label) {
+    const auto expect_compile_reject = [&](StringView snippet, const char* label) {
         auto prog = take(source::Program::create(runtime));
         Array<source::SourceFile> bad;
-        bad.add({"bad.source", 1, std::string{snippet}});
+        bad.add({"bad.source"_s, 1, String::from_utf8_validated(snippet)});
         auto req = prog->request("bad_mod", 1, std::move(bad));
         if (req) {
             auto prep = source::Program::prepare(std::move(*req));
@@ -2843,7 +2848,7 @@ class test.BadSliceSop : procedural.Node {
     auto anode = take(procedural::add_node(runtime, outer_graph.id(), asset_node_type));
     take(procedural::set_asset_subgraph(
         runtime, anode.id(),
-        {"content/sub_fail", procedural::Ports{{}, {}, {"output"}}, subgraph, {}, {sub_out.id()}, {}, 1u}));
+        {"content/sub_fail"_s, procedural::Ports{{}, {}, {"output"_s}}, subgraph, {}, {sub_out.id()}, {}, 1u}));
     take(procedural::set_display(runtime, outer_graph.id(), anode.id()));
     procedural::Evaluator outer_eval(runtime, outer_graph, resources, program.get());
     take(outer_eval.evaluate());
@@ -2912,16 +2917,18 @@ class test.ConstQuadSop : procedural.Node {
 
     // Verify engine/procedural stdlib functions are published in Program::functions() with parallel_safe & DESC:
     const auto fns = program->functions();
-    for (std::string_view expected_fn :
-         {"procedural.align_to_normal", "procedural.align_to_up", "procedural.rotation_between",
-          "procedural.unit_axis_angle", "procedural.euler_degrees", "procedural.fit", "procedural.fit01",
-          "procedural.efit", "procedural.unlerp", "procedural.hash", "procedural.hash2", "procedural.unit",
-          "procedural.random_vector", "procedural.sample_value_noise", "procedural.raycast_surface",
-          "procedural.closest_surface_point", "procedural.closest_polyline"}) {
+    for (StringView expected_fn :
+         {StringView{"procedural.align_to_normal"}, StringView{"procedural.align_to_up"},
+          StringView{"procedural.rotation_between"}, StringView{"procedural.unit_axis_angle"},
+          StringView{"procedural.euler_degrees"}, StringView{"procedural.fit"}, StringView{"procedural.fit01"},
+          StringView{"procedural.efit"}, StringView{"procedural.unlerp"}, StringView{"procedural.hash"},
+          StringView{"procedural.hash2"}, StringView{"procedural.unit"}, StringView{"procedural.random_vector"},
+          StringView{"procedural.sample_value_noise"}, StringView{"procedural.raycast_surface"},
+          StringView{"procedural.closest_surface_point"}, StringView{"procedural.closest_polyline"}}) {
         const auto it = std::ranges::find(fns, expected_fn, &source::FunctionInfo::name);
         require(it != fns.end() && it->engine_module == "procedural" && it->parallel_safe && !it->description.empty(),
-                "Engine procedural function missing parallel_safe or DESC in Program::functions(): " +
-                    std::string(expected_fn));
+                String::concat("Engine procedural function missing parallel_safe or DESC in Program::functions(): ",
+                               String::validated(expected_fn)));
     }
 
     // Verify SurfaceHit & CurveSample struct/field descriptions in Runtime:
@@ -2932,9 +2939,9 @@ class test.ConstQuadSop : procedural.Node {
 
     // R3-C1: procedural.Spatial (8B SharedArray<SpatialNode>) must be rejected as a .rdata constant and must not
     // masquerade as Array<procedural.SpatialNode>:
-    for (std::string_view bad_spatial_src : {
-             std::string_view{"const procedural.Spatial S = {}; int f() { return int(S.size()); }"},
-             std::string_view{"const Array<procedural.SpatialNode> S = {}; int f() { return int(S.size()); }"},
+    for (StringView bad_spatial_src : {
+             StringView{"const procedural.Spatial S = {}; int f() { return int(S.size()); }"},
+             StringView{"const Array<procedural.SpatialNode> S = {}; int f() { return int(S.size()); }"},
          }) {
         auto bad_prog = take(source::Program::create(runtime));
         auto bad_res = source::Program::prepare(take(bad_prog->request("bad_spatial.source", bad_spatial_src, "f")));
@@ -2964,11 +2971,11 @@ class test.ConstQuadSop : procedural.Node {
 
 int main(int argc, char** argv) {
     atelier::install_fatal_handler();
-    if (argc == 3 && std::string_view{argv[1]} == "--profile-procedural") {
+    if (argc == 3 && StringView{argv[1]} == "--profile-procedural") {
         profile(argv[2]);
         return 0;
     }
-    if (argc == 3 && std::string_view{argv[1]} == "--profile-boolean") {
+    if (argc == 3 && StringView{argv[1]} == "--profile-boolean") {
         atelier::acceptance::profile_boolean(argv[2]);
         return 0;
     }

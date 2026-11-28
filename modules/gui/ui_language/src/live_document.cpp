@@ -1,39 +1,47 @@
 #include "ui_language/live_document.hpp"
+#include "platform/utf.hpp"
 #include <algorithm>
 #include <fstream>
 
 namespace atelier::ui_language {
 namespace {
-auto failure(std::string message) {
+auto failure(Utf8Text message) {
     return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)});
 }
 
-std::string utf8(const std::filesystem::path& path) {
-    const auto value = path.u8string();
-    return {value.begin(), value.end()};
+String utf8(const std::filesystem::path& path) {
+    return platform::utf16_to_utf8(path.native()).value_or("<invalid UTF-16 path>"_s);
 }
 
-Optional<std::string> read_source(const std::filesystem::path& path, std::uintmax_t size) {
+enum class ReadFailure { io_error, invalid_utf8 };
+
+std::expected<String, ReadFailure> read_source(const std::filesystem::path& path, std::uintmax_t size) {
     std::ifstream file(path, std::ios::binary);
-    std::string bytes(static_cast<std::size_t>(size), '\0');
-    if (!file || !file.read(bytes.data(), static_cast<std::streamsize>(size)) ||
+    Array<char> bytes;
+    bytes.resize_uninitialized(static_cast<std::size_t>(size));
+    if (!file || (!bytes.empty() && !file.read(bytes.data(), static_cast<std::streamsize>(size))) ||
         file.peek() != std::ifstream::traits_type::eof())
-        return {};
-    return bytes;
+        return std::unexpected(ReadFailure::io_error);
+    const StringView view{bytes.data(), bytes.size()};
+    if (!view.is_valid_utf8())
+        return std::unexpected(ReadFailure::invalid_utf8);
+    return String::from_utf8_validated(view);
 }
 
 }
 
 LiveDocument::LiveDocument(Runtime& runtime, std::filesystem::path path, ui::ControlKey& keys,
-                           Optional<std::string> recovery)
+                           Optional<String> recovery)
     : runtime_(runtime), path_(std::move(path)), next_key_(keys), recovery_source_(std::move(recovery)) {}
 
 void LiveDocument::recover_initial() {
     if (active_ || candidate_ || !recovery_source_)
         return;
-    auto fallback = Module::compile(runtime_, utf8(path_.filename()), *recovery_source_);
+    const auto file_name = utf8(path_.filename());
+    auto fallback = Module::compile(runtime_, file_name.view(), recovery_source_->view());
     if (!fallback) {
-        diagnostic_ += " Recovery UI: " + fallback.error().message;
+        diagnostic_.append_literal<" Recovery UI: ">();
+        diagnostic_.append(fallback.error().message);
         return;
     }
     candidate_ = std::move(*fallback);
@@ -81,7 +89,8 @@ void LiveDocument::poll(Clock::time_point now) {
                 timing_->install_begin = Clock::now();
             // An atomic replacement can preserve both size and modification time.
             // Only a completed hot build pays for the final byte comparison.
-            if (read_source(path_, current.size) == completed->source) {
+            if (const auto verified = read_source(path_, current.size);
+                verified && *verified == completed->source) {
                 install(*completed);
                 return;
             }
@@ -101,14 +110,14 @@ void LiveDocument::poll(Clock::time_point now) {
     if (error) {
         attempted_ = true;
         attempted_source_.reset();
-        diagnostic_ = utf8(path_) + ": Cannot inspect UI authoring file (" + std::to_string(error.value()) + ").";
+        diagnostic_ = String::concat(utf8(path_), ": Cannot inspect UI authoring file (", error.value(), ").");
         recover_initial();
         return;
     }
     if (current.size > 1024 * 1024) {
         attempted_ = true;
         attempted_source_.reset();
-        diagnostic_ = "UI authoring file exceeds 1 MiB.";
+        diagnostic_ = "UI authoring file exceeds 1 MiB."_s;
         recover_initial();
         return;
     }
@@ -116,9 +125,13 @@ void LiveDocument::poll(Clock::time_point now) {
     if (!source) {
         attempted_ = true;
         attempted_source_.reset();
-        changed_ = true;
-        changed_at_ = now;
-        diagnostic_ = "Cannot read UI authoring file: " + utf8(path_);
+        if (source.error() == ReadFailure::io_error) {
+            changed_ = true;
+            changed_at_ = now;
+            diagnostic_ = String::concat("Cannot read UI authoring file: ", utf8(path_));
+        } else {
+            diagnostic_ = String::concat(utf8(path_.filename()), ": UI authoring file is not valid UTF-8.");
+        }
         recover_initial();
         return;
     }
@@ -131,7 +144,8 @@ void LiveDocument::poll(Clock::time_point now) {
         timing_->compile_begin = Clock::now();
     auto job = std::make_unique<InFlight>();
     job->source = std::move(*source);
-    auto build = Module::start(runtime_, utf8(path_.filename()), job->source, active_.get(),
+    const auto file_name = utf8(path_.filename());
+    auto build = Module::start(runtime_, file_name.view(), job->source.view(), active_.get(),
                                profile_components_ ? &job->components : nullptr, active_ != nullptr,
                                timing_ ? &job->worker : nullptr);
     if (!build) {
@@ -179,7 +193,7 @@ void LiveDocument::install(InFlight& job) {
         region.proposed_controls = 0;
         auto type = candidate_->find(name);
         if (!type) {
-            reject_controls("UI module is missing the mounted component: " + name);
+            reject_controls(String::concat("UI module is missing the mounted component: ", name));
             return;
         }
         auto prepared = region.instance->update(region.instance->inputs(), type);
@@ -196,28 +210,43 @@ void LiveDocument::install(InFlight& job) {
     diagnostic_.clear();
 }
 
-Result<bool> LiveDocument::append(std::string_view name, ui::ControlKey parent, Span<const KeyBinding> keys,
+Result<bool> LiveDocument::append(StringView name, ui::ControlKey parent, Span<const KeyBinding> keys,
                                   Span<const InputValue> inputs, ControlOutput output) {
     const auto& module = candidate_ ? candidate_ : active_;
+    if (!module) {
+        if (!name.is_valid_utf8())
+            return failure("UI component name is not valid UTF-8.");
+        return failure(diagnostic_.empty() ? Utf8Text{"No compiled UI module."} : Utf8Text{diagnostic_});
+    }
+    auto* found = regions_.find(name);
+    Optional<String> valid_name;
+    if (!found) {
+        auto parsed = String::from_utf8(name);
+        if (!parsed)
+            return failure("UI component name is not valid UTF-8.");
+        valid_name.emplace(std::move(*parsed));
+    }
     const auto report = [&](const Error& error) -> Result<bool> {
         diagnostic_ = error.message;
         candidate_failed_ = static_cast<bool>(candidate_);
         submission_failed_ = false;
-        if (!candidate_)
-            failed_region_ = name;
+        if (!candidate_) {
+            if (valid_name)
+                failed_region_ = std::move(*valid_name);
+            else
+                failed_region_.assign_validated(name);
+        }
         return std::unexpected(error);
     };
-    if (!module)
-        return failure(diagnostic_.empty() ? "No compiled UI module." : diagnostic_);
     if (candidate_)
         output.require_full_submission();
-    auto* found = regions_.find(name);
     bool blocked{};
     bool retried{};
     if (!found) {
         if (!module->find(name))
-            return report(Error{ErrorCode::invalid_definition, "UI module is missing component: " + std::string(name)});
-        found = regions_.try_emplace(std::string(name), Region{parent, Array<KeyBinding>{keys}, {}, {}, false}).value;
+            return report(
+                Error{ErrorCode::invalid_definition, String::concat("UI module is missing component: ", *valid_name)});
+        found = regions_.try_emplace(std::move(*valid_name), Region{parent, Array<KeyBinding>{keys}, {}, {}, false}).value;
     }
     auto& region = *found;
     if (region.parent != parent || region.keys.view() != keys) {
@@ -296,10 +325,10 @@ Result<bool> LiveDocument::event(const ui::Action& action) {
     return false;
 }
 
-bool LiveDocument::reject_controls(std::string message) {
+bool LiveDocument::reject_controls(Utf8Text message) {
     if (!candidate_ && !pending_submission_)
         return false;
-    diagnostic_ = std::move(message);
+    diagnostic_ = std::move(message).into_string();
     failed_region_.clear();
     submission_failed_ = !candidate_;
     const bool source = static_cast<bool>(candidate_);
@@ -359,7 +388,7 @@ void LiveDocument::commit_controls() {
     pending_submission_ = false;
 }
 
-Optional<Statistics> LiveDocument::statistics(std::string_view name) const {
+Optional<Statistics> LiveDocument::statistics(StringView name) const {
     const auto* region = regions_.find(name);
     return !region || !region->instance ? Optional<Statistics>{} : Optional{region->instance->statistics()};
 }

@@ -21,9 +21,9 @@ std::shared_ptr<const atelier::Array<std::uint32_t>> slots(std::initializer_list
     return std::make_shared<const atelier::Array<std::uint32_t>>(values);
 }
 
-material::ProgramSurfaceRef texture_override(material::ProgramSurfaceRef parent, const char* path,
+material::ProgramSurfaceRef texture_override(material::ProgramSurfaceRef parent, atelier::Utf8Text path,
                                              material::ImageRef image) {
-    const material::Override overrides[]{{path, material::TextureBinding{"native/image"}, true}};
+    const material::Override overrides[]{{std::move(path), material::TextureBinding{"native/image"}, true}};
     const material::ImageRef images[]{image};
     return take(material::resolve_instance(parent, overrides, images));
 }
@@ -32,11 +32,11 @@ atelier::Array<material::ProgramSurfaceRef> surfaces(const std::filesystem::path
     atelier::Runtime compiler;
     take(material::register_program_types(compiler));
     const auto compile = [&](const char* name, bool masked) {
-        const std::string text =
-            std::string(
-                masked
-                    ? "struct Params { float cutoff; vector3 color; vector3 emission; float frequency; float mode; };\n"
-                    : "struct Params { vector3 emission; vector3 color; float cutoff; float mode; float frequency; };\n") +
+        using namespace atelier::literals;
+        const auto text = atelier::String::concat(
+            masked
+                ? "struct Params { float cutoff; vector3 color; vector3 emission; float frequency; float mode; };\n"_s
+                : "struct Params { vector3 emission; vector3 color; float cutoff; float mode; float frequency; };\n"_s,
             "struct Textures { material.TextureInput zCoverage; material.TextureInput aColor; material.TextureInput mData; };\n"
             "Params defaults() { Params p; p.cutoff=0.5; p.color=vector3(1.0,0.0,0.0); p.emission=vector3(0.0,0.0,0.0); p.frequency=1.0; p.mode=0.0; return p; }\n"
             "material.Output shade(material.Context c, Params p, Textures t) { material.Output o;\n"
@@ -44,13 +44,14 @@ atelier::Array<material::ProgramSurfaceRef> surfaces(const std::filesystem::path
             "if (p.mode>0.5 && p.mode<1.5 && c.uv.x>0.5) { uv=uv*2.0; }\n"
             "vector4 color=sample(t.aColor,uv*p.frequency);\n"
             "o.base_color=vector3(p.color.x*color.x,p.color.y*color.y,p.color.z*color.z);\n"
-            "o.emissive=vector3(p.emission.x*color.x,p.emission.y*color.y,p.emission.z*color.z); o.roughness=0.8; o.metallic=0.0;\n" +
-            (masked
-                 ? "vector4 mask=sample(t.zCoverage,uv*p.frequency); o.coverage=p.cutoff-mask.x+c.position_world.y*0.125;\n"
-                 : "o.coverage=-1.0;\n") +
-            "o.normal_world=c.normal_world; return o; }";
-        std::ofstream file(output / (std::string(name) + ".source"));
-        file << text;
+            "o.emissive=vector3(p.emission.x*color.x,p.emission.y*color.y,p.emission.z*color.z); o.roughness=0.8; o.metallic=0.0;\n",
+            masked
+                ? "vector4 mask=sample(t.zCoverage,uv*p.frequency); o.coverage=p.cutoff-mask.x+c.position_world.y*0.125;\n"_s
+                : "o.coverage=-1.0;\n"_s,
+            "o.normal_world=c.normal_world; return o; }");
+        const auto file_name = atelier::String::concat(atelier::String::validated(atelier::StringView{name}), ".source");
+        std::ofstream file(output / file_name.c_str());
+        file.write(text.c_str(), static_cast<std::streamsize>(text.size()));
         check(file.good(), "write native source evidence");
         return take(source::compile_material(compiler, take(compiler.native_type<material::Context>()),
                                              take(compiler.native_type<material::Output>()),
@@ -126,7 +127,8 @@ void run(HWND window, const std::filesystem::path& output) {
         ++drawing.id;
         check(take(prepared_render(renderer, frame, &capture)).status == render::FrameStatus::accepted,
               "native candidate frame accepted");
-        scene_lit_e2e::png(capture, output / (std::string(name) + ".png"));
+        const auto png_name = atelier::String::concat(atelier::String::validated(atelier::StringView{name}), ".png");
+        scene_lit_e2e::png(capture, output / png_name.c_str());
     };
     const auto x = drawing.extent.width / 4;
     const auto y = drawing.extent.height / 4;

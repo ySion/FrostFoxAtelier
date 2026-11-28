@@ -80,7 +80,7 @@ function(atelier_add_rhi)
     atelier_target(atelier_rhi)
     target_compile_features(atelier_rhi PUBLIC cxx_std_23)
     target_include_directories(atelier_rhi PUBLIC "${PROJECT_SOURCE_DIR}/modules/render/rhi/include")
-    target_link_libraries(atelier_rhi PUBLIC gfx atelier_foundation_headers
+    target_link_libraries(atelier_rhi PUBLIC gfx atelier_foundation
         PRIVATE atelier_platform "${_gfx}/third_party/directx-dxc/lib/x64/dxcompiler.lib" bcrypt ole32)
     target_include_directories(atelier_rhi SYSTEM PUBLIC
         "${_gfx}/third_party/directx12-agility/build/native/include")

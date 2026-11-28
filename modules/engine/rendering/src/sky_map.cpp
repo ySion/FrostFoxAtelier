@@ -155,15 +155,18 @@ SkyMap::SkyMap(std::uint32_t width, std::uint32_t height, Span<const float> rgb)
     }
 }
 
-Result<SkyMapRef> decode_radiance_hdr(std::string_view bytes) {
+Result<SkyMapRef> decode_radiance_hdr(Span<const std::byte> bytes) {
     if (bytes.size() > std::size_t(256) << 20)
         return std::unexpected(Error{ErrorCode::invalid_storage, "Radiance HDR source exceeds 256 MiB."});
+    const StringView header_view = as_chars(bytes);
+
     std::size_t at = 0;
-    const auto line = [&]() -> Result<std::string_view> {
-        const auto end = bytes.find('\n', at);
-        if (end == std::string_view::npos)
+
+    const auto line = [&]() -> Result<StringView> {
+        const auto end = header_view.find('\n', at);
+        if (end == StringView::npos)
             return std::unexpected(Error{ErrorCode::invalid_storage, "Truncated Radiance HDR header."});
-        auto text = bytes.substr(at, end - at);
+        auto text = header_view.slice(at, end - at);
         at = end + 1;
         if (!text.empty() && text.back() == '\r')
             text.remove_suffix(1);
@@ -182,17 +185,21 @@ Result<SkyMapRef> decode_radiance_hdr(std::string_view bytes) {
     }
     ATELIER_TRY_BIND(resolution, line());
     std::uint32_t width{};
+
     std::uint32_t height{};
     {
         const char* cursor = resolution->data();
+
         const char* const end = cursor + resolution->size();
-        const auto token = [&](std::string_view expected) -> Result<void> {
-            if (!std::string_view(cursor, end).starts_with(expected))
+
+        const auto token = [&](StringView expected) -> Result<void> {
+            if (!StringView{cursor, static_cast<std::size_t>(end - cursor)}.starts_with(expected))
                 return std::unexpected(
                     Error{ErrorCode::invalid_storage, "Radiance HDR orientation must be -Y H +X W."});
             cursor += expected.size();
             return {};
         };
+
         const auto number = [&](std::uint32_t& value) -> Result<void> {
             const auto [next, error] = std::from_chars(cursor, end, value);
             if (error != std::errc{} || next == cursor)
@@ -213,7 +220,7 @@ Result<SkyMapRef> decode_radiance_hdr(std::string_view bytes) {
     const auto byte = [&]() -> Result<std::uint8_t> {
         if (at >= bytes.size())
             return std::unexpected(Error{ErrorCode::invalid_storage, "Truncated Radiance HDR scanline data."});
-        return static_cast<std::uint8_t>(bytes[at++]);
+        return std::to_integer<std::uint8_t>(bytes[at++]);
     };
     Array<float> rgb;
     rgb.resize_uninitialized(std::size_t(width) * height * 3);
@@ -221,8 +228,8 @@ Result<SkyMapRef> decode_radiance_hdr(std::string_view bytes) {
     scanline.resize_uninitialized(std::size_t(width) * 4);
     for (std::uint32_t y = 0; y < height; ++y) {
         // New-style scanlines start with 2, 2 and the width; anything else is flat or old RLE.
-        if (width >= 8 && width < 32768 && bytes.size() - at >= 4 && bytes[at] == 2 && bytes[at + 1] == 2 &&
-            !(bytes[at + 2] & 0x80)) {
+        if (width >= 8 && width < 32768 && bytes.size() - at >= 4 && bytes[at] == std::byte{2} &&
+            bytes[at + 1] == std::byte{2} && (std::to_integer<std::uint8_t>(bytes[at + 2]) & 0x80u) == 0) {
             at += 2;
             ATELIER_TRY_BIND(high, byte());
             ATELIER_TRY_BIND(low, byte());

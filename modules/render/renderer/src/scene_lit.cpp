@@ -24,7 +24,6 @@
 #include <cstring>
 #include <limits>
 #include <numbers>
-#include <string>
 #include <unordered_map>
 #include <utility>
 
@@ -33,9 +32,11 @@ namespace {
 // Secondary ray origins leave their surface by this many world meters.
 constexpr float ray_offset = .002f;
 
-Result<void> invalid(bool valid, const char* message) {
+Result<void> invalid(bool valid, Utf8Text message) {
     if (!valid)
-        return std::unexpected(Error{{rhi::ErrorCode::invalid_argument, kGfxResult_InvalidParameter, message}, false});
+        return std::unexpected(
+            Error{{rhi::ErrorCode::invalid_argument, kGfxResult_InvalidParameter, std::move(message).into_string()},
+                  false});
     return {};
 }
 
@@ -653,7 +654,8 @@ struct SceneLit::State {
 
     template <class T>
     Result<void> bind(GfxProgram p, const char* name, const T& value) {
-        return require(gfxProgramSetParameter(gfx, p, name, value), name);
+        const auto result = gfxProgramSetParameter(gfx, p, name, value);
+        return result == kGfxResult_NoError ? Result<void>{} : require(result, String::from_utf8_validated(name));
     }
 
     void retire(GfxTexture& texture) {
@@ -715,10 +717,11 @@ struct SceneLit::State {
     }
 
     Result<void> submit_probe_debug(Group group, rhi::Pipeline& pipeline) {
-        const std::string source = std::string(shaders::lit_ddgi_debug);
-        const std::string vs =
-            source + "\nDDGIDebugVertex main(uint v:SV_VertexID,uint i:SV_InstanceID){return ddgi_debug_vs(v,i);}";
-        const std::string ps = source + "\nfloat4 main(DDGIDebugVertex i):SV_Target{return ddgi_debug_ps(i);}";
+        const auto vs = String::concat(
+            shaders::lit_ddgi_debug,
+            "\nDDGIDebugVertex main(uint v:SV_VertexID,uint i:SV_InstanceID){return ddgi_debug_vs(v,i);}");
+        const auto ps = String::concat(
+            shaders::lit_ddgi_debug, "\nfloat4 main(DDGIDebugVertex i):SV_Target{return ddgi_debug_ps(i);}");
         rhi::PipelineDesc desc;
         desc.kind = rhi::PipelineKind::vertex;
         desc.source.vs = vs.c_str();
@@ -774,9 +777,9 @@ struct SceneLit::State {
                                "SMAA spatial reconstruction"));
             ATELIER_TRY(
                 submit(group, smaa_resolve, shaders::lit_smaa, "lit_smaa_resolve_cs", "SMAA two-frame reconstruction"));
-            const std::string tone_source =
-                std::string(shaders::lit_post) +
-                "\nfloat4 main(float4 p:SV_Position,float2 uv:TEXCOORD0):SV_Target{return lit_display_ps(p,uv);}";
+            const auto tone_source = String::concat(
+                shaders::lit_post,
+                "\nfloat4 main(float4 p:SV_Position,float2 uv:TEXCOORD0):SV_Target{return lit_display_ps(p,uv);}");
             rhi::PipelineDesc tone_desc;
             tone_desc.kind = rhi::PipelineKind::vertex;
             tone_desc.source.vs = shaders::viewport_vs;
@@ -1237,12 +1240,11 @@ struct SceneLit::State {
                                               {"lit_geometry_faces", &rt_faces},
                                               {"lit_geometry_closure", &rt_closure}}) {
                 static const GfxBuffer none{}; // An empty scene binds one null view; no ray hits it.
-                auto bound =
-                    require(gfxProgramSetBuffers(gfx, p, name, views->empty() ? &none : views->data(),
-                                                 views->empty() ? 1u : static_cast<std::uint32_t>(views->size())),
-                            name);
-                if (!bound)
-                    return std::unexpected(std::move(bound).error());
+                if (const auto result =
+                        gfxProgramSetBuffers(gfx, p, name, views->empty() ? &none : views->data(),
+                                             views->empty() ? 1u : static_cast<std::uint32_t>(views->size()));
+                    result != kGfxResult_NoError)
+                    return require(result, String::from_utf8_validated(name));
             }
             geometry_bound_programs.add(p);
         }
@@ -2867,7 +2869,7 @@ Result<void> SceneLit::validate(const Frame& frame, bool duplicate_mesh_keys) co
     ATELIER_TRY(invalid(finite(s.sky_rotation) && s.sky_rotation >= -180 && s.sky_rotation <= 180,
                         "Invalid Scene Lit sky rotation"));
     if (const auto* error = probe_focus_error(s, frame.lighting_focus))
-        return invalid(false, error);
+        return invalid(false, String::from_utf8_validated(error));
     ATELIER_TRY(invalid(!duplicate_mesh_keys, "Duplicate stable mesh identity"));
     Set<std::uint64_t> light_keys;
     light_keys.reserve(frame.lights.size());
@@ -2897,7 +2899,7 @@ Result<void> SceneLit::validate(const Frame& frame, bool duplicate_mesh_keys) co
         }
         if (const auto* message = rendering::analytic_light_range_error(
                 l.color, l.intensity, l.kind == LightKind::rectangle ? double(l.width) * l.height : 1))
-            return invalid(false, message);
+            return invalid(false, String::from_utf8_validated(message));
         if (l.kind == LightKind::directional)
             ATELIER_TRY(invalid(double(l.source_radius) < std::numbers::pi_v<double> / 2,
                                 "Directional source angular radius is too large"));

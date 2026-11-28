@@ -1,13 +1,12 @@
 #pragma once
 #include "../helpers.hpp"
 #include "foundation/array.hpp"
+#include "foundation/string.hpp"
 #include <gfx.h>
 #include <d3d12sdklayers.h>
 #include <wrl/client.h>
 #include <cstddef>
 #include <cstdio>
-#include <string>
-#include <string_view>
 
 namespace rhi_acceptance {
 using Microsoft::WRL::ComPtr;
@@ -27,7 +26,7 @@ inline void check_hr(HRESULT result) {
 inline bool expected_gpu_validation() {
     char mode[8]{};
     const auto length = GetEnvironmentVariableA("ATELIER_GPU_VALIDATION", mode, sizeof(mode));
-    return std::string_view(mode, length < sizeof(mode) ? length : 0) != "debug";
+    return atelier::StringView(mode, length < sizeof(mode) ? length : 0) != "debug";
 }
 
 inline ComPtr<ID3D12InfoQueue> debug_queue(GfxContext context) {

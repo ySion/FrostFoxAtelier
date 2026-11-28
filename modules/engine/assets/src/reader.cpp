@@ -8,14 +8,18 @@
 
 namespace atelier::assets {
 namespace {
-auto failure(std::string text) {
+auto failure(Utf8Text text) {
     return std::unexpected(Error{ErrorCode::invalid_storage, std::move(text)});
 }
 
-Result<const ProjectEntry*> listed(const Reader& reader, std::string_view key, AssetKind kind) {
+String safe_text(StringView text) {
+    return String::from_utf8(text).value_or("<invalid utf-8>"_s);
+}
+
+Result<const ProjectEntry*> listed(const Reader& reader, StringView key, AssetKind kind) {
     const auto* at = reader.entry(key);
     if (!at || at->kind != kind)
-        return failure("Missing resource or incorrect resource type: " + std::string(key));
+        return failure(String::concat("Missing resource or incorrect resource type: ", safe_text(key)));
     return at;
 }
 
@@ -78,17 +82,18 @@ Result<void> Reader::publish(Array<ProjectEntry> entries) {
     for (std::size_t i = 0; i < entries.size(); ++i) {
         const auto& key = entries[i].key;
         if (key.starts_with("builtin/"))
-            return failure("Reserved project resource identity: " + key);
+            return failure(String::concat("Reserved project resource identity: ", key));
         const auto [previous, inserted] = index.try_emplace(key, i);
         if (!inserted) {
             const auto first = platform::utf16_to_utf8(entries[*previous].path.generic_wstring());
             const auto second = platform::utf16_to_utf8(entries[i].path.generic_wstring());
             if (!first || !second)
-                return failure("Duplicate project resource identity: " + key);
-            return failure("Duplicate project resource identity " + key + " in " + *first + " and " + *second + ".");
+                return failure(String::concat("Duplicate project resource identity: ", key));
+            return failure(
+                String::concat("Duplicate project resource identity ", key, " in ", *first, " and ", *second, "."));
         }
     }
-    const auto next_entry = [&](std::string_view key) -> const ProjectEntry* {
+    const auto next_entry = [&](StringView key) -> const ProjectEntry* {
         const auto* at = index.find(key);
         return at ? &entries[*at] : nullptr;
     };
@@ -108,15 +113,15 @@ Result<void> Reader::publish(Array<ProjectEntry> entries) {
         for (const auto& file : entries)
             next_files.try_emplace(file.path, &file);
     }
-    const auto file_changed = [&](std::string_view key) {
+    const auto file_changed = [&](StringView key) {
         const auto* before = entry(key);
         const auto* after = next_entry(key);
         return !before || !after || before->kind != after->kind || before->bytes != after->bytes ||
                before->modified != after->modified;
     };
-    textures_.remove_if([&](std::string_view key, const auto&) { return file_changed(key); });
-    sky_maps_.remove_if([&](std::string_view key, const auto&) { return file_changed(key); });
-    meshes_.remove_if([&](std::string_view key, const CachedMesh& cached) {
+    textures_.remove_if([&](StringView key, const auto&) { return file_changed(key); });
+    sky_maps_.remove_if([&](StringView key, const auto&) { return file_changed(key); });
+    meshes_.remove_if([&](StringView key, const CachedMesh& cached) {
         const auto* next = next_entry(key);
         if (!next || next->kind != AssetKind::mesh)
             return true;
@@ -133,14 +138,14 @@ Result<void> Reader::publish(Array<ProjectEntry> entries) {
         }
         return false;
     });
-    images_.entries.remove_if([](const std::string&, const auto& entry) { return entry.expired(); });
+    images_.entries.remove_if([](const String&, const auto& entry) { return entry.expired(); });
     entries_ = std::move(entries);
     entry_index_ = std::move(index);
     ++revision_;
     return {};
 }
 
-Result<MeshAsset> Reader::publish_mesh(Reader candidate, Array<ProjectEntry> entries, std::string_view key,
+Result<MeshAsset> Reader::publish_mesh(Reader candidate, Array<ProjectEntry> entries, StringView key,
                                        const MeshImport& loaded, Span<const TextureAsset> textures) {
     if (!loaded.mesh)
         return failure("Mesh publication requires prepared geometry.");
@@ -172,17 +177,17 @@ Result<MeshAsset> Reader::publish_mesh(Reader candidate, Array<ProjectEntry> ent
         ATELIER_TRY(listed(candidate, cached_key, AssetKind::texture));
     }
     candidate.textures_.remove_if(
-        [&](std::string_view cached_key, const auto&) { return touched(candidate.entry(cached_key)->path); });
+        [&](StringView cached_key, const auto&) { return touched(candidate.entry(cached_key)->path); });
     for (const auto [cached_key, map] : candidate.sky_maps_) {
         (void)map;
         ATELIER_TRY(listed(candidate, cached_key, AssetKind::sky));
     }
     candidate.sky_maps_.remove_if(
-        [&](std::string_view cached_key, const auto&) { return touched(candidate.entry(cached_key)->path); });
+        [&](StringView cached_key, const auto&) { return touched(candidate.entry(cached_key)->path); });
     for (const auto [cached_key, mesh] : candidate.meshes_)
         if (!mesh.exact_content)
             ATELIER_TRY(listed(candidate, cached_key, AssetKind::mesh));
-    candidate.meshes_.remove_if([&](std::string_view cached_key, const CachedMesh& mesh) {
+    candidate.meshes_.remove_if([&](StringView cached_key, const CachedMesh& mesh) {
         if (mesh.exact_content)
             return false;
         return touched(candidate.entry(cached_key)->path) || std::ranges::any_of(mesh.dependencies, touched);
@@ -222,7 +227,7 @@ Result<void> Reader::publish_mesh_content(const MeshAsset& asset) {
     return {};
 }
 
-const ProjectEntry* Reader::entry(std::string_view key) const {
+const ProjectEntry* Reader::entry(StringView key) const {
     const auto* at = entry_index_.find(key);
     return at ? &entries_[*at] : nullptr;
 }
@@ -231,12 +236,12 @@ Result<MeshImport> Reader::prepare_mesh(const std::filesystem::path& source) {
     return load_mesh(source, &images_);
 }
 
-Result<Array<material::ImageRef>> Reader::prepare_images(Span<const std::string_view> sources,
+Result<Array<material::ImageRef>> Reader::prepare_images(Span<const Span<const std::byte>> sources,
                                                          std::uint64_t pixel_budget) {
     return decode_images(sources, &images_, pixel_budget);
 }
 
-Reader::CachedMesh& Reader::retain_import(std::string key, const std::filesystem::path& relative, MeshImport& loaded) {
+Reader::CachedMesh& Reader::retain_import(String key, const std::filesystem::path& relative, MeshImport& loaded) {
     CachedMesh cached{loaded.mesh, {}, std::move(loaded.notes)};
     for (const auto& file : loaded.files)
         if (file.relative != relative.filename())
@@ -244,13 +249,13 @@ Reader::CachedMesh& Reader::retain_import(std::string key, const std::filesystem
     return *meshes_.try_emplace(std::move(key), std::move(cached)).value;
 }
 
-Result<MeshAsset> Reader::mesh(std::string_view key) {
+Result<MeshAsset> Reader::mesh(StringView key) {
     for (const auto& builtin : mesh_assets())
         if (builtin.key == key)
             return builtin;
     const auto* item = entry(key);
     if (!item || item->kind != AssetKind::mesh)
-        return failure("Missing mesh resource: " + std::string(key));
+        return failure(String::concat("Missing mesh resource: ", safe_text(key)));
     const auto& entry = *item;
     auto* found_mesh = meshes_.find(entry.key);
     if (!found_mesh) {
@@ -261,7 +266,7 @@ Result<MeshAsset> Reader::mesh(std::string_view key) {
     // In slot order, so every consumer lists the defaults as the mesh lists its slots.
     const auto& mesh = *found_mesh->mesh;
     Array<std::pair<std::size_t, SlotMaterial>> ordered;
-    Set<std::string_view> bound;
+    Set<StringView> bound;
     bound.reserve(entry.materials.size());
     for (const auto& binding : entry.materials) {
         std::size_t matches{};
@@ -272,9 +277,11 @@ Result<MeshAsset> Reader::mesh(std::string_view key) {
                 index = i;
             }
         if (matches != 1)
-            return failure("Mesh metadata names a default material for a missing or ambiguous slot: " + binding.slot);
+            return failure(
+                String::concat("Mesh metadata names a default material for a missing or ambiguous slot: ",
+                               binding.slot));
         if (!bound.add(binding.slot))
-            return failure("Mesh metadata repeats a default material slot: " + binding.slot);
+            return failure(String::concat("Mesh metadata repeats a default material slot: ", binding.slot));
         ordered.emplace(index, binding);
     }
     std::ranges::sort(ordered, {}, &std::pair<std::size_t, SlotMaterial>::first);
@@ -284,12 +291,12 @@ Result<MeshAsset> Reader::mesh(std::string_view key) {
     return result;
 }
 
-Span<const std::string> Reader::mesh_notes(std::string_view key) const {
+Span<const String> Reader::mesh_notes(StringView key) const {
     const auto* found = meshes_.find(key);
-    return found ? Span<const std::string>(found->notes) : Span<const std::string>{};
+    return found ? Span<const String>(found->notes) : Span<const String>{};
 }
 
-Result<Array<std::filesystem::path>> Reader::mesh_dependency_files(std::string_view key) {
+Result<Array<std::filesystem::path>> Reader::mesh_dependency_files(StringView key) {
     for (const auto& builtin : mesh_assets())
         if (builtin.key == key)
             return Array<std::filesystem::path>{};
@@ -304,33 +311,35 @@ Result<Array<std::filesystem::path>> Reader::mesh_dependency_files(std::string_v
     return cached->dependencies;
 }
 
-Result<SkyAsset> Reader::sky_map(std::string_view key) {
+Result<SkyAsset> Reader::sky_map(StringView key) {
     const auto* at = entry(key);
     if (!at)
-        return failure("Sky map key is not a Radiance .hdr asset of this project: " + std::string(key));
+        return failure(String::concat("Sky map key is not a Radiance .hdr asset of this project: ", safe_text(key)));
     const auto relative = platform::utf16_to_utf8(at->path.generic_wstring());
     if (!relative)
         return failure("Invalid UTF-16 text.");
     if (at->kind != AssetKind::sky)
-        return failure("Sky map key names " + *relative + ", which is not a Radiance .hdr asset.");
+        return failure(String::concat("Sky map key names ", *relative, ", which is not a Radiance .hdr asset."));
     SkyAsset asset{at->key, at->path.stem().wstring(), {}};
     if (const auto* cached = sky_maps_.find(at->key)) {
         asset.map = *cached;
         return asset;
     }
     auto path = resolve(at->path);
-    auto bytes = path ? read_file(*path, std::size_t(256) << 20) : Result<std::string>{std::unexpected(path.error())};
+    auto bytes =
+        path ? read_file(*path, std::size_t(256) << 20) : Result<Array<std::byte>>{std::unexpected(path.error())};
     if (!bytes)
-        return failure("Sky map " + *relative + " could not be read: " + bytes.error().message);
+        return failure(String::concat("Sky map ", *relative, " could not be read: ", bytes.error().message));
     auto decoded = rendering::decode_radiance_hdr(*bytes);
     if (!decoded)
-        return failure("Sky map " + *relative + " is not a valid Radiance HDR file: " + decoded.error().message);
+        return failure(
+            String::concat("Sky map ", *relative, " is not a valid Radiance HDR file: ", decoded.error().message));
     asset.map = std::move(*decoded);
     sky_maps_.try_emplace(at->key, asset.map);
     return asset;
 }
 
-Result<TextureAsset> Reader::texture(std::string_view key) {
+Result<TextureAsset> Reader::texture(StringView key) {
     ATELIER_TRY_BIND(found, listed(*this, key, AssetKind::texture));
     const auto& item = **found;
     const auto* at = textures_.find(item.key);
@@ -338,7 +347,7 @@ Result<TextureAsset> Reader::texture(std::string_view key) {
         // Through the image cache: a mesh import that decoded the same bytes shares its pixels.
         ATELIER_TRY_BIND(path, resolve(item.path));
         ATELIER_TRY_BIND(bytes, read_file(*path, 128 * 1024 * 1024));
-        const std::array<std::string_view, 1> source{*bytes};
+        const std::array<Span<const std::byte>, 1> source{*bytes};
         ATELIER_TRY_BIND(decoded, decode_images(source, &images_));
         at = textures_.try_emplace(item.key, decoded->front()).value;
     }
@@ -353,7 +362,7 @@ Result<void> Reader::publish_texture(ProjectEntry item, material::ImageRef image
     const auto slot = *at;
     textures_.insert_or_assign(item.key, std::move(image));
     // A mesh may have decoded the same file into its imported default Surface.
-    meshes_.remove_if([&](const std::string&, const CachedMesh& cached) {
+    meshes_.remove_if([&](const String&, const CachedMesh& cached) {
         return !cached.exact_content &&
                std::ranges::find(cached.dependencies, item.path) != cached.dependencies.end();
     });
@@ -362,7 +371,7 @@ Result<void> Reader::publish_texture(ProjectEntry item, material::ImageRef image
     return {};
 }
 
-Result<MaterialAsset> Reader::material(std::string_view key) {
+Result<MaterialAsset> Reader::material(StringView key) {
     for (const auto& builtin : material_assets())
         if (builtin.key == key)
             return builtin;
@@ -391,16 +400,17 @@ Result<MaterialAsset> Reader::material(std::string_view key) {
     return asset;
 }
 
-Result<ProceduralGraphAsset> Reader::procedural_graph(std::string_view key) const {
+Result<ProceduralGraphAsset> Reader::procedural_graph(StringView key) const {
     ATELIER_TRY_BIND(found, listed(*this, key, AssetKind::procedural_graph));
     const auto& item = **found;
     if (!is_procedural_graph_path(item.path))
         return failure("Procedural graph assets require a .procgraph file.");
     ATELIER_TRY_BIND(path, resolve(item.path));
     ATELIER_TRY_BIND(bytes, read_file(*path, 16 * 1024 * 1024));
-    if (!StringView(*bytes).is_valid_utf8())
-        return failure("Invalid UTF-8 text in procedural graph: " + std::string(key));
-    return ProceduralGraphAsset{item.key, item.path.stem().wstring(), std::move(*bytes)};
+    auto text = String::from_utf8(as_chars(*bytes));
+    if (!text)
+        return failure(String::concat("Invalid UTF-8 text in procedural graph: ", safe_text(key)));
+    return ProceduralGraphAsset{item.key, item.path.stem().wstring(), std::move(*text)};
 }
 
 Result<source::SourceFile> Reader::source(const std::filesystem::path& project_relative) const {
@@ -410,7 +420,7 @@ Result<source::SourceFile> Reader::source(const std::filesystem::path& project_r
     if (named->starts_with("builtin/")) {
         auto builtin = builtin_material_source(*named);
         if (!builtin)
-            return failure("Unknown installed material Source: " + *named);
+            return failure(String::concat("Unknown installed material Source: ", *named));
         return std::move(*builtin);
     }
     if (root_.empty())

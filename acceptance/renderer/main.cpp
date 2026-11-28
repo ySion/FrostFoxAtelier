@@ -9,12 +9,10 @@
 #include <cstdlib>
 #include <crtdbg.h>
 #include <fstream>
-#include <iterator>
 #include <filesystem>
 #include <limits>
 #include <numbers>
 #include <string>
-#include <string_view>
 #include <thread>
 
 namespace {
@@ -169,9 +167,9 @@ int main(int argc, char** argv) {
     SetErrorMode(GetErrorMode() | SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     if (argc > 1) {
-        const std::string_view mode{argv[1]};
+        const atelier::StringView mode{argv[1]};
         check(
-            (argc == 2 || (argc == 4 && std::string_view{argv[2]} == "--output")) &&
+            (argc == 2 || (argc == 4 && atelier::StringView{argv[2]} == "--output")) &&
                 (mode == "--scene-lit" || mode == "--scene-lit-benchmark" || mode == "--material-programs"),
             "usage: atelier_renderer_acceptance [--scene-lit|--scene-lit-benchmark|--material-programs [--output <absolute-directory>]]");
         const std::filesystem::path output =

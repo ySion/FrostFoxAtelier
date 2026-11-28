@@ -58,7 +58,7 @@ validate_procedural_assets(Runtime& runtime, Span<const ProceduralInstanceAsset>
     Array<ObjectReference> inst_defaults;
     ranges.reserve(resolved_assets.size());
     for (const auto& asset : resolved_assets) {
-        Set<std::string_view> unique;
+        Set<StringView> unique;
         unique.reserve(asset.defaults.size());
         ProceduralAssetSlotRange range;
         range.key = asset.key;
@@ -71,7 +71,8 @@ validate_procedural_assets(Runtime& runtime, Span<const ProceduralInstanceAsset>
                     matches += material_slot_name(*asset.mesh, j) == item.slot;
             if (matches != 1 || !unique.add(item.slot))
                 return error(ErrorCode::argument_mismatch,
-                             "Instance default material slot is missing, ambiguous or repeated: " + item.slot);
+                             String::concat("Instance default material slot is missing, ambiguous or repeated: ",
+                                            item.slot));
             ATELIER_TRY(material::capture_program(runtime, item.resource.id()));
             range.default_slots.add(item.slot);
             inst_defaults.add(item.resource.reference());
@@ -113,13 +114,13 @@ Result<void> commit_procedural_binding(Runtime& runtime, ObjectId object, String
     return (*owner && capability_changed) ? (*owner)->reevaluate_capabilities(object) : Result<void>{};
 }
 
-Result<String> validate_procedural_key(std::string_view key) {
-    if (key.size() > 4096 || key.find('\0') != std::string_view::npos)
+Result<String> validate_procedural_key(StringView key) {
+    if (key.size() > 4096 || key.contains('\0'))
         return error(ErrorCode::invalid_definition, "Invalid procedural graph key.");
-    String source;
-    if (!source.assign(StringView{key}))
+    auto source = String::from_utf8(key);
+    if (!source)
         return error(ErrorCode::invalid_definition, "String requires valid UTF-8.");
-    return source;
+    return std::move(*source);
 }
 
 } // namespace
@@ -163,10 +164,12 @@ Result<Types> register_types(Runtime& runtime) {
 
 Result<ObjectRoot> create_static_mesh_entity(world::World& world, const StaticMeshEntityDesc& description) {
     return create_spatial_entity<StaticMeshEntity, StaticMeshComponent>(
-        world, description.transform, [&](Runtime& runtime, ObjectId component) {
-            return set_mesh_binding(
-                runtime, component,
-                {std::string(description.mesh_source), description.mesh, description.default_materials});
+        world, description.transform, [&](Runtime& runtime, ObjectId component) -> Result<void> {
+            auto source = String::from_utf8(description.mesh_source);
+            if (!source)
+                return error(ErrorCode::invalid_definition, "String requires valid UTF-8.");
+            return set_mesh_binding(runtime, component,
+                                    {std::move(*source), description.mesh, description.default_materials});
         });
 }
 
@@ -178,8 +181,7 @@ Result<geometry::MeshSource> read_mesh_source(Runtime& runtime, ObjectId object)
     ATELIER_TRY_BIND(status, world::inspect_component(runtime, object));
     return runtime.with_native<const StaticMeshComponent>(
         object, [](const StaticMeshComponent& component) -> Result<geometry::MeshSource> {
-            return geometry::MeshSource{std::string(Access::mesh_source(component).view().std_view()),
-                                        Access::geometry(component)};
+            return geometry::MeshSource{Access::mesh_source(component), Access::geometry(component)};
         });
 }
 
@@ -201,16 +203,13 @@ Result<StaticMeshState> read_static_mesh(Runtime& runtime, ObjectId object) {
 }
 
 Result<void> set_mesh_binding(Runtime& runtime, ObjectId object, MeshBinding binding) {
-    if (binding.source.size() > 4096 || binding.source.find('\0') != std::string::npos)
+    if (binding.source.size() > 4096 || binding.source.contains('\0'))
         return error(ErrorCode::invalid_definition, "Invalid mesh source key.");
-    String source;
-    if (!source.assign(StringView{binding.source}))
-        return error(ErrorCode::invalid_definition, "String requires valid UTF-8.");
     ATELIER_TRY(runtime.check_code_publication());
     // Each default names one slot of the new mesh exactly once and holds a material that captures.
-    Array<std::string> default_slots;
+    Array<String> default_slots;
     Array<ObjectReference> defaults;
-    Set<std::string_view> unique;
+    Set<StringView> unique;
     unique.reserve(binding.defaults.size());
     for (const auto& item : binding.defaults) {
         std::size_t matches{};
@@ -219,7 +218,7 @@ Result<void> set_mesh_binding(Runtime& runtime, ObjectId object, MeshBinding bin
                 matches += material_slot_name(*binding.resolved, j) == item.slot;
         if (matches != 1 || !unique.add(item.slot))
             return error(ErrorCode::argument_mismatch,
-                         "Default material slot is missing, ambiguous or repeated: " + item.slot);
+                         String::concat("Default material slot is missing, ambiguous or repeated: ", item.slot));
         ATELIER_TRY(material::capture_program(runtime, item.resource.id()));
         default_slots.add(item.slot);
         defaults.add(item.resource.reference());
@@ -227,7 +226,7 @@ Result<void> set_mesh_binding(Runtime& runtime, ObjectId object, MeshBinding bin
     ATELIER_TRY_BIND(owner, world::admit_component_edit(runtime, object));
     auto changed =
         runtime.with_native<StaticMeshComponent>(object, [&](StaticMeshComponent& component) -> Result<void> {
-            Array<std::string> names;
+            Array<String> names;
             BitVector overrides;
             Array<ObjectReference> references;
             ATELIER_TRY_BIND(field, runtime.reference_field(object, Access::materials(component)));
@@ -255,7 +254,7 @@ Result<void> set_mesh_binding(Runtime& runtime, ObjectId object, MeshBinding bin
             Access::default_slots(component) = std::move(default_slots);
             Access::surfaces(component).reset();
             Access::surface_geometry(component).reset();
-            Access::mesh_source(component) = std::move(source);
+            Access::mesh_source(component) = std::move(binding.source);
             Access::geometry(component) = std::move(binding.resolved);
             return {};
         });
@@ -366,16 +365,19 @@ Result<ObjectRoot> create_procedural_generator_entity(world::World& world,
                                                       const ProceduralGeneratorEntityDesc& description) {
     return create_spatial_entity<ProceduralGeneratorEntity, ProceduralGeneratorComponent>(
         world, description.transform, [&](Runtime& runtime, ObjectId component) -> Result<void> {
-            if (!description.graph_source.empty() || description.output)
+            if (!description.graph_source.empty() || description.output) {
+                ATELIER_TRY_BIND(source, validate_procedural_key(description.graph_source));
                 return set_procedural_binding(
                     runtime, component,
-                    {std::string(description.graph_source), description.output, description.resolved_assets});
+                    {std::move(*source), description.output, description.resolved_assets});
+            }
             return {};
         });
 }
 
 Result<void> set_procedural_binding(Runtime& runtime, ObjectId object, ProceduralBinding binding) {
-    ATELIER_TRY_BIND(source, validate_procedural_key(binding.source));
+    if (binding.source.size() > 4096 || binding.source.contains('\0'))
+        return error(ErrorCode::invalid_definition, "Invalid procedural graph key.");
     ATELIER_TRY(runtime.check_code_publication());
 
     Array<ObjectReference> inst_defaults;
@@ -396,11 +398,11 @@ Result<void> set_procedural_binding(Runtime& runtime, ObjectId object, Procedura
             published = std::move(built);
         }
     }
-    return commit_procedural_binding(runtime, object, std::move(*source), std::move(published), inst_defaults);
+    return commit_procedural_binding(runtime, object, std::move(binding.source), std::move(published), inst_defaults);
 }
 
 Result<std::shared_ptr<const ProceduralOutput>>
-publish_procedural_binding(Runtime& runtime, ObjectId object, std::string source_key, ProceduralOutput output,
+publish_procedural_binding(Runtime& runtime, ObjectId object, StringView source_key, ProceduralOutput output,
                            Span<const ProceduralInstanceAsset> resolved_assets) {
     ATELIER_TRY_BIND(source, validate_procedural_key(source_key));
     ATELIER_TRY(runtime.check_code_publication());
@@ -416,8 +418,7 @@ Result<ProceduralSource> read_procedural_source(Runtime& runtime, ObjectId objec
     ATELIER_TRY(world::inspect_component(runtime, object));
     return runtime.with_native<const ProceduralGeneratorComponent>(
         object, [](const ProceduralGeneratorComponent& component) -> Result<ProceduralSource> {
-            return ProceduralSource{std::string(Access::graph_source(component).view().std_view()),
-                                    Access::output(component)};
+            return ProceduralSource{Access::graph_source(component), Access::output(component)};
         });
 }
 
@@ -426,7 +427,7 @@ Result<ProceduralBinding> read_procedural_binding(Runtime& runtime, ObjectId obj
     return runtime.with_native<const ProceduralGeneratorComponent>(
         object, [&](const ProceduralGeneratorComponent& component) -> Result<ProceduralBinding> {
             ProceduralBinding result;
-            result.source = std::string(Access::graph_source(component).view().std_view());
+            result.source = Access::graph_source(component);
             result.output = Access::output(component);
             if (result.output && !result.output->assets.empty()) {
                 ATELIER_TRY_BIND(inst_field, runtime.reference_field(object, Access::instance_materials(component)));

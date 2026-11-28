@@ -6,4 +6,4 @@ target_include_directories(atelier_mikktspace PUBLIC "${PROJECT_SOURCE_DIR}/thir
 add_library(atelier_geometry STATIC "${PROJECT_SOURCE_DIR}/modules/engine/geometry/src/tangents.cpp")
 atelier_target(atelier_geometry)
 target_include_directories(atelier_geometry PUBLIC "${PROJECT_SOURCE_DIR}/modules/engine/geometry/include")
-target_link_libraries(atelier_geometry PUBLIC atelier_math atelier_foundation_headers PRIVATE atelier_mikktspace)
+target_link_libraries(atelier_geometry PUBLIC atelier_math atelier_foundation PRIVATE atelier_mikktspace)

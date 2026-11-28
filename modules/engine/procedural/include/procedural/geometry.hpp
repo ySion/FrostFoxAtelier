@@ -153,7 +153,7 @@ struct PrimitiveRange {
     PrimitiveKind kind;
 };
 
-[[nodiscard]] inline std::unexpected<Error> failure(std::string message) {
+[[nodiscard]] inline std::unexpected<Error> failure(Utf8Text message) {
     return std::unexpected(Error{ErrorCode::argument_mismatch, std::move(message)});
 }
 
@@ -226,7 +226,8 @@ public:
     Result<Array<T>*> write(StringView name, Layer layer) {
         auto* attribute = mutable_find(name);
         if (!attribute)
-            return failure("Geometry has no attribute " + std::string{name.std_view()} + ".");
+            return failure(
+                String::concat("Geometry has no attribute ", String::from_utf8(name).value_or("<invalid utf-8>"_s), "."));
         if (auto checked = check<T>(*attribute, layer); !checked)
             return std::unexpected(checked.error());
         if (name == "P")
@@ -328,8 +329,7 @@ private:
     template <Element T>
     Result<void> check(const Attribute& attribute, Layer layer) const {
         if (attribute.layer != layer || !std::holds_alternative<SharedArray<T>>(attribute.data))
-            return failure("Attribute " + std::string{attribute.name.view().std_view()} +
-                           " has another layer or type.");
+            return failure(String::concat("Attribute ", attribute.name, " has another layer or type."));
         return {};
     }
 

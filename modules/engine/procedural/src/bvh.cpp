@@ -712,7 +712,7 @@ Result<Spatial> Spatial::build(const Geometry& geometry) {
         if (range.kind == PrimitiveKind::polygon) {
             if (range.count > 3 && !geometry.boolean_boundary_) {
                 if (auto valid = detail::validate_polygon(geometry, range); !valid) {
-                    valid.error().message = "Primitive " + std::to_string(p) + ": " + valid.error().message;
+                    valid.error().message = String::concat("Primitive ", p, ": ", valid.error().message);
                     return std::unexpected(std::move(valid.error()));
                 }
             }

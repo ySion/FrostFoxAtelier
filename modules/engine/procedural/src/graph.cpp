@@ -74,7 +74,7 @@ using detail::Access;
 template <std::size_t I>
 using ColumnArray = Array<typename std::variant_alternative_t<I, ColumnData>::Value>;
 
-std::unexpected<Error> error(ErrorCode code, std::string message) {
+std::unexpected<Error> error(ErrorCode code, Utf8Text message) {
     return std::unexpected(Error{code, std::move(message)});
 }
 
@@ -105,8 +105,8 @@ Result<bool> upstream(Runtime& runtime, const Contents& graph, ObjectId from, Ob
     return false;
 }
 
-Optional<Layer> parse_layer_name(std::string_view text) noexcept {
-    constexpr std::array<std::string_view, 5> names{"point", "vertex", "primitive", "detail", "instance"};
+Optional<Layer> parse_layer_name(StringView text) noexcept {
+    constexpr std::array<StringView, 5> names{"point", "vertex", "primitive", "detail", "instance"};
     const auto found = std::ranges::find(names, text);
     if (found == names.end())
         return {};
@@ -145,7 +145,7 @@ Result<Geometry*> target_output(const Node& self, std::uint32_t output_port) noe
         return error(ErrorCode::unsupported_operation,
                      "Geometry builder methods can only run on the active procedural.Node during process().");
     if (output_port >= cook->outputs.size())
-        return error(ErrorCode::invocation_failed, "Output port " + std::to_string(output_port) + " is out of range.");
+        return error(ErrorCode::invocation_failed, String::concat("Output port ", output_port, " is out of range."));
     if (cook->uses_primary_stream && output_port == 0u)
         return error(
             ErrorCode::invocation_failed,
@@ -158,7 +158,7 @@ Result<void> validate_emitted_polygons(const Geometry& geometry) {
     for (std::uint32_t p = 0; p < count; ++p) {
         if (auto valid = detail::validate_polygon(geometry, geometry.primitive(p)); !valid) {
             valid.error().code = ErrorCode::invocation_failed;
-            valid.error().message = "Primitive " + std::to_string(p) + ": " + valid.error().message;
+            valid.error().message = String::concat("Primitive ", p, ": ", valid.error().message);
             valid.error().element = ErrorElement{"primitive", p};
             return std::unexpected(std::move(valid.error()));
         }
@@ -178,9 +178,10 @@ Result<void> set_output_column(const Node& self, const String& name, Layer layer
 
 Result<PrimitiveRange> checked_primitive(const Geometry& geometry, std::uint32_t primitive) noexcept {
     if (primitive >= geometry.count(Layer::primitive))
-        return std::unexpected(
-            Error{ErrorCode::invocation_failed, "Primitive index " + std::to_string(primitive) + " is out of bounds.",
-                  {}, ErrorElement{"primitive", primitive}});
+        return std::unexpected(Error{ErrorCode::invocation_failed,
+                                     String::concat("Primitive index ", primitive, " is out of bounds."),
+                                     {},
+                                     ErrorElement{"primitive", primitive}});
     return geometry.primitive(primitive);
 }
 
@@ -305,9 +306,9 @@ Result<void> register_types(Runtime& runtime) {
     if (!runtime.native_type<Array<String>>())
         definitions.add(array_definition<String>(runtime, "procedural.Strings"));
     // Every attribute column type, so Source and native nodes can borrow columns.
-    const auto column = [&]<class T>(std::type_identity<T>, const char* name) {
+    const auto column = [&]<class T>(std::type_identity<T>, Utf8Text name) {
         if (!runtime.native_type<Array<T>>())
-            definitions.add(array_definition<T>(runtime, name));
+            definitions.add(array_definition<T>(runtime, std::move(name)));
     };
     column(std::type_identity<bool>{}, "procedural.Bools");
     column(std::type_identity<std::int32_t>{}, "procedural.Ints");
@@ -346,7 +347,7 @@ Result<void> register_types(Runtime& runtime) {
     }
     {
         auto spatial_def = NativeRegistration<Spatial>{runtime, "procedural.Spatial", TypeKind::array}.build();
-        spatial_def.description = "供 Source 节点只读空间查询的表面 BVH 与折线线段缓冲。";
+        spatial_def.description = "供 Source 节点只读空间查询的表面 BVH 与折线线段缓冲。"_s;
         spatial_def.element = TypeReference::native<SpatialNode>();
         spatial_def.native.element_representation = atelier::detail::representation<SpatialNode>();
         spatial_def.native.sequence_view = [](const void* value, const void** data, std::size_t* size) noexcept {
@@ -408,7 +409,7 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
     ATELIER_TRY_BIND(info, runtime.describe(type));
     const auto& name = (*info)->name;
     if (!*derived)
-        return error(ErrorCode::invalid_type, name + " is not a procedural.Node.");
+        return error(ErrorCode::invalid_type, String::concat(name, " is not a procedural.Node."));
     if (type == *node_base)
         return error(ErrorCode::invalid_type, "procedural.Node is the node base, not a concrete node.");
 
@@ -439,7 +440,7 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
 
     NodePlan plan;
     const FunctionSignature* signature{};
-    Span<const std::string> parameter_names;
+    Span<const String> parameter_names;
     Span<const MetadataList> parameter_metadata;
 
     if ((*info)->native_storage) {
@@ -447,11 +448,11 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
             return m.name == "process" && m.signature.receiver && m.signature.receiver->type == type;
         });
         if (found == (*info)->methods.end())
-            return error(ErrorCode::invalid_definition, "Node type " + name + " has no process method.");
+            return error(ErrorCode::invalid_definition, String::concat("Node type ", name, " has no process method."));
         if (!found->signature.receiver || !found->signature.receiver->read_only || found->signature.result ||
             found->signature.execution != FunctionExecution::synchronous)
             return error(ErrorCode::invalid_definition,
-                         name + ".process must be a const synchronous method without a result.");
+                         String::concat(name, ".process must be a const synchronous method without a result."));
         plan.native = true;
         plan.method = found->id;
         signature = &found->signature;
@@ -460,10 +461,10 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
     } else {
         const auto found = std::ranges::find((*info)->described_methods, "process", &DescribedMethodInfo::name);
         if (found == (*info)->described_methods.end())
-            return error(ErrorCode::invalid_definition, "Node type " + name + " has no process method.");
+            return error(ErrorCode::invalid_definition, String::concat("Node type ", name, " has no process method."));
         if (found->signature.result || found->signature.execution != FunctionExecution::synchronous)
             return error(ErrorCode::invalid_definition,
-                         name + ".process must be a synchronous method without a result.");
+                         String::concat(name, ".process must be a synchronous method without a result."));
         plan.native = false;
         signature = &found->signature;
         parameter_names = found->parameter_names;
@@ -476,32 +477,33 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
                 continue;
             if (key != "procedural.role" || value != "run_over")
                 return error(ErrorCode::invalid_definition,
-                             name + "." + field.name + ": unknown procedural field metadata " + key + ".");
+                             String::concat(name, ".", field.name, ": unknown procedural field metadata ", key, "."));
             if (plan.run_over_field != FieldId{})
-                return error(ErrorCode::invalid_definition, name + ": at most one RunOver field is allowed.");
+                return error(ErrorCode::invalid_definition,
+                             String::concat(name, ": at most one RunOver field is allowed."));
             if (field.value.form != ValueForm::inline_value || field.value.type != *layer_type)
                 return error(ErrorCode::invalid_definition,
-                             name + "." + field.name + ": RunOver requires a procedural.Layer field.");
+                             String::concat(name, ".", field.name, ": RunOver requires a procedural.Layer field."));
             plan.run_over_field = field.id;
         }
     }
 
     struct ParsedMeta {
-        std::string_view role;
+        String role;
 
-        std::string_view explicit_name;
+        String explicit_name;
 
         bool has_name{};
 
-        std::string_view from;
+        String from;
 
-        std::string_view layer;
+        String layer;
 
-        std::string_view port;
+        String port;
 
         bool optional{};
 
-        std::string_view purpose;
+        String purpose;
     };
     Array<ParsedMeta> parsed_meta;
     parsed_meta.resize(signature->parameters.size());
@@ -529,7 +531,7 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
                 meta.optional = true;
             else
                 return error(ErrorCode::invalid_definition,
-                             name + ".process parameter " + std::to_string(i) + ": invalid procedural metadata.");
+                             String::concat(name, ".process parameter ", i, ": invalid procedural metadata."));
         }
         if ((meta.role == "in" || meta.role == "out" || meta.role == "inout" || meta.role == "group") &&
             meta.port.empty())
@@ -538,13 +540,13 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
 
     BitVector explicit_input_port;
     if (plan.uses_primary_stream) {
-        plan.ports.inputs.add("input");
+        plan.ports.inputs.add("input"_s);
         plan.ports.multiple.add(false);
         explicit_input_port.add(false);
-        plan.ports.outputs.add("output");
+        plan.ports.outputs.add("output"_s);
     }
 
-    const auto bind_input_port = [&](std::string_view port_name, bool is_explicit,
+    const auto bind_input_port = [&](const String& port_name, bool is_explicit,
                                      bool is_multi) -> Result<std::uint32_t> {
         const auto found_in = std::ranges::find(plan.ports.inputs, port_name);
         if (found_in != plan.ports.inputs.end()) {
@@ -552,17 +554,17 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
             if (is_explicit) {
                 if (explicit_input_port[existing_idx] || is_multi || plan.ports.multiple[existing_idx])
                     return error(ErrorCode::invalid_definition,
-                                 name + ".process has duplicate input port '" + std::string(port_name) + "'.");
+                                 String::concat(name, ".process has duplicate input port '", port_name, "'."));
                 explicit_input_port.set(existing_idx);
             } else if (plan.ports.multiple[existing_idx]) {
                 return error(ErrorCode::invalid_definition,
-                             name + ".process: Port cannot bind to multi-input Geometries port '" +
-                                 std::string(port_name) + "'.");
+                             String::concat(name, ".process: Port cannot bind to multi-input Geometries port '",
+                                            port_name, "'."));
             }
             return static_cast<std::uint32_t>(existing_idx);
         }
         const auto index = static_cast<std::uint32_t>(plan.ports.inputs.size());
-        plan.ports.inputs.emplace(port_name);
+        plan.ports.inputs.add(port_name);
         plan.ports.multiple.add(is_multi);
         explicit_input_port.add(is_explicit);
         return index;
@@ -573,7 +575,7 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
 
     for (std::size_t i = 0; i < signature->parameters.size(); ++i) {
         const auto& param = signature->parameters[i];
-        const std::string& param_name = parameter_names[i];
+        const String& param_name = parameter_names[i];
         const auto& meta = parsed_meta[i];
         const bool inline_value = param.form == ValueForm::inline_value;
         const bool read = inline_value && param.passing == ParameterPassing::read_only;
@@ -582,9 +584,10 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
         if (meta.role.empty() && param.type == *context_type && read) {
             if (meta.has_name || !meta.from.empty() || !meta.layer.empty() || !meta.port.empty() || meta.optional)
                 return error(ErrorCode::invalid_definition,
-                             name + ".process Context parameter accepts no column options.");
+                             String::concat(name, ".process Context parameter accepts no column options."));
             if (plan.uses_context)
-                return error(ErrorCode::invalid_definition, name + ".process accepts at most one Context parameter.");
+                return error(ErrorCode::invalid_definition,
+                             String::concat(name, ".process accepts at most one Context parameter."));
             plan.uses_context = true;
             plan.arguments.add({.kind = ArgKind::context, .type = param.type});
             continue;
@@ -593,7 +596,7 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
         if (meta.role.empty() || meta.role == "port") {
             if (meta.has_name || !meta.from.empty() || !meta.layer.empty() || !meta.port.empty() || meta.optional)
                 return error(ErrorCode::invalid_definition,
-                             name + ".process port parameter " + std::to_string(i) + " accepts no column options.");
+                             String::concat(name, ".process port parameter ", i, " accepts no column options."));
             Optional<ArgKind> port_kind;
             if (param.type == *geometry_type && read)
                 port_kind = ArgKind::port_input;
@@ -605,17 +608,18 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
                 port_kind = ArgKind::port_output;
             if (!port_kind)
                 return error(ErrorCode::invalid_definition,
-                             name + ".process parameter " + std::to_string(i) +
-                                 " is not a Context, Geometry/Spatial port, or annotated column stream.");
-            if (param_name.empty() || !Geometry::admit_name(StringView{param_name}))
-                return error(ErrorCode::invalid_definition, name + ".process port parameter " + std::to_string(i) +
-                                                                " requires a valid identifier name.");
+                             String::concat(name, ".process parameter ", i,
+                                            " is not a Context, Geometry/Spatial port, or annotated column stream."));
+            if (param_name.empty() || !Geometry::admit_name(param_name))
+                return error(ErrorCode::invalid_definition,
+                             String::concat(name, ".process port parameter ", i,
+                                            " requires a valid identifier name."));
             if (port_descriptions && !meta.purpose.empty())
-                port_descriptions->add({param_name, *port_kind == ArgKind::port_output, std::string(meta.purpose)});
+                port_descriptions->add({param_name, *port_kind == ArgKind::port_output, meta.purpose});
             if (*port_kind == ArgKind::port_output) {
                 if (std::ranges::find(plan.ports.outputs, param_name) != plan.ports.outputs.end())
                     return error(ErrorCode::invalid_definition,
-                                 name + ".process has duplicate output port '" + param_name + "'.");
+                                 String::concat(name, ".process has duplicate output port '", param_name, "'."));
                 const auto index = static_cast<std::uint32_t>(plan.ports.outputs.size());
                 plan.ports.outputs.add(param_name);
                 plan.arguments.add({.kind = *port_kind, .type = param.type, .port_index = index});
@@ -636,41 +640,48 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
         else if (meta.role == "group")
             kind = ArgKind::column_group;
         else
-            return error(ErrorCode::invalid_definition, name + ".process parameter " + std::to_string(i) +
-                                                            " has unknown role '" + std::string(meta.role) + "'.");
+            return error(ErrorCode::invalid_definition,
+                         String::concat(name, ".process parameter ", i, " has unknown role '", meta.role, "'."));
 
         const bool expects_read = kind == ArgKind::column_in || kind == ArgKind::column_group;
         if (expects_read ? !read : !writable)
             return error(ErrorCode::invalid_definition,
-                         name + ".process parameter '" + param_name +
-                             (expects_read ? "' requires const Array<T>&." : "' requires mutable Array<T>&."));
+                         String::concat(name, ".process parameter '", param_name,
+                                        expects_read ? "' requires const Array<T>&."_s
+                                                     : "' requires mutable Array<T>&."_s));
         if (meta.optional && kind != ArgKind::column_in)
             return error(ErrorCode::invalid_definition,
-                         name + ".process parameter '" + param_name + "': Optional applies only to In parameters.");
+                         String::concat(name, ".process parameter '", param_name,
+                                        "': Optional applies only to In parameters."));
         if (!meta.port.empty() && !expects_read)
-            return error(ErrorCode::invalid_definition, name + ".process parameter '" + param_name +
-                                                            "': Port option applies only to In and Group parameters.");
+            return error(ErrorCode::invalid_definition,
+                         String::concat(name, ".process parameter '", param_name,
+                                        "': Port option applies only to In and Group parameters."));
         const auto column_it = std::ranges::find(column_types, param.type);
         if (column_it == column_types.end())
             return error(ErrorCode::invalid_definition,
-                         name + ".process parameter '" + param_name + "' is not a supported Geometry column Array.");
+                         String::concat(name, ".process parameter '", param_name,
+                                        "' is not a supported Geometry column Array."));
         const auto variant = static_cast<std::size_t>(column_it - column_types.begin());
         if (kind == ArgKind::column_group && variant != 0)
             return error(ErrorCode::invalid_definition,
-                         name + ".process parameter '" + param_name + "': Group requires const Array<bool>&.");
+                         String::concat(name, ".process parameter '", param_name,
+                                        "': Group requires const Array<bool>&."));
         if (meta.has_name && !meta.from.empty())
             return error(ErrorCode::invalid_definition,
-                         name + ".process parameter '" + param_name + "' specifies both a literal name and From.");
+                         String::concat(name, ".process parameter '", param_name,
+                                        "' specifies both a literal name and From."));
 
         ArgPlan arg{.kind = kind,
                     .type = param.type,
                     .column_variant = variant,
                     .optional = meta.optional,
-                    .purpose = std::string(meta.purpose)};
+                    .purpose = meta.purpose};
         if (!meta.port.empty()) {
-            if (auto valid_port = Geometry::admit_name(StringView{meta.port}); !valid_port)
+            if (auto valid_port = Geometry::admit_name(meta.port); !valid_port)
                 return error(ErrorCode::invalid_definition,
-                             name + ".process parameter '" + param_name + "': Port " + valid_port.error().message);
+                             String::concat(name, ".process parameter '", param_name, "': Port ",
+                                            valid_port.error().message));
             ATELIER_TRY_BIND(port_idx, bind_input_port(meta.port, false, false));
             arg.port_index = *port_idx;
         }
@@ -678,28 +689,27 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
             const auto field = std::ranges::find((*info)->fields, meta.from, &FieldInfo::name);
             if (field == (*info)->fields.end() || field->value.form != ValueForm::inline_value ||
                 field->value.type != *string_type)
-                return error(ErrorCode::invalid_definition, name + ".process parameter '" + param_name +
-                                                                "': From must name a String field on " + name + ".");
+                return error(ErrorCode::invalid_definition,
+                             String::concat(name, ".process parameter '", param_name,
+                                            "': From must name a String field on ", name, "."));
             arg.name_selector = field->id;
         } else {
-            const std::string_view target = meta.has_name ? meta.explicit_name : std::string_view{param_name};
+            const String& target = meta.has_name ? meta.explicit_name : param_name;
             if (kind != ArgKind::column_group || !target.empty()) {
-                if (auto valid = Geometry::admit_name(StringView{target}); !valid)
+                if (auto valid = Geometry::admit_name(target); !valid)
                     return error(ErrorCode::invalid_definition,
-                                 name + ".process parameter '" + param_name + "': " + valid.error().message);
+                                 String::concat(name, ".process parameter '", param_name, "': ",
+                                                valid.error().message));
             }
-            auto owned = String::from_utf8(StringView{target});
-            if (!owned)
-                return error(ErrorCode::invalid_definition,
-                             name + ".process parameter '" + param_name + "' requires valid UTF-8.");
-            arg.static_name = std::move(*owned);
+            arg.static_name = target;
         }
 
         if (!meta.layer.empty()) {
             const auto parsed_layer = parse_layer_name(meta.layer);
             if (!parsed_layer)
-                return error(ErrorCode::invalid_definition, name + ".process parameter '" + param_name +
-                                                                "': invalid Layer '" + std::string(meta.layer) + "'.");
+                return error(ErrorCode::invalid_definition,
+                             String::concat(name, ".process parameter '", param_name, "': invalid Layer '",
+                                            meta.layer, "'."));
             arg.fixed_layer = *parsed_layer;
         } else if (plan.run_over_field == FieldId{}) {
             arg.fixed_layer = Layer::point;
@@ -711,19 +721,20 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
             for (const auto& prior : plan.arguments)
                 if ((prior.kind == ArgKind::column_inout || prior.kind == ArgKind::column_out) &&
                     prior.name_selector == FieldId{} && prior.static_name == arg.static_name)
-                    return error(ErrorCode::invalid_definition, name + ".process writes attribute '" +
-                                                                    std::string{arg.static_name.view().std_view()} +
-                                                                    "' more than once.");
+                    return error(ErrorCode::invalid_definition,
+                                 String::concat(name, ".process writes attribute '", arg.static_name,
+                                                "' more than once."));
         }
 
         plan.arguments.add(std::move(arg));
     }
 
     if (plan.ports.outputs.empty())
-        return error(ErrorCode::invalid_definition, name + ".process has no output.");
+        return error(ErrorCode::invalid_definition, String::concat(name, ".process has no output."));
     if (plan.run_over_field != FieldId{} && !uses_dynamic_layer)
         return error(ErrorCode::invalid_definition,
-                     name + ": RunOver requires at least one column or group parameter without a fixed Layer.");
+                     String::concat(
+                         name, ": RunOver requires at least one column or group parameter without a fixed Layer."));
     // A single column can define the entire named input. With several columns each DESC
     // describes only its own binding; an explicit Port owns the port-wide description.
     if (port_descriptions) {
@@ -734,19 +745,19 @@ Result<detail::NodePlan> detail::inspect_node(Runtime& runtime, TypeId type,
             const auto binding = std::ranges::find(parsed_meta, port, &ParsedMeta::port);
             if (binding != parsed_meta.end() && !binding->purpose.empty() &&
                 std::ranges::find(binding + 1, parsed_meta.end(), port, &ParsedMeta::port) == parsed_meta.end())
-                port_descriptions->add({port, false, std::string(binding->purpose)});
+                port_descriptions->add({port, false, binding->purpose});
         }
     }
     return plan;
 }
 
-std::string_view layer_name(Layer layer) noexcept {
-    constexpr std::array names{"point", "vertex", "primitive", "detail", "instance"};
+StringView layer_name(Layer layer) noexcept {
+    constexpr std::array<StringView, 5> names{"point", "vertex", "primitive", "detail", "instance"};
     return names[static_cast<std::size_t>(layer)];
 }
 
-std::string_view access_name(AttributeAccess access) noexcept {
-    constexpr std::array names{"read", "write", "edit", "group"};
+StringView access_name(AttributeAccess access) noexcept {
+    constexpr std::array<StringView, 4> names{"read", "write", "edit", "group"};
     return names[static_cast<std::size_t>(access)];
 }
 
@@ -754,15 +765,16 @@ Array<AttributeRule> detail::attribute_rules(const NodePlan& plan, const TypeInf
     Array<AttributeRule> result;
     if (plan.native)
         append_native_rules(result, type.name);
-    const auto field_name = [&](FieldId id) -> std::string {
-        return id == FieldId{} ? std::string{} : std::ranges::find(type.fields, id, &FieldInfo::id)->name;
+    const String empty_string{};
+    const auto field_name = [&](FieldId id) -> const String& {
+        return id == FieldId{} ? empty_string : std::ranges::find(type.fields, id, &FieldInfo::id)->name;
     };
-    constexpr std::array elements{"bool",    "int",     "uint",       "float",  "vector2",
-                                  "vector3", "vector4", "quaternion", "matrix4"};
+    constexpr std::array<StringView, column_type_count> elements{
+        "bool", "int", "uint", "float", "vector2", "vector3", "vector4", "quaternion", "matrix4"};
     static_assert(elements.size() == column_type_count);
     for (const auto& arg : plan.arguments) {
         AttributeAccess access;
-        std::string_view missing;
+        StringView missing;
         switch (arg.kind) {
         case ArgKind::column_in:
             access = AttributeAccess::read;
@@ -784,10 +796,10 @@ Array<AttributeRule> detail::attribute_rules(const NodePlan& plan, const TypeInf
             continue;
         }
         result.add({access == AttributeAccess::write ? plan.ports.outputs[0] : plan.ports.inputs[arg.port_index],
-                    std::string(arg.static_name.view().std_view()), field_name(arg.name_selector),
-                    arg.fixed_layer ? std::string(layer_name(*arg.fixed_layer)) : std::string{},
-                    arg.fixed_layer ? std::string{} : field_name(plan.run_over_field), elements[arg.column_variant],
-                    access, missing, arg.purpose});
+                    arg.static_name, field_name(arg.name_selector),
+                    arg.fixed_layer ? String::from_utf8_validated(layer_name(*arg.fixed_layer)) : String{},
+                    arg.fixed_layer ? String{} : field_name(plan.run_over_field),
+                    String::from_utf8_validated(elements[arg.column_variant]), access, missing, arg.purpose});
     }
     return result;
 }
@@ -1058,9 +1070,9 @@ Result<void> connect(Runtime& runtime, ObjectId graph, ObjectId from, std::uint3
     if (!target)
         return std::unexpected(target.error());
     if (output >= source->outputs.size())
-        return error(ErrorCode::argument_mismatch, "The upstream node has no output " + std::to_string(output) + ".");
+        return error(ErrorCode::argument_mismatch, String::concat("The upstream node has no output ", output, "."));
     if (input >= target->inputs.size())
-        return error(ErrorCode::argument_mismatch, "The downstream node has no input " + std::to_string(input) + ".");
+        return error(ErrorCode::argument_mismatch, String::concat("The downstream node has no input ", input, "."));
     auto cycle = upstream(runtime, *listed, from, to);
     if (!cycle)
         return std::unexpected(cycle.error());

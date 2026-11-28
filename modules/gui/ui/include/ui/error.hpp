@@ -1,7 +1,7 @@
 #pragma once
+#include "foundation/string.hpp"
 #include <cstdint>
 #include <expected>
-#include <string_view>
 
 namespace atelier::ui {
 using ControlKey = std::uint64_t; // Application key; zero denotes the layout root.
@@ -26,7 +26,7 @@ struct Error {
     std::uint32_t native_code{};
 
     // Non-owning; nonempty messages must refer to static-storage text (string literals).
-    std::string_view message{};
+    StringView message{};
 };
 
 template <class T>

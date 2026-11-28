@@ -394,7 +394,7 @@ Reply Session::input(const Event& event) {
             Impl::State popup;
             popup.control.parent = hit->key;
             popup.control.kind = ControlKind::popup;
-            popup.control.classes = {"value-ladder"};
+            popup.control.classes = {"value-ladder"_s};
             self.resolve(popup);
             ladder.style = popup.resolved;
             ladder.fine = event.shift;

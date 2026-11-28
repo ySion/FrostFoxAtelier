@@ -486,9 +486,9 @@ Result<PreparedBooleanSurface> make_surface(const Geometry& mesh, const Lattice&
                 collinear_fan |= plane.n == GridPoint{};
                 six_volume -= plane.d;
             }
-            auto invalid_face = [&](const char* reason) {
-                return failure("Boolean operand " + std::to_string(operand) + ", primitive " +
-                               std::to_string(primitive) + reason);
+            auto invalid_face = [&](StringView reason) {
+                return failure(String::concat("Boolean operand ", operand, ", primitive ", primitive,
+                                              String::validated(reason)));
             };
             if (support.n == GridPoint{})
                 return invalid_face(" is degenerate on the common 25-bit grid.");
@@ -1100,9 +1100,9 @@ struct MeshBuilder {
             const int direction = sign(piece.face->plane.n[axis]) * (piece.reverse ? -1 : 1);
             for (std::size_t i = 0; i < n; ++i) {
                 if (decoded[piece.vertices[i]] == decoded[piece.vertices[(i + 1) % n]]) {
-                    return failure("Boolean operand " + std::to_string(piece.face->operand) + ", primitive " +
-                                   std::to_string(piece.face->primitive) + ", boundary corner " + std::to_string(i) +
-                                   " collapses onto its neighbor at float P precision.");
+                    return failure(String::concat("Boolean operand ", piece.face->operand, ", primitive ",
+                                                  piece.face->primitive, ", boundary corner ", i,
+                                                  " collapses onto its neighbor at float P precision."));
                 }
             }
             auto admissible = [&](std::size_t start) {
@@ -1123,8 +1123,8 @@ struct MeshBuilder {
             while (start < n && !admissible(start))
                 ++start;
             if (start == n) {
-                return failure("Boolean operand " + std::to_string(patch.face->operand) + ", primitive " +
-                               std::to_string(patch.face->primitive) + " has no representable float triangle fan.");
+                return failure(String::concat("Boolean operand ", patch.face->operand, ", primitive ",
+                                              patch.face->primitive, " has no representable float triangle fan."));
             }
             std::rotate(piece.vertices.begin(), piece.vertices.begin() + start, piece.vertices.end());
             std::rotate(piece.incoming.begin(), piece.incoming.begin() + start, piece.incoming.end());
@@ -1198,7 +1198,7 @@ Result<void> attributes(Geometry& out, const std::array<const Geometry*, 2>& inp
             if (a && side)
                 continue;
             if (a && b && (a->layer != b->layer || a->usage != b->usage || a->data.index() != b->data.index()))
-                return failure("Boolean attribute schemas differ for " + std::string(name.std_view()) + ".");
+                return failure(String::concat("Boolean attribute schemas differ for ", attr.name, "."));
             if (name == "boolean_operand" || name == "boolean_primitive") {
                 if (attr.layer != Layer::primitive || !std::holds_alternative<SharedArray<std::uint32_t>>(attr.data))
                     return failure("Boolean provenance requires primitive uint columns.");
@@ -1394,14 +1394,14 @@ Result<Geometry> publish(const MeshBuilder& mesh, const Lattice& grid, const std
 }
 
 template <class F>
-auto stage(BooleanStats* stats, std::chrono::nanoseconds BooleanStats::* elapsed, const char* name, F&& run) {
+auto stage(BooleanStats* stats, std::chrono::nanoseconds BooleanStats::* elapsed, StringView name, F&& run) {
     using Clock = std::chrono::steady_clock;
     const auto start = stats ? Clock::now() : Clock::time_point{};
     auto result = run();
     if (stats)
         stats->*elapsed += Clock::now() - start;
     if (!result)
-        result.error().message = std::string(name) + ": " + result.error().message;
+        result.error().message = String::concat(String::validated(name), ": ", result.error().message);
     return result;
 }
 }

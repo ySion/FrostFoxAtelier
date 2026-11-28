@@ -13,7 +13,7 @@ Result<void> write_png(std::uint32_t width, std::uint32_t height, Span<const std
     using Microsoft::WRL::ComPtr;
     const auto check = [](HRESULT result) -> Result<void> {
         if (FAILED(result))
-            return std::unexpected(Error{ErrorCode::invalid_storage, "PNG encoding failed: " + std::to_string(result)});
+            return std::unexpected(Error{ErrorCode::invalid_storage, String::concat("PNG encoding failed: ", result)});
         return {};
     };
     ComPtr<IWICImagingFactory> factory;

@@ -37,13 +37,21 @@ private:
 
 struct AttributeBinding {
     AttributeRule rule;
-    std::string name{}, layer{};
-    std::string_view status{};
-    ObjectId upstream{}, column_source{};
+
+    String name{};
+
+    String layer{};
+
+    StringView status{};
+
+    ObjectId upstream{};
+
+    ObjectId column_source{};
 };
 
 struct NodeBindings {
-    std::string_view mode;
+    StringView mode;
+
     Array<AttributeBinding> attributes;
 };
 

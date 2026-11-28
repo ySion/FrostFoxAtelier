@@ -9,7 +9,6 @@
 
 #include <cstdint>
 #include <memory>
-#include <string>
 
 #include "procedural/graph.gen.hpp"
 
@@ -211,17 +210,17 @@ Result<void> register_types(Runtime& runtime);
 
 // Port schema of a concrete `procedural.Node` type or bound `procedural.AssetNode` instance.
 struct Ports {
-    Array<std::string> inputs; // Input port names.
+    Array<String> inputs; // Input port names.
 
     Array<bool> multiple; // Per input port: takes any number of connections.
 
-    Array<std::string> outputs; // Output port names.
+    Array<String> outputs; // Output port names.
 
     bool operator==(const Ports&) const = default;
 };
 
 struct AssetSubgraph {
-    std::string asset_key;
+    String asset_key;
 
     Ports ports;
 
@@ -239,41 +238,85 @@ struct AssetSubgraph {
 // Named column bindings. Opaque geometry kernels may additionally transport arbitrary columns.
 enum class AttributeAccess { read, write, edit, group };
 
+// A mode-dependent rule applies when the reflected enum field matches (or excludes) its named value.
+struct AttributeRuleCondition {
+    StringView field{};
+
+    StringView value{};
+
+    bool exclude{};
+
+    bool operator==(const AttributeRuleCondition&) const = default;
+};
+
 struct AttributeRule {
-    std::string port, name, selector; // A selector names the public field supplying the column name.
-    std::string layer, layer_selector, type;
+    using Condition = AttributeRuleCondition;
+
+    String port;
+
+    String name;
+
+    String selector; // A selector names the public field supplying the column name.
+
+    String layer;
+
+    String layer_selector;
+
+    String type;
+
     AttributeAccess access{};
-    std::string_view missing;
-    std::string purpose{};
-    std::string_view unless_present{}, needs_present{};
-    // A mode-dependent rule applies when the reflected enum field matches (or excludes) its named value.
-    struct Condition {
-        std::string_view field{}, value{};
-        bool exclude{};
-        bool operator==(const Condition&) const = default;
-    };
+
+    StringView missing;
+
+    String purpose{};
+
+    StringView unless_present{};
+
+    StringView needs_present{};
+
     Condition when{};
+
+    AttributeRule() = default;
+
+    AttributeRule(Utf8Text port_name, Utf8Text attr_name, Utf8Text selector_name, Utf8Text layer_str,
+                  Utf8Text layer_sel, Utf8Text type_name, AttributeAccess rule_access, StringView missing_behavior,
+                  Utf8Text rule_purpose = {}, StringView unless_attr = {}, StringView needs_attr = {},
+                  Condition rule_when = {})
+        : port(std::move(port_name).into_string()), name(std::move(attr_name).into_string()),
+          selector(std::move(selector_name).into_string()), layer(std::move(layer_str).into_string()),
+          layer_selector(std::move(layer_sel).into_string()), type(std::move(type_name).into_string()),
+          access(rule_access), missing(missing_behavior), purpose(std::move(rule_purpose).into_string()),
+          unless_present(unless_attr), needs_present(needs_attr), when(rule_when) {}
+
     bool operator==(const AttributeRule&) const = default;
 };
 
 // Documentation for explicit geometry ports; collected on type inspection only.
 struct PortDescription {
-    std::string port;
+    String port;
 
     bool output{};
 
-    std::string description;
+    String description;
+
+    PortDescription() = default;
+
+    PortDescription(Utf8Text port_name, bool is_output, Utf8Text port_description)
+        : port(std::move(port_name).into_string()), output(is_output),
+          description(std::move(port_description).into_string()) {}
 };
 
 struct NodeInterface {
     Ports ports;
+
     Array<AttributeRule> attributes;
+
     Array<PortDescription> port_descriptions;
 };
 
 Result<NodeInterface> node_interface(Runtime& runtime, TypeId node);
-std::string_view layer_name(Layer layer) noexcept;
-std::string_view access_name(AttributeAccess access) noexcept;
+StringView layer_name(Layer layer) noexcept;
+StringView access_name(AttributeAccess access) noexcept;
 
 // The ports of a node type, or why it cannot be a node; an unnamed port parameter fails.
 Result<Ports> ports(Runtime& runtime, TypeId node);

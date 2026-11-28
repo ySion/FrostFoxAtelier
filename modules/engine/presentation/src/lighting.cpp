@@ -23,7 +23,7 @@ Result<void> LightSettings::validate() const {
         return error(ErrorCode::argument_mismatch, "Rectangle width and height must be positive.");
     if (const auto* message = rendering::analytic_light_range_error(
             color, intensity, kind == LightKind::rectangle ? double(width) * height : 1))
-        return error(ErrorCode::argument_mismatch, message);
+        return error(ErrorCode::argument_mismatch, String::from_utf8_validated(message));
     return {};
 }
 
@@ -72,7 +72,7 @@ rendering::SceneLightingSettings environment_settings(const EnvironmentComponent
 // Single-field bounds are AFIELD hard bounds, checked before this runs.
 Result<void> EnvironmentComponent::validate() const {
     if (const auto* message = rendering::scene_lighting_error(environment_settings(*this)))
-        return error(ErrorCode::argument_mismatch, message);
+        return error(ErrorCode::argument_mismatch, String::from_utf8_validated(message));
     return {};
 }
 
@@ -126,7 +126,7 @@ namespace {
 // The new value's own rules first: World::write would clamp it to its hard bounds, and checks
 // the whole object's rules only when the object was valid before the edit.
 template <class Owner, class T>
-Result<void> set_value(world::World& world, ObjectId object, std::string_view name, const T& value) {
+Result<void> set_value(world::World& world, ObjectId object, StringView name, const T& value) {
     auto& runtime = world.runtime();
     ATELIER_TRY(detail::check_value(runtime, value));
     ATELIER_TRY_BIND(owner, runtime.native_type<Owner>());
@@ -141,18 +141,15 @@ Result<void> set_light(world::World& world, ObjectId object, LightSettings value
 }
 
 Result<void> set_sky_map_binding(Runtime& runtime, ObjectId object, SkyMapBinding binding) {
-    if (binding.source.size() > 4096 || binding.source.find('\0') != std::string::npos)
+    if (binding.source.size() > 4096 || binding.source.contains('\0'))
         return error(ErrorCode::invalid_definition, "Invalid sky map key.");
     // The key is what a scene saves; a map without one could not be saved.
     if (binding.resolved && binding.source.empty())
         return error(ErrorCode::invalid_definition, "A sky map needs its asset key.");
-    String source;
-    if (!source.assign(StringView{binding.source}))
-        return error(ErrorCode::invalid_definition, "String requires valid UTF-8.");
     ATELIER_TRY(runtime.check_code_publication());
     ATELIER_TRY(world::admit_component_edit(runtime, object));
     return runtime.with_native<EnvironmentComponent>(object, [&](EnvironmentComponent& component) -> Result<void> {
-        detail::Access::sky_map(component) = std::move(source);
+        detail::Access::sky_map(component) = std::move(binding.source);
         detail::Access::sky_map_resolved(component) = std::move(binding.resolved);
         return {};
     });
@@ -161,8 +158,7 @@ Result<void> set_sky_map_binding(Runtime& runtime, ObjectId object, SkyMapBindin
 Result<SkyMapBinding> read_sky_map(Runtime& runtime, ObjectId object) {
     return runtime.with_native<const EnvironmentComponent>(
         object, [](const EnvironmentComponent& component) -> Result<SkyMapBinding> {
-            return SkyMapBinding{std::string(detail::Access::sky_map(component).view().std_view()),
-                                 detail::Access::sky_map_resolved(component)};
+            return SkyMapBinding{detail::Access::sky_map(component), detail::Access::sky_map_resolved(component)};
         });
 }
 
@@ -192,7 +188,7 @@ Result<Array<LightRenderItem>> Scene::extract_lights(const detail::Presented* pr
             if (!settings) {
                 if (!world_->contain(settings.error(),
                                      detail::diagnostic(DiagnosticKind::invalid_value, DiagnosticPhase::lighting,
-                                                        object, owner, {"settings"})))
+                                                        object, owner, {"settings"_s})))
                     return std::unexpected(settings.error());
                 *failed = true;
                 continue;
@@ -202,7 +198,7 @@ Result<Array<LightRenderItem>> Scene::extract_lights(const detail::Presented* pr
                 if (*invalid) {
                     const auto& failure = **invalid;
                     if (!world_->contain(failure.error, world::validation_diagnostic(failure, DiagnosticPhase::lighting,
-                                                                                     object, owner, {"settings"})))
+                                                                                     object, owner, {"settings"_s})))
                         return std::unexpected(failure.error);
                     *failed = true;
                     continue;

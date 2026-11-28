@@ -4,19 +4,29 @@ void simulate_cooked_assets() {
     namespace p = atelier::physics;
     const auto mesh = atelier::geometry::cube_mesh();
     const auto cooked = take(p::cook_triangle_mesh(mesh, {8, 1, 8}, "builtin/cube"));
-    const auto path =
-        std::filesystem::temp_directory_path() /
-        ("atelier-collision-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".bin");
+    const auto file_name =
+        atelier::String::concat("atelier-collision-", std::chrono::steady_clock::now().time_since_epoch().count(),
+                                ".bin");
+
+    const auto path = std::filesystem::temp_directory_path() / file_name.c_str();
     {
         std::ofstream file(path, std::ios::binary);
-        require(bool(file.write(cooked.data(), static_cast<std::streamsize>(cooked.size()))),
-                "offline collision asset is written");
+        require(
+            bool(file.write(reinterpret_cast<const char*>(cooked.data()), static_cast<std::streamsize>(cooked.size()))),
+            "offline collision asset is written");
     }
-    std::ifstream file(path, std::ios::binary);
-    const std::string loaded(std::istreambuf_iterator<char>{file}, {});
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    const auto file_size = file.tellg();
+    require(file_size >= 0, "offline collision asset size is readable");
+    atelier::Array<std::byte> loaded;
+    loaded.resize_uninitialized(static_cast<std::size_t>(file_size));
+    file.seekg(0);
+    if (!loaded.empty())
+        require(bool(file.read(reinterpret_cast<char*>(loaded.data()), static_cast<std::streamsize>(loaded.size()))),
+                "offline collision asset is readable");
     file.close();
     std::filesystem::remove(path);
-    const auto load = [&](std::string bytes, std::string_view source, atelier::math::Vector3 scale) {
+    const auto load = [&](atelier::Array<std::byte> bytes, atelier::StringView source, atelier::math::Vector3 scale) {
         atelier::Runtime runtime;
         const auto world_types = take(w::register_types(runtime));
         (void)take(pr::register_types(runtime));
@@ -31,7 +41,7 @@ void simulate_cooked_assets() {
         auto body = take(runtime.hold(mesh_component(runtime, ground.id())));
         p::BodySettings settings;
         settings.shape = p::ShapeKind::triangle_mesh;
-        settings.cooked_shape = std::make_shared<const std::string>(std::move(bytes));
+        settings.cooked_shape = std::make_shared<const atelier::Array<std::byte>>(std::move(bytes));
         take(p::configure(runtime, body.id(), settings));
         committed(world.attach(ground.id()));
         committed(world.start());

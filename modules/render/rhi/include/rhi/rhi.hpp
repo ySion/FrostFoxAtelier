@@ -2,6 +2,7 @@
 
 #include "foundation/optional.hpp"
 #include "foundation/span.hpp"
+#include "foundation/string.hpp"
 
 #include <gfx.h>
 
@@ -10,7 +11,6 @@
 #include <expected>
 #include <filesystem>
 #include <memory>
-#include <string>
 
 namespace atelier::rhi {
 
@@ -39,11 +39,16 @@ enum class ErrorCode {
 };
 
 struct Error {
+    Error() = default;
+
+    Error(ErrorCode error_code, GfxResult native = kGfxResult_NoError, Utf8Text text = {})
+        : code(error_code), native_result(native), message(std::move(text).into_string()) {}
+
     ErrorCode code = ErrorCode::execution_failed;
 
     GfxResult native_result = kGfxResult_NoError;
 
-    std::string message;
+    String message;
 };
 
 template <class T>
@@ -250,7 +255,7 @@ public:
 private:
     explicit Context(std::shared_ptr<detail::ContextState> state) noexcept;
 
-    [[nodiscard]] Result<void> admit(const char* operation) const;
+    [[nodiscard]] Result<void> admit(const String::ConcatPiece& operation) const;
 
     [[nodiscard]] Result<std::shared_ptr<detail::PreparationJob>> job(const PipelineDesc& desc) const;
 

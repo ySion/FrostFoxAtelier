@@ -816,7 +816,7 @@ class AssetNode : public Node {
 
 public:
     struct SubgraphMeta {
-        std::string asset_key;
+        String asset_key;
 
         Ports ports; // Resolved schema.
 

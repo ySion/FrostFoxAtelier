@@ -1861,7 +1861,7 @@ NodeInput NodeInput::grid(GridSpec spec) {
     return value;
 }
 
-std::string_view describe(ErrorCode code) noexcept {
+StringView describe(ErrorCode code) noexcept {
     switch (code) {
     case ErrorCode::invalid_input:
         return "Invalid layout input";
@@ -1889,7 +1889,7 @@ std::string_view describe(ErrorCode code) noexcept {
     return "Unknown layout error";
 }
 
-std::string_view describe(InputField field) noexcept {
+StringView describe(InputField field) noexcept {
     switch (field) {
     case InputField::none:
         return "unspecified";

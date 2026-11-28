@@ -96,7 +96,7 @@ public:
     // Last attempted file reload. Borrow valid until sampling is disabled or the document closes.
     const ReloadTiming* profile_reloads(Profile);
 
-    LiveDocument(Runtime&, std::filesystem::path, ui::ControlKey&, Optional<std::string> recovery_source = {});
+    LiveDocument(Runtime&, std::filesystem::path, ui::ControlKey&, Optional<String> recovery_source = {});
 
     void poll(Clock::time_point now = Clock::now());
 
@@ -106,27 +106,27 @@ public:
     // error, output contains the accepted snapshot and that input is suppressed
     // until it changes; the accepted scopes can still handle their own events.
     // A successful false means the region used its accepted fallback for suppressed inputs.
-    Result<bool> append(std::string_view component, ui::ControlKey parent, Span<const KeyBinding>,
-                        Span<const InputValue>, ControlOutput);
+    Result<bool> append(StringView component, ui::ControlKey parent, Span<const KeyBinding>, Span<const InputValue>,
+                        ControlOutput);
 
     Result<bool> event(const ui::Action&);
 
     // Reject source replacement or ordinary prepared input updates. Old scope
     // membership, values and state survive; returns false if nothing was staged.
-    bool reject_controls(std::string message);
+    bool reject_controls(Utf8Text message);
 
     bool candidate_failed() const noexcept { return candidate_failed_; }
 
     void commit_controls();
 
-    Optional<Statistics> statistics(std::string_view component) const;
+    Optional<Statistics> statistics(StringView component) const;
 
-    std::string_view diagnostic() const noexcept { return diagnostic_; }
+    const String& diagnostic() const noexcept { return diagnostic_; }
 
-    const Optional<std::string>& committed_source() const noexcept { return active_source_; }
+    const Optional<String>& committed_source() const noexcept { return active_source_; }
 
-    Optional<std::string_view> attempted_source() const noexcept {
-        return attempted_source_ ? Optional<std::string_view>{*attempted_source_} : Optional<std::string_view>{};
+    Optional<StringView> attempted_source() const noexcept {
+        return attempted_source_ ? Optional<StringView>{attempted_source_->view()} : Optional<StringView>{};
     }
 
     const std::filesystem::path& path() const noexcept { return path_; }
@@ -135,7 +135,7 @@ public:
 
     // Auxiliary native surfaces share only the last committed authoring module.
     // Their Instances and accepted frames retain their own publication lifetimes.
-    std::shared_ptr<Component> component(std::string_view name) const {
+    std::shared_ptr<Component> component(StringView name) const {
         return active_ ? active_->find(name) : nullptr;
     }
 
@@ -172,7 +172,7 @@ private:
 
     ui::ControlKey& next_key_;
 
-    Map<std::string, Region> regions_;
+    Map<String, Region> regions_;
 
     std::shared_ptr<Module> active_;
 
@@ -188,18 +188,18 @@ private:
 
     bool profile_components_{};
 
-    Optional<std::string> attempted_source_;
+    Optional<String> attempted_source_;
 
-    Optional<std::string> active_source_;
+    Optional<String> active_source_;
 
-    Optional<std::string> candidate_source_;
+    Optional<String> candidate_source_;
 
-    Optional<std::string> recovery_source_;
+    Optional<String> recovery_source_;
 
     void recover_initial();
 
     struct InFlight {
-        std::string source;
+        String source;
 
         std::size_t catalog_size{};
 
@@ -212,9 +212,9 @@ private:
 
     void install(InFlight&);
 
-    std::string diagnostic_;
+    String diagnostic_;
 
-    std::string failed_region_;
+    String failed_region_;
 
     bool changed_{};
 

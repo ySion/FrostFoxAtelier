@@ -8,7 +8,7 @@
 namespace atelier::assets {
 // Cold-path, bounded-memory canonical encoding of actual content and slot defaults.
 // Invalid content returns an error; memory SHA primitive failures are fatal.
-Result<std::string> mesh_content_sha256(const MeshAsset&);
+Result<String> mesh_content_sha256(const MeshAsset&);
 
 // Synchronous asset reads, independent of author documents, Runtime objects and devices.
 // The default reader has only the engine catalogue. A project owner supplies a root
@@ -22,7 +22,9 @@ public:
 
     Span<const ProjectEntry> entries() const noexcept { return entries_; }
 
-    const ProjectEntry* entry(std::string_view key) const;
+    const ProjectEntry* entry(StringView key) const;
+
+    const ProjectEntry* entry(const String& key) const { return entry(key.view()); }
 
     std::uint64_t revision() const noexcept { return revision_; }
 
@@ -35,7 +37,7 @@ public:
     // Consumes a private copy of this Reader used for preparation, then publishes catalogue, geometry
     // and exact input pixels together. Failure leaves this Reader unchanged.
     // Disk-derived dependency caches invalidate even when file stamps match.
-    Result<MeshAsset> publish_mesh(Reader candidate, Array<ProjectEntry>, std::string_view key, const MeshImport&,
+    Result<MeshAsset> publish_mesh(Reader candidate, Array<ProjectEntry>, StringView key, const MeshImport&,
                                    Span<const TextureAsset>);
 
     // Exact received content for an existing mesh key. No disk reads/writes,
@@ -44,46 +46,56 @@ public:
     // mesh publication replaces it. Failure leaves this Reader unchanged.
     Result<void> publish_mesh_content(const MeshAsset&);
 
-    Result<MeshAsset> mesh(std::string_view);
+    Result<MeshAsset> mesh(StringView);
+
+    Result<MeshAsset> mesh(const String& key) { return mesh(key.view()); }
 
     // Exact installed identity and kind, never a project fallback. SHA failures are fatal.
-    Result<EngineDependency> engine_dependency(std::string_view, AssetKind expected) const;
+    Result<EngineDependency> engine_dependency(StringView, AssetKind expected) const;
 
-    Result<TextureAsset> texture(std::string_view);
+    Result<TextureAsset> texture(StringView);
+
+    Result<TextureAsset> texture(const String& key) { return texture(key.view()); }
 
     // Author has replaced this existing file after decoding. Publish its exact
     // pixels and entry, even when a file stamp happens to equal the previous one.
     Result<void> publish_texture(ProjectEntry, material::ImageRef);
 
     // Reads v2 author data only. The file suffix must agree with its MS/MI role.
-    Result<MaterialAsset> material(std::string_view);
+    Result<MaterialAsset> material(StringView);
+
+    Result<MaterialAsset> material(const String& key) { return material(key.view()); }
 
     // Reads UTF-8 procedural graph JSON text for a listed AssetKind::procedural_graph entry.
-    Result<ProceduralGraphAsset> procedural_graph(std::string_view) const;
+    Result<ProceduralGraphAsset> procedural_graph(StringView) const;
+
+    Result<ProceduralGraphAsset> procedural_graph(const String& key) const { return procedural_graph(key.view()); }
 
     // Exact contained project path, including Content/, or reserved builtin/ Source.
     // No game-Source scan or compilation; callers retain this saved-text snapshot.
     Result<source::SourceFile> source(const std::filesystem::path& project_relative) const;
 
-    Result<SkyAsset> sky_map(std::string_view);
+    Result<SkyAsset> sky_map(StringView);
 
-    Span<const std::string> mesh_notes(std::string_view key) const;
+    Result<SkyAsset> sky_map(const String& key) { return sky_map(key.view()); }
+
+    Span<const String> mesh_notes(StringView key) const;
 
     // Owning project-relative raw companions (MTL, bin, source images), excluding
     // the mesh file/sidecars and never following MS/MI author references. A cold
     // disk-derived mesh is prepared; received exact content never rereads disk.
-    Result<Array<std::filesystem::path>> mesh_dependency_files(std::string_view key);
+    Result<Array<std::filesystem::path>> mesh_dependency_files(StringView key);
 
     // Candidate preparation shares the Reader's weak image cache. It neither
     // publishes geometry nor writes files; the owner commits through publish_mesh.
     Result<MeshImport> prepare_mesh(const std::filesystem::path& source);
 
-    Result<Array<material::ImageRef>> prepare_images(Span<const std::string_view>, std::uint64_t pixel_budget);
+    Result<Array<material::ImageRef>> prepare_images(Span<const Span<const std::byte>>, std::uint64_t pixel_budget);
 
 private:
     struct CachedMesh;
 
-    CachedMesh& retain_import(std::string key, const std::filesystem::path& relative, MeshImport&);
+    CachedMesh& retain_import(String key, const std::filesystem::path& relative, MeshImport&);
 
     Result<std::filesystem::path> resolve(const std::filesystem::path& relative) const;
 
@@ -93,23 +105,23 @@ private:
 
     std::uint64_t revision_{};
 
-    Map<std::string, std::size_t> entry_index_;
+    Map<String, std::size_t> entry_index_;
 
-    Map<std::string, material::ImageRef> textures_;
+    Map<String, material::ImageRef> textures_;
 
-    Map<std::string, rendering::SkyMapRef> sky_maps_;
+    Map<String, rendering::SkyMapRef> sky_maps_;
 
     struct CachedMesh {
         geometry::MeshRef mesh;
 
         Array<std::filesystem::path> dependencies;
 
-        Array<std::string> notes;
+        Array<String> notes;
 
         bool exact_content{}; // Received publication, not a disk-derived cache entry.
     };
 
-    Map<std::string, CachedMesh> meshes_;
+    Map<String, CachedMesh> meshes_;
 
     ImageCache images_;
 };

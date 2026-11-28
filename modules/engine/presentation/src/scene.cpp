@@ -10,7 +10,7 @@ using world::DiagnosticKind;
 using world::DiagnosticPhase;
 
 world::Diagnostic detail::diagnostic(DiagnosticKind kind, DiagnosticPhase phase, ObjectId object, ObjectId entity,
-                                     Array<std::string> field) {
+                                     Array<String> field) {
     world::Diagnostic result;
     result.kind = kind;
     result.phase = phase;
@@ -290,7 +290,7 @@ Result<bool> Scene::update_mesh(world::World::SpatialPass& pass, std::size_t slo
     }
     if (unusable) {
         if (!world_->contain(*unusable, detail::diagnostic(DiagnosticKind::invalid_value, DiagnosticPhase::presentation,
-                                                           object, owner, {"materials"})))
+                                                           object, owner, {"materials"_s})))
             return std::unexpected(*unusable);
         return drop();
     }
@@ -359,7 +359,7 @@ Result<bool> Scene::update_generator(world::World::SpatialPass& pass, std::size_
             for (const auto& col : output->publication.collections) {
                 if (!col.transforms || col.transforms->empty())
                     continue;
-                const auto key_sv = col.reference.key.view().std_view();
+                const auto key_sv = col.reference.key.view();
                 geometry::MeshRef mesh = col.reference.mesh;
                 std::shared_ptr<const Array<material::ProgramSurfaceRef>> col_surfs;
                 if (!key_sv.empty()) {
@@ -413,7 +413,7 @@ Result<bool> Scene::update_generator(world::World::SpatialPass& pass, std::size_
     }
     if (unusable) {
         if (!world_->contain(*unusable, detail::diagnostic(DiagnosticKind::invalid_value, DiagnosticPhase::presentation,
-                                                           object, owner, {"materials"})))
+                                                           object, owner, {"materials"_s})))
             return std::unexpected(*unusable);
         return drop();
     }

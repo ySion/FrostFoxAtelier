@@ -51,11 +51,11 @@ void append_parameter_row(Array<Control>& controls, const ParameterRow& row, flo
     root.enabled = row.enabled;
     root.context_target = ctx;
     root.context_group = row.group_key;
-    root.classes = {"parameter-row"};
+    root.classes = {"parameter-row"_s};
     auto caption = single_line_layout(160);
     auto& label =
         append(row.group_key ? row.group_key : row.label_key, row.key, ControlKind::label, caption, row.label);
-    label.classes = {"parameter-label"};
+    label.classes = {"parameter-label"_s};
     label.modified = modified;
     label.context_target = ctx;
     label.context_group = row.group_key;
@@ -108,10 +108,15 @@ Result<void> append_number_row(Array<Control>& controls, ParameterRow row, Span<
         number.drag_step = field.drag_step;
         number.fine_step = field.fine_step;
         number.modified = field.value != field.default_value;
-        number.classes = {"parameter-field"};
-        constexpr std::array axis_classes{"", "axis-x", "axis-y", "axis-z", "axis-w"};
-        if (field.axis != VectorAxis::none)
-            number.classes.add(axis_classes.at(static_cast<std::size_t>(field.axis)));
+        number.classes = {"parameter-field"_s};
+        if (field.axis == VectorAxis::x)
+            number.classes.add("axis-x"_s);
+        else if (field.axis == VectorAxis::y)
+            number.classes.add("axis-y"_s);
+        else if (field.axis == VectorAxis::z)
+            number.classes.add("axis-z"_s);
+        else if (field.axis == VectorAxis::w)
+            number.classes.add("axis-w"_s);
         if (field.slider)
             number.layout.width = ui_layout::Axis::fixed(72);
         // Houdini: a lone scalar is one tuple column wide (about a third of the
@@ -136,7 +141,7 @@ Result<void> append_number_row(Array<Control>& controls, ParameterRow row, Span<
             slider.integral = field.integral;
             slider.context_target = field.key;
             slider.context_group = row.group_key;
-            slider.classes = {"parameter-slider"};
+            slider.classes = {"parameter-slider"_s};
             controls.add(std::move(slider));
         }
     }

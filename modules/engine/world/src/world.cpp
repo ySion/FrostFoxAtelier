@@ -8,7 +8,6 @@
 #include <bit>
 #include <cassert>
 #include <cmath>
-#include <format>
 
 namespace atelier::world {
 using detail::Access;
@@ -28,21 +27,24 @@ static bool isolatable(const Error& failure) noexcept {
 }
 
 Diagnostic validation_diagnostic(const ValidationFailure& failure, DiagnosticPhase phase, ObjectId object,
-                                 ObjectId entity, Array<std::string> record) {
+                                 ObjectId entity, Array<String> record) {
     Diagnostic diagnostic;
     diagnostic.kind = DiagnosticKind::invalid_value;
     diagnostic.phase = phase;
     diagnostic.object = object;
     diagnostic.entity = entity;
     diagnostic.field = std::move(record);
-    diagnostic.field.append(Span<const std::string>{failure.names});
+    diagnostic.field.append(Span<const String>{failure.names});
     if (failure.value)
         diagnostic.value = std::visit(
-            [](const auto& value) -> std::string {
-                if constexpr (std::same_as<std::decay_t<decltype(value)>, EnumValue>)
-                    return std::to_string(value.bits);
+            [](const auto& value) -> String {
+                using T = std::decay_t<decltype(value)>;
+                if constexpr (std::same_as<T, EnumValue>)
+                    return String::from_number(value.bits);
+                else if constexpr (std::same_as<T, bool>)
+                    return value ? "true"_s : "false"_s;
                 else
-                    return std::format("{}", value);
+                    return String::from_number(value);
             },
             *failure.value);
     diagnostic.message = failure.error.message;
@@ -70,12 +72,7 @@ void World::Impl::report(Diagnostic diagnostic) {
                           phase == DiagnosticPhase::physics || phase == DiagnosticPhase::command;
     Optional<DiagnosticKey> key;
     if (consumer) {
-        std::string field;
-        for (const auto& name : diagnostic.field) {
-            if (!field.empty())
-                field += '.';
-            field += name;
-        }
+        String field = String::join(diagnostic.field, "."_s);
         key.emplace(DiagnosticKey{diagnostic.object, diagnostic.kind, phase, std::move(field)});
         const auto pass = passes[std::size_t(phase)];
         // `repeats` counts consecutive passes; dependents failing on one cause count once per pass.
@@ -110,7 +107,7 @@ bool World::Impl::contain(const Error& failure, Diagnostic diagnostic) {
 }
 
 bool World::Impl::contain(const Error& failure, DiagnosticKind kind, DiagnosticPhase phase, ObjectId object,
-                          ObjectId entity, Array<std::string> field, Severity severity) {
+                          ObjectId entity, Array<String> field, Severity severity) {
     Diagnostic diagnostic;
     diagnostic.severity = severity;
     diagnostic.kind = kind;
@@ -141,7 +138,7 @@ void World::Impl::fault_tick(ObjectId object, ObjectId entity) noexcept {
 
 Result<void> World::Impl::admit(bool mutation) const {
     if (closed || (closing && mutation))
-        return error(ErrorCode::unsupported_operation, closing ? "World is closing." : "World is closed.");
+        return error(ErrorCode::unsupported_operation, closing ? "World is closing."_s : "World is closed."_s);
     if (transitioning || (mutation && (dispatch_depth || relocating)))
         return error(ErrorCode::busy, "World operation cannot reenter this phase.");
     if (mutation)
@@ -153,7 +150,7 @@ Result<std::size_t> World::Impl::member(ObjectId object) const {
     ATELIER_TRY_BIND(entity, detail::entity_data(runtime, object));
     if (entity->world != &world)
         return error(ErrorCode::invalid_member,
-                     entity->world ? "Entity belongs to another World." : "Entity is not a World member.");
+                     entity->world ? "Entity belongs to another World."_s : "Entity is not a World member."_s);
     const auto* found = positions.find(object);
     if (!found)
         return std::unexpected(inconsistent("World member index is inconsistent."));
@@ -720,7 +717,7 @@ Result<Optional<math::Matrix4>> World::SpatialPass::matrix(ObjectId entity) {
     return {};
 }
 
-bool World::SpatialPass::degenerate(ObjectId entity, const math::Matrix4& world, std::string_view message) {
+bool World::SpatialPass::degenerate(ObjectId entity, const math::Matrix4& world, Utf8Text message) {
     if (!singular(world) && !impl_->space.entry(entity)->flat)
         return false;
     Diagnostic diagnostic;
@@ -728,8 +725,8 @@ bool World::SpatialPass::degenerate(ObjectId entity, const math::Matrix4& world,
     diagnostic.kind = DiagnosticKind::degenerate_value;
     diagnostic.phase = phase_;
     diagnostic.object = diagnostic.entity = impl_->space.degenerate_root(entity);
-    diagnostic.field = {"scale"};
-    diagnostic.message = message;
+    diagnostic.field = {"scale"_s};
+    diagnostic.message = std::move(message).into_string();
     impl_->report(std::move(diagnostic));
     return true;
 }
@@ -780,7 +777,7 @@ Result<Optional<World::Orientation>> World::SpatialPass::orientation(ObjectId en
     }();
     if (composed)
         return result;
-    if (!impl_->contain(composed.error(), DiagnosticKind::invalid_value, phase_, entity, entity, {"rotation"}))
+    if (!impl_->contain(composed.error(), DiagnosticKind::invalid_value, phase_, entity, entity, {"rotation"_s}))
         return std::unexpected(composed.error());
     return {};
 }
@@ -798,7 +795,7 @@ Result<Optional<math::Quaterniond>> World::SpatialPass::rotation(ObjectId entity
         const auto next = local ? math::try_normalize(*local * result) : decltype(local){};
         if (!next) {
             const auto failure = Error{ErrorCode::argument_mismatch, "Space rotation is not finite or normalizable."};
-            if (!impl_->contain(failure, DiagnosticKind::invalid_value, phase_, node, node, {"rotation"}))
+            if (!impl_->contain(failure, DiagnosticKind::invalid_value, phase_, node, node, {"rotation"_s}))
                 return std::unexpected(failure);
             return {};
         }
@@ -1074,9 +1071,9 @@ Result<void> World::Impl::checked_write(ObjectId object, bool entity, Write&& wr
     ATELIER_TRY(write());
     const auto reject = [&](Error failure) -> Result<void> {
         if (auto restored = restore(); !restored)
-            return error(restored.error().code, "The rejected value could not be restored (" +
-                                                    restored.error().message +
-                                                    "); it was rejected because: " + failure.message);
+            return error(restored.error().code,
+                         String::concat("The rejected value could not be restored (", restored.error().message,
+                                        "); it was rejected because: ", failure.message));
         return std::unexpected(std::move(failure));
     };
     if (!*before) {
@@ -1190,8 +1187,9 @@ Result<void> World::write(ObjectId object, Span<const FieldPath> paths, Span<con
                 if (auto leaf = runtime().write(object, paths[written], values[written]); !leaf) {
                     if (auto restored = restore(); !restored)
                         return error(restored.error().code,
-                                     "The group's earlier values could not be restored (" + restored.error().message +
-                                         "); a field was rejected because: " + leaf.error().message);
+                                     String::concat("The group's earlier values could not be restored (",
+                                                    restored.error().message,
+                                                    "); a field was rejected because: ", leaf.error().message));
                     return leaf;
                 }
             return {};

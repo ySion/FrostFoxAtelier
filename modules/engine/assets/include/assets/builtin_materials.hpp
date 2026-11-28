@@ -8,5 +8,9 @@ namespace atelier::assets {
 // these keys. Four StandardPBR policies share one source and parameter interface.
 Span<const MaterialAsset> material_assets();
 
-Optional<source::SourceFile> builtin_material_source(std::string_view path);
+Optional<source::SourceFile> builtin_material_source(StringView path);
+
+inline Optional<source::SourceFile> builtin_material_source(const String& path) {
+    return builtin_material_source(path.view());
+}
 }

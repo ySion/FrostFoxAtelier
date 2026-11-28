@@ -11,21 +11,50 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <list>
-#include <string>
 #include <tuple>
 #include <utility>
 
 namespace atelier::procedural {
 namespace {
 
-std::unexpected<Error> error(ErrorCode code, std::string message) {
+using CacheKey = Array<std::byte>;
+
+struct CacheKeyHash {
+    using is_avalanching = void;
+
+    std::size_t operator()(Span<const std::byte> bytes) const noexcept {
+        return Hash<StringView>{}(as_chars(bytes));
+    }
+
+    std::size_t operator()(const CacheKey& bytes) const noexcept { return (*this)(bytes.view()); }
+};
+
+struct CacheKeyEqual {
+    using is_transparent = void;
+
+    bool operator()(Span<const std::byte> left, Span<const std::byte> right) const noexcept {
+        return left == right;
+    }
+};
+
+std::unexpected<Error> error(ErrorCode code, Utf8Text message) {
     return std::unexpected(Error{code, std::move(message)});
 }
 
+void append_bytes(CacheKey& key, const void* data, std::size_t size) {
+    if (size)
+        key.append({static_cast<const std::byte*>(data), size});
+}
+
+void append_text(CacheKey& key, StringView text) {
+    key.append(as_bytes(text));
+}
+
 template <class T>
-void append(std::string& key, const T& value) {
-    key.append(reinterpret_cast<const char*>(&value), sizeof value);
+void append(CacheKey& key, const T& value) {
+    append_bytes(key, &value, sizeof value);
 }
 
 struct SourceKernel {
@@ -54,7 +83,8 @@ Result<const void*> read_column(const Geometry& geometry, StringView name, Layer
     if (!*column) {
         if (optional)
             return &std::get<I>(empty_columns());
-        return failure("The input has no attribute " + std::string{name.std_view()} + ".");
+        return failure(
+            String::concat("The input has no attribute ", String::from_utf8(name).value_or("<invalid utf-8>"_s), "."));
     }
     return *column;
 }
@@ -97,7 +127,7 @@ constexpr auto accessors = column_accessors(std::make_index_sequence<detail::col
 
 // One evaluation of one node. Keys are exact byte strings, so equal keys mean equal contents.
 struct Entry {
-    std::string key;
+    CacheKey key;
 
     std::uint64_t serial{}; // Unique per evaluation; downstream keys use it.
 
@@ -125,7 +155,7 @@ struct CachePool::Impl {
 
     detail::BooleanPreparationCache boolean_preparation;
 
-    Map<std::string, std::shared_ptr<Entry>> cache;
+    Map<CacheKey, std::shared_ptr<Entry>, CacheKeyHash, CacheKeyEqual> cache;
 
     std::list<Entry*> recent; // Most recently used first.
 
@@ -144,7 +174,7 @@ struct CachePool::Impl {
         entry.cached = false;
         cached_bytes -= entry.bytes;
         recent.erase(entry.recent);
-        const std::string key = entry.key;
+        const CacheKey key = entry.key;
         (void)cache.remove(key); // May release the entry; touch nothing after this.
     }
 
@@ -194,7 +224,7 @@ struct Evaluator::Impl {
 
         std::shared_ptr<Entry> frozen_entry;
 
-        std::string local; // Type and public field contents.
+        CacheKey local; // Type and public field contents.
 
         Array<Input> inputs;
 
@@ -202,7 +232,7 @@ struct Evaluator::Impl {
 
         std::shared_ptr<Entry> entry; // The node's current result.
 
-        std::string failed; // Key of the last failed evaluation, at failed_revision.
+        CacheKey failed; // Key of the last failed evaluation, at failed_revision.
 
         std::uint64_t failed_revision{};
 
@@ -300,19 +330,19 @@ struct Evaluator::Impl {
         ATELIER_TRY_BIND(info, runtime.describe(type));
         const auto& name = (*info)->name;
         if (!program)
-            return error(ErrorCode::unsupported_operation, "Source node " + name + " needs a program.");
+            return error(ErrorCode::unsupported_operation, String::concat("Source node ", name, " needs a program."));
         const auto entries = program->entries();
-        const std::string entry_name = name + ".process";
-        const auto found = std::ranges::find(entries, entry_name, &source::EntryInfo::name);
+        const auto entry_name = String::concat(name, ".process");
+        const auto found = std::ranges::find(entries, entry_name.view(), &source::EntryInfo::name);
         if (found == entries.end())
-            return error(ErrorCode::invalid_definition, name + " has no published process entry.");
+            return error(ErrorCode::invalid_definition, String::concat(name, " has no published process entry."));
         ATELIER_TRY_BIND(entry, program->entry(found->name));
         return SourceKernel{std::move(*entry), found->code};
     }
 
-    Result<void> append_value(std::string& key, const TypeInfo& info, const void* data) const {
+    Result<void> append_value(CacheKey& key, const TypeInfo& info, const void* data) const {
         if (info.kind == TypeKind::scalar || info.kind == TypeKind::enumeration || info.math) {
-            key.append(static_cast<const char*>(data), info.size);
+            append_bytes(key, data, info.size);
             return {};
         }
         if (info.kind == TypeKind::record && info.plain_value) {
@@ -341,13 +371,13 @@ struct Evaluator::Impl {
         }
         if ((info.kind != TypeKind::string && info.kind != TypeKind::array) || !info.sequence_view)
             return error(ErrorCode::unsupported_operation,
-                         "Node parameters of type " + info.name + " are not supported.");
+                         String::concat("Node parameters of type ", info.name, " are not supported."));
         const void* items{};
         std::size_t count{};
         info.sequence_view(data, &items, &count);
         append(key, count);
         if (info.kind == TypeKind::string) {
-            key.append(static_cast<const char*>(items), count);
+            append_bytes(key, items, count);
             return {};
         }
         auto element = runtime.describe(*info.element);
@@ -360,9 +390,10 @@ struct Evaluator::Impl {
         return {};
     }
 
-    Result<void> append_field(std::string& key, ObjectId object, const FieldInfo& field) {
+    Result<void> append_field(CacheKey& key, ObjectId object, const FieldInfo& field) {
         if (field.value.form != ValueForm::inline_value)
-            return error(ErrorCode::unsupported_operation, "Node parameter " + field.name + " is a reference.");
+            return error(ErrorCode::unsupported_operation,
+                         String::concat("Node parameter ", field.name, " is a reference."));
         auto info = runtime.describe(field.value.type);
         if (!info)
             return std::unexpected(info.error());
@@ -370,7 +401,7 @@ struct Evaluator::Impl {
             auto value = runtime.read(object, field.id);
             if (!value)
                 return std::unexpected(value.error());
-            key.push_back(static_cast<char>(value->index()));
+            key.add(static_cast<std::byte>(value->index()));
             std::visit(
                 [&](const auto& scalar) {
                     if constexpr (std::same_as<std::remove_cvref_t<decltype(scalar)>, EnumValue>)
@@ -448,7 +479,7 @@ struct Evaluator::Impl {
             if (!*bound)
                 return std::unexpected(bound->error());
         }
-        std::string local;
+        CacheKey local;
         append(local, *info); // Published TypeInfo addresses are stable identities for this Runtime.
         append(local, state.bypassed);
         append(local, state.frozen);
@@ -460,12 +491,12 @@ struct Evaluator::Impl {
                     return added;
             if (state.is_asset_node) {
                 append(local, state.asset_subgraph.asset_key.size());
-                local.append(state.asset_subgraph.asset_key);
+                append_text(local, state.asset_subgraph.asset_key);
                 append(local, state.asset_subgraph.revision);
                 append(local, state.asset_subgraph.ports.inputs.size());
                 for (std::size_t p = 0; p < state.asset_subgraph.ports.inputs.size(); ++p) {
                     append(local, state.asset_subgraph.ports.inputs[p].size());
-                    local.append(state.asset_subgraph.ports.inputs[p]);
+                    append_text(local, state.asset_subgraph.ports.inputs[p]);
                     const bool multi =
                         p < state.asset_subgraph.ports.multiple.size() && state.asset_subgraph.ports.multiple[p];
                     append(local, multi);
@@ -473,14 +504,14 @@ struct Evaluator::Impl {
                 append(local, state.asset_subgraph.ports.outputs.size());
                 for (const auto& out_name : state.asset_subgraph.ports.outputs) {
                     append(local, out_name.size());
-                    local.append(out_name);
+                    append_text(local, out_name);
                 }
                 const bool has_err = state.asset_subgraph.bind_error.has_value();
                 append(local, has_err);
                 if (has_err) {
                     append(local, state.asset_subgraph.bind_error->code);
                     append(local, state.asset_subgraph.bind_error->message.size());
-                    local.append(state.asset_subgraph.bind_error->message);
+                    append_text(local, state.asset_subgraph.bind_error->message);
                 }
             }
         }
@@ -511,8 +542,9 @@ struct Evaluator::Impl {
 
     Result<void> execute_asset_node(ObjectId id, State& state, Entry& entry, bool record_timings) {
         if (subgraph_depth >= Evaluator::max_subgraph_depth)
-            return error(ErrorCode::invocation_failed, "AssetNode nesting exceeds maximum depth of " +
-                                                           std::to_string(Evaluator::max_subgraph_depth) + ".");
+            return error(ErrorCode::invocation_failed,
+                         String::concat("AssetNode nesting exceeds maximum depth of ", Evaluator::max_subgraph_depth,
+                                        "."));
         if (state.asset_subgraph.bind_error)
             return std::unexpected(*state.asset_subgraph.bind_error);
         if (!state.asset_subgraph.graph.registered())
@@ -650,8 +682,8 @@ struct Evaluator::Impl {
                         const auto pk = plan.arguments[j].kind;
                         if ((pk == detail::ArgKind::column_inout || pk == detail::ArgKind::column_out) &&
                             resolved_names[j] == resolved_names[i])
-                            return failure("Multiple writable parameters select " +
-                                           std::string{resolved_names[i].view().std_view()} + ".");
+                            return failure(
+                                String::concat("Multiple writable parameters select ", resolved_names[i], "."));
                     }
                 }
             }
@@ -769,7 +801,9 @@ struct Evaluator::Impl {
             if (!invoked) {
                 if (invoked.error().element && invoked.error().element->layer.empty()) {
                     invoked.error().element->layer =
-                        plan.run_over_field != FieldId{} ? layer_name(dynamic_layer) : std::string_view{"element"};
+                        plan.run_over_field != FieldId{}
+                            ? String::from_utf8_validated(layer_name(dynamic_layer))
+                            : "element"_s;
                 }
                 return invoked;
             }
@@ -782,7 +816,7 @@ struct Evaluator::Impl {
                 if (accessors[arg.column_variant].size(writable[i]) !=
                     expected_layer_counts[static_cast<std::size_t>(resolved_layers[i])])
                     return error(ErrorCode::invocation_failed,
-                                 "Column '" + std::string{resolved_names[i].view().std_view()} + "' changed length.");
+                                 String::concat("Column '", resolved_names[i], "' changed length."));
             }
         }
         if (wrote_positions) {
@@ -796,7 +830,7 @@ struct Evaluator::Impl {
         return {};
     }
 
-    Result<std::shared_ptr<Entry>> run(ObjectId id, State& state, const SourceKernel* source_kernel, std::string key,
+    Result<std::shared_ptr<Entry>> run(ObjectId id, State& state, const SourceKernel* source_kernel, CacheKey key,
                                        bool record_timings) {
         auto entry = std::make_shared<Entry>();
         entry->key = std::move(key);
@@ -836,10 +870,10 @@ struct Evaluator::Impl {
         return entry;
     }
 
-    std::string node_label(TypeId type) const {
+    String node_label(TypeId type) const {
         if (auto info = runtime.describe(type))
             return (*info)->name;
-        return "procedural.Node";
+        return "procedural.Node"_s;
     }
 
     void update(ObjectId id, State& state, bool record_timings) {
@@ -852,7 +886,8 @@ struct Evaluator::Impl {
             state.status.error = cause;
             state.status.root_node = id;
             state.root_error =
-                Error{cause.code, node_label(state.type) + ": " + cause.message, cause.source, cause.element};
+                Error{cause.code, String::concat(node_label(state.type), ": ", cause.message), cause.source,
+                      cause.element};
         };
         if (state.fault) {
             fail_root(*state.fault);
@@ -866,7 +901,7 @@ struct Evaluator::Impl {
             clear_error();
             return;
         }
-        std::string key = state.local;
+        CacheKey key = state.local;
         const SourceKernel* source_kernel{};
         if (!state.plan->native && !state.bypassed) {
             source_kernel = &**source_kernels.find(state.type); // read() already validated the current kernel.
@@ -891,18 +926,18 @@ struct Evaluator::Impl {
                 continue;
             const auto& upstream = *nodes.find(connection.from);
             if (upstream.status.error || !upstream.entry) {
-                const std::string port_name = connection.input < state.plan->ports.inputs.size()
-                                                  ? state.plan->ports.inputs[connection.input]
-                                                  : std::to_string(connection.input);
-                const std::string_view cause = upstream.root_error ? std::string_view{upstream.root_error->message}
-                                               : upstream.status.error
-                                                   ? std::string_view{upstream.status.error->message}
-                                                   : "upstream failed";
+                const String port_name = connection.input < state.plan->ports.inputs.size()
+                                             ? state.plan->ports.inputs[connection.input]
+                                             : String::from_number(connection.input);
+                const StringView cause = upstream.root_error     ? upstream.root_error->message.view()
+                                         : upstream.status.error ? upstream.status.error->message.view()
+                                                                 : StringView{"upstream failed"};
                 state.root_error = upstream.root_error ? upstream.root_error : upstream.status.error;
                 state.status.root_node =
                     upstream.status.root_node != ObjectId{} ? upstream.status.root_node : connection.from;
                 state.status.error = Error{ErrorCode::invocation_failed,
-                                           "Input '" + port_name + "' failed (" + std::string{cause} + ").",
+                                           String::concat("Input '", port_name, "' failed (", String::validated(cause),
+                                                          ")."),
                                            state.root_error ? state.root_error->source : decltype(Error::source){},
                                            state.root_error ? state.root_error->element : decltype(Error::element){}};
                 return;
@@ -1535,7 +1570,8 @@ Result<NodeBindings> Evaluator::inspect_bindings(ObjectId node) {
             const auto choice =
                 std::ranges::find_if(choices, [&](const auto& v) { return v.first == rule.when.value; });
             if (choice == choices.end())
-                return failure("Unknown attribute contract enum value: " + std::string(rule.when.value));
+                return failure(String::concat("Unknown attribute contract enum value: ",
+                                              String::from_utf8(rule.when.value).value_or("<invalid utf-8>"_s)));
             if ((choice->second == selected.bits) == rule.when.exclude)
                 continue;
         }
@@ -1548,19 +1584,20 @@ Result<NodeBindings> Evaluator::inspect_bindings(ObjectId node) {
             ATELIER_TRY_BIND(string_type, runtime.native_type<String>());
             String selected;
             ATELIER_TRY(runtime.read(node, *field, ValueOutput{*string_type, &selected}));
-            binding.name = selected.view().std_view();
+            binding.name = std::move(selected);
         }
         if (!attr.layer_selector.empty()) {
             ATELIER_TRY_BIND(field, runtime.find_field(state->type, attr.layer_selector));
             ATELIER_TRY_BIND(value, runtime.read(node, *field));
-            binding.layer = layer_name(static_cast<Layer>(std::get<EnumValue>(*value).bits));
+            binding.layer =
+                String::from_utf8_validated(layer_name(static_cast<Layer>(std::get<EnumValue>(*value).bits)));
         }
 
         const bool writes = attr.access == AttributeAccess::write;
         const auto& ports = writes ? state->plan->ports.outputs : state->plan->ports.inputs;
         const auto port = std::ranges::find(ports, attr.port);
         if (port == ports.end())
-            return failure("Unknown attribute contract port: " + attr.port);
+            return failure(String::concat("Unknown attribute contract port: ", attr.port));
         const auto index = static_cast<std::uint32_t>(port - ports.begin());
         const Geometry* geometry = &impl_->empty;
         const Input* edge = nullptr;
@@ -1572,13 +1609,13 @@ Result<NodeBindings> Evaluator::inspect_bindings(ObjectId node) {
             geometry = node_output(edge->from, edge->output);
             binding.upstream = edge->from;
         }
-        const auto* column = geometry->find(StringView{binding.name});
+        const auto* column = geometry->find(binding.name);
         if (column && binding.layer.empty())
-            binding.layer = layer_name(column->layer);
+            binding.layer = String::from_utf8_validated(layer_name(column->layer));
         if (column && edge)
             binding.column_source = column_source(edge->from, *column, edge->output);
-        if ((!attr.unless_present.empty() && geometry->find(StringView{attr.unless_present})) ||
-            (!attr.needs_present.empty() && !geometry->find(StringView{attr.needs_present})))
+        if ((!attr.unless_present.empty() && geometry->find(attr.unless_present)) ||
+            (!attr.needs_present.empty() && !geometry->find(attr.needs_present)))
             binding.status = "inactive";
         else if (writes)
             binding.status = column ? "written" : "omitted";

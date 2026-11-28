@@ -56,7 +56,7 @@ Result<Types> register_types(Runtime& runtime) {
     types.primitive_component = (*ids)[7];
     types.collision_component = (*ids)[8];
     types.spatial_component = (*ids)[9];
-    const auto make_paths = [&](auto& paths, TypeId record, std::string_view name) -> Result<void> {
+    const auto make_paths = [&](auto& paths, TypeId record, StringView name) -> Result<void> {
         ATELIER_TRY_BIND(outer, runtime.find_field(types.entity, name));
         constexpr std::array names{"x", "y", "z", "w"};
         for (std::size_t i = 0; i < paths.size(); ++i) {

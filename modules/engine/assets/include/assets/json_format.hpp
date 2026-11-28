@@ -9,10 +9,19 @@ inline constexpr std::size_t maximum_bytes = 16 * 1024 * 1024;
 // Persistent JSON-byte digests and bundle manifests use this same declaration.
 inline constexpr std::uint32_t json_bytes_version = 2;
 
-inline json::Result<json::Document> parse(std::string_view text) {
+inline json::Result<json::Document> parse(StringView text) {
     if (text.size() > maximum_bytes)
-        return std::unexpected(json::Error{json::Fault::range, "JSON exceeds the 16 MiB file limit.", {}, {}});
+        return std::unexpected(
+            json::Error{json::Fault::range, String::literal<"JSON exceeds the 16 MiB file limit.">(), {}, {}});
     return json::Document::parse(text, {32, json::DepthPolicy::containers, true});
+}
+
+inline json::Result<json::Document> parse(const String& text) {
+    return parse(text.view());
+}
+
+inline json::Result<json::Document> parse(Span<const std::byte> bytes) {
+    return parse(as_chars(bytes));
 }
 
 template <std::size_t Count>
@@ -46,13 +55,11 @@ inline void overlay(json::Builder& builder, json::Value target, json::Value kept
 }
 
 // A saved value shortened for diagnostics, cut at a UTF-8 boundary.
-inline std::string preview(json::Value value) {
+inline String preview(json::Value value) {
     const auto bytes = json::write(value);
     const StringView full{bytes.data(), bytes.size()};
     const auto prefix = bytes.size() > 96 ? full.utf8_prefix(93) : full;
-    std::string text{prefix.std_view()};
-    if (prefix.size() != bytes.size())
-        text += "...";
-    return text;
+    return prefix.size() != bytes.size() ? String::concat(String::from_utf8_validated(prefix), "...")
+                                         : String::from_utf8_validated(prefix);
 }
 }

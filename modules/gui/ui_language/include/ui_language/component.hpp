@@ -111,9 +111,14 @@ using InputValue = std::variant<bool, double, EditBinding, std::wstring, TextEdi
                                 ActionBinding, TableBinding, CodeBinding, TooltipBinding, TreeRowBinding>;
 
 struct KeyBinding {
+    KeyBinding() = default;
+
+    KeyBinding(Utf8Text path, ui::ControlKey control = {}, ui::ControlKey caption = {}, ui::ControlKey content = {})
+        : node(std::move(path).into_string()), key(control), label(caption), body(content) {}
+
     // A node in this component, or a dotted path through named static component
     // instances. Dotted endpoints own their keys; TextField uses TextEditBinding.
-    std::string node;
+    String node;
 
     ui::ControlKey key{};
 
@@ -157,7 +162,7 @@ struct Statistics {
     std::uint64_t scope_retirements{};
 };
 
-[[nodiscard]] Result<ui::ControlKey> allocate_control_key(ui::ControlKey& next_key, std::string_view exhausted);
+[[nodiscard]] Result<ui::ControlKey> allocate_control_key(ui::ControlKey& next_key, Utf8Text exhausted);
 
 // Call during the host Runtime's existing bootstrap, before its first object.
 Result<TypeId> register_types(Runtime&);
@@ -166,8 +171,8 @@ Result<TypeId> register_types(Runtime&);
 // share code and metadata; close all instances/components before the Runtime.
 class Component {
 public:
-    static Result<std::shared_ptr<Component>> compile(Runtime&, std::string_view name, std::string_view source,
-                                                      std::string_view entry = {});
+    static Result<std::shared_ptr<Component>> compile(Runtime&, StringView name, StringView source,
+                                                      StringView entry = {});
 
     ~Component();
 
@@ -200,7 +205,7 @@ private:
 class Module {
 public:
     struct ComponentTiming {
-        std::string name;
+        String name;
 
         Component::Compilation disposition{};
 
@@ -225,10 +230,10 @@ public:
 
     // Reuse only identical dispatch code from the active module in this Runtime.
     // Every revision still lowers/validates the whole graph and owns fresh metadata.
-    static Result<std::shared_ptr<Module>> compile(Runtime&, std::string_view name, std::string_view source,
+    static Result<std::shared_ptr<Module>> compile(Runtime&, StringView name, StringView source,
                                                    const Module* previous = nullptr, CompileTiming* = nullptr);
 
-    std::shared_ptr<Component> find(std::string_view) const;
+    std::shared_ptr<Component> find(StringView) const;
 
     struct Compilation {
         std::size_t compiled{};
@@ -247,8 +252,8 @@ private:
         std::chrono::steady_clock::time_point end;
     };
 
-    static Result<std::shared_ptr<Build>> start(Runtime&, std::string_view, std::string_view, const Module*,
-                                                CompileTiming*, bool background, WorkerTiming* = nullptr);
+    static Result<std::shared_ptr<Build>> start(Runtime&, StringView, StringView, const Module*, CompileTiming*,
+                                                bool background, WorkerTiming* = nullptr);
 
     static bool ready(const Build&);
 

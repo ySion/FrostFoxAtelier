@@ -85,7 +85,7 @@ TestTypes register_test_types(Runtime& runtime) {
     return types;
 }
 
-void publish(source::Program& program, std::string_view text) {
+void publish(source::Program& program, StringView text) {
     auto candidate = take(source::Program::prepare(take(program.request("world-acceptance.source", text))));
     take(program.try_publish(candidate));
 }

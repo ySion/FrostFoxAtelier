@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rhi/rhi.hpp"
+#include "foundation/array.hpp"
 
 #include <d3d12shader.h>
 #include <dxcapi.h>
@@ -14,7 +15,7 @@ namespace atelier::rhi::detail {
 struct ShaderSource {
     std::wstring name; // DXC main-file name: diagnostics and relative includes.
 
-    std::string text;
+    Array<char> text;
 
     std::wstring profile;
 
@@ -44,7 +45,7 @@ private:
 
     Microsoft::WRL::ComPtr<IDxcIncludeHandler> includes_;
 
-    std::string identity_; // Compiler version and commit; part of every cache key.
+    String identity_; // Compiler version and commit; part of every cache key.
 
     std::filesystem::path cache_;
 };

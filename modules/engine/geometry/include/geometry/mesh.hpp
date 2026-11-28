@@ -3,6 +3,7 @@
 #include "foundation/array.hpp"
 #include "foundation/result.hpp"
 #include "foundation/span.hpp"
+#include "foundation/string.hpp"
 #include "math/bounds.hpp"
 #include "memory/fatal.hpp"
 #include <algorithm>
@@ -11,12 +12,15 @@
 #include <expected>
 #include <limits>
 #include <memory>
-#include <string>
 
 namespace atelier::geometry {
 
 struct MeshError {
-    std::string message;
+    MeshError() = default;
+
+    MeshError(Utf8Text text) : message(std::move(text).into_string()) {}
+
+    String message;
 };
 
 struct Vertex {
@@ -49,7 +53,11 @@ struct MeshPart {
 };
 
 struct MaterialSlot {
-    std::string name;
+    MaterialSlot() = default;
+
+    MaterialSlot(Utf8Text slot_name) : name(std::move(slot_name).into_string()) {}
+
+    String name;
 };
 
 // Immutable CPU mesh resource, independent of World, Runtime and GPU lifetime.
@@ -195,16 +203,16 @@ using MeshRef = std::shared_ptr<const Mesh>;
 
 // A captured source key and its exact immutable CPU content, without material or Runtime ownership.
 struct MeshSource {
-    std::string source;
+    String source;
 
     MeshRef resolved;
 };
 
 // Names, not slot positions, are the persistent correspondence. Empty imported
 // names use the reserved slot/<index> spelling until assigned a named asset.
-[[nodiscard]] inline std::string material_slot_name(const Mesh& mesh, std::size_t index) {
+[[nodiscard]] inline String material_slot_name(const Mesh& mesh, std::size_t index) {
     const auto& slot = mesh.materials()[index];
-    return slot.name.empty() ? "slot/" + std::to_string(index) : slot.name;
+    return slot.name.empty() ? String::concat("slot/", index) : slot.name;
 }
 
 // A built-in resource; the cube has no special object type or rendering path.
@@ -227,7 +235,7 @@ struct MeshSource {
             }
         auto mesh = Mesh::create(std::move(vertices), Array<std::uint8_t>{5, 3, 5, 3, 5, 3, 5, 3, 5, 3, 5, 3});
         if (!mesh)
-            fatal(mesh.error().message);
+            fatal(mesh.error().message.c_str());
         return std::move(*mesh);
     }();
     return resource;

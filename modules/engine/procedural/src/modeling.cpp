@@ -219,12 +219,13 @@ struct SurfaceBuilder {
 
 template <class T>
 Result<const Attribute*> group_column(const Geometry& geometry, StringView name) {
+    const auto safe_name = [&] { return String::from_utf8(name).value_or("<invalid utf-8>"_s); };
     const auto* attribute = geometry.find(name);
     if (!attribute)
-        return failure("Group attribute " + std::string{name.std_view()} + " was not found.");
+        return failure(String::concat("Group attribute ", safe_name(), " was not found."));
     if (!std::holds_alternative<SharedArray<T>>(attribute->data))
-        return failure("Group attribute " + std::string{name.std_view()} +
-                       (std::same_as<T, bool> ? " must be bool." : " must be float."));
+        return failure(String::concat("Group attribute ", safe_name(),
+                                      std::same_as<T, bool> ? " must be bool."_s : " must be float."_s));
     return attribute;
 }
 
@@ -286,8 +287,7 @@ Result<Geometry> build_group(const Geometry& input, const GroupSettings& setting
     case GroupOperation::subtract: {
         ATELIER_TRY_BIND(attr, group_column<bool>(input, settings.base_group));
         if ((*attr)->layer != layer)
-            return failure("Base group " + std::string{settings.base_group.std_view()} +
-                           " belongs to a different layer.");
+            return failure(String::concat("Base group ", (*attr)->name, " belongs to a different layer."));
         base = &std::get<SharedArray<bool>>((*attr)->data).array();
         break;
     }
@@ -312,13 +312,15 @@ Result<Geometry> build_group(const Geometry& input, const GroupSettings& setting
         } else if (scalars) {
             const float value = (*scalars)[i];
             if (!std::isfinite(value))
-                return failure("Group attribute " + std::string{settings.source_attribute.std_view()} +
-                               " is not finite at element " + std::to_string(i) + ".");
+                return failure(String::concat(
+                    "Group attribute ",
+                    String::from_utf8(settings.source_attribute).value_or("<invalid utf-8>"_s),
+                    " is not finite at element ", i, "."));
             match = value >= settings.minimum && value <= settings.maximum;
         } else if (const auto face = input.primitive(i); face.kind == PrimitiveKind::polygon) {
             auto normal = compute_polygon_normal(input, face);
             if (!normal)
-                return failure("Group primitive " + std::to_string(i) + ": " + normal.error().message);
+                return failure(String::concat("Group primitive ", i, ": ", normal.error().message));
             // Include the boundary even when normalization and cosine round in opposite directions.
             match = math::dot(*normal, axis) >= cosine - 4. * std::numeric_limits<double>::epsilon();
         }
@@ -349,7 +351,7 @@ Result<Geometry> extrude(const Geometry& surface, const ExtrudeSettings& setting
         ATELIER_TRY(Geometry::admit_name(group_name));
         if (const auto* existing = surface.find(group_name)) {
             if (existing->layer != Layer::primitive || !std::holds_alternative<SharedArray<bool>>(existing->data))
-                return failure("Attribute " + std::string{group_name.std_view()} + " has another layer or type.");
+                return failure(String::concat("Attribute ", existing->name, " has another layer or type."));
         }
     }
 
@@ -386,13 +388,14 @@ Result<Geometry> extrude(const Geometry& surface, const ExtrudeSettings& setting
         }
     }
 
-    const auto read_prim_override = [&](StringView name, const char* label) -> Result<const Array<float>*> {
+    const auto read_prim_override = [&](StringView name, StringView label) -> Result<const Array<float>*> {
         if (name.empty())
             return nullptr;
         ATELIER_TRY_BIND(col, surface.read<float>(name, Layer::primitive));
         if (!*col)
-            return failure(std::string("Extrude ") + label + " " + std::string{name.std_view()} +
-                           " was not found on primitive layer.");
+            return failure(String::concat("Extrude ", String::validated(label), " ",
+                                          String::from_utf8(name).value_or("<invalid utf-8>"_s),
+                                          " was not found on primitive layer."));
         return *col;
     };
     ATELIER_TRY_BIND(dist_override_res, read_prim_override(settings.distance_attribute, "distance_attribute"));
@@ -501,7 +504,7 @@ Result<Geometry> extrude(const Geometry& surface, const ExtrudeSettings& setting
             for (std::uint32_t j = 0; j < k; ++j) {
                 const auto unit = math::try_normalize(proj[(j + 1) % k] - proj[j]);
                 if (!unit)
-                    return failure("Extrude encountered a degenerate edge on primitive " + std::to_string(p) + ".");
+                    return failure(String::concat("Extrude encountered a degenerate edge on primitive ", p, "."));
                 e_unit[j] = *unit;
                 m_inward[j] = math::cross(n, *unit);
             }
@@ -513,12 +516,12 @@ Result<Geometry> extrude(const Geometry& surface, const ExtrudeSettings& setting
                 const Vector3d bis = m_prev + m_next;
                 const double denom = math::dot(bis, m_next);
                 if (!(denom > 1e-6))
-                    return failure("Extrude inset collapsed a corner on primitive " + std::to_string(p) + ".");
+                    return failure(String::concat("Extrude inset collapsed a corner on primitive ", p, "."));
                 inset_pts[j] = proj[j] + bis * (double{ins} / denom);
             }
             for (std::uint32_t j = 0; j < k; ++j) {
                 if (!(math::dot(inset_pts[(j + 1) % k] - inset_pts[j], e_unit[j]) > tolerance))
-                    return failure("Extrude inset collapsed or inverted primitive " + std::to_string(p) + ".");
+                    return failure(String::concat("Extrude inset collapsed or inverted primitive ", p, "."));
             }
 
             base_ring.resize(k);
@@ -693,7 +696,11 @@ Result<Geometry> sweep(const Geometry& backbone, const SweepSettings& settings, 
 
     // A bent side quad can split into two triangles; a non-convex cap becomes a fan.
     // Check their worst-case counts before allocating even the first profile ring.
-    std::size_t point_count{}, corner_reserve{}, face_reserve{};
+    std::size_t point_count{};
+
+    std::size_t corner_reserve{};
+
+    std::size_t face_reserve{};
     const auto size_output = [&](std::uint32_t ring) -> Result<void> {
         const std::uint64_t stations = backbone.vertex_points().size();
         const std::uint64_t points = stations * ring;
@@ -823,7 +830,7 @@ Result<Geometry> sweep(const Geometry& backbone, const SweepSettings& settings, 
             const Vector3d delta = path_pts[s + 1] - path_pts[s];
             const double len = math::length(delta);
             if (!(len > 1e-6))
-                return failure("Sweep polyline " + std::to_string(p) + " contains a zero-length segment.");
+                return failure(String::concat("Sweep polyline ", p, " contains a zero-length segment."));
             arc_u[s + 1] = arc_u[s] + len;
             const Vector3d t = delta / len;
             seg_t[s] = t;
@@ -881,7 +888,8 @@ Result<Geometry> sweep(const Geometry& backbone, const SweepSettings& settings, 
                 const auto next = i + 1 == ring_size ? 0 : i + 1;
                 const auto across = at(k, next) - at(k, prev);
                 const auto here = at(k, i);
-                Vector3d before{}, after{};
+                Vector3d before{};
+                Vector3d after{};
                 if (k)
                     before = math::fast_normalize_or_zero(math::cross(across, here - at(k - 1, i)));
                 if (k + 1 < m)

@@ -21,7 +21,7 @@ struct DockTab {
 
     ui_layout::Size minimum{220, 140}; // Includes pane chrome; shrinks only if the host is smaller.
 
-    Array<std::string> classes{};
+    Array<String> classes{};
 };
 
 // Single-host split tree. Owns geometry and tab placement, never the views' state.

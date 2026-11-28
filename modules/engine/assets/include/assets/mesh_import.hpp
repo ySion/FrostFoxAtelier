@@ -3,21 +3,21 @@
 #include "assets/image_decode.hpp"
 #include "foundation/array.hpp"
 #include "foundation/optional.hpp"
+#include "foundation/string.hpp"
 #include "geometry/mesh.hpp"
 #include "runtime/runtime.hpp"
 #include <array>
+#include <cstddef>
 #include <filesystem>
-#include <string>
-#include <string_view>
 
 namespace atelier::assets {
-inline constexpr std::array<std::string_view, 6> imported_material_inputs{"base_color", "roughness", "metallic",
-                                                                          "normal",     "emissive",  "opacity"};
+inline constexpr std::array<StringView, 6> imported_material_inputs{"base_color", "roughness", "metallic",
+                                                                    "normal",     "emissive",  "opacity"};
 
 struct ImportedFile {
     std::filesystem::path relative;
 
-    std::string bytes;
+    Array<std::byte> bytes;
 };
 
 struct MeshImport {
@@ -27,7 +27,7 @@ struct MeshImport {
     // Import publishes these exact bytes; project refresh tracks the same paths.
     Array<ImportedFile> files;
 
-    Array<std::string> notes; // Source content the import left out, one line each.
+    Array<String> notes; // Source content the import left out, one line each.
 
     // Both arrays align with mesh->materials(). An absent author material is
     // nullopt, never inferred from white/default parameter values.

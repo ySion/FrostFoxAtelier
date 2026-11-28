@@ -105,8 +105,15 @@ struct Placement {
 };
 
 // Borrows one immutable point input for either resource instances or real copies.
-constexpr char orientation[] = "orient", uniform_scale[] = "pscale", axis_scale[] = "scale", normal_name[] = "N",
-               up_name[] = "up";
+constexpr char orientation[] = "orient";
+
+constexpr char uniform_scale[] = "pscale";
+
+constexpr char axis_scale[] = "scale";
+
+constexpr char normal_name[] = "N";
+
+constexpr char up_name[] = "up";
 
 struct PlacementColumns {
     const Array<Vector3>* positions;
@@ -273,7 +280,9 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
     if (!settings.group.empty()) {
         ATELIER_TRY_BIND(mask, surface.read<bool>(settings.group, Layer::primitive));
         if (!*mask)
-            return failure("Scatter primitive group " + std::string{settings.group.std_view()} + " was not found.");
+            return failure(String::concat("Scatter primitive group ",
+                                          String::from_utf8(settings.group).value_or("<invalid utf-8>"_s),
+                                          " was not found."));
         selected = *mask;
     }
     const auto triangles = detail::TriangleView::create(surface);
@@ -532,11 +541,13 @@ Result<Geometry> scatter(const Geometry& surface, const ScatterSettings& setting
 
 // The native placement contract covers named bindings. Bulk propagation of source geometry
 // and Realize's explicit target_attributes list are separate from these conventional names.
-void detail::append_native_rules(Array<AttributeRule>& rules, std::string_view type) {
+void detail::append_native_rules(Array<AttributeRule>& rules, StringView type) {
     using enum AttributeAccess;
     if (type == "procedural.Group") {
-        const AttributeRule::Condition normal{"criterion", "normal"}, existing{"criterion", "existing"},
-            range{"criterion", "range"}, combine{"operation", "replace", true};
+        const AttributeRule::Condition normal{"criterion", "normal"};
+        const AttributeRule::Condition existing{"criterion", "existing"};
+        const AttributeRule::Condition range{"criterion", "range"};
+        const AttributeRule::Condition combine{"operation", "replace", true};
         rules = {{"input",
                   "P",
                   {},
@@ -733,7 +744,7 @@ Result<void> transform(Geometry& geometry, Vector3 translate, Quaternion rotatio
             for (auto& q : values) {
                 q = *unit_rotation * q;
                 if (!math::is_finite(q))
-                    return failure("Transformed " + std::string{name.std_view()} + " is not finite.");
+                    return failure(String::concat("Transformed ", attribute.name, " is not finite."));
             }
             continue;
         }
@@ -746,7 +757,7 @@ Result<void> transform(Geometry& geometry, Vector3 translate, Quaternion rotatio
         for (auto& v : values) {
             v = transformed(v, usage, matrix, normals);
             if (!math::is_finite(v))
-                return failure("Transformed " + std::string{name.std_view()} + " is not finite.");
+                return failure(String::concat("Transformed ", attribute.name, " is not finite."));
         }
     }
     if (geometry.count(Layer::instance))
@@ -840,7 +851,8 @@ Result<Geometry> match_size(const Geometry& geometry, const MatchSizeSettings& s
 Result<void> promote(Geometry& geometry, StringView name, Layer to, Reduce reduce) {
     const auto* attribute = geometry.find(name);
     if (!attribute)
-        return failure("Geometry has no attribute " + std::string{name.std_view()} + ".");
+        return failure(
+            String::concat("Geometry has no attribute ", String::from_utf8(name).value_or("<invalid utf-8>"_s), "."));
     const auto from = attribute->layer;
     if (from == to)
         return {};
@@ -1111,8 +1123,7 @@ Result<Geometry> realize(Span<const Geometry> sources, const Geometry& points, S
         const auto& previous = *found->first;
         if (previous.layer != attribute.layer || previous.usage != attribute.usage ||
             previous.data.index() != attribute.data.index())
-            return failure("Realize attribute " + std::string{attribute.name.view().std_view()} +
-                           " differs in layer, type or usage.");
+            return failure(String::concat("Realize attribute ", attribute.name, " differs in layer, type or usage."));
         if (broadcast)
             found->broadcast = &attribute;
         return {};
@@ -1210,8 +1221,7 @@ Result<Geometry> realize(Span<const Geometry> sources, const Geometry& points, S
                             if (attribute.usage == Usage::orientation) {
                                 v = copy.placement.rotation * v;
                                 if (!math::is_finite(v))
-                                    return failure("A realized " + std::string{attribute.name.view().std_view()} +
-                                                   " is not finite.");
+                                    return failure(String::concat("A realized ", attribute.name, " is not finite."));
                             }
                         }
                         values.add(std::move(v));

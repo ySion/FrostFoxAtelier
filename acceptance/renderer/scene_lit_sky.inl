@@ -110,9 +110,16 @@ void sky_background_geometry(Fixture& f) {
 atelier::rendering::SkyMapRef sky_real_map() {
     const auto path = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() /
                       "examples/Content/Sponza/Sky/kloppenheim_05_4k.hdr";
-    std::ifstream input(path, std::ios::binary);
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
     check(input.good(), "the bundled kloppenheim_05 HDRI is readable");
-    const std::string bytes{std::istreambuf_iterator<char>(input), {}};
+    const auto size = input.tellg();
+    check(size >= 0, "the bundled kloppenheim_05 HDRI size is readable");
+    atelier::Array<std::byte> bytes;
+    bytes.resize_uninitialized(static_cast<std::size_t>(size));
+    input.seekg(0);
+    if (!bytes.empty())
+        check(bool(input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()))),
+              "the bundled kloppenheim_05 HDRI bytes are readable");
     auto result = atelier::rendering::decode_radiance_hdr(bytes);
     check(result.has_value(), "decode bundled HDRI");
     return std::move(*result);

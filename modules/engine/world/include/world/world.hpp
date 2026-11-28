@@ -192,7 +192,7 @@ public:
     // The bytes carry their input key (format, Jolt version, mesh source and
     // scaled geometry hash); physics checks it where it uses the shape, so
     // edits never clear it.
-    std::shared_ptr<const std::string> cooked_shape{};
+    std::shared_ptr<const Array<std::byte>> cooked_shape{};
 
     [[nodiscard]] Response response(std::uint32_t category) const noexcept;
 
@@ -520,7 +520,7 @@ struct CapabilityMember {
 // The invalid_value Diagnostic for a type-rule failure. `record` is the path of
 // the checked value inside `object`, empty when the object itself was checked.
 [[nodiscard]] Diagnostic validation_diagnostic(const ValidationFailure&, DiagnosticPhase, ObjectId object,
-                                               ObjectId entity, Array<std::string> record = {});
+                                               ObjectId entity, Array<String> record = {});
 
 // Same Runtime thread. Runtime outlives World, its detached objects and tasks.
 // The World owns only member roots and execution/registration state. Entity's
@@ -767,7 +767,7 @@ public:
         // True when the chain of `entity` has a zero scale axis or `world`, this
         // pass's matrix of it, is singular; one warning names the topmost
         // zero-scale node. Degenerate spaces are not object failures under any policy.
-        [[nodiscard]] bool degenerate(ObjectId entity, const math::Matrix4& world, std::string_view message);
+        [[nodiscard]] bool degenerate(ObjectId entity, const math::Matrix4& world, Utf8Text message);
 
         [[nodiscard]] Result<Optional<Orientation>> orientation(ObjectId entity);
 

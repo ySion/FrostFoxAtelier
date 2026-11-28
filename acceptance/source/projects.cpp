@@ -27,24 +27,29 @@ void publish(Program& program, source::SourceSnapshot snapshot) {
 
 void verify_project_engine_sources() {
     const auto root =
-        std::filesystem::temp_directory_path() / ("atelier-engine-sources-" + std::to_string(GetCurrentProcessId()));
+        std::filesystem::temp_directory_path() / String::concat("atelier-engine-sources-", GetCurrentProcessId()).c_str();
     ScopeExit cleanup{[&]() noexcept {
         std::error_code ignored;
         std::filesystem::remove_all(root, ignored);
     }};
     std::filesystem::create_directories(root);
-    const std::string text =
-        "const uint procedural.SEED = 7;\nuint procedural.hash(uint x) { return x * 31 + procedural.SEED; }\n";
+    const String text =
+        "const uint procedural.SEED = 7;\nuint procedural.hash(uint x) { return x * 31 + procedural.SEED; }\n"_s;
     const auto path = root / "random.source";
-    std::ofstream(path, std::ios::binary) << "\xef\xbb\xbf" << text;
+    std::ofstream(path, std::ios::binary) << "\xef\xbb\xbf" << text.c_str();
     const auto loaded = take(source::read_source_file(path, "engine/procedural/random.source"));
     // Independent FNV-1a of these exact saved bytes, including the UTF-8 BOM.
     require(loaded.source == text && loaded.version == 0x29c502cbc158a196ull,
             "Saved Source text or its raw-byte version changed.");
-    std::ofstream(path, std::ios::binary) << "\xef\xbb\xbf" << loaded.source;
+    std::ofstream(path, std::ios::binary) << "\xef\xbb\xbf" << loaded.source.c_str();
     const auto restored = take(source::read_source_file(path, "engine/procedural/random.source"));
     require(restored.source == text && restored.version == 0x29c502cbc158a196ull,
             "Current Source format did not round-trip.");
+    const auto bad_path = root / "invalid_utf8.source";
+    std::ofstream(bad_path, std::ios::binary).write("void bad() { String s = \"\xff\"; }", 30);
+    const auto bad_loaded = source::read_source_file(bad_path, "Source/Bad.source");
+    require(!bad_loaded && bad_loaded.error().message.contains("valid UTF-8"),
+            "read_source_file accepted invalid UTF-8 bytes.");
 }
 
 source::SourceSnapshot sources() {
@@ -91,7 +96,7 @@ void verify_world_project() {
     ++revised.version;
     auto& file = revised.files.back();
     ++file.version;
-    file.source.replace(file.source.find("Move owner."), 11, "Translate owner.");
+    (void)file.source.replace(file.source.view().find("Move owner."), 11, "Translate owner.");
     auto candidate = Program::prepare(take(program->request(std::move(revised))));
     require(!candidate && candidate.error().code == ErrorCode::rebuild_required &&
                 info->description == "Move owner.\nUnits: metres.",
@@ -183,20 +188,26 @@ void verify_frontend_and_pod_evaluation() {
             .method<&PairHost::add_pair>("add_pair", true)
             .build(),
         NativeRegistration<ContractHost>(runtime, "test.ContractHost", TypeKind::object)
-            .type_metadata({{"source.contract_method", "process"}})
+            .type_metadata({{"source.contract_method"_s, "process"_s}})
             .build()}));
     auto project = take(Program::create(runtime));
-    const auto reject_snapshot = [&](std::string text, std::string_view expected, std::size_t expected_line = 0) {
+    {
+        const auto bad_req =
+            take(project->request("Source/Bad.source", StringView{"void bad() { String s = \"\xff\"; }", 30}));
+        const auto bad_prep = Program::prepare(bad_req);
+        require(!bad_prep && bad_prep.error().message.contains("valid UTF-8"),
+                bad_prep ? "Invalid UTF-8 source unexpectedly compiled."_s : bad_prep.error().message);
+    }
+    const auto reject_snapshot = [&](Utf8Text text, StringView expected, std::size_t expected_line = 0) {
         auto request =
             take(project->request(source::SourceSnapshot{"bad", 1, {{"Source/Bad.source", 1, std::move(text)}}}));
         auto prepared = Program::prepare(request);
         require(!prepared && prepared.error().message.contains(expected),
-                prepared ? "Invalid source unexpectedly compiled." : prepared.error().message);
+                prepared ? "Invalid source unexpectedly compiled."_s : prepared.error().message);
         if (expected_line)
             require(prepared.error().source && prepared.error().source->line == expected_line,
                     "Unexpected diagnostic line number.");
     };
-    reject_snapshot("void bad() { String s = \"\xff\"; }", "valid UTF-8");
     reject_snapshot("int ok() { return 1; }\rint bad() { return true; }", "Type mismatch", 2);
     reject_snapshot("void bodyless();", "Expected '{'");
     reject_snapshot("struct MissingSemi { int x; }", "Expected ';'");
@@ -252,18 +263,20 @@ class test.SopNode : test.ContractHost {
     const auto sop_type = take(runtime.find_type("test.SopNode"));
     const auto* sop_info = take(runtime.describe(sop_type));
     require(sop_info->fields.size() == 2 &&
-                sop_info->fields[0].metadata == MetadataList{{"procedural.role", "run_over"}} &&
+                sop_info->fields[0].metadata == MetadataList{{"procedural.role"_s, "run_over"_s}} &&
                 sop_info->described_methods.size() == 2 && sop_info->described_methods[1].name == "process" &&
                 sop_info->described_methods[1].parameter_names.size() == 5 &&
                 sop_info->described_methods[1].parameter_metadata[0].empty() &&
-                sop_info->described_methods[1].parameter_metadata[1] == MetadataList{{"procedural.role", "port"}} &&
-                sop_info->described_methods[1].parameter_metadata[2] == MetadataList{{"procedural.layer", "point"},
-                                                                                     {"procedural.name", "src"},
-                                                                                     {"procedural.optional", "true"},
-                                                                                     {"procedural.role", "in"}} &&
-                sop_info->described_methods[1].parameter_metadata[3] == MetadataList{{"procedural.role", "inout"}} &&
+                sop_info->described_methods[1].parameter_metadata[1] == MetadataList{{"procedural.role"_s, "port"_s}} &&
+                sop_info->described_methods[1].parameter_metadata[2] ==
+                    MetadataList{{"procedural.layer"_s, "point"_s},
+                                 {"procedural.name"_s, "src"_s},
+                                 {"procedural.optional"_s, "true"_s},
+                                 {"procedural.role"_s, "in"_s}} &&
+                sop_info->described_methods[1].parameter_metadata[3] ==
+                    MetadataList{{"procedural.role"_s, "inout"_s}} &&
                 sop_info->described_methods[1].parameter_metadata[4] ==
-                    MetadataList{{"procedural.from", "target"}, {"procedural.role", "out"}},
+                    MetadataList{{"procedural.from"_s, "target"_s}, {"procedural.role"_s, "out"_s}},
             "Source class [RunOver] or parameter attributes did not publish into TypeInfo::described_methods.");
     // Ordinary classes (base without source.contract_method) can hot-reload to add `process` and rename its parameter,
     // while non-contract helper parameter renames on contract classes remain compatible as well.
@@ -305,31 +318,30 @@ class test.SopNode : test.ContractHost {
 )"}}});
     const auto ord_proc =
         std::ranges::find(described_prog->entries(), "test.Ordinary.process", &source::EntryInfo::name);
-    require(ord_proc != described_prog->entries().end() &&
-                ord_proc->parameter_names == Array<std::string>{"renamed_dt"},
+    require(ord_proc != described_prog->entries().end() && ord_proc->parameter_names == Array<String>{"renamed_dt"_s},
             "Ordinary class process hot-reload or EntryInfo::parameter_names update failed.");
     // Host-registered Runtime descendants of a Source class must also obey cold/warm hiding parity in both orders:
     // (1) warm-added `process` on `test.Ordinary` blocks registering a child with member `process`;
     // (2) registering a child with member `child_slot` blocks `test.Ordinary` from warm-adding `void child_slot()`.
     {
         TypeDefinition bad_child;
-        bad_child.name = "test.BadManagedChild";
+        bad_child.name = "test.BadManagedChild"_s;
         bad_child.kind = TypeKind::object;
         bad_child.base = TypeReference{"test.Ordinary"};
-        bad_child.fields.add({"process", {TypeReference::native<std::int32_t>()}});
+        bad_child.fields.add({"process"_s, {TypeReference::native<std::int32_t>()}});
         const auto rejected_child = runtime.register_type(std::move(bad_child));
         require(!rejected_child && rejected_child.error().code == ErrorCode::invalid_definition &&
                     rejected_child.error().message.contains("test.BadManagedChild.process hides test.Ordinary.process"),
                 "Runtime child type hid a warm-added Source ancestor method.");
 
         TypeDefinition ok_child;
-        ok_child.name = "test.OkManagedChild";
+        ok_child.name = "test.OkManagedChild"_s;
         ok_child.kind = TypeKind::object;
         ok_child.base = TypeReference{"test.Ordinary"};
-        ok_child.fields.add({"child_slot", {TypeReference::native<std::int32_t>()}});
+        ok_child.fields.add({"child_slot"_s, {TypeReference::native<std::int32_t>()}});
         take(runtime.register_type(std::move(ok_child)));
 
-        const std::string warm_clash_child = R"(class test.Ordinary : test.PairHost {
+        const String warm_clash_child = R"(class test.Ordinary : test.PairHost {
     int count = 0;
     void helper(int a) {}
     void process(int renamed_dt) {}
@@ -345,7 +357,7 @@ class test.SopNode : test.ContractHost {
                  [InOut] Array<int>& col,
                  [Out(From = "target")] Array<int>& out_col) {}
 }
-)";
+)"_s;
         auto child_clash_req = take(described_prog->request({"sop", 4, {{"Source/Sop.source", 4, warm_clash_child}}}));
         auto child_clash_cand = Program::prepare(child_clash_req);
         require(!child_clash_cand && child_clash_cand.error().code == ErrorCode::invalid_definition &&
@@ -356,12 +368,13 @@ class test.SopNode : test.ContractHost {
     }
     // Warm hot-reload must reject methods hiding native base methods or hidden fields, matching cold load.
     for (const auto& [bad_member, expected_msg] :
-         {std::pair{"void add_pair(int x) {}", "test.Ordinary.add_pair hides test.PairHost.add_pair"},
-          std::pair{"void secret(int x) {}", "test.Ordinary.secret hides test.PairHost.secret"}}) {
-        const std::string warm_bad =
-            std::string{
-                "class test.Ordinary : test.PairHost {\n    int count = 0;\n    void helper(int a) {}\n    void process(int renamed_dt) {}\n    "} +
-            bad_member + R"(
+         {std::pair<StringView, StringView>{"void add_pair(int x) {}",
+                                            "test.Ordinary.add_pair hides test.PairHost.add_pair"},
+          std::pair<StringView, StringView>{"void secret(int x) {}",
+                                            "test.Ordinary.secret hides test.PairHost.secret"}}) {
+        const String warm_bad = String::concat(
+            "class test.Ordinary : test.PairHost {\n    int count = 0;\n    void helper(int a) {}\n    void process(int renamed_dt) {}\n    ",
+            String::validated(bad_member), R"(
 }
 class test.SopNode : test.ContractHost {
     [RunOver] int domain = 0;
@@ -373,7 +386,7 @@ class test.SopNode : test.ContractHost {
                  [InOut] Array<int>& col,
                  [Out(From = "target")] Array<int>& out_col) {}
 }
-)";
+)");
         auto hide_req = take(described_prog->request({"sop", 4, {{"Source/Sop.source", 4, warm_bad}}}));
         auto hide_cand = Program::prepare(hide_req);
         require(!hide_cand && hide_cand.error().code == ErrorCode::invalid_definition &&
@@ -409,7 +422,7 @@ class test.SopNode : test.ContractHost {
     // and CompileOptions{.fast = true} produce identical results across both optimization tiers.
     const auto host_type = take(runtime.find_type("test.PairHost"));
     auto host = take(runtime.create(host_type));
-    const std::string_view pod_and_sop = R"(
+    const StringView pod_and_sop = R"(
 bool check_intrinsics(float zero) {
     const float nan_f = zero / zero;
     const float inf_f = 1.0f / zero;
@@ -484,7 +497,7 @@ int evaluate(Array<int>& column, test.PlainPair delta) {
     // 1. Standalone and stateless_direct `fail("...")` + non-void branch termination.
     {
         auto pure_prog = take(Program::create(runtime));
-        const std::string_view pure_src = R"(
+        const StringView pure_src = R"(
 int checked_double(int x) {
     if (x < 0) {
         fail("Negative scalar rejected.");
@@ -515,7 +528,7 @@ int run_checked(int x) {
             .field<&SeqHolder::lut>("lut", {TypeReference::native<Array<std::int32_t>>()}, offsetof(SeqHolder, lut))
             .build()}));
     {
-        const std::string_view clean_parallel_src = R"(
+        const StringView clean_parallel_src = R"(
 int scale_step(int base, int factor, int& slot) {
     if (factor < 0) {
         fail("Negative LUT factor.");
@@ -657,7 +670,7 @@ void run_parallel(int count, const test.PlainPair& pair, const Array<int>& lut,
 
     // 3. Debugger stepping inside `parallel_for` and stopping on `fail(...)` (`CompileOptions::debugging`).
     {
-        const std::string_view dbg_src = R"(
+        const StringView dbg_src = R"(
 void debug_parallel(Array<int>& values) {
     const uint n = values.size();
     parallel_for (uint i : n) {
@@ -697,7 +710,7 @@ void debug_parallel(Array<int>& values) {
 
     // 4. Static compile-time data-race and contract rejections.
     {
-        const std::pair<std::string_view, std::string_view> bad_cases[]{
+        const std::pair<StringView, StringView> bad_cases[]{
             {"void f(Array<int>& a) { int s = 0; parallel_for (uint i : a.size()) { s = s + 1; } }",
              "parallel_for can only mutate locals declared inside the loop or outer Array[i] elements"},
             {"void bump(int& x) { x = x + 1; } void f(Array<int>& a) { int s = 0; parallel_for (uint i : a.size()) { bump(s); } }",
@@ -734,8 +747,8 @@ void debug_parallel(Array<int>& values) {
     // 5. Borrowed record/scalar overlap parity across normal & debug builds, helper zero task-body sequence
     //    re-projection + merged `source_call` diagnostics, embedded-NUL `fail`, and >512-byte UTF-8 coroutine `fail`.
     {
-        const auto publish_single = [](Program& prog, std::string_view name, std::string_view src,
-                                       std::string_view entry = {}, source::CompileOptions opts = {}) {
+        const auto publish_single = [](Program& prog, StringView name, StringView src, StringView entry = {},
+                                       source::CompileOptions opts = {}) {
             auto req = take(prog.request(name, src, entry, opts));
             auto cand = take(Program::prepare(req));
             take(prog.try_publish(cand));
@@ -743,7 +756,7 @@ void debug_parallel(Array<int>& values) {
         // (a) Pure-Source `rows[0]` record borrow and `xs[0]` scalar borrow overlapping writable Array -> `parallel_alias`
         //     in BOTH normal (`debugging = false`) and debug (`debugging = true`) builds; by-value scalar capture gives
         //     identical `[12, 12]` in both builds.
-        const std::string_view alias_parity_src = R"(
+        const StringView alias_parity_src = R"(
 void seed_rows(const test.PlainPair& seed, Array<test.PlainPair>& rows) {
     parallel_for (uint i : rows.size()) {
         rows[i].x = rows[i].x + seed.x + 10;
@@ -779,7 +792,7 @@ void run_scalar_val_capture(Array<int>& xs) {
             *size = view.size();
         };
         take(runtime.register_type(std::move(view_type)));
-        const std::string_view view_src = R"(
+        const StringView view_src = R"(
 void increment(const test.IntView& input, test.IntArray& output) {
     parallel_for (uint i : output.size()) { output[i] = input[i] + 1; }
 }
@@ -833,7 +846,7 @@ void increment(const test.IntView& input, test.IntArray& output) {
 
         // (b) 4096-element helper call: `sequence_view` projected ONLY twice on serial thread (0 in worker tasks),
         //     and `source_call` count equals 4096 in both parallel and debug-serial modes.
-        const std::string_view proj_src = R"(
+        const StringView proj_src = R"(
 int sample_lut(const Array<int>& lut, uint idx) {
     return lut[idx & 3];
 }
@@ -864,7 +877,7 @@ void run_helper_proj(const Array<int>& lut, Array<int>& out) {
             require(proj_out[0] == 10 && proj_out[4095] == 40, "Parallel helper output mismatch.");
         }
         {
-            const std::string_view shared_helper_src = R"(
+            const StringView shared_helper_src = R"(
 int make_pair_sum(int v) {
     test.PlainPair p;
     p.x = v;
@@ -894,7 +907,7 @@ int serial_caller(int v) {
 
         // (c) Empty-body `parallel_for` under Debugger stops with `i == 0` in scope and supports immediate `abort`.
         {
-            const std::string_view empty_loop_src = "void spin() { parallel_for (uint i : 1000000) {} }";
+            const StringView empty_loop_src = "void spin() { parallel_for (uint i : 1000000) {} }";
             auto spin_prog = take(Program::create(runtime));
             publish_single(*spin_prog, "spin.source", empty_loop_src, "spin", {.debugging = true});
             std::uint32_t header_stops = 0;
@@ -921,8 +934,8 @@ int serial_caller(int v) {
         // (d) Embedded NUL in `fail("A\0B")` preserves all 3 bytes across sync, stateless-direct, and Debugger stops;
         //     and >512-byte multi-byte UTF-8 `fail("...")` in an `async` coroutine preserves full valid UTF-8 text.
         {
-            const std::string expected_nul("A\0B", 3);
-            const std::string_view nul_src = R"(void fail_nul() { fail("A\0B"); })";
+            const String expected_nul = "A\0B"_s;
+            const StringView nul_src = R"(void fail_nul() { fail("A\0B"); })";
             auto nul_prog = take(Program::create(runtime));
             publish_single(*nul_prog, "nul.source", nul_src);
             const auto sync_nul = nul_prog->entry().invoke(ObjectId{}, Span<const Scalar>{});
@@ -935,7 +948,7 @@ int serial_caller(int v) {
             auto dbg_nul_prog = take(Program::create(runtime));
             publish_single(*dbg_nul_prog, "dbg_nul.source", nul_src, "fail_nul",
                            {.diagnostics = true, .debugging = true});
-            std::string stopped_msg;
+            String stopped_msg;
             source::Debugger nul_dbg{[&](const source::DebugSnapshot& stop) noexcept -> Result<source::DebugCommand> {
                 if (stop.reason == source::DebugStopReason::error && stop.error)
                     stopped_msg = stop.error->message;
@@ -949,10 +962,8 @@ int serial_caller(int v) {
                         nul_report.error && nul_report.error->message == expected_nul,
                     "Debug or diagnostics capture truncated fail(...) at an embedded NUL byte.");
 
-            std::string long_utf8;
-            for (int k = 0; k < 171; ++k)
-                long_utf8 += "\xe9\x9c\x9c"; // 171 * 3 = 513 UTF-8 bytes ("霜" * 171).
-            const std::string coro_src = "async void coro_long() { yield; fail(\"" + long_utf8 + "\"); }";
+            const String long_utf8 = String::repeat("\xe9\x9c\x9c"_s, 171); // 171 * 3 = 513 UTF-8 bytes ("霜" * 171).
+            const String coro_src = String::concat("async void coro_long() { yield; fail(\"", long_utf8, "\"); }");
             auto coro_prog = take(Program::create(runtime));
             publish_single(*coro_prog, "coro_long.source", coro_src, "coro_long", {.diagnostics = true});
             auto coro = take(coro_prog->entry().start(ObjectId{}, {}, &diagnostics));
@@ -962,7 +973,7 @@ int serial_caller(int v) {
                         step2.error().message.size() == 513 && step2.error().message == long_utf8,
                     "Async coroutine fail(...) truncated >512-byte UTF-8 message.");
             const auto long_report = diagnostics.snapshot();
-            require(long_report.error && long_report.error->message == std::string_view(long_utf8).substr(0, 510),
+            require(long_report.error && long_report.error->message == long_utf8.slice(0, 510),
                     "Diagnostics did not retain the longest complete UTF-8 prefix within 511 bytes.");
         }
     }
@@ -979,14 +990,11 @@ struct ErgHost {
 
     Result<void> native_fail_at(std::uint32_t index) const noexcept {
         if (index == 888u) {
-            std::string long_cjk;
-            for (int i = 0; i < 171; ++i)
-                long_cjk += "\xe4\xb8\xad"; // 171 * 3 = 513 bytes; byte 511 splits the 171st codepoint.
-            std::string long_layer;
-            for (int i = 0; i < 11; ++i)
-                long_layer += "\xe5\xb1\x82"; // 11 * 3 = 33 bytes; byte 31 splits the 11th codepoint.
+            // 171 * 3 = 513 bytes (byte 511 splits 171st codepoint); 11 * 3 = 33 bytes (byte 31 splits 11th).
+            String long_cjk = String::repeat("\xe4\xb8\xad"_s, 171);
+            String long_layer = String::repeat("\xe5\xb1\x82"_s, 11);
             return std::unexpected(Error{ErrorCode::invocation_failed, std::move(long_cjk), {},
-                                         ErrorElement{std::move(long_layer), index}});
+                                         ErrorElement{long_layer, index}});
         }
         return std::unexpected(Error{ErrorCode::invocation_failed, "native interval failed", {},
                                      ErrorElement{"interval", index}});
@@ -1006,8 +1014,8 @@ void verify_language_ergonomics() {
     Runtime runtime;
     register_erg_host(runtime);
     const auto host_type = take(runtime.find_type("test.PairHost"));
-    const auto publish_single = [](Program& prog, std::string_view name, std::string_view src,
-                                   std::string_view entry = {}, source::CompileOptions opts = {}) {
+    const auto publish_single = [](Program& prog, StringView name, StringView src, StringView entry = {},
+                                   source::CompileOptions opts = {}) {
         auto req = take(prog.request(name, src, entry, opts));
         auto cand = take(Program::prepare(req));
         take(prog.try_publish(cand));
@@ -1023,7 +1031,7 @@ void verify_language_ergonomics() {
         const auto bumped = take(host_bump->entry().invoke(host.id(), Span<const Scalar>{}));
         require(bumped && std::get<std::int32_t>(*bumped) == 12, "Compound assignment on self.scale failed.");
 
-        const std::string_view src = R"(
+        const StringView src = R"(
 [Flags]
 enum erg.Mask : uint {
     None = 0,
@@ -1243,9 +1251,9 @@ int erg.run_all(Array<int>& caller_arr, String& caller_str) {
     //    and SOP `[InOut]`/`[Out]` fixed-length columns allow element-only helpers while rejecting structural helpers.
     {
         source::SourceSnapshot v1;
-        v1.name = "HotArray";
+        v1.name = "HotArray"_s;
         v1.version = 1;
-        v1.files.push_back({"a.source", 1, R"(
+        v1.files.add({"a.source", 1, R"(
 struct hot.Item {
     int id;
     quaternion q;
@@ -1315,7 +1323,7 @@ int hot.run() {
     }
     return items[7].id + int(items[7].q.w);
 }
-)";
+)"_s;
         auto c2 = take(Program::prepare(take(mod_prog->request(v2))));
         take(mod_prog->try_publish(c2));
         const auto r2 = take(take(mod_prog->entry("hot.run")).invoke(ObjectId{}, Span<const Scalar>{}));
@@ -1325,7 +1333,7 @@ int hot.run() {
     // 3. Negative compile-time boundary checks for const deep read-only, SOP fixed-length, call-site aliasing,
     //    compound assignments, and ternary expressions.
     {
-        const auto reject_single = [&](std::string_view code, std::string_view expected) {
+        const auto reject_single = [&](StringView code, StringView expected) {
             auto bad_prog = take(Program::create(runtime, host_type));
             auto bad_req = take(bad_prog->request("neg_erg.source", code, "f"));
             auto bad_cand = Program::prepare(bad_req);
@@ -1347,11 +1355,11 @@ int hot.run() {
         reject_single("void f(bool c, const Array<int>& a, const Array<int>& b) { uint n = (c ? a : b).size(); }",
                       "Conditional branches require matching scalar, enum, built-in math or plain struct value types");
 
-        const auto reject_mod = [&](std::string_view file_src, std::string_view expected) {
+        const auto reject_mod = [&](StringView file_src, StringView expected) {
             source::SourceSnapshot bad_snap;
-            bad_snap.name = "NegSOP";
+            bad_snap.name = "NegSOP"_s;
             bad_snap.version = 1;
-            bad_snap.files.push_back({"sop.source", 1, std::string(file_src)});
+            bad_snap.files.add({"sop.source", 1, String::from_utf8_validated(file_src)});
             auto p = take(Program::create(runtime));
             auto r = take(p->request(bad_snap));
             auto c = Program::prepare(r);
@@ -1383,7 +1391,7 @@ int hot.run() {
 
     // 4. Structured fail("msg", [layer,] index), sentinel omission, DirectScope, Coroutine, parallel_for, and NativeFailure.
     {
-        const std::string_view diag_src = R"(
+        const StringView diag_src = R"(
 enum diag.Domain : uint {
     Point = 10,
     Primitive = 25,
@@ -1436,7 +1444,7 @@ class diag.Runner : test.PairHost {
         Runtime diag_rt;
         register_erg_host(diag_rt);
         auto diag_prog = take(Program::create(diag_rt));
-        source::SourceSnapshot snap{"DiagBatch3", 1, {{"Source/Diag.source", 11, std::string(diag_src)}}};
+        source::SourceSnapshot snap{"DiagBatch3", 1, {{"Source/Diag.source", 11, String::from_utf8_validated(diag_src)}}};
         auto cand = take(Program::prepare(take(diag_prog->request(snap, source::CompileOptions{.diagnostics = true}))));
         take(diag_prog->try_publish(cand));
 
@@ -1455,7 +1463,7 @@ class diag.Runner : test.PairHost {
         const auto dom_type = take(diag_rt.find_type("diag.Domain"));
         const std::array<Scalar, 2> args_3{EnumValue{dom_type, 25u}, std::uint32_t{42u}};
         const auto e_three = f3.invoke(ObjectId{}, args_3);
-        const std::string expected_prim = "Primitive";
+        const String expected_prim = "Primitive"_s;
         require(!e_three && e_three.error().message == "three-arg failure" &&
                     e_three.error().element == ErrorElement{"Primitive", 42u} &&
                     e_three.error().element->layer == "Primitive" && e_three.error().element->layer == expected_prim,
@@ -1515,14 +1523,12 @@ class diag.Runner : test.PairHost {
 
         // UTF-8 vs malformed byte truncation preserves valid CJK codepoints while keeping invalid UTF-8 detectable:
         {
-            std::string cjk;
-            for (int i = 0; i < 200; ++i)
-                cjk += "诊断界"; // 9 bytes per iteration -> 1800 bytes
-            const auto cjk_cut = StringView{cjk}.truncate_utf8_or_bytes(511);
+            const String cjk = String::repeat("诊断界"_s, 200); // 9 bytes per iteration -> 1800 bytes
+            const auto cjk_cut = cjk.view().truncate_utf8_or_bytes(511);
             require(cjk_cut.size() == 510 && cjk_cut.is_valid_utf8(),
                     "truncate_utf8_or_bytes did not cut multi-byte CJK text at a codepoint boundary.");
-            const std::string bad_utf8(520, '\x80');
-            const auto bad_cut = StringView{bad_utf8}.truncate_utf8_or_bytes(511);
+            Array<char> bad_utf8(520, '\x80');
+            const auto bad_cut = StringView{bad_utf8.data(), bad_utf8.size()}.truncate_utf8_or_bytes(511);
             require(bad_cut.size() == 511 && !bad_cut.is_valid_utf8(),
                     "truncate_utf8_or_bytes erased malformed UTF-8 bytes instead of preserving detectability.");
         }
@@ -1576,16 +1582,16 @@ class diag.Runner : test.PairHost {
         const std::array<Scalar, 1> nat_utf8_args{std::uint32_t{888u}};
         const auto nat_utf8 = fn_nat.invoke(runner_obj.id(), nat_utf8_args);
         require(!nat_utf8 && nat_utf8.error().message.size() == 510u &&
-                    StringView{nat_utf8.error().message}.is_valid_utf8() && nat_utf8.error().element.has_value() &&
+                    nat_utf8.error().message.view().is_valid_utf8() && nat_utf8.error().element.has_value() &&
                     nat_utf8.error().element->index == 888u && nat_utf8.error().element->layer.size() == 30u &&
-                    StringView{nat_utf8.error().element->layer}.is_valid_utf8(),
+                    nat_utf8.error().element->layer.view().is_valid_utf8(),
                 "NativeThunk / Invocation sliced multi-byte UTF-8 mid-codepoint or dropped long-layer element.");
     }
 
     // 9. Batch 4: .rdata zero-allocation constant tables (math, plain struct, Array<T>),
     //    [DESC] on struct/enum/field/function, Program::functions(), and DESC-only hot reload:
     {
-        constexpr std::string_view batch4_src_v1 = R"(
+        constexpr StringView batch4_src_v1 = R"(
 [DESC = "Station sample record."]
 struct tab.Station {
     [DESC = "Height in metres."]
@@ -1671,7 +1677,7 @@ double tab.parallel_sum(uint n) {
         auto b4_prog = take(Program::create(b4_rt));
         source::CompileOptions opts{};
         opts.artifacts = true;
-        source::SourceSnapshot snap1{"Batch4Const", 1, {{"Source/Tab.source", 1, std::string(batch4_src_v1)}}};
+        source::SourceSnapshot snap1{"Batch4Const", 1, {{"Source/Tab.source", 1, String::from_utf8_validated(batch4_src_v1)}}};
         auto cand1 = take(Program::prepare(take(b4_prog->request(snap1, opts))));
         require(cand1.functions().size() == 4, "Candidate::functions() did not report the 4 global functions.");
         take(b4_prog->try_publish(cand1));
@@ -1693,7 +1699,7 @@ double tab.parallel_sum(uint n) {
         // Verify zero-allocation .rdata IR and zero runtime value/sequence calls on a pure constant Array reader:
         {
             auto pure_const_prog = take(Program::create(b4_rt));
-            constexpr std::string_view pure_const_src = R"(
+            constexpr StringView pure_const_src = R"(
 const Array<vector2> PureProf = { vector2(0.10f, 0.13f), vector2(0.20f, 0.15f) };
 float read_prof_y(uint idx) {
     return PureProf[idx].y;
@@ -1745,7 +1751,7 @@ float read_prof_y(uint idx) {
 
         // Verify Program::functions() metadata & DESC-only hot reload compatibility:
         const auto fns_v1 = b4_prog->functions();
-        const auto find_fn = [](Span<const source::FunctionInfo> list, std::string_view name) {
+        const auto find_fn = [](Span<const source::FunctionInfo> list, StringView name) {
             const auto it = std::ranges::find(list, name, &source::FunctionInfo::name);
             return it == list.end() ? nullptr : &*it;
         };
@@ -1761,10 +1767,10 @@ float read_prof_y(uint idx) {
                     !f_par->parallel_safe,
                 "Program::functions() metadata mismatch.");
 
-        std::string batch4_src_v2(batch4_src_v1);
-        const auto doc_pos = batch4_src_v2.find("Initial docstring v1.");
-        require(doc_pos != std::string::npos, "Missing v1 docstring.");
-        batch4_src_v2.replace(doc_pos, std::string_view{"Initial docstring v1."}.size(), "Updated docstring v2.");
+        String batch4_src_v2 = String::from_utf8_validated(batch4_src_v1);
+        const auto doc_pos = batch4_src_v2.view().find("Initial docstring v1.");
+        require(doc_pos != StringView::npos, "Missing v1 docstring.");
+        (void)batch4_src_v2.replace(doc_pos, StringView{"Initial docstring v1."}.size(), "Updated docstring v2.");
         source::SourceSnapshot snap2{"Batch4Const", 2, {{"Source/Tab.source", 2, std::move(batch4_src_v2)}}};
         auto cand2 = take(Program::prepare(take(b4_prog->request(snap2, opts))));
         take(b4_prog->try_publish(cand2));
@@ -1818,12 +1824,12 @@ float read_prof_y(uint idx) {
                                             .method<&UnsafeBorrowHost::safe_array>("safe_array", true)
                                             .publish());
 
-            const auto expect_r3_reject = [&](TypeId receiver, std::string_view code, std::string_view expected) {
+            const auto expect_r3_reject = [&](TypeId receiver, StringView code, StringView expected) {
                 auto p = take(Program::create(r3_rt, receiver));
                 auto req = take(p->request("r3_reject.source", code, "run"));
                 auto res = Program::prepare(req);
                 require(!res && res.error().message.contains(expected),
-                        res ? "Expected R3 rejection did not trigger." : res.error().message);
+                        res ? "Expected R3 rejection did not trigger."_s : res.error().message);
             };
             // R3-C1: custom sequence view rejected both by explicit name and via Array<double> syntax:
             expect_r3_reject({}, "const test.DoubleSpan S = {}; int run() { return 0; }",
@@ -1839,7 +1845,7 @@ float read_prof_y(uint idx) {
                              "Property is write-only: Only");
             {
                 auto p = take(Program::create(r3_rt));
-                constexpr std::string_view prop_const_src = R"(
+                constexpr StringView prop_const_src = R"(
 int GetFlag() { return 99; }
 const int INNER = 5;
 const bool GUARD = true || (Flag == 1);
@@ -1901,10 +1907,10 @@ int run() {
             // source::source_type_name enforces the exact Source value/enum projection contract:
             {
                 TypeDefinition editor_rec;
-                editor_rec.name = "editor.HiddenPair";
+                editor_rec.name = "editor.HiddenPair"_s;
                 editor_rec.kind = TypeKind::record;
                 FieldDefinition hidden_field;
-                hidden_field.name = "x";
+                hidden_field.name = "x"_s;
                 hidden_field.value = {take(r3_rt.native_type<std::int32_t>())};
                 editor_rec.fields.add(std::move(hidden_field));
                 take(r3_rt.register_types(Array<TypeDefinition>{string_definition(r3_rt), std::move(editor_rec)}));
@@ -1928,6 +1934,267 @@ int run() {
         }
     }
 }
+
+void verify_sequence_stdlib() {
+    struct SopHost {
+        String prefix{String::from_utf8_validated("pt_")};
+    };
+    Runtime rt;
+    Array<TypeDefinition> defs;
+    defs.add(string_definition(rt));
+    defs.add(array_definition<std::int32_t>(rt, "seq.IntArray"));
+    defs.add(array_definition<float>(rt, "seq.FloatArray"));
+    defs.add(array_definition<String>(rt, "seq.StringArray"));
+    defs.add(array_definition<math::Vector3>(rt, "seq.Vec3Array"));
+    take(rt.register_types(std::move(defs)));
+    auto host_def = NativeRegistration<SopHost>(rt, "seq.SopHost", TypeKind::object)
+                        .field<&SopHost::prefix>("prefix", {TypeReference::native<String>()}, offsetof(SopHost, prefix))
+                        .build();
+    host_def.metadata.add({"source.contract_method"_s, "process"_s});
+    (void)take(rt.register_type(std::move(host_def)));
+
+    // 1. DescribedArray (Source enum & struct), Array<String>, Array<vector3>, constant .back()/.empty(), parallel_for:
+    {
+        auto prog = take(Program::create(rt));
+        constexpr StringView code = R"(
+enum seq.Rank : int { Low = -5, Mid = 0, High = 9 }
+struct seq.Item { int key; vector3 pos; };
+
+const Array<int> K_TABLE = { 10, 20, 30, 40 };
+const int K_LAST = K_TABLE.back();
+const bool K_NONEMPTY = !K_TABLE.empty();
+
+int passthrough_int(uint i) { return int(i) * 10 + 10; }
+
+bool helper_check(const String& tag, const Array<int>& table, uint i, int& out_val) {
+    if (!tag.starts_with("pt_") || tag == "pt_skip") { return false; }
+    const int pos = table.find(passthrough_int(i % 4u));
+    return pos >= 0 && "40".try_parse_int(out_val) && table.contains(out_val) && table.is_sorted();
+}
+
+int run_all(const String& tag, Array<int>& nums, Array<String>& words, Array<vector3>& vecs) {
+    if (!K_NONEMPTY || K_LAST != 40) { return -10; }
+
+    // DescribedArray<seq.Rank> & DescribedArray<seq.Item>
+    Array<seq.Rank> ranks;
+    ranks.add(seq.Rank::High);
+    ranks.add(seq.Rank::Low);
+    ranks.add(seq.Rank::Mid);
+    if (ranks.is_sorted()) { return -12; }
+    ranks.sort();
+    if (!ranks.is_sorted() || ranks.front() != seq.Rank::Low || ranks.back() != seq.Rank::High) { return -13; }
+    ranks.reverse();
+    if (ranks.find(seq.Rank::Low) != 2 || !ranks.remove(seq.Rank::Mid) || ranks.size() != 2u) { return -14; }
+
+    Array<seq.Item> items;
+    seq.Item a;
+    a.key = 1;
+    a.pos = vector3(1.0f, 2.0f, 3.0f);
+    items.resize(3, a);
+    items.back().key = 9;
+    items.swap(0, 2);
+    if (items.front().key != 9 || items.back().key != 1) { return -15; }
+    items.pop();
+    items.truncate(1);
+    if (items.size() != 1u || items[0].key != 9) { return -16; }
+
+    // Native Array<int>, Array<String>, Array<vector3> self-aliasing & mutations
+    nums.clear();
+    nums.resize(3, 7);
+    nums.front() = 3;
+    nums.back() = 9;
+    nums.insert(0, nums.back()); // self-alias insert -> {9, 3, 7, 9}
+    if (nums.count(9) != 2u || nums.rfind(9) != 3) { return -17; }
+    if (!nums.remove(nums[0]) || nums.front() != 3) { return -18; } // self-alias remove -> {3, 7, 9}
+    if (!nums.is_sorted()) { return -19; }
+    nums.remove_at_swap(0); // {9, 7}
+    nums.sort(); // {7, 9}
+    if (nums.remove(999)) { return -20; }
+
+    words.clear();
+    words.add("beta");
+    words.add("alpha");
+    words.insert(1, words[0]); // self-alias String insert -> {"beta", "beta", "alpha"}
+    if (words.count("beta") != 2u || words.find("alpha") != 2) { return -21; }
+    words.sort(); // {"alpha", "beta", "beta"}
+    if (!words.is_sorted() || !words.remove_swap("beta") || words.size() != 2u) { return -22; }
+
+    vecs.clear();
+    vecs.add(vector3(1.0f, 0.0f, 0.0f));
+    vecs.add(vector3(0.0f, 2.0f, 0.0f));
+    if (!vecs.contains(vector3(0.0f, 2.0f, 0.0f)) || vecs != vecs) { return -23; }
+
+    Array<int> parallel_out;
+    parallel_out.resize(8, 0);
+    parallel_for (uint i : parallel_out.size()) {
+        int parsed = 0;
+        if (helper_check(tag, K_TABLE, i, parsed)) {
+            parallel_out[i] = parsed + K_TABLE.find(passthrough_int(i % 4u));
+        }
+    }
+    return parallel_out.front() + parallel_out.back(); // 40 + 43 = 83
+}
+
+class seq.DeformNode : seq.SopHost {
+    void process([InOut] Array<float>& P) {
+        if (self.prefix != "pt_" || !(self.prefix < "pu_")) { fail("self String comparison failed"); }
+        P.fill(2.0f);
+        if (!P.empty()) {
+            P.front() = 8.0f;
+            P.back() = 1.0f;
+        }
+        P.reverse();
+        P.swap(0, 1);
+        P.sort();
+    }
+}
+)";
+        publish(*prog,
+                source::SourceSnapshot{"seq_stdlib", 1, {source::SourceFile{"Main.source", 1, String::from_utf8_validated(code)}}});
+
+        String tag = String::from_utf8_validated("pt_main");
+        Array<std::int32_t> nums;
+        Array<String> words;
+        Array<math::Vector3> vecs;
+        const std::array run_args{Argument::borrow(std::as_const(tag)), Argument::borrow(nums),
+                                  Argument::borrow(words), Argument::borrow(vecs)};
+        const auto run_res = take(take(prog->entry("run_all")).invoke({}, run_args));
+        require(run_res && std::get<std::int32_t>(*run_res) == 83, "Source sequence stdlib run_all failed.");
+
+        const auto deform_type = take(rt.find_type("seq.DeformNode"));
+        auto deform_obj = take(rt.create(deform_type));
+        Array<float> pts{0.0f, 0.0f, 0.0f, 0.0f};
+        const std::array sop_args{Argument::borrow(pts)};
+        take(take(prog->entry("seq.DeformNode.process")).invoke(deform_obj.id(), sop_args));
+        require(pts.size() == 4 && pts[0] == 1.0f && pts[1] == 2.0f && pts[2] == 2.0f && pts[3] == 8.0f,
+                "Length-preserving Array operations on SOP [InOut] fixed_length column failed.");
+    }
+
+    // 1b. Conditional plain_record lvalue borrow snapshots & SOP fixed_length element/helper mutations:
+    {
+        auto prog = take(Program::create(rt));
+        const char* code = R"(
+struct seq.Pair { int a; int b; };
+
+seq.Pair make_pair(int a, int b) {
+    seq.Pair p;
+    p.a = a;
+    p.b = b;
+    return p;
+}
+
+int read_pair(const seq.Pair& p, int dummy) { return p.a * 100 + p.b + dummy; }
+int read_int(const int& x, int dummy) { return x + dummy; }
+
+int clobber_pairs(Array<seq.Pair>& arr) {
+    arr.clear();
+    const seq.Pair fill_val = make_pair(999, 888);
+    arr.resize(256u, fill_val);
+    return 1;
+}
+
+int verify_conditional_borrows(bool flag) {
+    Array<seq.Pair> arr;
+    arr.add(make_pair(10, 20));
+    arr.add(make_pair(30, 40));
+    const int r1 = read_pair(flag ? arr[0] : arr[1], clobber_pairs(arr));
+    Array<seq.Pair> arr2;
+    arr2.add(make_pair(5, 6));
+    arr2.add(make_pair(7, 8));
+    const int r2 = read_int((flag ? arr2[1] : arr2[0]).a, clobber_pairs(arr2));
+    return r1 + r2;
+}
+
+void sort_floats(Array<float>& col) { col.sort(); }
+void sort_labels(Array<String>& col) { col.sort(); }
+void format_label(String& s) {
+    s.trim();
+    s.to_lower();
+    s.insert(0u, "[");
+    s.append("]");
+}
+
+class seq.LabelNode : seq.SopHost {
+    void process([InOut] Array<float>& P, [InOut] Array<String>& labels) {
+        if (P.size() < 2u || labels.size() < 2u) { return; }
+        P[0] = 9.0f;
+        P[1] = 3.0f;
+        sort_floats(P);
+        labels[0] += "  ";
+        format_label(labels[0]);
+        format_label(labels[1]);
+        sort_labels(labels);
+    }
+}
+)";
+        publish(*prog,
+                source::SourceSnapshot{"seq_cond_sop", 1, {source::SourceFile{"CondSop.source", 1, String::from_utf8_validated(code)}}});
+
+        const std::array args_true{Argument{true}};
+        const std::array args_false{Argument{false}};
+        const auto res_true = take(take(prog->entry("verify_conditional_borrows")).invoke({}, args_true));
+        const auto res_false = take(take(prog->entry("verify_conditional_borrows")).invoke({}, args_false));
+        require(res_true && std::get<std::int32_t>(*res_true) == (1021 + 8) &&
+                    res_false && std::get<std::int32_t>(*res_false) == (3041 + 6),
+                "Conditional plain_record / field read_only borrow across sequence reallocation failed.");
+
+        const auto label_type = take(rt.find_type("seq.LabelNode"));
+        auto label_obj = take(rt.create(label_type));
+        Array<float> pts{0.0f, 0.0f};
+        Array<String> labels{"  Zeta"_s, "  Alpha  "_s};
+        const std::array sop_args{Argument::borrow(pts), Argument::borrow(labels)};
+        take(take(prog->entry("seq.LabelNode.process")).invoke(label_obj.id(), sop_args));
+        require(pts.size() == 2 && pts[0] == 3.0f && pts[1] == 9.0f && labels.size() == 2 &&
+                    labels[0] == "[alpha]" && labels[1] == "[zeta]",
+                "SOP [InOut] helper sort and Array<String> element mutation failed.");
+    }
+
+    // 2. Compile-time & runtime rejection checks for fixed_length and parallel_for aliasing:
+    {
+        const auto expect_snap_reject = [&](StringView body, StringView expected) {
+            auto prog = take(Program::create(rt));
+            const String src = String::concat("void pop_col(Array<float>& c) { c.pop(); } class seq.BadNode : seq.SopHost { ",
+                                              String::validated(body), " }");
+            auto req = take(prog->request(source::SourceSnapshot{"bad_snap", 1, {source::SourceFile{"Bad.source", 1, src}}}));
+            auto res = Program::prepare(req);
+            require(!res && res.error().message.contains(expected),
+                    res ? "Expected sequence rejection did not trigger."_s : res.error().message);
+        };
+        expect_snap_reject("void process([InOut] Array<float>& P) { P.pop(); }", "fixed element count");
+        expect_snap_reject("void process([InOut] Array<float>& P) { pop_col(P); }", "fixed element count");
+        expect_snap_reject("void process([InOut] Array<float>& P) { P.truncate(1); }", "fixed element count");
+        expect_snap_reject("void process([InOut] Array<float>& P) { P.insert(0, 1.0f); }", "fixed element count");
+        expect_snap_reject("void process([InOut] Array<float>& P) { P.remove_at(0); }", "fixed element count");
+        expect_snap_reject("void process([InOut] Array<float>& P) { P.remove(1.0f); }", "fixed element count");
+        expect_snap_reject(
+            "void run(Array<int>& xs) { parallel_for (uint i : xs.size()) { if (xs.contains(1)) { xs[i] = 2; } } }",
+            "written inside parallel_for");
+        expect_snap_reject(
+            "void run(Array<int>& xs) { parallel_for (uint i : xs.size()) { xs.back() = 2; } }",
+            "must index directly by the loop variable");
+        expect_snap_reject(
+            "uint bad(Array<String>& w, const String& s, const String& b) { w.fill(b); return s[0]; } "
+            "uint run(Array<String>& w, const String& b) { return bad(w, w[0], b); }",
+            "another reference parameter");
+        expect_snap_reject(
+            "uint bad(Array<String>& w, const String& s) { w.sort(); return s[0]; } "
+            "uint run(Array<String>& w) { return bad(w, w[0]); }",
+            "another reference parameter");
+
+        auto alias_prog = take(Program::create(rt));
+        auto alias_req = take(alias_prog->request(
+            "parallel_seq_alias.source",
+            "void run(Array<int>& out, const Array<int>& lut) { parallel_for (uint i : out.size()) { out[i] = lut.find(int(i)); } }",
+            "run"));
+        auto alias_cand = take(Program::prepare(alias_req));
+        take(alias_prog->try_publish(alias_cand));
+        Array<std::int32_t> shared{3, 2, 1, 0};
+        const std::array alias_args{Argument::borrow(shared), Argument::borrow(std::as_const(shared))};
+        const auto alias_res = alias_prog->entry().invoke({}, alias_args);
+        require(!alias_res && StringView{alias_res.error().message}.contains("overlaps"),
+                "Aliased Array.find + element write in parallel_for must trigger parallel_alias.");
+    }
+}
 }
 
 void verify_source_projects() {
@@ -1935,5 +2202,6 @@ void verify_source_projects() {
     verify_world_project();
     verify_frontend_and_pod_evaluation();
     verify_language_ergonomics();
+    verify_sequence_stdlib();
     std::puts("Source project consumer: PASS (current disk format and cross-file World tick)");
 }

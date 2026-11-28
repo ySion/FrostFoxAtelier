@@ -16,9 +16,7 @@
 #include <condition_variable>
 #include <cstdio>
 #include <fstream>
-#include <iterator>
 #include <mutex>
-#include <string_view>
 #include <thread>
 #include <utility>
 
@@ -31,15 +29,19 @@ Error execution_error(GfxResult result) {
             "gfx execution failed; only owner cleanup/close remains permitted"};
 }
 
+String path_utf8(const std::filesystem::path& path) {
+    return platform::utf16_to_utf8(path.native()).value_or("<invalid UTF-16 path>"_s);
+}
+
 bool valid_shader_model(const char* value) {
     if (!value)
         return false;
-    const std::string_view model(value);
+    const StringView model(value);
     // gfx prefixes the suffix with up to four bytes ("lib_") in a 16-byte profile.
     if (model.size() > 11)
         return false;
     const auto separator = model.find('_');
-    if (separator == std::string_view::npos || separator == 0 || separator + 1 == model.size())
+    if (separator == StringView::npos || separator == 0 || separator + 1 == model.size())
         return false;
     for (std::size_t i = 0; i < model.size(); ++i)
         if (i != separator && (model[i] < '0' || model[i] > '9'))
@@ -67,9 +69,9 @@ namespace detail {
 struct PreparationJob {
     PipelineKind kind{};
 
-    std::string name;
+    String name;
 
-    std::string model;
+    String model;
 
     Array<std::pair<GfxShaderStage, ShaderSource>> stages;
 
@@ -225,7 +227,7 @@ private:
             if (gfxKernelBuildSetStage(job.build, stage, compiled->bytecode.Get(), compiled->reflection.Get()) !=
                 kGfxResult_NoError) {
                 job.error = Error{ErrorCode::shader_failed, kGfxResult_InvalidParameter,
-                                  "duplicate shader stage for `" + job.name + "'"};
+                                  String::concat("duplicate shader stage for `", job.name, "'")};
                 return;
             }
         }
@@ -234,7 +236,7 @@ private:
         if (gfxKernelBuildFinish(job.build) != kGfxResult_NoError || !gfxKernelBuildGetRootSignature(job.build) ||
             !gfxKernelBuildGetPipelineState(job.build)) {
             job.error = Error{ErrorCode::shader_failed, kGfxResult_InvalidParameter,
-                              "root signature or pipeline state creation failed for `" + job.name + "'"};
+                              String::concat("root signature or pipeline state creation failed for `", job.name, "'")};
             return;
         }
         if (config_.gpu_validation && !job.cancel)
@@ -389,7 +391,7 @@ Result<Context> Context::open(const ContextOptions& options) {
     Validation validation = options.validation;
     char switch_value[8]{};
     if (const DWORD length = GetEnvironmentVariableA("ATELIER_GPU_VALIDATION", switch_value, sizeof(switch_value))) {
-        const std::string_view value(switch_value, length < sizeof(switch_value) ? length : 0);
+        const StringView value(switch_value, length < sizeof(switch_value) ? length : 0);
         if (value != "gbv" && value != "debug")
             return std::unexpected(Error{ErrorCode::invalid_argument, kGfxResult_InvalidParameter,
                                          "ATELIER_GPU_VALIDATION must be gbv or debug"});
@@ -458,7 +460,7 @@ Result<Context> Context::open(const ContextOptions& options) {
         const HRESULT result = swap_chain->SetMaximumFrameLatency(1);
         if (FAILED(result))
             return std::unexpected(Error{ErrorCode::creation_failed, kGfxResult_DeviceError,
-                                         "SetMaximumFrameLatency failed: " + std::to_string(result)});
+                                         String::concat("SetMaximumFrameLatency failed: ", static_cast<long>(result))});
         state->frame_latency = swap_chain->GetFrameLatencyWaitableObject();
         if (!state->frame_latency)
             return std::unexpected(Error{ErrorCode::creation_failed, kGfxResult_InternalError,
@@ -493,12 +495,12 @@ const ContextInfo& Context::info() const noexcept {
     return state_ ? state_->info : empty;
 }
 
-Result<void> Context::admit(const char* operation) const {
+Result<void> Context::admit(const String::ConcatPiece& operation) const {
     if (!state_ || !state_->context)
         return std::unexpected(Error{ErrorCode::closed, kGfxResult_InvalidOperation, "context is closed"});
     if (!state_->on_owner())
-        return std::unexpected(Error{ErrorCode::wrong_thread, kGfxResult_InvalidOperation,
-                                     std::string(operation) + " requires owner thread"});
+        return std::unexpected(
+            Error{ErrorCode::wrong_thread, kGfxResult_InvalidOperation, String::concat(operation, " requires owner thread")});
     if (state_->failure != kGfxResult_NoError)
         return std::unexpected(execution_error(state_->failure));
     return {};
@@ -560,23 +562,34 @@ Result<std::shared_ptr<detail::PreparationJob>> Context::job(const PipelineDesc&
                                     {kGfxShaderStage_PS, s.ps, L"ps_", L".frag", false}};
     auto job = std::make_shared<detail::PreparationJob>();
     job->kind = desc.kind;
-    job->model = desc.shader_model;
-    job->name = desc.file_name ? desc.file_name : desc.name ? desc.name : "pipeline";
+    job->model = String::from_utf8_validated(desc.shader_model);
+    const StringView raw_name = desc.file_name ? desc.file_name : desc.name ? desc.name : "pipeline";
+    const auto name = platform::utf8_to_utf16(raw_name);
+    if (!name)
+        return std::unexpected(
+            Error{ErrorCode::invalid_argument, kGfxResult_InvalidParameter, "shader name is not valid UTF-8"});
     const auto model = platform::utf8_to_utf16_validated(desc.shader_model); // valid_shader_model accepted ASCII.
     const auto entry = platform::utf8_to_utf16(desc.entry_point);
     if (!entry)
         return std::unexpected(
             Error{ErrorCode::invalid_argument, kGfxResult_InvalidParameter, "shader entry point is not valid UTF-8"});
+    std::filesystem::path directory;
     std::error_code error;
-    const auto directory = desc.file_name ? std::filesystem::absolute(desc.file_path ? desc.file_path : ".", error)
-                                          : std::filesystem::path{};
+    if (desc.file_name) {
+        if (desc.file_path) {
+            const auto wide_dir = platform::utf8_to_utf16(desc.file_path);
+            if (!wide_dir)
+                return std::unexpected(Error{ErrorCode::invalid_argument, kGfxResult_InvalidParameter,
+                                             "shader directory is not valid UTF-8"});
+            directory = std::filesystem::absolute(*wide_dir, error);
+        } else {
+            directory = std::filesystem::absolute(L".", error);
+        }
+    }
     if (error)
         return std::unexpected(
             Error{ErrorCode::shader_failed, kGfxResult_InvalidParameter, "shader directory is unusable"});
-    const auto name = platform::utf8_to_utf16(job->name);
-    if (!name)
-        return std::unexpected(
-            Error{ErrorCode::invalid_argument, kGfxResult_InvalidParameter, "shader name is not valid UTF-8"});
+    job->name = String::from_utf8_validated(raw_name);
     for (const auto& stage : stages) {
         detail::ShaderSource source{{}, {}, stage.profile + model, *entry};
         if (desc.file_name) {
@@ -585,19 +598,26 @@ Result<std::shared_ptr<detail::PreparationJob>> Context::job(const PipelineDesc&
             const bool exists = std::filesystem::exists(path, error);
             if (error || (!exists && stage.primary))
                 return std::unexpected(Error{ErrorCode::shader_failed, kGfxResult_InvalidParameter,
-                                             "cannot open shader file " + path.string()});
+                                             String::concat("cannot open shader file ", path_utf8(path))});
             if (!exists)
                 continue;
-            std::ifstream file(path, std::ios::binary);
-            source.text.assign(std::istreambuf_iterator<char>(file), {});
-            if (!file && !file.eof())
+            std::ifstream file(path, std::ios::binary | std::ios::ate);
+            const auto end = file ? file.tellg() : std::streampos(-1);
+            if (!file || end < 0)
                 return std::unexpected(Error{ErrorCode::shader_failed, kGfxResult_InvalidParameter,
-                                             "cannot read shader file " + path.string()});
+                                             String::concat("cannot read shader file ", path_utf8(path))});
+            source.text.resize_uninitialized(static_cast<std::size_t>(end));
+            file.seekg(0);
+            if (!source.text.empty() &&
+                !file.read(source.text.data(), static_cast<std::streamsize>(source.text.size())))
+                return std::unexpected(Error{ErrorCode::shader_failed, kGfxResult_InvalidParameter,
+                                             String::concat("cannot read shader file ", path_utf8(path))});
             source.name = path.wstring();
         } else {
             if (!stage.source)
                 continue;
-            source.text = stage.source;
+            const StringView inline_source{stage.source};
+            source.text.assign(Span<const char>{inline_source.data(), inline_source.size()});
             source.name = *name + stage.extension;
         }
         job->stages.emplace(stage.stage, std::move(source));
@@ -736,7 +756,8 @@ Result<bool> Context::wait_frame(std::uint32_t timeout_ms) {
     const auto cause = GetLastError();
     state_->failure = kGfxResult_InternalError;
     return std::unexpected(
-        Error{ErrorCode::execution_failed, state_->failure, "frame admission wait failed: " + std::to_string(cause)});
+        Error{ErrorCode::execution_failed, state_->failure,
+              String::concat("frame admission wait failed: ", static_cast<std::uint32_t>(cause))});
 }
 
 Result<void> Context::frame(bool vsync, FrameInfo* details) {

@@ -3,6 +3,7 @@
 #include "assets/file.hpp"
 #include "foundation/array.hpp"
 #include "foundation/bit_vector.hpp"
+#include "foundation/inline_array.hpp"
 #include "foundation/map.hpp"
 #include "foundation/set.hpp"
 #include "platform/error.hpp"
@@ -33,13 +34,13 @@ constexpr std::size_t maximum_nodes = 65536;
 
 constexpr std::size_t no_slot = ~std::size_t{};
 
-json::Result<void> require(bool ok, std::string_view message) {
+json::Result<void> require(bool ok, Utf8Text message) {
     if (!ok)
-        return std::unexpected(json::Error{json::Fault::range, std::string(message), {}, {}});
+        return std::unexpected(json::Error{json::Fault::range, std::move(message).into_string(), {}, {}});
     return {};
 }
 
-json::Result<json::Value> field(json::Value object, std::string_view key, json::Value fallback) {
+json::Result<json::Value> field(json::Value object, StringView key, json::Value fallback) {
     ATELIER_TRY_BIND(found, object.find(key));
     return *found ? **found : fallback;
 }
@@ -60,8 +61,8 @@ json::Result<std::uint64_t> integer(json::Value value, std::uint64_t maximum = U
 
 // Build each top-level index only when it is actually consumed. Unused fields
 // remain unvalidated, and entries borrow the immutable import document.
-json::Result<json::Value> element(json::Value root, Map<std::string_view, Array<json::Value>>& arrays,
-                                  std::string_view name, json::Value index) {
+json::Result<json::Value> element(json::Value root, Map<StringView, Array<json::Value>>& arrays, StringView name,
+                                  json::Value index) {
     ATELIER_TRY_BIND(position, integer(index));
     const auto* found = arrays.find(name);
     if (!found) {
@@ -78,13 +79,13 @@ json::Result<json::Value> element(json::Value root, Map<std::string_view, Array<
     return (*found)[*position];
 }
 
-json::Result<double> number(json::Value object, std::string_view key, double fallback) {
+json::Result<double> number(json::Value object, StringView key, double fallback) {
     ATELIER_TRY_BIND(found, object.find(key));
     return *found ? (**found).number() : json::Result<double>{fallback};
 }
 
 template <std::size_t N>
-json::Result<std::array<float, N>> numbers(json::Value object, std::string_view key, std::array<float, N> fallback) {
+json::Result<std::array<float, N>> numbers(json::Value object, StringView key, std::array<float, N> fallback) {
     ATELIER_TRY_BIND(found, object.find(key));
     if (!*found)
         return fallback;
@@ -105,10 +106,11 @@ json::Result<std::filesystem::path> dependency(json::Value uri) {
     ATELIER_TRY_BIND(value_text, uri.string());
     const auto text = *value_text;
     ATELIER_TRY(require(!text.starts_with("data:"), "embedded data URIs are not supported."));
-    std::string decoded;
+    InlineArray<char, 256> decoded;
+    decoded.reserve(text.size());
     for (std::size_t i = 0; i < text.size(); ++i) {
         if (text[i] != '%') {
-            decoded += text[i];
+            decoded.add(text[i]);
             continue;
         }
         unsigned value{};
@@ -116,10 +118,10 @@ json::Result<std::filesystem::path> dependency(json::Value uri) {
             require(i + 2 < text.size() &&
                         std::from_chars(text.data() + i + 1, text.data() + i + 3, value, 16).ptr == text.data() + i + 3,
                     "invalid percent-encoding in uri."));
-        decoded += static_cast<char>(value);
+        decoded.add(static_cast<char>(value));
         i += 2;
     }
-    auto converted = platform::utf8_to_utf16(decoded);
+    auto converted = platform::utf8_to_utf16(StringView{decoded.data(), decoded.size()});
     if (!converted)
         return std::unexpected(uri.error(json::Fault::encoding, "Invalid UTF-8 text."));
     const auto path = std::filesystem::path(std::move(*converted));
@@ -184,8 +186,8 @@ std::size_t component_size(std::uint32_t type) {
     return type == 5121 ? 1 : type == 5123 ? 2 : 4;
 }
 
-json::Result<Accessor> accessor(json::Value gltf, Map<std::string_view, Array<json::Value>>& indexed,
-                                Span<const std::string_view> buffers, json::Value index, std::string_view type,
+json::Result<Accessor> accessor(json::Value gltf, Map<StringView, Array<json::Value>>& indexed,
+                                Span<const Span<const std::byte>> buffers, json::Value index, StringView type,
                                 std::initializer_list<std::uint32_t> components) {
     ATELIER_TRY_BIND(a, element(gltf, indexed, "accessors", index));
     ATELIER_TRY_BIND(sparse, a->find("sparse"));
@@ -227,9 +229,8 @@ json::Result<Accessor> accessor(json::Value gltf, Map<std::string_view, Array<js
     ATELIER_TRY(require(*view_offset <= bytes.size() && *view_length <= bytes.size() - *view_offset &&
                             *offset <= *view_length && (*count - 1) * *stride + width <= *view_length - *offset,
                         "accessor exceeds its buffer."));
-    return Accessor{reinterpret_cast<const std::byte*>(bytes.data()) + *view_offset + *offset,
-                    static_cast<std::size_t>(*count), static_cast<std::size_t>(*stride),
-                    static_cast<std::uint32_t>(*component)};
+    return Accessor{bytes.data() + *view_offset + *offset, static_cast<std::size_t>(*count),
+                    static_cast<std::size_t>(*stride), static_cast<std::uint32_t>(*component)};
 }
 
 std::uint32_t index_at(const Accessor& a, std::size_t i) {
@@ -258,17 +259,17 @@ json::Result<std::array<double, N>> floats_at(const Accessor& a, std::size_t i) 
     return result;
 }
 
-json::Result<std::string_view> alpha_mode(json::Value material) {
+json::Result<StringView> alpha_mode(json::Value material) {
     ATELIER_TRY_BIND(value, material.find("alphaMode"));
-    ATELIER_TRY_BIND(mode, *value ? (**value).string() : json::Result<std::string_view>{"OPAQUE"});
+    ATELIER_TRY_BIND(mode, *value ? (**value).string() : json::Result<StringView>{"OPAQUE"});
     ATELIER_TRY(require(*mode == "OPAQUE" || *mode == "MASK" || *mode == "BLEND", "invalid alphaMode."));
     return *mode;
 }
 
-json::Result<std::string> material_name(json::Value material, std::size_t index) {
+json::Result<String> material_name(json::Value material, std::size_t index) {
     ATELIER_TRY_BIND(value, material.find("name"));
-    ATELIER_TRY_BIND(name, *value ? (**value).string() : json::Result<std::string_view>{""});
-    return name->empty() ? "material " + std::to_string(index) : std::string(*name);
+    ATELIER_TRY_BIND(name, *value ? (**value).string() : json::Result<StringView>{""});
+    return name->empty() ? String::concat("material ", index) : String::from_utf8_validated(*name);
 }
 }
 
@@ -301,9 +302,9 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
     };
     const auto imported = [&]() -> std::expected<void, std::variant<json::Error, Error>> {
         ATELIER_TRY_BIND(file, read(source.filename(), maximum_document));
-        ATELIER_TRY_BIND(document, json::Document::parse_gltf(result.files[*file].bytes));
+        ATELIER_TRY_BIND(document, json::Document::parse_gltf(as_chars(result.files[*file].bytes)));
         const auto gltf = document->root();
-        Map<std::string_view, Array<json::Value>> indexed;
+        Map<StringView, Array<json::Value>> indexed;
         const json::Builder array_default{json::Kind::array};
         const json::Builder object_default;
         const auto empty_array = array_default.root();
@@ -423,9 +424,9 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
             if (!skipped[m].primitives)
                 continue;
             ATELIER_TRY_BIND(name, material_name(materials[m], m));
-            result.notes.add("BLEND material skipped: " + *name + " (" + std::to_string(skipped[m].primitives) +
-                             " primitives, " + std::to_string(skipped[m].triangles) +
-                             " triangles); alpha blending is not supported.");
+            result.notes.add(String::concat("BLEND material skipped: ", *name, " (", skipped[m].primitives,
+                                            " primitives, ", skipped[m].triangles,
+                                            " triangles); alpha blending is not supported."));
         }
         // Read every dependency before taking views: result.files grows while reading.
         Array<std::size_t> buffer_files;
@@ -490,8 +491,8 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
                         ATELIER_TRY(texture_image(**info));
                 }
             }
-        Array<std::string_view> buffers;
-        Array<std::string_view> image_sources;
+        Array<Span<const std::byte>> buffers;
+        Array<Span<const std::byte>> image_sources;
         for (const auto file : buffer_files)
             buffers.add(result.files[file].bytes);
         for (const auto file : image_files)
@@ -525,13 +526,13 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
                 const auto address = wrap == 33071   ? material::Address::clamp
                                      : wrap == 33648 ? material::Address::mirror
                                                      : material::Address::repeat;
-                const auto name = std::string(imported_material_inputs[input]);
-                author.entries.add({name + "_texture", material::TextureBinding{{}, address}});
-                author.entries.add({name + "_uv.scale", math::Vector2{1, 1}});
-                author.entries.add({name + "_uv.offset", math::Vector2{}});
-                author.entries.add({name + "_uv.rotation", 0.f});
+                const auto name = String::validated(imported_material_inputs[input]);
+                author.entries.add({String::concat(name, "_texture"), material::TextureBinding{{}, address}});
+                author.entries.add({String::concat(name, "_uv.scale"), math::Vector2{1, 1}});
+                author.entries.add({String::concat(name, "_uv.offset"), math::Vector2{}});
+                author.entries.add({String::concat(name, "_uv.rotation"), 0.f});
                 if (input == 1 || input == 2)
-                    author.entries.add({name + "_channel", channel});
+                    author.entries.add({String::concat(name, "_channel"), channel});
                 return {};
             };
             ATELIER_TRY_BIND(pbr, field(source_material, "pbrMetallicRoughness", empty_object));
@@ -560,9 +561,10 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
             ATELIER_TRY_BIND(sided, source_material.find("doubleSided"));
             ATELIER_TRY_BIND(two_sided, *sided ? (**sided).boolean() : json::Result<bool>{false});
             author.parent_key =
-                mask ? (*two_sided ? "builtin/material/standard-mask-double" : "builtin/material/standard-mask-single")
-                     : (*two_sided ? "builtin/material/standard-opaque-double"
-                                   : "builtin/material/standard-opaque-single");
+                mask ? (*two_sided ? "builtin/material/standard-mask-double"_s
+                                   : "builtin/material/standard-mask-single"_s)
+                     : (*two_sided ? "builtin/material/standard-opaque-double"_s
+                                   : "builtin/material/standard-opaque-single"_s);
             // glTF's implicit factors are part of its appearance (not the engine
             // defaults). Explicit values equal to defaults remain overrides too.
             author.entries = {{"base_color", math::Vector4{(*color)[0], (*color)[1], (*color)[2], (*color)[3]}},
@@ -591,11 +593,11 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
         // Slot names are unique: scenes bind materials to slots by name.
         Array<geometry::MaterialSlot> slots;
         Array<std::size_t> slot_of(materials.size(), no_slot);
-        Set<std::string> names;
-        const auto add_slot = [&](const std::string& name, const json::Value* source_material) -> json::Result<void> {
-            auto unique = name;
+        Set<String> names;
+        const auto add_slot = [&](StringView name, const json::Value* source_material) -> json::Result<void> {
+            auto unique = String::from_utf8_validated(name);
             for (std::size_t n = 2; !names.add(unique); ++n)
-                unique = name + " (" + std::to_string(n) + ")";
+                unique = String::concat(String::validated(name), " (", n, ")");
             slots.add({std::move(unique)});
             result.textures.emplace();
             if (source_material) {
@@ -641,9 +643,9 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
                                              m[2] * v[0] + m[5] * v[1] + m[8] * v[2]};
             };
             const auto store_unit = [](const std::array<double, 3>& v, float* out,
-                                       std::string_view what) -> json::Result<void> {
+                                       Utf8Text what) -> json::Result<void> {
                 const auto length = std::hypot(v[0], v[1], v[2]);
-                ATELIER_TRY(require(length > 0 && std::isfinite(length), what));
+                ATELIER_TRY(require(length > 0 && std::isfinite(length), std::move(what)));
                 for (std::size_t axis = 0; axis < 3; ++axis)
                     out[axis] = static_cast<float>(v[axis] / length);
                 return {};
@@ -659,7 +661,7 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
                 ATELIER_TRY_BIND(attributes, primitive.at("attributes"));
                 ATELIER_TRY_BIND(position_index, attributes->at("POSITION"));
                 ATELIER_TRY_BIND(position, accessor(gltf, indexed, buffers, *position_index, "VEC3", {5126}));
-                const auto optional = [&](const char* name, std::string_view type) -> json::Result<Optional<Accessor>> {
+                const auto optional = [&](StringView name, StringView type) -> json::Result<Optional<Accessor>> {
                     Optional<Accessor> a;
                     ATELIER_TRY_BIND(value, attributes->find(name));
                     if (*value) {
@@ -759,7 +761,7 @@ Result<MeshImport> load_gltf(const std::filesystem::path& source, ImageCache* sh
     }();
     if (!imported) {
         if (const auto* error = std::get_if<json::Error>(&imported.error()))
-            return std::unexpected(Error{ErrorCode::invalid_storage, "glTF: " + error->describe()});
+            return std::unexpected(Error{ErrorCode::invalid_storage, String::concat("glTF: ", error->describe())});
         return std::unexpected(std::get<Error>(imported.error()));
     }
     return result;

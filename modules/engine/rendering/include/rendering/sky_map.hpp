@@ -1,21 +1,25 @@
 #pragma once
 #include "foundation/array.hpp"
 #include "foundation/span.hpp"
+#include "foundation/string.hpp"
 #include "math/vector.hpp"
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <memory>
-#include <string>
-#include <string_view>
 
 namespace atelier::rendering {
 
 enum class ErrorCode { invalid_argument, invalid_storage };
 
 struct Error {
-    ErrorCode code;
+    Error() = default;
 
-    std::string message;
+    Error(ErrorCode error_code, Utf8Text text = {}) : code(error_code), message(std::move(text).into_string()) {}
+
+    ErrorCode code{};
+
+    String message;
 };
 
 template <class T>
@@ -78,6 +82,6 @@ private:
 };
 
 // Radiance RGBE (.hdr) with flat, old or new run-length scanlines in -Y H +X W order.
-[[nodiscard]] Result<SkyMapRef> decode_radiance_hdr(std::string_view bytes);
+[[nodiscard]] Result<SkyMapRef> decode_radiance_hdr(Span<const std::byte> bytes);
 
 } // namespace atelier::rendering

@@ -99,7 +99,7 @@ struct Access {
     static bool transitioning(const Entity& value) noexcept { return value.transitioning_; }
 };
 
-inline std::unexpected<Error> error(ErrorCode code, std::string message) {
+inline std::unexpected<Error> error(ErrorCode code, Utf8Text message) {
     return std::unexpected(Error{code, std::move(message)});
 }
 
@@ -475,7 +475,7 @@ struct World::Impl {
 
         DiagnosticPhase phase;
 
-        std::string field;
+        String field;
 
         bool operator==(const DiagnosticKey&) const = default;
     };
@@ -506,14 +506,14 @@ struct World::Impl {
     bool contain(const Error&, Diagnostic);
 
     bool contain(const Error&, DiagnosticKind, DiagnosticPhase, ObjectId object, ObjectId entity,
-                 Array<std::string> field = {}, Severity = Severity::error);
+                 Array<String> field = {}, Severity = Severity::error);
 
     // A broken World index is a World-level failure; once seen, nothing is isolated.
     mutable bool invariant_failed{};
 
-    Error inconsistent(const char* message) const {
+    Error inconsistent(Utf8Text message) const {
         invariant_failed = true;
-        return Error{ErrorCode::invalid_member, message};
+        return Error{ErrorCode::invalid_member, std::move(message)};
     }
 
     Fault* fault_of(ObjectId object, ObjectId entity) noexcept;

@@ -3,11 +3,11 @@
 #include "foundation/array.hpp"
 #include "foundation/result.hpp"
 #include "foundation/span.hpp"
+#include "foundation/string.hpp"
 #include "memory/fatal.hpp"
 #include <algorithm>
 #include <bit>
 #include <cstring>
-#include <string>
 #include <utility>
 
 namespace atelier::renderer::detail {
@@ -21,7 +21,7 @@ public:
     // Returns this frame's slot holding values. A slot that already holds the
     // latest values is not rewritten while changed stays false.
     Result<GfxBuffer> write(GfxContext gfx, std::uint32_t frames_in_flight, Span<const T> values, bool changed,
-                            const char* name) {
+                            const String::ConcatPiece& name) {
         const auto sequence = gfxGetRecordingFrameSequence(gfx);
         if (!sequence)
             fatal("Renderer frame slot written outside a recording frame");
@@ -39,9 +39,10 @@ public:
                 fatal("Renderer frame slot retirement failed");
             slot.buffer = gfxCreateBuffer<T>(gfx, std::bit_ceil(count), nullptr, kGfxCpuAccess_Write);
             if (!slot.buffer)
-                return std::unexpected(Error{{rhi::ErrorCode::creation_failed, kGfxResult_OutOfMemory,
-                                              std::string(name) + " frame slot allocation failed"},
-                                             true});
+                return std::unexpected(
+                    Error{{rhi::ErrorCode::creation_failed, kGfxResult_OutOfMemory,
+                           String::concat(name, " frame slot allocation failed")},
+                          true});
             slot.revision = 0;
         }
         if (slot.revision != revision_) {
@@ -91,16 +92,17 @@ class DeviceTable {
 public:
     // Copies values[first, last) in; growing the table copies every value.
     Result<GfxBuffer> write(GfxContext gfx, std::uint32_t frames_in_flight, Span<const T> values,
-                            std::size_t first, std::size_t last, const char* name) {
+                            std::size_t first, std::size_t last, const String::ConcatPiece& name) {
         const auto count = static_cast<std::uint32_t>(std::max<std::size_t>(1, values.size()));
         if (buffer_.getCount() < count) {
             if (buffer_ && gfxDestroyBuffer(gfx, buffer_) != kGfxResult_NoError)
                 fatal("Renderer device table retirement failed");
             buffer_ = gfxCreateBuffer<T>(gfx, std::bit_ceil(count));
             if (!buffer_)
-                return std::unexpected(Error{{rhi::ErrorCode::creation_failed, kGfxResult_OutOfMemory,
-                                              std::string(name) + " table allocation failed"},
-                                             true});
+                return std::unexpected(
+                    Error{{rhi::ErrorCode::creation_failed, kGfxResult_OutOfMemory,
+                           String::concat(name, " table allocation failed")},
+                          true});
             first = 0;
             last = values.size();
         }
@@ -111,14 +113,14 @@ public:
                     gfxCommandCopyBuffer(gfx, buffer_, first * sizeof(T), *staging, 0, changed.size_bytes());
                 copied != kGfxResult_NoError)
                 return std::unexpected(Error{
-                    {rhi::ErrorCode::execution_failed, copied, std::string(name) + " frame slot table copy failed"},
+                    {rhi::ErrorCode::execution_failed, copied, String::concat(name, " frame slot table copy failed")},
                     true});
         }
         return buffer_;
     }
 
     Result<GfxBuffer> write(GfxContext gfx, std::uint32_t frames_in_flight, Span<const T> values, bool changed,
-                            const char* name) {
+                            const String::ConcatPiece& name) {
         return write(gfx, frames_in_flight, values, 0, changed ? values.size() : 0, name);
     }
 

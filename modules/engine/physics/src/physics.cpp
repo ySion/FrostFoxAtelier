@@ -10,7 +10,8 @@
 #include <Jolt/Core/Factory.h>
 #include <Jolt/Core/JobSystemThreadPool.h>
 #include <Jolt/Core/TempAllocator.h>
-#include <Jolt/Core/StreamWrapper.h>
+#include <Jolt/Core/StreamIn.h>
+#include <Jolt/Core/StreamOut.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/Physics/Body/BodyActivationListener.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
@@ -38,11 +39,9 @@
 #include <bit>
 #include <cmath>
 #include <cstring>
-#include <sstream>
 #include <limits>
 #include <map>
 #include <mutex>
-#include <string_view>
 #include <thread>
 
 namespace atelier::physics {
@@ -81,8 +80,8 @@ constexpr std::size_t contacts_per_body = 2;
 
 constexpr float fixed_step = 1.f / 60.f;
 
-std::unexpected<Error> failure(ErrorCode code, const char* message) {
-    return std::unexpected(Error{code, message});
+std::unexpected<Error> failure(ErrorCode code, Utf8Text message) {
+    return std::unexpected(Error{code, std::move(message)});
 }
 }
 
@@ -115,8 +114,8 @@ Result<void> acquire_jolt() {
         // Jolt PhysicsSystem.cpp:679 asserts on every Update error; recheck this match when Jolt is upgraded.
         // step() reports those errors as warnings; every other assert still breaks.
         JPH::AssertFailed = [](const char* expression, const char*, const char* file, JPH::uint) {
-            return !(std::string_view(expression) == "errors == EPhysicsUpdateError::None" &&
-                     std::string_view(file).ends_with("PhysicsSystem.cpp"));
+            return !(StringView{expression} == "errors == EPhysicsUpdateError::None" &&
+                     StringView{file}.ends_with("PhysicsSystem.cpp"));
         };
 #endif
         JPH::Factory::sInstance = new JPH::Factory();
@@ -175,25 +174,71 @@ JPH::EMotionType motion(MotionKind value) {
 
 constexpr std::uint64_t hash_basis = 14695981039346656037ull;
 
-std::uint64_t hash_bytes(std::string_view bytes, std::uint64_t hash = hash_basis) {
-    for (const unsigned char byte : bytes)
-        hash = (hash ^ byte) * 1099511628211ull;
+std::uint64_t fnv1a_bytes(Span<const std::byte> bytes, std::uint64_t hash = hash_basis) {
+    for (const std::byte byte : bytes)
+        hash = (hash ^ std::to_integer<std::uint8_t>(byte)) * 1099511628211ull;
     return hash;
 }
 
-void write_number(std::string& out, std::uint64_t value, unsigned count) {
+void write_number(Array<std::byte>& out, std::uint64_t value, unsigned count) {
     for (unsigned index = 0; index < count; ++index)
-        out.push_back(char(value >> (index * 8)));
+        out.add(static_cast<std::byte>(value >> (index * 8)));
 }
 
-bool read_number(std::string_view bytes, std::size_t& cursor, unsigned count, std::uint64_t& value) {
+bool read_number(Span<const std::byte> bytes, std::size_t& cursor, unsigned count, std::uint64_t& value) {
     if (count > bytes.size() - cursor)
         return false;
     value = 0;
     for (unsigned index = 0; index < count; ++index)
-        value |= std::uint64_t(static_cast<unsigned char>(bytes[cursor++])) << (index * 8);
+        value |= std::uint64_t(std::to_integer<std::uint8_t>(bytes[cursor++])) << (index * 8);
     return true;
 }
+
+class ByteSpanStreamIn final : public JPH::StreamIn {
+public:
+    explicit ByteSpanStreamIn(Span<const std::byte> bytes) noexcept : bytes_(bytes) {}
+
+    void ReadBytes(void* out_data, std::size_t num_bytes) override {
+        if (num_bytes == 0)
+            return;
+        if (eof_ || num_bytes > bytes_.size() - cursor_) {
+            eof_ = true;
+            return;
+        }
+        std::memcpy(out_data, bytes_.data() + cursor_, num_bytes);
+        cursor_ += num_bytes;
+    }
+
+    bool IsEOF() const override { return eof_; }
+
+    bool IsFailed() const override { return false; }
+
+    bool Exhausted() const noexcept { return !eof_ && cursor_ == bytes_.size(); }
+
+private:
+    Span<const std::byte> bytes_;
+
+    std::size_t cursor_{};
+
+    bool eof_{};
+};
+
+class ByteArrayStreamOut final : public JPH::StreamOut {
+public:
+    void WriteBytes(const void* in_data, std::size_t num_bytes) override {
+        if (num_bytes == 0)
+            return;
+        const auto* begin = static_cast<const std::byte*>(in_data);
+        bytes_.append(Span<const std::byte>{begin, num_bytes});
+    }
+
+    bool IsFailed() const override { return false; }
+
+    Span<const std::byte> view() const noexcept { return bytes_.view(); }
+
+private:
+    Array<std::byte> bytes_;
+};
 
 std::uint64_t mesh_hash(const geometry::Mesh& mesh, math::Vector3 scale) {
     std::uint64_t hash = hash_basis;
@@ -239,10 +284,10 @@ Result<JPH::ShapeRefC> mesh_shape(const geometry::Mesh& mesh, math::Vector3 scal
     return JPH::ShapeRefC(built.Get());
 }
 
-Result<JPH::ShapeRefC> restore_shape(std::string_view bytes, const geometry::Mesh& mesh, math::Vector3 scale,
-                                     std::string_view source) {
-    constexpr std::string_view magic = "ATJSHAPE";
-    if (!bytes.starts_with(magic))
+Result<JPH::ShapeRefC> restore_shape(Span<const std::byte> bytes, const geometry::Mesh& mesh, math::Vector3 scale,
+                                     StringView source) {
+    constexpr StringView magic = "ATJSHAPE";
+    if (!bytes.starts_with(as_bytes(magic)))
         return failure(ErrorCode::invalid_storage, "Collision asset magic is invalid.");
     std::size_t cursor = magic.size();
     std::uint64_t version{};
@@ -262,57 +307,59 @@ Result<JPH::ShapeRefC> restore_shape(std::string_view bytes, const geometry::Mes
     if (source_size > 4096 || payload_size > 128ull * 1024 * 1024 ||
         source_size + payload_size != bytes.size() - cursor)
         return failure(ErrorCode::invalid_storage, "Collision asset length is invalid.");
-    const auto stored_source = bytes.substr(cursor, static_cast<std::size_t>(source_size));
+    const auto stored_source = bytes.slice(cursor, static_cast<std::size_t>(source_size));
     cursor += static_cast<std::size_t>(source_size);
-    const auto payload = bytes.substr(cursor);
-    if (hash_bytes(stored_source) != source_hash || hash_bytes(payload) != payload_hash)
+    const auto payload = bytes.slice(cursor);
+    if (fnv1a_bytes(stored_source) != source_hash || fnv1a_bytes(payload) != payload_hash)
         return failure(ErrorCode::invalid_storage, "Collision asset content digest is invalid.");
-    if (stored_source != source || geometry_hash != mesh_hash(mesh, scale))
+    if (stored_source != as_bytes(source) || geometry_hash != mesh_hash(mesh, scale))
         return failure(ErrorCode::rebuild_required, "Collision asset source or scale changed; recook required.");
-    std::istringstream input(std::string(payload), std::ios::binary);
-    JPH::StreamInWrapper stream(input);
+    ByteSpanStreamIn stream(payload);
     JPH::Shape::IDToShapeMap shapes;
     JPH::Shape::IDToMaterialMap materials;
     auto restored = JPH::Shape::sRestoreWithChildren(stream, shapes, materials);
-    if (restored.HasError() || stream.IsFailed() || input.rdbuf()->in_avail() != 0)
+    if (restored.HasError() || !stream.Exhausted())
         return failure(ErrorCode::invalid_storage, "Collision asset Jolt payload is invalid.");
     return JPH::ShapeRefC(restored.Get());
 }
 }
 
-Result<std::string> cook_triangle_mesh(const geometry::MeshRef& mesh, math::Vector3 scale,
-                                       std::string_view source_key) {
+Result<Array<std::byte>> cook_triangle_mesh(const geometry::MeshRef& mesh, math::Vector3 scale,
+                                            StringView source_key) {
     if (!mesh || source_key.empty() || source_key.size() > 4096 || !math::is_finite(scale) || scale.x == 0 ||
         scale.y == 0 || scale.z == 0)
         return failure(ErrorCode::argument_mismatch, "Cook needs a mesh, stable source key and nonzero scale.");
     ATELIER_TRY(acquire_jolt());
     ScopeExit registration{[]() noexcept { release_jolt(); }};
     ATELIER_TRY_BIND(shape, mesh_shape(*mesh, scale));
-    std::ostringstream output(std::ios::binary);
-    JPH::StreamOutWrapper stream(output);
+    ByteArrayStreamOut stream;
     JPH::Shape::ShapeToIDMap shapes;
     JPH::Shape::MaterialToIDMap materials;
     (*shape)->SaveWithChildren(stream, shapes, materials);
-    if (stream.IsFailed())
-        return failure(ErrorCode::invalid_storage, "Could not serialize Jolt collision shape.");
-    const auto payload = output.str();
+    const auto payload = stream.view();
     if (payload.size() > 128ull * 1024 * 1024)
         return failure(ErrorCode::capacity_exceeded, "Cooked collision shape is too large.");
-    std::string bytes("ATJSHAPE", 8);
+    constexpr StringView magic = "ATJSHAPE";
+
+    const auto source_bytes = as_bytes(source_key);
+
+    Array<std::byte> bytes;
+    bytes.reserve(magic.size() + 48 + source_bytes.size() + payload.size());
+    bytes.append(as_bytes(magic));
     write_number(bytes, 1, 4);
     write_number(bytes, JPH_VERSION_ID, 8);
-    write_number(bytes, source_key.size(), 4);
-    write_number(bytes, hash_bytes(source_key), 8);
+    write_number(bytes, source_bytes.size(), 4);
+    write_number(bytes, fnv1a_bytes(source_bytes), 8);
     write_number(bytes, mesh_hash(*mesh, scale), 8);
     write_number(bytes, payload.size(), 8);
-    write_number(bytes, hash_bytes(payload), 8);
-    bytes.append(source_key);
+    write_number(bytes, fnv1a_bytes(payload), 8);
+    bytes.append(source_bytes);
     bytes.append(payload);
     return bytes;
 }
 
-Result<void> validate_cooked_triangle_mesh(std::string_view bytes, const geometry::MeshRef& mesh, math::Vector3 scale,
-                                           std::string_view source_key) {
+Result<void> validate_cooked_triangle_mesh(Span<const std::byte> bytes, const geometry::MeshRef& mesh,
+                                           math::Vector3 scale, StringView source_key) {
     if (!mesh || source_key.empty() || !math::is_finite(scale) || scale.x == 0 || scale.y == 0 || scale.z == 0)
         return failure(ErrorCode::argument_mismatch, "Collision validation needs a mesh, source and nonzero scale.");
     ATELIER_TRY(acquire_jolt());
@@ -1167,8 +1214,8 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
         diagnostic.kind = world::DiagnosticKind::degenerate_value;
         diagnostic.phase = world::DiagnosticPhase::physics;
         diagnostic.object = diagnostic.entity = degenerate != ObjectId{} ? degenerate : entity;
-        diagnostic.field = {"scale"};
-        diagnostic.message = "A zero scale axis makes this space degenerate; Primitives in it have no physical body.";
+        diagnostic.field = {"scale"_s};
+        diagnostic.message = "A zero scale axis makes this space degenerate; Primitives in it have no physical body."_s;
         world_.report(std::move(diagnostic));
         impl_->retry.add(entity);
         return {};
@@ -1186,7 +1233,7 @@ Result<void> PhysicsScene::reconcile_component(ObjectId entity, ObjectId compone
         (std::abs(size.x - size.y) > 1e-5f || std::abs(size.x - size.z) > 1e-5f))
         return failure(ErrorCode::argument_mismatch, "Sphere and capsule collision require uniform world scale.");
     geometry::MeshRef mesh;
-    std::string source;
+    String source;
     if (settings->shape == ShapeKind::triangle_mesh) {
         ATELIER_TRY_BIND(binding, mesh_reader_(runtime, component));
         mesh = std::move(binding->resolved);
@@ -1535,15 +1582,15 @@ Result<void> PhysicsScene::step(float elapsed) {
             const auto updated = impl_->system.Update(fixed, 1, &impl_->temporary, solver_jobs);
             if (updated != JPH::EPhysicsUpdateError::None) {
                 ++result.contact_overflows;
-                const auto report = [&](JPH::EPhysicsUpdateError bits, const char* field, const char* message) {
+                const auto report = [&](JPH::EPhysicsUpdateError bits, Utf8Text field, Utf8Text message) {
                     if ((updated & bits) == JPH::EPhysicsUpdateError::None)
                         return;
                     world::Diagnostic diagnostic;
                     diagnostic.severity = world::Severity::warning;
                     diagnostic.kind = world::DiagnosticKind::capacity_exceeded;
                     diagnostic.phase = world::DiagnosticPhase::physics;
-                    diagnostic.field = {field};
-                    diagnostic.message = message;
+                    diagnostic.field = {std::move(field).into_string()};
+                    diagnostic.message = std::move(message).into_string();
                     world_.report(std::move(diagnostic));
                 };
                 report(JPH::EPhysicsUpdateError::BodyPairCacheFull, "body_pairs",
@@ -1559,9 +1606,10 @@ Result<void> PhysicsScene::step(float elapsed) {
                 diagnostic.severity = world::Severity::warning;
                 diagnostic.kind = world::DiagnosticKind::capacity_exceeded;
                 diagnostic.phase = world::DiagnosticPhase::physics;
-                diagnostic.field = {"contact_notifications"};
-                diagnostic.value = "dropped=" + std::to_string(dropped) + "; capacity=16384";
-                diagnostic.message = "The physics contact notification queue is full; some notifications were dropped.";
+                diagnostic.field = {"contact_notifications"_s};
+                diagnostic.value = String::concat("dropped=", dropped, "; capacity=16384");
+                diagnostic.message =
+                    "The physics contact notification queue is full; some notifications were dropped."_s;
                 world_.report(std::move(diagnostic));
             }
         }
@@ -2031,7 +2079,7 @@ Result<SpecialHandle> PhysicsScene::create_ragdoll(ObjectId entity, Span<const R
             !math::is_finite(source.local_position) || !std::isfinite(source.radius) || source.radius <= 0 ||
             !std::isfinite(source.capsule_half_height) || source.capsule_half_height <= 0)
             return failure(ErrorCode::argument_mismatch, "Ragdoll part has invalid hierarchy or dimensions.");
-        settings->mSkeleton->AddJoint(source.name, source.parent);
+        settings->mSkeleton->AddJoint(source.name.view().std_view(), source.parent);
         JPH::RagdollSettings::Part part;
         part.SetShape(new JPH::CapsuleShape(source.capsule_half_height, source.radius));
         part.mPosition = world_part(source.local_position);

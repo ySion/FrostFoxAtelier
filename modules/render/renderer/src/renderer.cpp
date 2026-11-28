@@ -27,7 +27,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
-#include <string_view>
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
@@ -35,7 +34,7 @@
 
 namespace atelier::renderer {
 namespace {
-detail::CancellableResult<void> check_stop(const std::function<bool()>* requested, std::string_view phase) {
+detail::CancellableResult<void> check_stop(const std::function<bool()>* requested, StringView phase) {
     if (requested && (*requested)())
         return std::unexpected(detail::FrameCancelled{phase});
     return {};
@@ -123,9 +122,9 @@ using detail::allocation;
 
 using detail::require;
 
-Error error(rhi::ErrorCode code, const char* text, bool terminal = false,
+Error error(rhi::ErrorCode code, Utf8Text text, bool terminal = false,
             GfxResult native = kGfxResult_InvalidParameter) {
-    return {{code, native, text}, terminal};
+    return {{code, native, std::move(text)}, terminal};
 }
 
 bool finite(float value) {
@@ -412,9 +411,10 @@ Result<Instance> prepare_instance(const MeshInstance& mesh) {
     const auto normal = math::normal_transform({m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]});
     if (!normal)
         return std::unexpected(
-            error(rhi::ErrorCode::invalid_argument, normal.error() == math::NormalTransformFailure::singular
-                                                        ? "Mesh world matrix is singular"
-                                                        : "Mesh normal transform cannot be represented by GPU floats"));
+            error(rhi::ErrorCode::invalid_argument,
+                  normal.error() == math::NormalTransformFailure::singular
+                      ? "Mesh world matrix is singular"_s
+                      : "Mesh normal transform cannot be represented by GPU floats"_s));
     return Instance{mesh.world.elements, normal->matrix, mesh.selected ? 1.0f : 0.0f, normal->mirror};
 }
 
@@ -763,14 +763,14 @@ struct Renderer::State {
                                   PipelineStyle style) {
         const auto desc = detail::studio_pipeline(name, vs, ps, style);
         static_cast<void>(ATELIER_LOG(logging::Severity::info, "renderer", "renderer.pipeline_prepare_begin",
-                                      "Synchronous pipeline preparation beginning: {}", std::string_view(name)));
+                                      "Synchronous pipeline preparation beginning: {}", StringView(name)));
         const auto began = std::chrono::steady_clock::now();
         auto prepared = context.prepare(desc);
         const auto elapsed =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began).count();
         static_cast<void>(ATELIER_LOG(logging::Severity::info, "renderer", "renderer.pipeline_prepare_end",
                                       "Synchronous pipeline preparation returned: {} elapsed_ms={} success={}",
-                                      std::string_view(name), elapsed, bool(prepared)));
+                                      StringView(name), elapsed, bool(prepared)));
         if (!prepared)
             return std::unexpected(Error{prepared.error(), false});
         output = std::move(*prepared);
@@ -825,9 +825,12 @@ struct Renderer::State {
                 continue;
             Array<std::byte> storage(size);
             auto* message = reinterpret_cast<D3D12_MESSAGE*>(storage.data());
-            if (SUCCEEDED(debug->GetMessage(i, message, &size)) && message->Severity <= D3D12_MESSAGE_SEVERITY_ERROR)
-                return std::unexpected(
-                    Error{{rhi::ErrorCode::execution_failed, kGfxResult_DeviceError, message->pDescription}, true});
+            if (SUCCEEDED(debug->GetMessage(i, message, &size)) && message->Severity <= D3D12_MESSAGE_SEVERITY_ERROR) {
+                const StringView description = message->pDescription ? StringView{message->pDescription} : StringView{};
+                return std::unexpected(Error{{rhi::ErrorCode::execution_failed, kGfxResult_DeviceError,
+                                              String::from_utf8(description).value_or("D3D12 debug error"_s)},
+                                             true});
+            }
         }
         debug->ClearStoredMessages();
         return {};

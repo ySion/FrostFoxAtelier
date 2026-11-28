@@ -15,7 +15,6 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
-#include <sstream>
 
 namespace atelier::acceptance {
 namespace {
@@ -100,9 +99,9 @@ bool scenario(std::ostream& report, const Geometry& subject, const Geometry& cut
     const bool curved = segments != 0;
     const int preheats = curved ? 3 : warmups;
     std::array<double, samples> times{};
-    const std::string name = curved ? "sphere_" + std::to_string(segments) + "x" + std::to_string(segments / 2)
-                                    : (coplanar ? "coplanar_heavy" : "sparse_contact");
-    report << "{\"name\":" << std::quoted(name);
+    const String name = curved ? String::concat("sphere_", segments, "x", segments / 2)
+                               : (coplanar ? "coplanar_heavy"_s : "sparse_contact"_s);
+    report << "{\"name\":" << std::quoted(name.c_str());
     if (!curved)
         report << ",\"boxes_per_operand\":" << boxes;
     report << ",\"triangles_per_operand\":" << (curved ? 2 * segments * (segments / 2 - 1) : boxes * 12)
@@ -143,7 +142,7 @@ bool scenario(std::ostream& report, const Geometry& subject, const Geometry& cut
                    << ",\"output_area\":" << m.area << ",\"signature\":\"" << std::hex << m.signature << std::dec
                    << "\"";
         } else {
-            report << ",\"error\":" << std::quoted(result.error().message);
+            report << ",\"error\":" << std::quoted(result.error().message.c_str());
         }
         write_stats(report, stats);
     }
@@ -207,7 +206,7 @@ void evaluator_scenario(std::ostream& report, const std::array<std::uint64_t, 3>
                 require(status && status->evaluations == static_cast<unsigned>(pose + 2) && status->boolean_stats,
                         "The moving sphere Boolean did not actually cook.");
                 if (status->error)
-                    fatal(status->error->message);
+                    fatal(status->error->message.c_str());
                 require(evaluator.output() && status->time, "Missing Boolean SOP result or timing.");
                 if (pose < 0)
                     continue;
@@ -243,7 +242,8 @@ void profile_boolean(const char* path) {
     require(output.is_absolute() && !std::filesystem::exists(output), "Choose a new absolute profile file.");
     const std::array source{take(box({2, 2, 2}))};
     bool valid = true;
-    std::ostringstream report;
+    std::ofstream report{output, std::ios::binary | std::ios::noreplace};
+    require(static_cast<bool>(report), "The Boolean profile file cannot be opened.");
     report << std::setprecision(std::numeric_limits<double>::max_digits10);
     report << "{\n\"schema\":\"atelier.boolean.profile.v1\",\n\"configuration\":\""
 #ifdef NDEBUG
@@ -272,12 +272,19 @@ void profile_boolean(const char* path) {
     report << ",\n";
     evaluator_scenario(report, signatures);
     report << "\n]}\n";
-    const auto json = std::move(report).str();
-    std::ofstream file{output, std::ios::binary | std::ios::noreplace};
-    file << json;
-    file.close();
-    require(static_cast<bool>(file), "The Boolean profile file cannot be written.");
-    std::fputs(json.c_str(), stdout);
+    report.close();
+    require(static_cast<bool>(report), "The Boolean profile file cannot be written.");
+    std::ifstream in{output, std::ios::binary | std::ios::ate};
+    const auto json_size = in.tellg();
+    require(json_size >= 0, "The Boolean profile file size cannot be read.");
+    Array<char> json;
+    json.resize_uninitialized(static_cast<std::size_t>(json_size));
+    in.seekg(0);
+    if (!json.empty()) {
+        require(static_cast<bool>(in.read(json.data(), static_cast<std::streamsize>(json.size()))),
+                "The Boolean profile file cannot be read.");
+        (void)std::fwrite(json.data(), 1, json.size(), stdout);
+    }
     require(valid, "A required Boolean profile pose was rejected; see the JSON report.");
 }
 }

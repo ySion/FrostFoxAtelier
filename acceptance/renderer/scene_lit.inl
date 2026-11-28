@@ -461,7 +461,8 @@ struct Fixture {
             step();
         render::Capture result;
         step(&result);
-        png(result, output / (std::string(name) + ".png"));
+        const auto png_name = atelier::String::concat(atelier::String::validated(atelier::StringView{name}), ".png");
+        png(result, output / png_name.c_str());
         return result;
     }
 
