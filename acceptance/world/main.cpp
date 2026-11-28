@@ -13,6 +13,7 @@
 #include <tuple>
 
 void verify_mesh_import();
+void verify_meshlet_and_atx_pipeline();
 
 namespace {
 using namespace atelier;
@@ -257,6 +258,7 @@ int main() {
     tick_prerequisite_order();
     spatial_tree_and_mesh();
     verify_mesh_import();
-    std::puts("World acceptance: PASS (edit history, tick prerequisites, transform and failed Begin cleanup)");
+    verify_meshlet_and_atx_pipeline();
+    std::puts("World acceptance: PASS (edit history, tick prerequisites, transform, meshlet/ATX cooking and failed Begin cleanup)");
     return 0;
 }
