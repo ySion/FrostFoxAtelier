@@ -243,11 +243,14 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
     StructuredBuffer<GlobalFrameConstants> fcb_buf = ResourceDescriptorHeap[atelier_safe_desc(g_frame_cb_srv)];
     GlobalFrameConstants fcb = fcb_buf[0];
 
+    uint2 tile8_off = uint2(fcb.scene_tile8_offset_packed & 0xFFFFu, fcb.scene_tile8_offset_packed >> 16u);
+    uint2 tile8_px_off = tile8_off * 8u;
+
     // ========================================================================
     // Mode 0: Layer 0 — Full-Res Signed 32-Sector ONB-GT-VBAO (Therrien 2023 + XeGTAO + Lumen ShortRangeAO)
     // ========================================================================
     if (g_gi_mode == 0u) {
-        uint2 fpx = dtid.xy;
+        uint2 fpx = dtid.xy + tile8_px_off;
         if (fpx.x >= fcb.render_extent.x || fpx.y >= fcb.render_extent.y)
             return;
 
@@ -466,7 +469,7 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
             gs_inv_prev_vp = gi_invert_4x4(fcb.prev_unjittered_vp, fcb.inv_unjittered_vp);
         GroupMemoryBarrierWithGroupSync();
 
-        uint2 px = dtid.xy;
+        uint2 px = dtid.xy + tile8_px_off;
         if (px.x >= fcb.render_extent.x || px.y >= fcb.render_extent.y)
             return;
 
@@ -654,8 +657,21 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
     if (g_gi_mode == 2u) {
         uint2 probes_dim = uint2((fcb.render_extent.x + 7u) / 8u, (fcb.render_extent.y + 7u) / 8u);
         uint2 probe_coord = gid.xy;
-        bool in_grid = (probe_coord.x < probes_dim.x && probe_coord.y < probes_dim.y);
+        if (probe_coord.x >= probes_dim.x || probe_coord.y >= probes_dim.y)
+            return;
         uint probe_idx = probe_coord.y * probes_dim.x + probe_coord.x;
+        float2 p_box0 = float2(probe_coord * 8u);
+        float2 p_box1 = p_box0 + 8.0f;
+        bool probe_in_vp = (p_box1.x > fcb.scene_viewport.x && p_box0.x < fcb.scene_viewport.x + fcb.scene_viewport.z &&
+                            p_box1.y > fcb.scene_viewport.y && p_box0.y < fcb.scene_viewport.y + fcb.scene_viewport.w);
+        if (!probe_in_vp || (fcb.flags & 2u) == 0u) {
+            if (gindex == 0u) {
+                RWStructuredBuffer<uint2> probe_state_out = ResourceDescriptorHeap[atelier_safe_desc(g_srv_aux0)];
+                probe_state_out[probe_idx] = uint2(0xFFFFFFFFu, 0u);
+            }
+            return;
+        }
+        bool in_grid = true;
 
         uint grid_n = (fcb.gi_rays_per_probe >= 64u) ? 8u : 6u;
         uint total_rays = grid_n * grid_n;
@@ -766,6 +782,8 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
 
         uint pflags = gs_probe_flags;
         bool probe_valid = (pflags & 1u) != 0u;
+        if (!probe_valid)
+            return;
         bool tile_active = (pflags & 2u) != 0u;
         bool reproj_ok = (pflags & 4u) != 0u;
         float3 anchor_P = gs_anchor_P;
@@ -1274,6 +1292,12 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
 
         if (in_grid && gindex == 0u)
             mask_uav[probe_coord] = probe_valid ? seed : 0xFFFFFFFFu;
+        if (!in_grid)
+            return;
+        if (!probe_valid) {
+            atlas_uav[atlas_px] = 0.0f;
+            return;
+        }
 
         gs_reproj_accum[gindex] = uint4(0u, 0u, 0u, 0u);
         GroupMemoryBarrierWithGroupSync();
@@ -1481,6 +1505,12 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
         GroupMemoryBarrierWithGroupSync();
 
         bool center_valid = (gs_probe_flags != 0u);
+        if (!in_grid)
+            return;
+        if (!center_valid) {
+            atlas_out[atlas_px] = 0.0f;
+            return;
+        }
         float3 P_c = gs_anchor_P;
         float3 N_c = gs_anchor_N;
 
@@ -1611,6 +1641,15 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
         GroupMemoryBarrierWithGroupSync();
 
         bool valid_probe = (gs_probe_flags != 0u);
+        if (!in_grid)
+            return;
+        if (!valid_probe) {
+            if (gindex == 0u) {
+                PackedScreenProbeSH2 zero_rec = (PackedScreenProbeSH2)0;
+                sh_out[probe_idx] = zero_rec;
+            }
+            return;
+        }
         if (valid_probe) {
             float4 cell = atlas_in.Load(int3(probe_coord * 8u + cell_xy, 0));
             float3 local_d = hemi_oct_decode((float2(cell_xy) + 0.5f) * 0.125f);
@@ -1658,7 +1697,7 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
     // Mode 11: GI-1.2 Separable `FilterGI` (`g_srv_aux2`: 0 = Horizontal, 1 = Vertical + Bent-Cone Coupling)
     // ========================================================================
     if (g_gi_mode == 11u) {
-        uint2 px = dtid.xy;
+        uint2 px = dtid.xy + tile8_px_off;
         if (px.x >= fcb.render_extent.x || px.y >= fcb.render_extent.y)
             return;
 
@@ -1772,7 +1811,7 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
         gs_inv_prev_vp = gi_invert_4x4(fcb.prev_unjittered_vp, fcb.inv_unjittered_vp);
     GroupMemoryBarrierWithGroupSync();
 
-    uint2 px = dtid.xy;
+    uint2 px = dtid.xy + tile8_px_off;
     if (px.x >= fcb.render_extent.x || px.y >= fcb.render_extent.y)
         return;
 

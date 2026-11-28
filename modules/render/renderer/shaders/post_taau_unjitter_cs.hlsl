@@ -44,6 +44,98 @@ float luma_rec709(float3 c) {
     return dot(c, float3(0.2126f, 0.7152f, 0.0722f));
 }
 
+// Jorge Jiménez [SIGGRAPH 2016 Filmic SMAA] 5-tap anti-ringing Catmull-Rom bicubic history filter:
+float3 sample_taa_history_catmull_rom(Texture2D<float4> tex, SamplerState lin_smp, float2 uv, float2 rt_size,
+                                      int2 sc_min, int2 sc_max) {
+    float2 sample_pos = uv * rt_size;
+    float2 tc1 = floor(sample_pos - 0.5f) + 0.5f;
+    float2 f = sample_pos - tc1;
+    if (abs(f.x) < 1e-4f && abs(f.y) < 1e-4f) {
+        int2 ip = clamp(int2(tc1), sc_min, sc_max);
+        return max(tex.Load(int3(ip, 0)).rgb, 0.0f);
+    }
+
+    float2 f2 = f * f;
+    float2 f3 = f2 * f;
+    float2 w0 = f2 - 0.5f * (f3 + f);
+    float2 w1 = 1.5f * f3 - 2.5f * f2 + 1.0f;
+    float2 w3 = 0.5f * (f3 - f2);
+    float2 w2 = 1.0f - w0 - w1 - w3;
+
+    float2 w12 = w1 + w2;
+    float2 inv_rt = 1.0f / rt_size;
+    float2 uv_min = (float2(sc_min) + 0.5f) * inv_rt;
+    float2 uv_max = (float2(sc_max) + 0.5f) * inv_rt;
+
+    float2 tc0 = clamp((tc1 - 1.0f) * inv_rt, uv_min, uv_max);
+    float2 tc3 = clamp((tc1 + 2.0f) * inv_rt, uv_min, uv_max);
+    float2 tc12 = clamp((tc1 + w2 / max(w12, 1e-5f)) * inv_rt, uv_min, uv_max);
+
+    float s0 = w12.x * w0.y;
+    float s1 = w0.x * w12.y;
+    float s2 = w12.x * w12.y;
+    float s3 = w3.x * w12.y;
+    float s4 = w12.x * w3.y;
+    float w_sum = max(s0 + s1 + s2 + s3 + s4, 1e-5f);
+
+    float3 c_top = tex.SampleLevel(lin_smp, float2(tc12.x, tc0.y), 0.0f).rgb;
+    float3 c_lft = tex.SampleLevel(lin_smp, float2(tc0.x, tc12.y), 0.0f).rgb;
+    float3 c_mid = tex.SampleLevel(lin_smp, float2(tc12.x, tc12.y), 0.0f).rgb;
+    float3 c_rgt = tex.SampleLevel(lin_smp, float2(tc3.x, tc12.y), 0.0f).rgb;
+    float3 c_bot = tex.SampleLevel(lin_smp, float2(tc12.x, tc3.y), 0.0f).rgb;
+
+    float3 res = (c_top * s0 + c_lft * s1 + c_mid * s2 + c_rgt * s3 + c_bot * s4) / w_sum;
+
+    // Clamp cubic negative-lobe overshoot to the local 2x2 bilinear texel hull (zero ringing!):
+    int2 b00 = clamp(int2(floor(sample_pos - 0.5f)), sc_min, sc_max);
+    int2 b11 = clamp(b00 + int2(1, 1), sc_min, sc_max);
+    float3 p00 = tex.Load(int3(b00.x, b00.y, 0)).rgb;
+    float3 p10 = tex.Load(int3(b11.x, b00.y, 0)).rgb;
+    float3 p01 = tex.Load(int3(b00.x, b11.y, 0)).rgb;
+    float3 p11 = tex.Load(int3(b11.x, b11.y, 0)).rgb;
+    float3 h_min = max(min(min(p00, p10), min(p01, p11)), 0.0f);
+    float3 h_max = max(max(p00, p10), max(p01, p11));
+    return clamp(res, h_min, h_max);
+}
+
+// Timothy Lottes [AMD FidelityFX RCAS] zero-overshoot 5-tap Robust Contrast Adaptive Sharpening in [0,1) compressed HDR:
+float3 apply_inline_rcas_hdr(Texture2D<float4> hdr_tex, int2 ipx, int2 sc_min, int2 sc_max, float sharpness) {
+    float3 c_hdr = max(hdr_tex.Load(int3(ipx, 0)).rgb, 0.0f);
+    float3 n_hdr = max(hdr_tex.Load(int3(clamp(ipx + int2(0, -1), sc_min, sc_max), 0)).rgb, 0.0f);
+    float3 s_hdr = max(hdr_tex.Load(int3(clamp(ipx + int2(0,  1), sc_min, sc_max), 0)).rgb, 0.0f);
+    float3 w_hdr = max(hdr_tex.Load(int3(clamp(ipx + int2(-1, 0), sc_min, sc_max), 0)).rgb, 0.0f);
+    float3 e_hdr = max(hdr_tex.Load(int3(clamp(ipx + int2(1,  0), sc_min, sc_max), 0)).rgb, 0.0f);
+
+    float3 c = c_hdr / (1.0f + luma_rec709(c_hdr));
+    float3 n = n_hdr / (1.0f + luma_rec709(n_hdr));
+    float3 s = s_hdr / (1.0f + luma_rec709(s_hdr));
+    float3 w = w_hdr / (1.0f + luma_rec709(w_hdr));
+    float3 e = e_hdr / (1.0f + luma_rec709(e_hdr));
+
+    float cL = luma_rec709(c);
+    float nL = luma_rec709(n);
+    float sL = luma_rec709(s);
+    float wL = luma_rec709(w);
+    float eL = luma_rec709(e);
+
+    float mn4L = min(min(nL, sL), min(wL, eL));
+    float mx4L = max(max(nL, sL), max(wL, eL));
+    float mn5L = min(mn4L, cL);
+    float mx5L = max(mx4L, cL);
+
+    float hit_min = mn4L / max(4.0f * mx5L, 1e-4f);
+    float hit_max = (1.0f - mx4L) / max(4.0f * (1.0f - mn5L), 1e-4f);
+    float lobe = -clamp(min(hit_min, hit_max), 0.0f, 0.1875f) * sharpness;
+
+    float3 mn5 = min(min(min(n, s), min(w, e)), c);
+    float3 mx5 = max(max(max(n, s), max(w, e)), c);
+    float3 out_c = clamp((c + lobe * (n + s + w + e)) / max(1.0f + 4.0f * lobe, 0.25f), mn5, mx5);
+    float max_hdr_l = max(max(max(luma_rec709(n_hdr), luma_rec709(s_hdr)), max(luma_rec709(w_hdr), luma_rec709(e_hdr))),
+                          luma_rec709(c_hdr));
+    float min_den = max(1.0f / (1.0f + max_hdr_l), 1e-4f);
+    return max(out_c / max(1.0f - luma_rec709(out_c), min_den), 0.0f);
+}
+
 float3 bloom_soft_knee(float3 c) {
     c = max(c, 0.0f);
     const float thresh = 0.80f;
@@ -261,12 +353,18 @@ void main(uint3 dtid : SV_DispatchThreadID) {
             return;
         }
 
+        bool is_native_res = all(fcb.render_extent == fcb.output_extent);
         int2 sc_min = fcb.scissor_rect.xy;
         int2 sc_max = max(sc_min, fcb.scissor_rect.zw - 1);
-        float best_z = -1.0f;
+        float center_z = depth_tex.Load(int3(px, 0));
+        float best_z = center_z;
         int2 best_px = int2(px);
         float3 m1 = 0.0f;
         float3 m2 = 0.0f;
+        float3 box_min = 1e9f;
+        float3 box_max = -1e9f;
+        float3 bh_ycc_sum = 0.0f;
+        float bh_w_sum = 0.0f;
         float max_hdr_luma = 0.0f;
         [unroll] for (int dy = -1; dy <= 1; ++dy) {
             [unroll] for (int dx = -1; dx <= 1; ++dx) {
@@ -282,6 +380,19 @@ void main(uint3 dtid : SV_DispatchThreadID) {
                 float3 ycc = rgb_to_ycocg(s_hdr / (1.0f + l));
                 m1 += ycc;
                 m2 += ycc * ycc;
+                box_min = min(box_min, ycc);
+                box_max = max(box_max, ycc);
+
+                if (!is_native_res) {
+                    // Sub-native TAAU upscaling Blackman-Harris subpixel reconstruction (`q_unjit - pxc`):
+                    float2 d_sub = float2(float(dx), float(dy)) - fcb.jitter_pixels;
+                    float d2_sub = dot(d_sub, d_sub);
+                    if (d2_sub <= 2.25f) {
+                        float w_bh = exp(-2.29f * d2_sub);
+                        bh_ycc_sum += ycc * w_bh;
+                        bh_w_sum += w_bh;
+                    }
+                }
             }
         }
 
@@ -293,9 +404,11 @@ void main(uint3 dtid : SV_DispatchThreadID) {
             return;
         }
 
-        float2 mot = mot_tex.Load(int3(best_px, 0));
-        float2 prev_uv = (pxc / float2(g_dst_w, g_dst_h)) + mot;
-        float2 prev_px = prev_uv * float2(g_dst_w, g_dst_h);
+        float2 rt_size = float2(g_dst_w, g_dst_h);
+        float2 mot_best = mot_tex.Load(int3(best_px, 0));
+        float2 mot_cent = mot_tex.Load(int3(px, 0));
+        float2 prev_uv = (pxc / rt_size) + mot_best;
+        float2 prev_px = prev_uv * rt_size;
         if (prev_px.x < fcb.prev_scene_viewport.x || prev_px.x >= fcb.prev_scene_viewport.x + fcb.prev_scene_viewport.z ||
             prev_px.y < fcb.prev_scene_viewport.y || prev_px.y >= fcb.prev_scene_viewport.y + fcb.prev_scene_viewport.w) {
             out_hdr[px] = float4(center, 1.0f);
@@ -303,36 +416,68 @@ void main(uint3 dtid : SV_DispatchThreadID) {
             return;
         }
 
+        float vel_best = length(mot_best * rt_size);
+        float vel_cent = length(mot_cent * rt_size);
+        float max_vel = max(vel_best, vel_cent);
+
+        // Pixel-aligned disocclusion check (never fires on stationary Halton silhouette supersampling!):
         float disocc_boost = 0.0f;
-        if (best_z > 0.0f && g_src_w != 0xFFFFFFFFu && fcb.prev_view_z_srv != 0xFFFFFFFFu) {
+        if (max_vel > 0.12f && center_z > 0.0f && g_src_w != 0xFFFFFFFFu && fcb.prev_view_z_srv != 0xFFFFFFFFu) {
             Texture2D<float> exp_pz_tex = ResourceDescriptorHeap[atelier_safe_desc(g_src_w)];
             Texture2D<float> act_pz_tex = ResourceDescriptorHeap[atelier_safe_desc(fcb.prev_view_z_srv)];
-            SamplerState pt_smp = SamplerDescriptorHeap[3];
-            float exp_pz = exp_pz_tex.Load(int3(best_px, 0));
-            float act_pz = act_pz_tex.SampleLevel(pt_smp, prev_uv, 0.0f);
-            if (act_pz <= 0.0f || abs(act_pz - exp_pz) > max(2e-5f, max(act_pz, exp_pz) * 0.08f))
-                disocc_boost = 0.55f;
+            float exp_pz = exp_pz_tex.Load(int3(px, 0));
+            float2 prev_cent_px = pxc + mot_cent * rt_size;
+            int2 p_base = int2(floor(prev_cent_px - 0.5f));
+            bool matched_pz = false;
+            [unroll] for (int py = 0; py <= 1; ++py) {
+                [unroll] for (int px_o = 0; px_o <= 1; ++px_o) {
+                    int2 qp = clamp(p_base + int2(px_o, py), int2(0, 0), int2(int(g_dst_w) - 1, int(g_dst_h) - 1));
+                    float act_pz = act_pz_tex.Load(int3(qp, 0));
+                    if (act_pz > 0.0f && abs(act_pz - exp_pz) <= max(2e-5f, max(act_pz, exp_pz) * 0.08f))
+                        matched_pz = true;
+                }
+            }
+            if (!matched_pz)
+                disocc_boost = 0.60f * saturate((max_vel - 0.10f) * 1.5f);
         }
 
         Texture2D<float4> prev_taa = ResourceDescriptorHeap[atelier_safe_desc(g_src1_srv)];
-        float3 hist_rgb = max(prev_taa.SampleLevel(lin_clamp, prev_uv, 0.0f).rgb * fcb.exposure_ratio, 0.0f);
+        float3 hist_rgb = sample_taa_history_catmull_rom(prev_taa, lin_clamp, prev_uv, rt_size, sc_min, sc_max) *
+                          fcb.exposure_ratio;
         float3 hist_ycc = rgb_to_ycocg(hist_rgb / (1.0f + luma_rec709(hist_rgb)));
 
-        // Chroma-preserving YCoCg ray-clip toward 3x3 neighborhood mean `mu`:
+        // Motion-adaptive variance + subpixel hull: preserves woven fabric / thin threads at rest, kills ghosting in motion!
         float3 mu = m1 * (1.0f / 9.0f);
         float3 sigma = sqrt(max(0.0f, m2 * (1.0f / 9.0f) - mu * mu));
-        float3 delta_h = hist_ycc - mu;
-        float3 unit_d = abs(delta_h) / max(sigma * 1.25f, 1e-5f);
+        float motion_t = saturate(max_vel * 0.45f + disocc_boost * 2.0f);
+        float gamma = lerp(2.25f, 1.15f, motion_t);
+        float3 half_ext = max(sigma * gamma, 1e-5f);
+        float3 c_lo = lerp(min(mu - half_ext, box_min), mu - half_ext, motion_t);
+        float3 c_hi = lerp(max(mu + half_ext, box_max), mu + half_ext, motion_t);
+        float3 center_clip = 0.5f * (c_lo + c_hi);
+        float3 extent_clip = max(0.5f * (c_hi - c_lo), 1e-5f);
+        float3 delta_h = hist_ycc - center_clip;
+        float3 unit_d = abs(delta_h) / extent_clip;
         float max_unit = max(unit_d.x, max(unit_d.y, unit_d.z));
-        float3 clipped_ycc = (max_unit > 1.0f) ? (mu + delta_h / max_unit) : hist_ycc;
+        float3 clipped_ycc = (max_unit > 1.0f) ? (center_clip + delta_h / max_unit) : hist_ycc;
+
+        // At 100% native resolution, keep `center` unblurred (zero 3x3 neighbor pre-blur!) and integrate subpixel
+        // samples strictly across time via Blackman-Harris jitter confidence weighting:
+        float min_denom = max(1.0f / (1.0f + max_hdr_luma), 1e-3f);
+        float3 curr_unjit_hdr = center;
+        if (!is_native_res && bh_w_sum > 1e-4f) {
+            float3 curr_tm = ycocg_to_rgb(bh_ycc_sum / bh_w_sum);
+            curr_unjit_hdr = curr_tm / max(1.0f - luma_rec709(curr_tm), min_denom);
+        }
 
         float3 clipped_tm = ycocg_to_rgb(clipped_ycc);
-        float min_denom = max(1.0f / (1.0f + max_hdr_luma), 1e-3f);
         float3 clipped_hdr = clipped_tm / max(1.0f - luma_rec709(clipped_tm), min_denom);
 
-        float vel_px = length(mot * float2(g_dst_w, g_dst_h));
-        float alpha = saturate(lerp(0.08f, 0.25f, saturate(vel_px * 0.2f)) + disocc_boost);
-        float3 resolved = lerp(clipped_hdr, center, alpha);
+        float center_bh = exp(-3.30f * dot(fcb.jitter_pixels, fcb.jitter_pixels));
+        float rest_alpha = 0.052f * (0.22f + 0.78f * center_bh);
+        float alpha = saturate(lerp(rest_alpha, 0.26f, saturate(max_vel * 0.25f)) + disocc_boost);
+        float3 target_curr = is_native_res ? center : lerp(curr_unjit_hdr, center, saturate(max_vel * 0.5f + disocc_boost));
+        float3 resolved = lerp(clipped_hdr, target_curr, alpha);
         out_hdr[px] = float4(resolved, 1.0f);
         hist_out[px] = float4(resolved, 1.0f);
         return;
@@ -428,8 +573,13 @@ void main(uint3 dtid : SV_DispatchThreadID) {
             return;
         }
 
-        // `hdr_tex` (`resolved_hdr` <- `scene_hdr`) is already pre-exposed by `fcb.exposure_scale`:
-        float3 hdr = max(hdr_tex.Load(int3(px, 0)).rgb, 0.0f);
+        // `hdr_tex` (`resolved_hdr` <- `scene_hdr`) is already pre-exposed by `fcb.exposure_scale`;
+        // apply inline zero-overshoot AMD FidelityFX RCAS when TAA supersampling is active to restore crisp fabric/stone micro-detail:
+        int2 sc_min_t = fcb.scissor_rect.xy;
+        int2 sc_max_t = max(sc_min_t, fcb.scissor_rect.zw - 1);
+        float3 hdr = ((fcb.flags & (1u << 11u)) != 0u)
+                         ? apply_inline_rcas_hdr(hdr_tex, int2(px), sc_min_t, sc_max_t, 0.85f)
+                         : max(hdr_tex.Load(int3(px, 0)).rgb, 0.0f);
         if ((fcb.flags & (1u << 4u)) != 0u && g_src1_srv != 0xFFFFFFFFu) {
             Texture2D<float4> bloom_tex = ResourceDescriptorHeap[atelier_safe_desc(g_src1_srv)];
             float2 uv = pxc / float2(g_dst_w, g_dst_h);

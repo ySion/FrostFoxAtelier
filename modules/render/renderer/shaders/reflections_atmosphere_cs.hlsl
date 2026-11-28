@@ -139,6 +139,151 @@ float3 refl_eval_filter_normal(uint2 qpx, Texture2D<uint2> slab0_tex) {
     return unpack_oct_snorm16(s0.x);
 }
 
+uint refl_find_closest_probe_seed(uint2 base_probe, int2 offset, Texture2D<uint> mask_tex, uint2 probes_dim,
+                                  uint mip_count) {
+    int2 pos = int2(base_probe) + offset;
+    if (pos.x < 0 || pos.y < 0 || pos.x >= int(probes_dim.x) || pos.y >= int(probes_dim.y))
+        return 0xFFFFFFFFu;
+    uint seed0 = mask_tex.Load(int3(pos, 0));
+    if (seed0 != 0xFFFFFFFFu)
+        return seed0;
+    [loop] for (uint mip = 1u; mip < mip_count; ++mip) {
+        uint2 mdim = max(uint2(1u, 1u), probes_dim >> mip);
+        int2 mpos = clamp(pos >> int(mip), int2(0, 0), int2(mdim) - 1);
+        uint mseed = mask_tex.Load(int3(mpos, int(mip)));
+        if (mseed != 0xFFFFFFFFu)
+            return mseed;
+    }
+    return 0xFFFFFFFFu;
+}
+
+float4 sample_probe_oct_bilerp(Texture2D<float4> atlas_tex, uint2 pc, float2 oct_uv, float spread_cells) {
+    float2 cf = oct_uv * 8.0f - 0.5f;
+    int2 c0 = int2(floor(cf));
+    float2 f = saturate(cf - float2(c0));
+    int2 p00 = clamp(c0, int2(0, 0), int2(7, 7));
+    int2 p10 = clamp(c0 + int2(1, 0), int2(0, 0), int2(7, 7));
+    int2 p01 = clamp(c0 + int2(0, 1), int2(0, 0), int2(7, 7));
+    int2 p11 = clamp(c0 + int2(1, 1), int2(0, 0), int2(7, 7));
+    int2 tile = int2(pc * 8u);
+    float4 v00 = atlas_tex.Load(int3(tile + p00, 0));
+    float4 v10 = atlas_tex.Load(int3(tile + p10, 0));
+    float4 v01 = atlas_tex.Load(int3(tile + p01, 0));
+    float4 v11 = atlas_tex.Load(int3(tile + p11, 0));
+    float4 center = lerp(lerp(v00, v10, f.x), lerp(v01, v11, f.x), f.y);
+    if (spread_cells > 1e-3f) {
+        int2 cr = int2(round(cf));
+        float3 cross_sum = atlas_tex.Load(int3(tile + clamp(cr + int2(-1, 0), int2(0, 0), int2(7, 7)), 0)).rgb +
+                           atlas_tex.Load(int3(tile + clamp(cr + int2(1, 0), int2(0, 0), int2(7, 7)), 0)).rgb +
+                           atlas_tex.Load(int3(tile + clamp(cr + int2(0, -1), int2(0, 0), int2(7, 7)), 0)).rgb +
+                           atlas_tex.Load(int3(tile + clamp(cr + int2(0, 1), int2(0, 0), int2(7, 7)), 0)).rgb;
+        center.rgb = lerp(center.rgb, cross_sum * 0.25f, spread_cells);
+    }
+    return center;
+}
+
+// Lumen-style Screen-Probes directional rough specular (`8x8` octahedral radiance atlas along GGX dominant lobe):
+bool sample_screen_probes_rough_specular(uint2 px, float3 P, float3 GN, float3 N_refl, float3 R, float3 bent_w,
+                                         float bent_vis, float r_trace, Texture2D<float> depth_tex,
+                                         GlobalFrameConstants fcb, out float3 out_rad, out float out_dist) {
+    out_rad = 0.0f;
+    out_dist = 4.0f;
+    if ((fcb.flags & 2u) == 0u || fcb.gi_probe_atlas_srv == 0xFFFFFFFFu || fcb.gi_probe_mask_srv == 0xFFFFFFFFu ||
+        g_slab2_srv == 0xFFFFFFFFu)
+        return false;
+
+    float alpha_r = r_trace * r_trace;
+    float dom_f = (1.0f - alpha_r) * (sqrt(max(1.0f - alpha_r, 0.0f)) + alpha_r);
+    float3 R_dom = safe_unit_normal(lerp(N_refl, R, dom_f));
+    float3 R_eval = safe_unit_normal(R_dom + (bent_w - GN) * ((1.0f - bent_vis) * 0.35f * r_trace));
+    float spread = saturate((r_trace - 0.65f) * 2.2f) * 0.45f;
+
+    float px_ws = gi_pixel_world_size(P, fcb);
+    float cell_ws = 8.0f * px_ws;
+    Texture2D<uint> gn_tex = ResourceDescriptorHeap[atelier_safe_desc(g_slab2_srv)];
+    Texture2D<float4> atlas_tex = ResourceDescriptorHeap[atelier_safe_desc(fcb.gi_probe_atlas_srv)];
+    Texture2D<uint> mask_tex = ResourceDescriptorHeap[atelier_safe_desc(fcb.gi_probe_mask_srv)];
+
+    uint pm_w = 1u, pm_h = 1u, pm_mips = 1u;
+    mask_tex.GetDimensions(0u, pm_w, pm_h, pm_mips);
+    uint2 probes_dim = uint2((fcb.render_extent.x + 7u) / 8u, (fcb.render_extent.y + 7u) / 8u);
+
+    uint t_idx = ((fcb.flags & (1u << 7u)) != 0u) ? fcb.frame_index : 0u;
+    float2 u_jit = atelier_blue_jitter2(px, t_idx, 0x9E3779B9u) * 2.0f - 1.0f;
+    float2 sample_px = float2(px);
+    int2 j_px = clamp(int2(round(float2(px) + u_jit * 4.0f)), fcb.scissor_rect.xy,
+                      max(fcb.scissor_rect.xy, fcb.scissor_rect.zw - 1));
+    float2 j_pxc = float2(j_px) + 0.5f;
+    if (j_pxc.x >= fcb.scene_viewport.x && j_pxc.x < fcb.scene_viewport.x + fcb.scene_viewport.z &&
+        j_pxc.y >= fcb.scene_viewport.y && j_pxc.y < fcb.scene_viewport.y + fcb.scene_viewport.w) {
+        float j_dz = depth_tex.Load(int3(j_px, 0));
+        if (j_dz > 0.0f) {
+            float3 j_GN = unpack_oct_snorm16(gn_tex.Load(int3(j_px, 0)));
+            float3 j_P = comp_reconstruct_world(j_pxc, j_dz, fcb.inv_view_projection, fcb);
+            if (dot(j_GN, GN) >= 0.90f && abs(dot(j_P - P, GN)) <= max(0.02f, px_ws * 2.5f))
+                sample_px = float2(px) + u_jit * 4.0f;
+        }
+    }
+
+    float2 probe_f = clamp((sample_px - 3.5f) * 0.125f, 0.0f, float2(max(probes_dim, 1u) - 1u));
+    uint2 base_p = min(uint2(floor(probe_f)), max(probes_dim, 1u) - 1u);
+    float2 frac_p = saturate(probe_f - float2(base_p));
+
+    float3 rad_sum = 0.0f;
+    float dist_sum = 0.0f;
+    float w_total = 0.0f;
+
+    [loop] for (int oy = 0; oy <= 1; ++oy) {
+        [loop] for (int ox = 0; ox <= 1; ++ox) {
+            uint seed = refl_find_closest_probe_seed(base_p, int2(ox, oy), mask_tex, probes_dim, pm_mips);
+            if (seed == 0xFFFFFFFFu)
+                continue;
+            uint2 seed_px = uint2(seed & 0xFFFFu, seed >> 16u);
+            uint2 pc = min(seed_px >> 3u, probes_dim - 1u);
+            float adz = depth_tex.Load(int3(seed_px, 0));
+            if (adz <= 0.0f)
+                continue;
+
+            float3 qN = unpack_oct_snorm16(gn_tex.Load(int3(seed_px, 0)));
+            float3 Q = comp_reconstruct_world(float2(seed_px) + 0.5f, adz, fcb.inv_view_projection, fcb);
+
+            float bw = (ox == 0 ? (1.0f - frac_p.x) : frac_p.x) * (oy == 0 ? (1.0f - frac_p.y) : frac_p.y);
+            bool direct_cell = all(pc == min(base_p + uint2(ox, oy), probes_dim - 1u));
+            float base_w = direct_cell ? max(bw, 0.02f) : max(bw * 0.25f, 0.01f);
+            float plane_d = max(abs(dot(Q - P, GN)), abs(dot(P - Q, qN))) / max(0.03f, cell_ws * 0.55f);
+            float radial_d = length(Q - P) / max(0.12f, cell_ws * 2.5f);
+            float normal_w = pow(saturate(dot(GN, qN) * 0.5f + 0.5f), 4.0f);
+            float horizon_w = saturate(dot(R_eval, qN) * 2.5f + 0.35f);
+            float geom_w = base_w * normal_w * horizon_w * exp(-plane_d * 2.5f - radial_d * 0.5f);
+            if (geom_w <= 1e-5f)
+                continue;
+
+            float3 nl0 = atelier_world_to_local(R_eval, qN);
+            nl0 = safe_unit_normal(float3(nl0.xy, max(nl0.z, 0.04f)));
+            uint2 c_init = min(uint2(hemi_oct_encode(nl0) * 8.0f), 7u);
+            float init_d = atlas_tex.Load(int3(pc * 8u + c_init, 0)).w;
+            float3 dir_p = R_eval;
+            if (init_d > 0.05f && init_d < 490.0f) {
+                float3 P_hit = P + R_eval * clamp(init_d, 0.15f, 50.0f);
+                dir_p = safe_unit_normal(lerp(R_eval, safe_unit_normal(P_hit - Q), 0.65f));
+            }
+            float3 nl_p = atelier_world_to_local(dir_p, qN);
+            nl_p = safe_unit_normal(float3(nl_p.xy, max(nl_p.z, 0.04f)));
+            float4 cell_val = sample_probe_oct_bilerp(atlas_tex, pc, hemi_oct_encode(nl_p), spread);
+
+            rad_sum += max(cell_val.rgb, 0.0f) * geom_w;
+            dist_sum += clamp(cell_val.w, 0.1f, 50.0f) * geom_w;
+            w_total += geom_w;
+        }
+    }
+
+    if (w_total <= 1e-5f)
+        return false;
+    out_rad = rad_sum / w_total;
+    out_dist = dist_sum / w_total;
+    return true;
+}
+
 [numthreads(8, 8, 1)]
 void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 gid : SV_GroupID) {
     StructuredBuffer<GlobalFrameConstants> fcb_buf = ResourceDescriptorHeap[atelier_safe_desc(g_frame_cb_srv)];
@@ -295,8 +440,10 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
     // ========================================================================
     // Mode 0: 3-Tier Coat-Aware Reflections (Uniform Group Flow for LDS Compaction!)
     // ========================================================================
+    uint2 tile8_px_off = uint2(fcb.scene_tile8_offset_packed & 0xFFFFu, fcb.scene_tile8_offset_packed >> 16u) * 8u;
+
     if (comp_mode == 0u) {
-        uint2 px = dtid.xy;
+        uint2 px = dtid.xy + tile8_px_off;
         bool in_bounds = (px.x < fcb.render_extent.x && px.y < fcb.render_extent.y);
         float2 pxc = float2(px) + 0.5f;
         bool in_vp = in_bounds && (pxc.x >= fcb.scene_viewport.x && pxc.x < fcb.scene_viewport.x + fcb.scene_viewport.z &&
@@ -327,6 +474,10 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
         float3 N_refl = float3(0.0f, 1.0f, 0.0f);
         float3 R = float3(0.0f, 1.0f, 0.0f);
         float3 refl_rad = 0.0f;
+
+        float tier_blend = 0.0f;
+        float3 probe_fallback_rad = 0.0f;
+        float probe_fallback_dist = 4.0f;
 
         if (dz > 0.0f) {
             Texture2D<uint2> slab0_tex = ResourceDescriptorHeap[atelier_safe_desc(g_slab0_srv)];
@@ -375,19 +526,36 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
                     bent_vis = saturate(ao.w);
                 }
 
-                float rough_cut = min(fcb.reflection_roughness, 0.58f);
+                float rough_cut = clamp(fcb.reflection_roughness, 0.0f, 0.80f);
+                float blend_lo = max(0.16f, rough_cut - 0.12f);
                 if (!refl_on || r_trace >= rough_cut) {
-                    // Tier 3 (`r >= 0.58` or Reflections Off): 0 rays, `GT-VBAO Bent Cone` + GI irradiance / prefiltered Sky!
+                    // Tier 3 (`r >= rough_cut` or Reflections Off): 0 rays, Screen-Probes directional octahedral lobe -> GI -> Sky!
                     float3 R_bent = safe_unit_normal(lerp(bent_w, R, saturate(bent_vis * (1.0f - 0.5f * r_trace) + 0.15f)));
-                    hit_dist = 1.0f;
-                    if (g_gi_srv != 0xFFFFFFFFu && (fcb.flags & 2u) != 0u) {
-                        Texture2D<float4> gi_tex = ResourceDescriptorHeap[atelier_safe_desc(g_gi_srv)];
-                        refl_rad = gi_tex.Load(int3(px, 0)).rgb;
-                    } else {
-                        refl_rad = eval_atelier_sky(R_bent, r_trace * 6.0f, fcb) * bent_vis;
+                    hit_dist = 4.0f;
+                    if (!sample_screen_probes_rough_specular(px, P, GN, N_refl, R, bent_w, bent_vis, r_trace, depth_tex,
+                                                             fcb, refl_rad, hit_dist)) {
+                        if (g_gi_srv != 0xFFFFFFFFu && (fcb.flags & 2u) != 0u) {
+                            Texture2D<float4> gi_tex = ResourceDescriptorHeap[atelier_safe_desc(g_gi_srv)];
+                            refl_rad = gi_tex.Load(int3(px, 0)).rgb;
+                        } else {
+                            refl_rad = eval_atelier_sky(R_bent, r_trace * 6.0f, fcb) * bent_vis;
+                        }
                     }
                 } else {
-                    // Tier 1 (`r <= 0.12` mirror) & Tier 2 (`0.12 < r < 0.58` Bounded VNDF):
+                    if (r_trace > blend_lo && rough_cut > blend_lo + 1e-3f) {
+                        tier_blend = smoothstep(blend_lo, rough_cut, r_trace);
+                        if (!sample_screen_probes_rough_specular(px, P, GN, N_refl, R, bent_w, bent_vis, r_trace,
+                                                                 depth_tex, fcb, probe_fallback_rad, probe_fallback_dist)) {
+                            if (g_gi_srv != 0xFFFFFFFFu && (fcb.flags & 2u) != 0u) {
+                                Texture2D<float4> gi_tex = ResourceDescriptorHeap[atelier_safe_desc(g_gi_srv)];
+                                probe_fallback_rad = gi_tex.Load(int3(px, 0)).rgb;
+                            } else {
+                                float3 R_b = safe_unit_normal(lerp(bent_w, R, saturate(bent_vis * (1.0f - 0.5f * r_trace) + 0.15f)));
+                                probe_fallback_rad = eval_atelier_sky(R_b, r_trace * 6.0f, fcb) * bent_vis;
+                            }
+                        }
+                    }
+                    // Tier 1 (`r <= 0.12` mirror) & Tier 2 (`0.12 < r < rough_cut` Bounded VNDF):
                     if (r_trace > 0.12f) {
                         float3 T, B;
                         atelier_build_onb(N_refl, T, B);
@@ -560,8 +728,10 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
                 dxr_dist = clamp(hit_t, 0.02f, 50.0f);
 
                 hit_rad = 0.0f;
-                if (!(bf && (sflags & 6u) == 0u && closed) && fcb.wrc_curr_srv != 0xFFFFFFFFu &&
-                    fcb.wrc_hash_keys_srv != 0xFFFFFFFFu && fcb.wrc_voxel_keys_srv != 0xFFFFFFFFu && (fcb.flags & 2u) != 0u) {
+                bool valid_hit_side = !(bf && (sflags & 6u) == 0u && closed);
+                bool hit_sharc_ok = false;
+                if (valid_hit_side && fcb.wrc_curr_srv != 0xFFFFFFFFu && fcb.wrc_hash_keys_srv != 0xFFFFFFFFu &&
+                    fcb.wrc_voxel_keys_srv != 0xFFFFFFFFu && (fcb.flags & 2u) != 0u) {
                     StructuredBuffer<uint> hash_keys = ResourceDescriptorHeap[atelier_safe_desc(fcb.wrc_hash_keys_srv)];
                     StructuredBuffer<uint2> voxel_keys = ResourceDescriptorHeap[atelier_safe_desc(fcb.wrc_voxel_keys_srv)];
                     StructuredBuffer<uint4> wrc_curr = ResourceDescriptorHeap[atelier_safe_desc(fcb.wrc_curr_srv)];
@@ -569,9 +739,12 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
                     uint r_t = ((fcb.flags & (1u << 7u)) != 0u) ? fcb.frame_index : 0u;
                     float2 r_jit = atelier_blue_jitter2(uint2(src_lane, gid.x ^ (gid.y << 10u)), r_t, 0x85EBCA6Bu);
                     float3 j_pos = sharc_jitter_query_pos(hit_wp, hit_n, vsz_r, hit_t, r_jit);
-                    if (!sharc_query_resolved_srv(hash_keys, voxel_keys, wrc_curr, 0u, j_pos, hit_n, fcb.camera_eye, hit_rad))
-                        sharc_query_resolved_srv(hash_keys, voxel_keys, wrc_curr, 0u, hit_wp, hit_n, fcb.camera_eye, hit_rad);
+                    hit_sharc_ok = sharc_query_resolved_srv(hash_keys, voxel_keys, wrc_curr, 0u, j_pos, hit_n, fcb.camera_eye, hit_rad);
+                    if (!hit_sharc_ok)
+                        hit_sharc_ok = sharc_query_resolved_srv(hash_keys, voxel_keys, wrc_curr, 0u, hit_wp, hit_n, fcb.camera_eye, hit_rad);
                 }
+                if (valid_hit_side && !hit_sharc_ok)
+                    hit_rad = eval_atelier_sky_diffuse_radiance(hit_n, fcb) * 0.16f;
             }
             gs_refl_rad[src_lane] = hit_rad;
             gs_refl_dist[src_lane] = dxr_dist;
@@ -581,6 +754,10 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
         if (needs_dxr) {
             refl_rad = gs_refl_rad[gindex];
             hit_dist = gs_refl_dist[gindex];
+        }
+        if (tier_blend > 0.0f) {
+            refl_rad = lerp(refl_rad, probe_fallback_rad, tier_blend);
+            hit_dist = lerp(hit_dist, probe_fallback_dist, tier_blend);
         }
 
         if (in_bounds) {
@@ -798,7 +975,7 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
         return;
     }
 
-    uint2 px = dtid.xy;
+    uint2 px = (comp_mode == 1u) ? (dtid.xy + tile8_px_off) : dtid.xy;
     if (px.x >= fcb.render_extent.x || px.y >= fcb.render_extent.y)
         return;
 
@@ -824,7 +1001,8 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
         }
 
         float rough = center.a;
-        if (!in_vp || dz <= 0.0f || g_atrous_step == 0u || rough <= 0.12f || rough >= 0.58f) {
+        float rough_cut_f = clamp(fcb.reflection_roughness, 0.14f, 0.80f);
+        if (!in_vp || dz <= 0.0f || g_atrous_step == 0u || rough <= 0.12f || rough >= rough_cut_f) {
             dst_r[px] = center;
             if (has_dst_mom) {
                 RWTexture2D<float2> dst_m = ResourceDescriptorHeap[atelier_safe_desc(g_uav1)];
@@ -843,7 +1021,7 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
         float hit_dist = clamp(c_mom.y, 0.02f, 50.0f);
         float cone_tan = max(rough * rough, 0.02f);
         float footprint_px = clamp((hit_dist * cone_tan) / max(px_ws, 1e-4f), 0.50f, 18.0f);
-        float lobe_sharp = lerp(72.0f, 12.0f, saturate((rough - 0.12f) / 0.46f));
+        float lobe_sharp = lerp(72.0f, 12.0f, saturate((rough - 0.12f) / max(rough_cut_f - 0.12f, 0.10f)));
 
         float3 c_karis = atelier_karis_compress(center.rgb);
         float luma_c = atelier_luma(c_karis);
@@ -866,7 +1044,7 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
                 if (qd <= 0.0f)
                     continue;
                 float4 qr = src_r.Load(int3(q, 0));
-                if (qr.a < 0.0f || qr.a >= 0.58f)
+                if (qr.a < 0.0f || qr.a >= rough_cut_f)
                     continue;
                 float3 qN = refl_eval_filter_normal(uint2(q), slab0_tex);
                 float3 Q = comp_reconstruct_world(float2(q) + 0.5f, qd, fcb.inv_view_projection, fcb);
@@ -983,23 +1161,23 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
     float4 gi_sample = gi_tex.Load(int3(px, 0));
     float3 gi_irrad = gi_sample.rgb;
     float gi_ao_vis = gi_sample.a;
-    float3 refl_rad = refl_tex.Load(int3(px, 0)).rgb;
+    float4 refl_sample = refl_tex.Load(int3(px, 0));
+    float3 refl_rad = refl_sample.rgb;
+    float refl_r = refl_sample.a;
 
-    float3 bent_w = surf.shading_normal;
     float ssilvb_vis = 1.0f;
     if ((fcb.flags & (1u << 2u)) != 0u && g_motion_srv != 0xFFFFFFFFu) {
         Texture2D<float4> ssilvb = ResourceDescriptorHeap[atelier_safe_desc(g_motion_srv)];
-        float4 ao_val = ssilvb.Load(int3(px, 0));
-        bent_w = safe_unit_normal(ao_val.xyz);
-        ssilvb_vis = saturate(ao_val.w);
+        ssilvb_vis = saturate(ssilvb.Load(int3(px, 0)).w);
     }
-    float ao_spec = min(surf.micro_ao, ssilvb_vis);
-    float lagarde_sao = saturate(pow(max(nv + ao_spec, 1e-4f), exp2(-16.0f * surf.roughness - 1.0f)) - 1.0f + ao_spec);
-    float3 R_spec = reflect(-V, surf.shading_normal);
-    float cos_av = sqrt(max(0.0f, 1.0f - ao_spec));
-    float cone_sao = saturate((dot(bent_w, R_spec) - cos_av) / max(1.0f - cos_av, 0.15f));
-    float spec_ao = lerp(lagarde_sao, min(lagarde_sao, lerp(ao_spec, cone_sao, 1.0f - surf.roughness)),
-                         saturate((1.0f - ao_spec) * 0.85f));
+    // Lagarde & de Rousiers [SIGGRAPH 2014] Specular AO without double-occluding ray-traced reflections or clipping grazing rays:
+    float rough_cut_c = clamp(fcb.reflection_roughness, 0.0f, 0.80f);
+    float traced_w = (((fcb.flags & (1u << 3u)) != 0u) && refl_r >= 0.0f)
+                         ? (1.0f - smoothstep(max(0.16f, rough_cut_c - 0.12f), max(0.17f, rough_cut_c), refl_r))
+                         : 0.0f;
+    float macro_sao_vis = ((fcb.flags & 2u) != 0u) ? lerp(1.0f, ssilvb_vis, 0.65f) : ssilvb_vis;
+    float ao_spec = lerp(min(surf.micro_ao, macro_sao_vis), surf.micro_ao, traced_w);
+    float spec_ao = saturate(pow(max(nv + ao_spec, 1e-4f), exp2(-16.0f * surf.roughness - 1.0f)) - 1.0f + ao_spec);
 
     Texture2D<float2> ltc_amp_tex = ResourceDescriptorHeap[atelier_safe_desc(fcb.ltc_amp_srv)];
     SamplerState smp = SamplerDescriptorHeap[0];
@@ -1022,6 +1200,9 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
         float3 f_laz = saturate(f_sch - b_f82 * nv * x5 * x);
         env_spec_brdf *= f_laz / max(f_sch, 1e-4f);
     }
+    // Turquin [2019] white-furnace-preserving multiple-scattering microfacet GGX energy compensation:
+    float e_ss = clamp(brdf_ab.x, 0.05f, 1.0f);
+    env_spec_brdf = saturate(env_spec_brdf * (1.0f + f0 * ((1.0f - e_ss) / e_ss)));
 
     float3 diffuse_albedo = surf.base_color * (1.0f - surf.metallic);
     if (surf.profile_id == SLAB_PROFILE_FOLIAGE)

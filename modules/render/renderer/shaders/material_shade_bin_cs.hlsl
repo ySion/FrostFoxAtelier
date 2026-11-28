@@ -168,14 +168,17 @@ void main(uint gtid : SV_GroupThreadID, uint3 gid : SV_GroupID) {
     c_in.ms_geometric_normal_world = gn_unflipped;
     c_in.ms_tangent_world = float4(interp_t.xyz, interp_t.w < 0.0f ? -1.0f : 1.0f);
 
+    // Negative Mip-LOD bias (`-0.65` mip -> `0.63728x` UV gradient) when 8-phase TAA supersampling is active:
+    float uv_mip_scale = ((fcb.flags & (1u << 11u)) != 0u) ? 0.63728f : 1.0f;
+
     Arch::ms_Context c_dx = (Arch::ms_Context)0;
-    c_dx.ms_uv = (a1.uv - a0.uv) * bd.db_dx.x + (a2.uv - a0.uv) * bd.db_dx.y;
+    c_dx.ms_uv = ((a1.uv - a0.uv) * bd.db_dx.x + (a2.uv - a0.uv) * bd.db_dx.y) * uv_mip_scale;
     c_dx.ms_position_world = (wp1 - wp0) * bd.db_dx.x + (wp2 - wp0) * bd.db_dx.y;
     c_dx.ms_normal_world = shade_normal_delta(interp_n_raw, (n1 - n0) * bd.db_dx.x + (n2 - n0) * bd.db_dx.y);
     c_dx.ms_tangent_world = float4((t1.xyz - t0.xyz) * bd.db_dx.x + (t2.xyz - t0.xyz) * bd.db_dx.y, 0.0f);
 
     Arch::ms_Context c_dy = (Arch::ms_Context)0;
-    c_dy.ms_uv = (a1.uv - a0.uv) * bd.db_dy.x + (a2.uv - a0.uv) * bd.db_dy.y;
+    c_dy.ms_uv = ((a1.uv - a0.uv) * bd.db_dy.x + (a2.uv - a0.uv) * bd.db_dy.y) * uv_mip_scale;
     c_dy.ms_position_world = (wp1 - wp0) * bd.db_dy.x + (wp2 - wp0) * bd.db_dy.y;
     c_dy.ms_normal_world = shade_normal_delta(interp_n_raw, (n1 - n0) * bd.db_dy.x + (n2 - n0) * bd.db_dy.y);
     c_dy.ms_tangent_world = float4((t1.xyz - t0.xyz) * bd.db_dy.x + (t2.xyz - t0.xyz) * bd.db_dy.y, 0.0f);

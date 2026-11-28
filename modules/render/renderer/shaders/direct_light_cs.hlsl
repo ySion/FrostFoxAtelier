@@ -146,8 +146,8 @@ float3 calc_cap_representative_dir(float3 L_center, float3 R, float sin_sigma, f
 }
 
 void eval_analytic_brdf(OpenPbrSurface s, float3 N, float3 GN, float3 V, float3 L_diff, float3 L_spec,
-                        float half_sin_sigma, float micro_vis, uint charlie_srv, out float3 out_diff,
-                        out float3 out_spec) {
+                        float half_sin_sigma, float micro_vis, float3 spec_ms_comp, uint charlie_srv,
+                        out float3 out_diff, out float3 out_spec) {
     out_diff = 0.0f;
     out_spec = 0.0f;
 
@@ -204,7 +204,7 @@ void eval_analytic_brdf(OpenPbrSurface s, float3 N, float3 GN, float3 V, float3 
         float3 F_s = eval_schlick_f82(vh_s, f0, f82);
         if (s.profile_id == SLAB_PROFILE_IRIDESCENT && s.lobe_weight > 0.0f)
             F_s = lerp(F_s, eval_thin_film_iridescence(vh_s, s.lobe_param0, s.lobe_param1, f0), s.lobe_weight);
-        spec = (D * gv * gl * F_s) / max(4.0f * nl_s * nv, 1e-5f) * nl_s;
+        spec = ((D * gv * gl * F_s) / max(4.0f * nl_s * nv, 1e-5f) * nl_s) * spec_ms_comp;
     }
 
     // Profile 1: Dielectric Clearcoat (evaluated independently of bumped base `nl_s`!)
@@ -693,6 +693,13 @@ void main(uint3 dtid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint gindex 
         return;
     }
 
+    if (g_direct_mode == 1u) {
+        uint2 tile16_off = uint2(fcb.scene_tile16_offset_packed & 0xFFFFu, fcb.scene_tile16_offset_packed >> 16u);
+        uint2 tile_xy = gid.xy + tile16_off;
+        tile_id = tile_xy.y * tiles_x + tile_xy.x;
+        px = dtid.xy + tile16_off * 16u;
+    }
+
     if (px.x >= fcb.render_extent.x || px.y >= fcb.render_extent.y)
         return;
 
@@ -825,7 +832,8 @@ void main(uint3 dtid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint gindex 
     uint d_bits = min(fcb.dir_light_count, 4u);
     uint local_bit_cap = 64u - d_bits;
     uint tile_area_slot = (g_penumbra_mask_srv != 0xFFFFFFFFu && fcb.light_count > fcb.dir_light_count)
-                              ? find_tile_primary_area_slot(c_base, c_count, local_bit_cap, cluster_buf, lights)
+                              ? select_receiver_primary_area_slot(c_base, c_count, local_bit_cap, P, GN, is_foliage,
+                                                                  cluster_buf, lights)
                               : 0xFFu;
     bool shadows_on = (fcb.flags & 1u) != 0u;
     bool jitter_penumbra = (fcb.flags & (1u << 11u)) != 0u;
@@ -833,6 +841,16 @@ void main(uint3 dtid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint gindex 
     float ign2 = frac(ign * 17.371f + 0.381966f);
     uint fallback_rays = 0u;
     float3 R_view = reflect(-V, N);
+    float nv_px = max(dot(N, V), 1e-4f);
+    float3 spec_ms_comp = 1.0f;
+    if (fcb.ltc_amp_srv != 0xFFFFFFFFu) {
+        Texture2D<float2> ltc_amp_tex = ResourceDescriptorHeap[atelier_safe_desc(fcb.ltc_amp_srv)];
+        SamplerState smp_ltc = SamplerDescriptorHeap[0];
+        float2 ltc_uv = float2(surf.roughness, sqrt(max(0.0f, 1.0f - nv_px))) * (63.0f / 64.0f) + (0.5f / 64.0f);
+        float e_ss = clamp(ltc_amp_tex.SampleLevel(smp_ltc, ltc_uv, 0.0f).x, 0.05f, 1.0f);
+        float3 f0_px = lerp(surf.spec_f0_dielectric.xxx, surf.base_color, surf.metallic);
+        spec_ms_comp = 1.0f + f0_px * ((1.0f - e_ss) / e_ss);
+    }
 
     float3 sum_diff = 0.0f;
     float3 sum_spec = 0.0f;
@@ -871,7 +889,8 @@ void main(uint3 dtid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint gindex 
             half_sin_sigma = 0.5f * sin_s;
         }
         float3 d_part, s_part;
-        eval_analytic_brdf(surf, N, GN, V, L_diff, L_spec, half_sin_sigma, micro_vis, fcb.charlie_lut_srv, d_part, s_part);
+        eval_analytic_brdf(surf, N, GN, V, L_diff, L_spec, half_sin_sigma, micro_vis, spec_ms_comp, fcb.charlie_lut_srv,
+                           d_part, s_part);
         sum_diff += d_part * l.color_intensity * (vis * gn_vis);
         sum_spec += s_part * l.color_intensity * (vis * gn_vis);
     }
@@ -947,7 +966,8 @@ void main(uint3 dtid : SV_DispatchThreadID, uint3 gid : SV_GroupID, uint gindex 
             }
 
             float3 d_p, s_p;
-            eval_analytic_brdf(surf, N, GN, V, L_diff, L_spec, half_sin_sigma, micro_vis, fcb.charlie_lut_srv, d_p, s_p);
+            eval_analytic_brdf(surf, N, GN, V, L_diff, L_spec, half_sin_sigma, micro_vis, spec_ms_comp,
+                               fcb.charlie_lut_srv, d_p, s_p);
             if (any(d_p > 0.0f) || any(s_p > 0.0f)) {
                 if (need_fallback_shadow &&
                     !trace_direct_fallback_shadow(l, P, GN, is_foliage, jitter_penumbra, ign, ign2, fcb, fallback_rays))

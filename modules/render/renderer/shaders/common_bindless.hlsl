@@ -238,6 +238,11 @@ struct GlobalFrameConstants {
     uint vsm_dynamic_srv;
     uint vsm_page_table_srv;
     uint vsm_views_srv;
+
+    uint gi_probe_atlas_srv;
+    uint gi_probe_mask_srv;
+    uint scene_tile8_offset_packed;
+    uint scene_tile16_offset_packed;
 };
 
 // ============================================================================
@@ -551,19 +556,52 @@ int build_analytic_shadow_ray(GpuLightRecord l, float3 wpos, float3 gn, bool is_
 static const uint VSM_PAGE_UNMAPPED  = 0xFFFFFFFFu;
 static const uint VSM_PAGE_EMPTY_LIT = 0xFFFFFFFEu;
 
-uint find_tile_primary_area_slot(uint c_base, uint c_count, uint local_bit_cap, StructuredBuffer<uint> cluster_buf,
-                                 StructuredBuffer<GpuLightRecord> lights) {
+uint select_receiver_primary_area_slot(uint c_base, uint c_count, uint local_bit_cap, float3 wpos, float3 gn,
+                                       bool is_foliage, StructuredBuffer<uint> cluster_buf,
+                                       StructuredBuffer<GpuLightRecord> lights) {
     uint lim = min(c_count, local_bit_cap);
+    uint best_slot = 0xFFu;
+    float best_score = 1e-6f;
     [loop] for (uint it = 0u; it < lim; ++it) {
         uint li = cluster_buf[c_base + 2u + it];
         GpuLightRecord l = lights[li];
         if ((l.kind_and_flags & 8u) == 0u)
             continue;
         uint kind = l.kind_and_flags & 3u;
-        if (kind == 1u || l.source_radius > 1e-3f)
-            return it;
+        if (kind != 1u && l.source_radius <= 1e-3f)
+            continue;
+        float3 to_l = l.position - wpos;
+        float dist2 = dot(to_l, to_l);
+        float dist = sqrt(max(dist2, 1e-8f));
+        float ext = (kind == 1u) ? (0.5f * (l.width + l.height)) : l.source_radius;
+        if (dist >= l.range + ext)
+            continue;
+        if (kind == 1u && (l.kind_and_flags & 4u) == 0u && dot(wpos - l.position, l.direction) <= 0.0f)
+            continue;
+        float3 L_dir = to_l / dist;
+        float spot_atten = 1.0f;
+        if (kind == 3u) {
+            float spot_t = saturate((dot(-L_dir, l.direction) - l.width) * l.height);
+            if (spot_t <= 0.0f)
+                continue;
+            spot_atten = spot_t * spot_t;
+        }
+        if (!is_foliage && !is_light_front_horizon(l, wpos, gn))
+            continue;
+        float r_eff = max(dist - ext, 0.0f);
+        float win_t = saturate(1.0f - pow(r_eff / max(l.range, 1e-3f), 4.0f));
+        float geom_atten = (win_t * win_t * spot_atten) / max(dist2, 0.04f);
+        float sin_s = (kind == 1u) ? min(ext / max(dist, 0.1f), 1.0f) : min(l.source_radius / max(dist, 0.1f), 1.0f);
+        float cos_w = is_foliage ? 1.0f : saturate(dot(gn, L_dir) + sin_s);
+        float lum = dot(l.color_intensity, float3(0.2126f, 0.7152f, 0.0722f));
+        float area_boost = (kind == 1u) ? max(l.width * l.height, 0.05f) : 1.0f;
+        float score = lum * geom_atten * area_boost * max(cos_w, 0.05f);
+        if (score > best_score) {
+            best_score = score;
+            best_slot = it;
+        }
     }
-    return 0xFFu;
+    return best_slot;
 }
 
 float load_vsm_view_texel(GpuVsmLightView v, int tx, int ty, GlobalFrameConstants fcb) {
@@ -684,8 +722,6 @@ int evaluate_vsm_light_interval(GpuLightRecord l, float3 wpos, float3 gn, bool i
             float y_max = float(cv.page_offset_xy.y + 16) * page_sz;
             float3 q_pos = wpos;
             float texel_sz = span * (1.0f / 2048.0f);
-            if (is_foliage && dot(gn, L_center) < 0.0f)
-                q_pos -= gn * max(0.01f, 1.5f * texel_sz);
 
             float x_p = dot(q_pos, cv.right_axis);
             float y_p = dot(q_pos, cv.up_axis);
@@ -698,7 +734,7 @@ int evaluate_vsm_light_interval(GpuLightRecord l, float3 wpos, float3 gn, bool i
 
             float2 f_px = float2(u_n * 2048.0f, v_n * 2048.0f);
             float3 gn_l = float3(dot(gn, cv.right_axis), dot(gn, cv.up_axis), dot(gn, cv.light_pos_or_dir));
-            float safe_gz = (abs(gn_l.z) >= 0.12f) ? gn_l.z : (gn_l.z < 0.0f ? -0.12f : 0.12f);
+            float safe_gz = (abs(gn_l.z) >= 0.20f) ? gn_l.z : (gn_l.z < 0.0f ? -0.20f : 0.20f);
             float bias_far = max(0.015f, 1.75f * texel_sz);
 
             if (far_tlas_handoff) {
@@ -718,7 +754,7 @@ int evaluate_vsm_light_interval(GpuLightRecord l, float3 wpos, float3 gn, bool i
                             float x_t = x_min + (float(tx) + 0.5f) * texel_sz;
                             float y_t = y_max - (float(ty) + 0.5f) * texel_sz;
                             float dz_pl = clamp(-((x_t - x_p) * gn_l.x + (y_t - y_p) * gn_l.y) / safe_gz,
-                                                -4.0f * texel_sz, 4.0f * texel_sz);
+                                                -5.0f * texel_sz, 5.0f * texel_sz);
                             pcf_sum += (z_occ >= z_p + dz_pl - bias_far) ? 1.0f : 0.0f;
                         }
                     }
@@ -731,6 +767,7 @@ int evaluate_vsm_light_interval(GpuLightRecord l, float3 wpos, float3 gn, bool i
 
             float tan_a = tan(min(alpha, 0.25f));
             float tol_lit = max(3e-3f, 0.20f * texel_sz);
+            float eff_tol_lit = is_foliage ? max(0.008f, 0.65f * texel_sz) : tol_lit;
             int tx0 = int(floor(f_px.x));
             int ty0 = int(floor(f_px.y));
             float dz0 = load_vsm_view_texel(cv, tx0, ty0, fcb);
@@ -750,12 +787,12 @@ int evaluate_vsm_light_interval(GpuLightRecord l, float3 wpos, float3 gn, bool i
                 float x_t0 = x_min + (float(tx0) + 0.5f) * texel_sz;
                 float y_t0 = y_max - (float(ty0) + 0.5f) * texel_sz;
                 float dz_pl0 = clamp(-((x_t0 - x_p) * gn_l.x + (y_t0 - y_p) * gn_l.y) / safe_gz,
-                                     -4.0f * texel_sz, 4.0f * texel_sz);
+                                     -3.5f * texel_sz, 3.5f * texel_sz);
                 delta0 = (z_p + dz_pl0) - z_occ0;
                 max_delta = delta0;
                 min_delta = delta0;
                 pcf_sum = (delta0 <= bias_far) ? 1.0f : 0.0f;
-                if (delta0 > tol_lit)
+                if (delta0 > eff_tol_lit)
                     step_pen = clamp(ceil((delta0 * tan_a * 1.15f) / max(texel_sz, 1e-4f)), 1.5f, 40.0f);
             }
 
@@ -788,10 +825,15 @@ int evaluate_vsm_light_interval(GpuLightRecord l, float3 wpos, float3 gn, bool i
                     float z_occ = cv.near_or_zmin + (1.0f - dz) * cv.far_or_zspan;
                     float x_t = x_min + (float(tx) + 0.5f) * texel_sz;
                     float y_t = y_max - (float(ty) + 0.5f) * texel_sz;
+                    float max_pl_dz = 3.5f * (length(offsets[k]) + 0.75f) * texel_sz;
                     float dz_pl = clamp(-((x_t - x_p) * gn_l.x + (y_t - y_p) * gn_l.y) / safe_gz,
-                                        -4.0f * texel_sz, 4.0f * texel_sz);
+                                        -max_pl_dz, max_pl_dz);
                     float delta = (z_p + dz_pl) - z_occ;
-                    max_delta = max(max_delta, delta);
+                    float d_lat = max(0.0f, length(float2(x_t - x_p, y_t - y_p)) - 1.75f * texel_sz);
+                    float dz_cone = max(delta, z_p - z_occ);
+                    bool can_cast_pen = (k < 4u) || (dz_cone * tan_a * 1.5f + 2.0f * texel_sz >= d_lat);
+                    if (can_cast_pen)
+                        max_delta = max(max_delta, delta);
                     min_delta = min(min_delta, delta);
                     if (k < 8u)
                         pcf_sum += (delta <= bias_far) ? 1.0f : 0.0f;
@@ -800,13 +842,12 @@ int evaluate_vsm_light_interval(GpuLightRecord l, float3 wpos, float3 gn, bool i
             if (unmapped_ring)
                 continue;
 
-            float foliage_lit_tol = -max(0.025f, 5.75f * texel_sz);
-            if (max_delta <= (is_foliage ? foliage_lit_tol : tol_lit))
+            if (max_delta <= eff_tol_lit)
                 return 1;
 
             float pen_depth = max(0.0f, min_delta) * tan_a * 1.15f;
             float center_cone = max(0.0f, delta0) * tan_a * 1.15f;
-            float tol_umbra = is_foliage ? max(0.15f, 3.0f * texel_sz + 0.25f * pen_depth)
+            float tol_umbra = is_foliage ? max(0.08f, 2.5f * texel_sz + 0.25f * pen_depth)
                                          : max(0.025f, 1.75f * texel_sz + 0.25f * pen_depth);
             if (min_delta >= tol_umbra && step_pen * texel_sz >= center_cone)
                 return 0;
@@ -915,6 +956,7 @@ int evaluate_vsm_light_interval(GpuLightRecord l, float3 wpos, float3 gn, bool i
         return -1;
 
     float tol_lit = max(2.5e-3f, 0.18f * texel_sz);
+    float eff_tol_lit = is_foliage ? max(0.008f, 0.50f * texel_sz) : tol_lit;
     int tx0 = int(floor(f_px.x));
     int ty0 = int(floor(f_px.y));
     float dz0 = load_vsm_view_texel(lv, tx0, ty0, fcb);
@@ -925,9 +967,17 @@ int evaluate_vsm_light_interval(GpuLightRecord l, float3 wpos, float3 gn, bool i
     float min_delta = 1e30f;
     float min_z_occ = 1e30f;
     float pcf_sum = 0.0f;
+    bool is_rect_light = (kind == 1u);
     float near_occ = max(near_z * 1.5f, 1.8f * src_ext);
-    float pot_pen = (src_ext > 1e-3f && z_v > near_occ) ? (src_ext * ((z_v - near_occ) / near_occ) * 0.45f) : 0.0f;
-    float tap_step = clamp(1.25f + (max(2.0f * src_ext, pot_pen) / max(texel_sz, 1e-4f)), 1.25f, 24.0f);
+    float close_recv_t = saturate((z_v - 1.4f) * 0.5f);
+    float pot_pen = 0.0f;
+    if (is_rect_light) {
+        pot_pen = (src_ext > 1e-3f && z_v > near_occ) ? (src_ext * ((z_v - near_occ) / near_occ) * 0.45f) : 0.0f;
+    } else if (src_ext > 1e-3f) {
+        pot_pen = src_ext * lerp(5.5f, 2.5f, close_recv_t);
+    }
+    float max_lit_step = is_rect_light ? 24.0f : lerp(20.0f, 8.0f, close_recv_t);
+    float tap_step = clamp(1.25f + (max(2.0f * src_ext, pot_pen) / max(texel_sz, 1e-4f)), 1.25f, max_lit_step);
     if (dz0 <= 0.0f) {
         min_delta = -1e30f;
         pcf_sum = 1.0f;
@@ -936,23 +986,25 @@ int evaluate_vsm_light_interval(GpuLightRecord l, float3 wpos, float3 gn, bool i
         float3 r_tap0 = float3(((float(tx0) + 0.5f) * (1.0f / 128.0f) - 1.0f) * th,
                                (1.0f - (float(ty0) + 0.5f) * (1.0f / 128.0f)) * th, 1.0f);
         float denom0 = dot(r_tap0, gn_v);
-        float safe_den0 = (abs(denom0) >= 0.12f) ? denom0 : (denom0 < 0.0f ? -0.12f : 0.12f);
-        float z_pl0 = clamp(p_dot_gn / safe_den0, z_v - 4.0f * texel_sz, z_v + 4.0f * texel_sz);
+        float safe_den0 = (abs(denom0) >= 0.20f) ? denom0 : (denom0 < 0.0f ? -0.20f : 0.20f);
+        float z_pl0 = clamp(p_dot_gn / safe_den0, max(near_z, z_v - 3.5f * texel_sz), z_v + 3.5f * texel_sz);
         float delta0 = z_pl0 - z_occ0;
         max_delta = delta0;
         min_delta = delta0;
         pcf_sum = (delta0 <= bias_far) ? 1.0f : 0.0f;
-        if (delta0 > tol_lit) {
+        if (delta0 > eff_tol_lit) {
             min_z_occ = z_occ0;
             if (src_ext > 0.0f && z_occ0 < z_v) {
                 float pen0 = src_ext * ((z_v - z_occ0) / max(z_occ0, near_z)) * 1.15f;
-                tap_step = clamp(ceil(pen0 / max(texel_sz, 1e-4f)), 1.5f, 96.0f);
+                float max_occ_step = is_rect_light ? 96.0f : 16.0f;
+                tap_step = clamp(ceil(pen0 / max(texel_sz, 1e-4f)), 1.5f, max_occ_step);
             }
         }
     }
 
-    if (f_px.x < tap_step + 1.0f || f_px.x >= 255.0f - tap_step ||
-        f_px.y < tap_step + 1.0f || f_px.y >= 255.0f - tap_step)
+    float border_pad = is_rect_light ? (tap_step + 1.0f) : 2.0f;
+    if (f_px.x < border_pad || f_px.x >= 256.0f - border_pad ||
+        f_px.y < border_pad || f_px.y >= 256.0f - border_pad)
         return -1;
 
     float mid_step = max(2.0f, tap_step * 0.35f);
@@ -964,8 +1016,8 @@ int evaluate_vsm_light_interval(GpuLightRecord l, float3 wpos, float3 gn, bool i
     };
 
     [unroll] for (uint k = 0u; k < 12u; ++k) {
-        int tx = int(floor(f_px.x + offsets[k].x));
-        int ty = int(floor(f_px.y + offsets[k].y));
+        int tx = clamp(int(floor(f_px.x + offsets[k].x)), 0, 255);
+        int ty = clamp(int(floor(f_px.y + offsets[k].y)), 0, 255);
         float dz = load_vsm_view_texel(lv, tx, ty, fcb);
         if (dz < 0.0f)
             return -1;
@@ -977,27 +1029,35 @@ int evaluate_vsm_light_interval(GpuLightRecord l, float3 wpos, float3 gn, bool i
             float3 r_tap = float3(((float(tx) + 0.5f) * (1.0f / 128.0f) - 1.0f) * th,
                                   (1.0f - (float(ty) + 0.5f) * (1.0f / 128.0f)) * th, 1.0f);
             float denom = dot(r_tap, gn_v);
-            float safe_den = (abs(denom) >= 0.12f) ? denom : (denom < 0.0f ? -0.12f : 0.12f);
-            float z_pl = clamp(p_dot_gn / safe_den, z_v - 4.0f * texel_sz, z_v + 4.0f * texel_sz);
+            float safe_den = (abs(denom) >= 0.20f) ? denom : (denom < 0.0f ? -0.20f : 0.20f);
+            float max_pl_dz = 3.5f * (length(offsets[k]) + 0.75f) * texel_sz;
+            float z_pl = clamp(p_dot_gn / safe_den, max(near_z, z_v - max_pl_dz), z_v + max_pl_dz);
             float delta = z_pl - z_occ;
-            if (delta > tol_lit)
-                min_z_occ = min(min_z_occ, z_occ);
-            max_delta = max(max_delta, delta);
+            float texel_sz_occ = (2.0f * z_occ * th) * (1.0f / 256.0f);
+            float d_lat = max(0.0f, length(r_tap.xy - ndc * th) * z_occ - 1.75f * texel_sz_occ);
+            float dz_cone = max(delta, z_v - z_occ);
+            float r_cone = (2.0f * src_ext) * saturate(dz_cone / max(z_v, 1e-3f)) + 1.5f * texel_sz_occ;
+            bool can_cast_pen = (k < 4u) || is_rect_light || (r_cone >= d_lat);
+            if (can_cast_pen) {
+                if (delta > eff_tol_lit)
+                    min_z_occ = min(min_z_occ, z_occ);
+                max_delta = max(max_delta, delta);
+            }
             min_delta = min(min_delta, delta);
             pcf_sum += (delta <= bias_far) ? 1.0f : 0.0f;
         }
     }
 
-    float foliage_lit_tol = -max(0.02f, 4.25f * texel_sz);
-    if (max_delta <= (is_foliage ? foliage_lit_tol : tol_lit))
+    if (max_delta <= eff_tol_lit)
         return 1;
 
     float pen_world = (src_ext > 0.0f && min_z_occ < z_v)
                           ? (src_ext * ((z_v - min_z_occ) / max(min_z_occ, near_z)) * 1.15f)
                           : 0.0f;
-    float tol_umbra = is_foliage ? max(0.15f, 3.0f * texel_sz + 0.25f * pen_world)
+    float tol_umbra = is_foliage ? max(0.08f, 2.25f * texel_sz + 0.25f * pen_world)
                                  : max(0.025f, 1.65f * texel_sz + 0.25f * pen_world);
-    if (min_delta >= tol_umbra && tap_step * texel_sz >= pen_world && min_z_occ >= 3.5f * src_ext)
+    float min_umbra_occ = is_rect_light ? (3.5f * src_ext) : (1.35f * src_ext);
+    if (min_delta >= tol_umbra && tap_step * texel_sz >= pen_world && min_z_occ >= min_umbra_occ)
         return 0;
 
     if (fcb.instance_count > 256u && min_z_occ < z_v) {

@@ -175,11 +175,13 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
         return;
     }
 
+    uint2 tile8_px_off = uint2(fcb.scene_tile8_offset_packed & 0xFFFFu, fcb.scene_tile8_offset_packed >> 16u) * 8u;
+
     // ========================================================================
     // Mode 0: Screen-Space ContactShadow CS (Sony Bend Studio Subpixel Edge-Aware + 3-Zone Estimator)
     // ========================================================================
     if (mode == 0u) {
-        uint2 px = dtid.xy;
+        uint2 px = dtid.xy + tile8_px_off;
         if (px.x >= fcb.render_extent.x || px.y >= fcb.render_extent.y)
             return;
 
@@ -331,7 +333,7 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
             gs_pen_mask[gindex] = 0u;
         GroupMemoryBarrierWithGroupSync();
 
-        uint2 px = dtid.xy;
+        uint2 px = dtid.xy + tile8_px_off;
         bool in_bounds = (px.x < fcb.render_extent.x && px.y < fcb.render_extent.y);
         bool needs_penumbra = false;
         GpuPenumbraItem pen_item = (GpuPenumbraItem)0;
@@ -403,7 +405,8 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
                     uint tile_id = (px.y >> 4u) * tiles_x + (px.x >> 4u);
                     uint c_base = tile_id * 132u;
                     uint c_count = min(cluster_buf[c_base + 0u] & 0x7FFFFFFFu, local_bit_cap);
-                    area_slot = find_tile_primary_area_slot(c_base, c_count, local_bit_cap, cluster_buf, lights);
+                    area_slot = select_receiver_primary_area_slot(c_base, c_count, local_bit_cap, wpos, gn, is_foliage,
+                                                                  cluster_buf, lights);
                     uint px_z_bit = 1u << depth_to_z_bin(exact_view_z_from_depth(px, dz, fcb));
 
                     [loop] for (uint it = 0u; it < c_count; ++it) {
@@ -493,7 +496,7 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
     // Mode 6: Temporal Penumbra Reprojection & Variance-Guided Accumulation CS (`RGBA16_SFLOAT`)
     // ========================================================================
     if (mode == 6u) {
-        uint2 px = dtid.xy;
+        uint2 px = dtid.xy + tile8_px_off;
         if (px.x >= fcb.render_extent.x || px.y >= fcb.render_extent.y)
             return;
 
@@ -646,7 +649,7 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
     // Mode 4: 3D Tangent-Plane Edge-Stopping À-Trous Wavelet Bilateral Penumbra Filter CS (`step = 1, 2, 4`)
     // ========================================================================
     if (mode == 4u) {
-        uint2 px = dtid.xy;
+        uint2 px = dtid.xy + tile8_px_off;
         if (px.x >= fcb.render_extent.x || px.y >= fcb.render_extent.y)
             return;
 
@@ -684,6 +687,15 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
         if (filter_sun)
             sun_l = lights[sun_idx];
 
+        Texture2D<uint> geom_n_tex = ResourceDescriptorHeap[atelier_safe_desc(geom_n_srv)];
+        float3 gn_c = unpack_oct_snorm16(geom_n_tex.Load(int3(px, 0)));
+        float3 P_c = reconstruct_world_pos_from_depth(px, dz, fcb);
+        bool c_foliage = false;
+        if (slab0_srv != 0xFFFFFFFFu) {
+            Texture2D<uint2> slab0_tex = ResourceDescriptorHeap[atelier_safe_desc(slab0_srv)];
+            c_foliage = (((slab0_tex.Load(int3(px, 0)).y >> 26u) & 7u) == SLAB_PROFILE_FOLIAGE);
+        }
+
         uint d_bits = min(fcb.dir_light_count, 4u);
         uint local_bit_cap = 64u - d_bits;
         uint tiles_x = (fcb.render_extent.x + 15u) >> 4u;
@@ -693,7 +705,8 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
             uint tile_id = (px.y >> 4u) * tiles_x + (px.x >> 4u);
             uint c_base = tile_id * 132u;
             uint c_count = min(cluster_buf[c_base + 0u] & 0x7FFFFFFFu, local_bit_cap);
-            uint aslot = find_tile_primary_area_slot(c_base, c_count, local_bit_cap, cluster_buf, lights);
+            uint aslot = select_receiver_primary_area_slot(c_base, c_count, local_bit_cap, P_c, gn_c, c_foliage,
+                                                           cluster_buf, lights);
             if (aslot != 0xFFu)
                 px_area_li = cluster_buf[c_base + 2u + aslot];
         }
@@ -706,15 +719,12 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
         if (filter_area)
             area_l = lights[px_area_li];
 
-        // Once temporal history has converged (`hist_cnt >= 10`), attenuate wide step=4 blur to preserve crisp leaf/contact detail:
-        if (step_px >= 4 && center.z >= 10.0f && center.w < 0.35f) {
+        // Skip wide step=4 blur only inside settled pure-lit or pure-umbra regions (`center.w < 0.04`):
+        if (step_px >= 4 && center.z >= 10.0f && center.w < 0.04f) {
             pen_dst[px] = center;
             return;
         }
 
-        Texture2D<uint> geom_n_tex = ResourceDescriptorHeap[atelier_safe_desc(geom_n_srv)];
-        float3 gn_c = unpack_oct_snorm16(geom_n_tex.Load(int3(px, 0)));
-        float3 P_c = reconstruct_world_pos_from_depth(px, dz, fcb);
         bool c_sun_front = !filter_sun || is_light_front_horizon(sun_l, P_c, gn_c);
         bool c_area_front = !filter_area || is_light_front_horizon(area_l, P_c, gn_c);
         float px_ws = gi_pixel_world_size(P_c, fcb);
@@ -756,14 +766,17 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
                     w_s += kw;
                 }
                 if (filter_area && (c_area_front == is_light_front_horizon(area_l, Q, qgn))) {
-                    bool same_area = all((uint2(q) >> 4u) == (px >> 4u));
-                    if (!same_area) {
-                        uint qt_id = (uint(q.y) >> 4u) * tiles_x + (uint(q.x) >> 4u);
-                        uint qb = qt_id * 132u;
-                        uint qc = min(cluster_buf[qb + 0u] & 0x7FFFFFFFu, local_bit_cap);
-                        uint qslot = find_tile_primary_area_slot(qb, qc, local_bit_cap, cluster_buf, lights);
-                        same_area = (qslot != 0xFFu) && (cluster_buf[qb + 2u + qslot] == px_area_li);
+                    bool q_foliage = false;
+                    if (slab0_srv != 0xFFFFFFFFu) {
+                        Texture2D<uint2> slab0_tex = ResourceDescriptorHeap[atelier_safe_desc(slab0_srv)];
+                        q_foliage = (((slab0_tex.Load(int3(q, 0)).y >> 26u) & 7u) == SLAB_PROFILE_FOLIAGE);
                     }
+                    uint qt_id = (uint(q.y) >> 4u) * tiles_x + (uint(q.x) >> 4u);
+                    uint qb = qt_id * 132u;
+                    uint qc = min(cluster_buf[qb + 0u] & 0x7FFFFFFFu, local_bit_cap);
+                    uint qslot = select_receiver_primary_area_slot(qb, qc, local_bit_cap, Q, qgn, q_foliage,
+                                                                   cluster_buf, lights);
+                    bool same_area = (qslot != 0xFFu) && (cluster_buf[qb + 2u + qslot] == px_area_li);
                     if (same_area) {
                         sum_a += qv.y * kw;
                         w_a += kw;
@@ -827,14 +840,14 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
             GpuLightRecord l = lights[di];
             if (di == sun_idx && l.source_radius > 1e-4f) {
                 bool h0 = evaluate_light_shadow_ray(l, wpos, gn, is_foliage, true, bn0.x, bn0.y, fcb, traced_rays);
-                bool h1 = evaluate_light_shadow_ray(l, wpos, gn, is_foliage, true, bn1.x, bn1.y, fcb, traced_rays);
-                float sv = 0.5f * (float(h0) + float(h1));
-                bool any_h = h0 || h1;
+                float sv = float(h0);
+                bool any_h = h0;
                 if (!temporal_aa) {
+                    bool h1 = evaluate_light_shadow_ray(l, wpos, gn, is_foliage, true, bn1.x, bn1.y, fcb, traced_rays);
                     bool h2 = evaluate_light_shadow_ray(l, wpos, gn, is_foliage, true, bn2.x, bn2.y, fcb, traced_rays);
                     bool h3 = evaluate_light_shadow_ray(l, wpos, gn, is_foliage, true, bn3.x, bn3.y, fcb, traced_rays);
                     sv = 0.25f * (float(h0) + float(h1) + float(h2) + float(h3));
-                    any_h = any_h || h2 || h3;
+                    any_h = any_h || h1 || h2 || h3;
                 }
                 soft_pen.x = sv;
                 if (!any_h)
@@ -864,15 +877,22 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
                 GpuLightRecord l = lights[li];
                 uint kind = l.kind_and_flags & 3u;
                 if (it == area_slot && (kind == 1u || l.source_radius > 1e-3f)) {
-                    bool h0 = evaluate_light_shadow_ray(l, wpos, gn, is_foliage, true, bn0.x, bn0.y, fcb, traced_rays);
-                    bool h1 = evaluate_light_shadow_ray(l, wpos, gn, is_foliage, true, bn1.x, bn1.y, fcb, traced_rays);
-                    float sv = 0.5f * (float(h0) + float(h1));
-                    bool any_h = h0 || h1;
-                    if (!temporal_aa) {
-                        bool h2 = evaluate_light_shadow_ray(l, wpos, gn, is_foliage, true, bn2.x, bn2.y, fcb, traced_rays);
-                        bool h3 = evaluate_light_shadow_ray(l, wpos, gn, is_foliage, true, bn3.x, bn3.y, fcb, traced_rays);
-                        sv = 0.25f * (float(h0) + float(h1) + float(h2) + float(h3));
-                        any_h = any_h || h2 || h3;
+                    float sv = 0.0f;
+                    bool any_h = false;
+                    if (temporal_aa) {
+                        bool h0 = evaluate_light_shadow_ray(l, wpos, gn, is_foliage, true, bn0.x, bn0.y, fcb, traced_rays);
+                        bool h1 = evaluate_light_shadow_ray(l, wpos, gn, is_foliage, true, bn1.x, bn1.y, fcb, traced_rays);
+                        sv = 0.5f * (float(h0) + float(h1));
+                        any_h = h0 || h1;
+                    } else {
+                        uint hit_sum = 0u;
+                        [unroll] for (uint s_i = 0u; s_i < 8u; ++s_i) {
+                            float2 b_s = frac(bn0 + float2(float(s_i) * 0.125f, float(s_i) * 0.6180339887f));
+                            bool hs = evaluate_light_shadow_ray(l, wpos, gn, is_foliage, true, b_s.x, b_s.y, fcb, traced_rays);
+                            hit_sum += hs ? 1u : 0u;
+                        }
+                        sv = float(hit_sum) * 0.125f;
+                        any_h = (hit_sum != 0u);
                     }
                     soft_pen.y = sv;
                     if (!any_h) {
@@ -882,7 +902,9 @@ void main(uint3 dtid : SV_DispatchThreadID, uint gindex : SV_GroupIndex, uint3 g
                             vis_bits.y &= ~(1u << (it - 32u));
                     }
                 } else {
-                    bool h = evaluate_light_shadow_ray(l, wpos, gn, is_foliage, temporal_aa, bn0.x, bn0.y, fcb, traced_rays);
+                    bool finite_src = (kind == 1u || l.source_radius > 1e-3f);
+                    bool h = evaluate_light_shadow_ray(l, wpos, gn, is_foliage, temporal_aa || finite_src, bn0.x, bn0.y,
+                                                       fcb, traced_rays);
                     if (!h) {
                         if (it < 32u)
                             vis_bits.x &= ~(1u << it);

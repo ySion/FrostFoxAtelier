@@ -296,9 +296,17 @@ struct alignas(16) GlobalFrameConstants {
     std::uint32_t vsm_page_table_srv = 0xFFFFFFFFu;
 
     std::uint32_t vsm_views_srv = 0xFFFFFFFFu;
+
+    std::uint32_t gi_probe_atlas_srv = 0xFFFFFFFFu;
+
+    std::uint32_t gi_probe_mask_srv = 0xFFFFFFFFu;
+
+    std::uint32_t scene_tile8_offset_packed = 0u;
+
+    std::uint32_t scene_tile16_offset_packed = 0u;
 };
 
-static_assert(sizeof(GlobalFrameConstants) == 1232);
+static_assert(sizeof(GlobalFrameConstants) == 1248);
 
 using detail::GpuLightRecord;
 
@@ -2767,6 +2775,34 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
         std::array<float, 3> next_prev_camera_eye{0.f, 0.f, 0.f};
         float next_prev_exposure_scale = 1.0f;
 
+        const int sc_left = std::clamp(static_cast<int>(scene_rv.scissor.left), 0, static_cast<int>(extent.width));
+        const int sc_top = std::clamp(static_cast<int>(scene_rv.scissor.top), 0, static_cast<int>(extent.height));
+        const int sc_right =
+            std::clamp(static_cast<int>(scene_rv.scissor.right), sc_left, static_cast<int>(extent.width));
+        const int sc_bottom =
+            std::clamp(static_cast<int>(scene_rv.scissor.bottom), sc_top, static_cast<int>(extent.height));
+        const std::uint32_t sc_gx0 = static_cast<std::uint32_t>(std::max(sc_left - 8, 0)) / 8u;
+        const std::uint32_t sc_gy0 = static_cast<std::uint32_t>(std::max(sc_top - 8, 0)) / 8u;
+        const std::uint32_t sc_gx1 = std::max(
+            sc_gx0 + 1u,
+            (static_cast<std::uint32_t>(std::min<int>(sc_right + 8, static_cast<int>(extent.width))) + 7u) / 8u);
+        const std::uint32_t sc_gy1 = std::max(
+            sc_gy0 + 1u,
+            (static_cast<std::uint32_t>(std::min<int>(sc_bottom + 8, static_cast<int>(extent.height))) + 7u) / 8u);
+        const std::uint32_t sc_gx_cnt = sc_gx1 - sc_gx0;
+        const std::uint32_t sc_gy_cnt = sc_gy1 - sc_gy0;
+
+        const std::uint32_t sc_tx0 = static_cast<std::uint32_t>(std::max(sc_left - 16, 0)) / 16u;
+        const std::uint32_t sc_ty0 = static_cast<std::uint32_t>(std::max(sc_top - 16, 0)) / 16u;
+        const std::uint32_t sc_tx1 = std::max(
+            sc_tx0 + 1u,
+            (static_cast<std::uint32_t>(std::min<int>(sc_right + 16, static_cast<int>(extent.width))) + 15u) / 16u);
+        const std::uint32_t sc_ty1 = std::max(
+            sc_ty0 + 1u,
+            (static_cast<std::uint32_t>(std::min<int>(sc_bottom + 16, static_cast<int>(extent.height))) + 15u) / 16u);
+        const std::uint32_t sc_tx_cnt = sc_tx1 - sc_tx0;
+        const std::uint32_t sc_ty_cnt = sc_ty1 - sc_ty0;
+
         if (draw_scene) {
             const auto masked_cnt_fcb =
                 static_cast<std::uint32_t>(mat_batch->program_set->masked_archetype_indices.size());
@@ -3163,6 +3199,12 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
                     fcb.vsm_page_table_srv = vsm_plan.page_table_srv;
                     fcb.vsm_views_srv = vsm_plan.views_srv;
                 }
+                if (frame.view.lit.indirect_lighting) {
+                    fcb.gi_probe_atlas_srv = lc.probe_atlas[fcb_cur_p].srv_bindless;
+                    fcb.gi_probe_mask_srv = lc.probe_mask[fcb_cur_p].srv_bindless;
+                }
+                fcb.scene_tile8_offset_packed = (sc_gx0 & 0xFFFFu) | ((sc_gy0 & 0xFFFFu) << 16u);
+                fcb.scene_tile16_offset_packed = (sc_tx0 & 0xFFFFu) | ((sc_ty0 & 0xFFFFu) << 16u);
             }
 
             ATELIER_TRY_BIND(written_fcb, s.frame_cb_slots.write(*s.device, slot_idx, std::span{&fcb, 1u}));
@@ -4589,8 +4631,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
                                 rc.uav0 = ctx.uav(ssilvb_bent_raw);
                                 rc.uav1 = ctx.uav(ssilvb_gi_raw);
                                 ctx.push_constants(rc, nri::BindPoint::COMPUTE);
-                                ctx.core().CmdDispatch(ctx.cmd(),
-                                                       {(extent.width + 7u) / 8u, (extent.height + 7u) / 8u, 1u});
+                                ctx.core().CmdDispatch(ctx.cmd(), {sc_gx_cnt, sc_gy_cnt, 1u});
                                 return {};
                             });
 
@@ -4629,8 +4670,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
                                 rc.uav0 = ctx.uav(ssilvb_ao_curr_h);
                                 rc.uav1 = ctx.uav(ssilvb_gi_curr_h);
                                 ctx.push_constants(rc, nri::BindPoint::COMPUTE);
-                                ctx.core().CmdDispatch(ctx.cmd(),
-                                                       {(extent.width + 7u) / 8u, (extent.height + 7u) / 8u, 1u});
+                                ctx.core().CmdDispatch(ctx.cmd(), {sc_gx_cnt, sc_gy_cnt, 1u});
                                 return {};
                             });
                     }
@@ -5022,8 +5062,8 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
                     if (run_contact_shadows || run_ray_shadows) {
                         const bool use_masked_shadow_pso =
                             scene.any_masked_instance && static_cast<bool>(prog_set.ray_shadow_masked_pso());
-                        const std::uint32_t gx8 = (extent.width + 7u) / 8u;
-                        const std::uint32_t gy8 = (extent.height + 7u) / 8u;
+                        const std::uint32_t gx8 = sc_gx_cnt;
+                        const std::uint32_t gy8 = sc_gy_cnt;
 
                         graph.add_pass(
                             "LitDirectShadowClassify", rhi::QueueKind::graphics,
@@ -5195,6 +5235,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
                                     [&](rdg::PassBuilder& b) {
                                         b.read_texture(depth_handle);
                                         b.read_texture(geom_normal_tex);
+                                        b.read_texture(slab0);
                                         b.read_texture(src_t);
                                         b.read_buffer(cluster_list);
                                         b.write_texture(dst_t);
@@ -5207,6 +5248,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
                                         frc.shadow_mode = 4u;
                                         frc.depth_srv = ctx.srv(depth_handle);
                                         frc.geom_normal_srv = ctx.srv(geom_normal_tex);
+                                        frc.slab0_srv = ctx.srv(slab0);
                                         frc.cluster_list_srv = ctx.srv(cluster_list);
                                         frc.penumbra_tex_uav_or_srv = ctx.srv(src_t);
                                         frc.shadow_mask_uav = ctx.uav(dst_t);
@@ -5259,7 +5301,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
                             drc.direct_spec_uav = ctx.uav(direct_spec);
                             drc.cluster_stats_uav = run_ray_shadows ? ctx.uav(gpu_counters) : 0xFFFFFFFFu;
                             ctx.push_constants(drc, nri::BindPoint::COMPUTE);
-                            ctx.core().CmdDispatch(ctx.cmd(), {tiles_16x, tiles_16y, 1u});
+                            ctx.core().CmdDispatch(ctx.cmd(), {sc_tx_cnt, sc_ty_cnt, 1u});
                             return {};
                         });
 
@@ -5494,8 +5536,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
                             rc.srv_aux1 = use_gi_history ? ctx.srv(gi_hist_prev_h) : 0xFFFFFFFFu;
                             rc.srv_aux2 = ctx.srv(probe_mask_curr_h);
                             ctx.push_constants(rc, nri::BindPoint::COMPUTE);
-                            ctx.core().CmdDispatch(ctx.cmd(),
-                                                   {(extent.width + 7u) / 8u, (extent.height + 7u) / 8u, 1u});
+                            ctx.core().CmdDispatch(ctx.cmd(), {sc_gx_cnt, sc_gy_cnt, 1u});
                             return {};
                         });
 
@@ -5522,8 +5563,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
                             rc.srv_aux2 = 0u;
                             rc.uav0 = ctx.uav(gi_denoise_tmp);
                             ctx.push_constants(rc, nri::BindPoint::COMPUTE);
-                            ctx.core().CmdDispatch(ctx.cmd(),
-                                                   {(extent.width + 7u) / 8u, (extent.height + 7u) / 8u, 1u});
+                            ctx.core().CmdDispatch(ctx.cmd(), {sc_gx_cnt, sc_gy_cnt, 1u});
                             return {};
                         });
 
@@ -5558,8 +5598,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
                             rc.uav0 = ctx.uav(gi_resolved);
                             rc.uav1 = ctx.uav(gi_hist_cur_h);
                             ctx.push_constants(rc, nri::BindPoint::COMPUTE);
-                            ctx.core().CmdDispatch(ctx.cmd(),
-                                                   {(extent.width + 7u) / 8u, (extent.height + 7u) / 8u, 1u});
+                            ctx.core().CmdDispatch(ctx.cmd(), {sc_gx_cnt, sc_gy_cnt, 1u});
                             return {};
                         });
 
@@ -5587,6 +5626,10 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
                             b.read_texture(geom_normal_tex);
                             if (ssilvb_active)
                                 b.read_texture(ssilvb_ao_curr_h);
+                            if (frame.view.lit.indirect_lighting) {
+                                b.read_texture(probe_atlas_curr_h);
+                                b.read_texture(probe_mask_curr_h);
+                            }
                             b.read_texture(gi_resolved);
                             b.read_texture(motion_tex);
                             b.read_buffer(wrc_curr_h);
@@ -5626,8 +5669,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
                             rc.uav1 = ctx.uav(gpu_counters);
                             rc.atrous_step = use_refl_history ? ctx.srv(refl_moments_prev_h) : 0xFFFFFFFFu;
                             ctx.push_constants(rc, nri::BindPoint::COMPUTE);
-                            ctx.core().CmdDispatch(ctx.cmd(),
-                                                   {(extent.width + 7u) / 8u, (extent.height + 7u) / 8u, 1u});
+                            ctx.core().CmdDispatch(ctx.cmd(), {sc_gx_cnt, sc_gy_cnt, 1u});
                             return {};
                         });
 
@@ -5666,8 +5708,7 @@ Result<FrameResult> Renderer::render(const Frame& frame, Capture* capture) {
                                 rc.uav1 = mom_dst.valid() ? ctx.uav(mom_dst) : 0xFFFFFFFFu;
                                 rc.atrous_step = step;
                                 ctx.push_constants(rc, nri::BindPoint::COMPUTE);
-                                ctx.core().CmdDispatch(ctx.cmd(),
-                                                       {(extent.width + 7u) / 8u, (extent.height + 7u) / 8u, 1u});
+                                ctx.core().CmdDispatch(ctx.cmd(), {sc_gx_cnt, sc_gy_cnt, 1u});
                                 return {};
                             });
                     };
