@@ -2,6 +2,8 @@
 #include "jit/windows_unwind.hpp"
 #include "detail/math_lowering.hpp"
 #include "detail/diagnostic_artifact.hpp"
+#include "foundation/span.hpp"
+#include "foundation/string.hpp"
 #include "language/source.hpp"
 #include "language/material.hpp"
 #include "runtime/detail/value_storage.hpp"
@@ -27,7 +29,10 @@
 #include <llvm/Support/TargetSelect.h>
 #include <llvm/Support/raw_ostream.h>
 #include <bit>
+#include <charconv>
+#include <cmath>
 #include <cstring>
+#include <emmintrin.h>
 #include <algorithm>
 #include <expected>
 #include <limits>
@@ -43,6 +48,378 @@
 
 namespace atelier::source::detail {
 namespace {
+
+static_assert(sizeof(SequenceCall) == 64 && alignof(SequenceCall) == 8 && offsetof(SequenceCall, algorithm) == 0 &&
+              offsetof(SequenceCall, flags) == 4 && offsetof(SequenceCall, index) == 8 &&
+              offsetof(SequenceCall, count) == 16 && offsetof(SequenceCall, first_data) == 24 &&
+              offsetof(SequenceCall, first_size) == 32 && offsetof(SequenceCall, second_data) == 40 &&
+              offsetof(SequenceCall, second_size) == 48 && offsetof(SequenceCall, result) == 56);
+
+StringView make_leaf_view(const char* data, std::size_t size) noexcept {
+    return StringView{data ? data : "", size};
+}
+
+std::uint32_t source_str_eq(const char* a, std::size_t na, const char* b, std::size_t nb) noexcept {
+    return make_leaf_view(a, na) == make_leaf_view(b, nb) ? 1u : 0u;
+}
+
+std::int32_t source_str_cmp(const char* a, std::size_t na, const char* b, std::size_t nb) noexcept {
+    const auto ord = make_leaf_view(a, na) <=> make_leaf_view(b, nb);
+    return ord < 0 ? -1 : (ord > 0 ? 1 : 0);
+}
+
+std::uint32_t source_str_is_ascii(const char* d, std::size_t n) noexcept {
+    return make_leaf_view(d, n).is_ascii() ? 1u : 0u;
+}
+
+std::uint32_t source_str_starts_with(const char* a, std::size_t na, const char* b, std::size_t nb) noexcept {
+    return make_leaf_view(a, na).starts_with(make_leaf_view(b, nb)) ? 1u : 0u;
+}
+
+std::uint32_t source_str_ends_with(const char* a, std::size_t na, const char* b, std::size_t nb) noexcept {
+    return make_leaf_view(a, na).ends_with(make_leaf_view(b, nb)) ? 1u : 0u;
+}
+
+std::uint32_t source_str_contains(const char* a, std::size_t na, const char* b, std::size_t nb) noexcept {
+    return make_leaf_view(a, na).contains(make_leaf_view(b, nb)) ? 1u : 0u;
+}
+
+std::uint32_t source_str_equals_icase(const char* a, std::size_t na, const char* b, std::size_t nb) noexcept {
+    return make_leaf_view(a, na).equals_ascii_case_insensitive(make_leaf_view(b, nb)) ? 1u : 0u;
+}
+
+std::uint32_t source_str_starts_with_icase(const char* a, std::size_t na, const char* b, std::size_t nb) noexcept {
+    return make_leaf_view(a, na).starts_with_ascii_case_insensitive(make_leaf_view(b, nb)) ? 1u : 0u;
+}
+
+std::uint32_t source_str_ends_with_icase(const char* a, std::size_t na, const char* b, std::size_t nb) noexcept {
+    return make_leaf_view(a, na).ends_with_ascii_case_insensitive(make_leaf_view(b, nb)) ? 1u : 0u;
+}
+
+std::int32_t source_str_find(const char* a, std::size_t na, const char* b, std::size_t nb,
+                             std::uint64_t from) noexcept {
+    const auto pos = make_leaf_view(a, na).find(make_leaf_view(b, nb), static_cast<std::size_t>(from));
+    return (pos == StringView::npos || pos > static_cast<std::size_t>(INT32_MAX)) ? -1 : static_cast<std::int32_t>(pos);
+}
+
+std::int32_t source_str_rfind(const char* a, std::size_t na, const char* b, std::size_t nb,
+                              std::uint64_t from) noexcept {
+    const auto pos = make_leaf_view(a, na).rfind(make_leaf_view(b, nb), static_cast<std::size_t>(from));
+    return (pos == StringView::npos || pos > static_cast<std::size_t>(INT32_MAX)) ? -1 : static_cast<std::int32_t>(pos);
+}
+
+std::uint32_t source_str_count(const char* a, std::size_t na, const char* b, std::size_t nb) noexcept {
+    return static_cast<std::uint32_t>(make_leaf_view(a, na).count(make_leaf_view(b, nb)));
+}
+
+std::uint32_t source_str_common_prefix(const char* a, std::size_t na, const char* b, std::size_t nb) noexcept {
+    return static_cast<std::uint32_t>(make_leaf_view(a, na).common_prefix_length(make_leaf_view(b, nb)));
+}
+
+std::uint32_t source_str_try_parse_i32(const char* d, std::size_t n, std::int32_t* out) noexcept {
+    if (n == 0 || !d)
+        return 0;
+    std::int32_t parsed{};
+    const auto res = std::from_chars(d, d + n, parsed, 10);
+    if (res.ec != std::errc{} || res.ptr != d + n)
+        return 0;
+    *out = parsed;
+    return 1;
+}
+
+std::uint32_t source_str_try_parse_u32(const char* d, std::size_t n, std::uint32_t* out) noexcept {
+    if (n == 0 || !d)
+        return 0;
+    std::uint32_t parsed{};
+    const auto res = std::from_chars(d, d + n, parsed, 10);
+    if (res.ec != std::errc{} || res.ptr != d + n)
+        return 0;
+    *out = parsed;
+    return 1;
+}
+
+std::uint32_t source_str_try_parse_f32(const char* d, std::size_t n, float* out) noexcept {
+    if (n == 0 || !d)
+        return 0;
+    float parsed{};
+    const auto res = std::from_chars(d, d + n, parsed);
+    if (res.ec != std::errc{} || res.ptr != d + n || !std::isfinite(parsed))
+        return 0;
+    *out = parsed;
+    return 1;
+}
+
+std::uint32_t source_str_try_parse_f64(const char* d, std::size_t n, double* out) noexcept {
+    if (n == 0 || !d)
+        return 0;
+    double parsed{};
+    const auto res = std::from_chars(d, d + n, parsed);
+    if (res.ec != std::errc{} || res.ptr != d + n || !std::isfinite(parsed))
+        return 0;
+    *out = parsed;
+    return 1;
+}
+
+std::uint32_t source_arr_eq_u8(const std::uint8_t* a, std::size_t na, const std::uint8_t* b, std::size_t nb) noexcept {
+    return Span<const std::uint8_t>{a, na} == Span<const std::uint8_t>{b, nb} ? 1u : 0u;
+}
+
+std::uint32_t source_arr_eq_u32(const std::uint32_t* a, std::size_t na, const std::uint32_t* b,
+                                std::size_t nb) noexcept {
+    return Span<const std::uint32_t>{a, na} == Span<const std::uint32_t>{b, nb} ? 1u : 0u;
+}
+
+std::uint32_t source_arr_eq_f32(const float* a, std::size_t na, const float* b, std::size_t nb,
+                                std::uint32_t lanes) noexcept {
+    if (na != nb)
+        return 0;
+    return Span<const float>{a, na * lanes} == Span<const float>{b, nb * lanes} ? 1u : 0u;
+}
+
+std::uint32_t source_arr_eq_f64(const double* a, std::size_t na, const double* b, std::size_t nb,
+                                std::uint32_t lanes) noexcept {
+    if (na != nb)
+        return 0;
+    return Span<const double>{a, na * lanes} == Span<const double>{b, nb * lanes} ? 1u : 0u;
+}
+
+std::uint32_t source_arr_eq_str(const String* a, std::size_t na, const String* b, std::size_t nb) noexcept {
+    if (na != nb)
+        return 0;
+    for (std::size_t i = 0; i < na; ++i)
+        if (a[i].view() != b[i].view())
+            return 0;
+    return 1;
+}
+
+std::int32_t source_arr_find_u8(const std::uint8_t* d, std::size_t n, std::uint32_t needle,
+                                std::uint64_t from) noexcept {
+    if (from >= n)
+        return -1;
+    const auto sub = Span<const std::uint8_t>{d + from, n - static_cast<std::size_t>(from)};
+    const auto hit = sub.find(static_cast<std::uint8_t>(needle));
+    if (hit == Span<const std::uint8_t>::npos)
+        return -1;
+    const auto idx = static_cast<std::size_t>(from) + hit;
+    return idx > static_cast<std::size_t>(INT32_MAX) ? -1 : static_cast<std::int32_t>(idx);
+}
+
+std::int32_t source_arr_rfind_u8(const std::uint8_t* d, std::size_t n, std::uint32_t needle,
+                                 std::uint64_t from) noexcept {
+    const auto hit =
+        Span<const std::uint8_t>{d, n}.find_last(static_cast<std::uint8_t>(needle), static_cast<std::size_t>(from));
+    return (hit == Span<const std::uint8_t>::npos || hit > static_cast<std::size_t>(INT32_MAX))
+               ? -1
+               : static_cast<std::int32_t>(hit);
+}
+
+std::uint32_t source_arr_count_u8(const std::uint8_t* d, std::size_t n, std::uint32_t needle) noexcept {
+    return static_cast<std::uint32_t>(Span<const std::uint8_t>{d, n}.count(static_cast<std::uint8_t>(needle)));
+}
+
+std::int32_t source_arr_find_u32(const std::uint32_t* d, std::size_t n, std::uint32_t needle,
+                                 std::uint64_t from) noexcept {
+    if (from >= n)
+        return -1;
+    const auto sub = Span<const std::uint32_t>{d + from, n - static_cast<std::size_t>(from)};
+    const auto hit = sub.find(needle);
+    if (hit == Span<const std::uint32_t>::npos)
+        return -1;
+    const auto idx = static_cast<std::size_t>(from) + hit;
+    return idx > static_cast<std::size_t>(INT32_MAX) ? -1 : static_cast<std::int32_t>(idx);
+}
+
+std::int32_t source_arr_rfind_u32(const std::uint32_t* d, std::size_t n, std::uint32_t needle,
+                                  std::uint64_t from) noexcept {
+    const auto hit = Span<const std::uint32_t>{d, n}.find_last(needle, static_cast<std::size_t>(from));
+    return (hit == Span<const std::uint32_t>::npos || hit > static_cast<std::size_t>(INT32_MAX))
+               ? -1
+               : static_cast<std::int32_t>(hit);
+}
+
+std::uint32_t source_arr_count_u32(const std::uint32_t* d, std::size_t n, std::uint32_t needle) noexcept {
+    return static_cast<std::uint32_t>(Span<const std::uint32_t>{d, n}.count(needle));
+}
+
+template <typename Float>
+bool match_float_lanes(const Float* a, const Float* b, std::uint32_t lanes) noexcept {
+    for (std::uint32_t k = 0; k < lanes; ++k)
+        if (a[k] != b[k])
+            return false;
+    return true;
+}
+
+std::int32_t source_arr_find_f32(const float* d, std::size_t n, const float* needle, std::uint32_t lanes,
+                                 std::uint64_t from) noexcept {
+    if (from >= n)
+        return -1;
+    if (lanes == 1) {
+        const auto hit = Span<const float>{d + from, n - static_cast<std::size_t>(from)}.find(*needle);
+        if (hit == Span<const float>::npos)
+            return -1;
+        const auto idx = static_cast<std::size_t>(from) + hit;
+        return idx > static_cast<std::size_t>(INT32_MAX) ? -1 : static_cast<std::int32_t>(idx);
+    }
+    for (std::size_t i = static_cast<std::size_t>(from); i < n; ++i)
+        if (match_float_lanes(d + i * lanes, needle, lanes))
+            return i > static_cast<std::size_t>(INT32_MAX) ? -1 : static_cast<std::int32_t>(i);
+    return -1;
+}
+
+std::int32_t source_arr_rfind_f32(const float* d, std::size_t n, const float* needle, std::uint32_t lanes,
+                                  std::uint64_t from) noexcept {
+    if (n == 0)
+        return -1;
+    const std::size_t len = from >= n ? n : static_cast<std::size_t>(from) + 1;
+    if (lanes == 1) {
+        const auto hit = Span<const float>{d, len}.find_last(*needle);
+        return (hit == Span<const float>::npos || hit > static_cast<std::size_t>(INT32_MAX))
+                   ? -1
+                   : static_cast<std::int32_t>(hit);
+    }
+    for (std::size_t i = len; i > 0;) {
+        --i;
+        if (match_float_lanes(d + i * lanes, needle, lanes))
+            return i > static_cast<std::size_t>(INT32_MAX) ? -1 : static_cast<std::int32_t>(i);
+    }
+    return -1;
+}
+
+std::uint32_t source_arr_count_f32(const float* d, std::size_t n, const float* needle, std::uint32_t lanes) noexcept {
+    if (lanes == 1)
+        return static_cast<std::uint32_t>(Span<const float>{d, n}.count(*needle));
+    std::uint32_t total = 0;
+    for (std::size_t i = 0; i < n; ++i)
+        if (match_float_lanes(d + i * lanes, needle, lanes))
+            ++total;
+    return total;
+}
+
+std::int32_t source_arr_find_f64(const double* d, std::size_t n, const double* needle, std::uint32_t lanes,
+                                 std::uint64_t from) noexcept {
+    if (from >= n)
+        return -1;
+    if (lanes == 1) {
+        const auto hit = Span<const double>{d + from, n - static_cast<std::size_t>(from)}.find(*needle);
+        if (hit == Span<const double>::npos)
+            return -1;
+        const auto idx = static_cast<std::size_t>(from) + hit;
+        return idx > static_cast<std::size_t>(INT32_MAX) ? -1 : static_cast<std::int32_t>(idx);
+    }
+    for (std::size_t i = static_cast<std::size_t>(from); i < n; ++i)
+        if (match_float_lanes(d + i * lanes, needle, lanes))
+            return i > static_cast<std::size_t>(INT32_MAX) ? -1 : static_cast<std::int32_t>(i);
+    return -1;
+}
+
+std::int32_t source_arr_rfind_f64(const double* d, std::size_t n, const double* needle, std::uint32_t lanes,
+                                  std::uint64_t from) noexcept {
+    if (n == 0)
+        return -1;
+    const std::size_t len = from >= n ? n : static_cast<std::size_t>(from) + 1;
+    if (lanes == 1) {
+        const auto hit = Span<const double>{d, len}.find_last(*needle);
+        return (hit == Span<const double>::npos || hit > static_cast<std::size_t>(INT32_MAX))
+                   ? -1
+                   : static_cast<std::int32_t>(hit);
+    }
+    for (std::size_t i = len; i > 0;) {
+        --i;
+        if (match_float_lanes(d + i * lanes, needle, lanes))
+            return i > static_cast<std::size_t>(INT32_MAX) ? -1 : static_cast<std::int32_t>(i);
+    }
+    return -1;
+}
+
+std::uint32_t source_arr_count_f64(const double* d, std::size_t n, const double* needle,
+                                   std::uint32_t lanes) noexcept {
+    if (lanes == 1)
+        return static_cast<std::uint32_t>(Span<const double>{d, n}.count(*needle));
+    std::uint32_t total = 0;
+    for (std::size_t i = 0; i < n; ++i)
+        if (match_float_lanes(d + i * lanes, needle, lanes))
+            ++total;
+    return total;
+}
+
+std::int32_t source_arr_find_str(const String* d, std::size_t n, const char* nd, std::size_t nn,
+                                 std::uint64_t from) noexcept {
+    if (from >= n)
+        return -1;
+    const auto needle = make_leaf_view(nd, nn);
+    for (std::size_t i = static_cast<std::size_t>(from); i < n; ++i)
+        if (d[i].view() == needle)
+            return i > static_cast<std::size_t>(INT32_MAX) ? -1 : static_cast<std::int32_t>(i);
+    return -1;
+}
+
+std::int32_t source_arr_rfind_str(const String* d, std::size_t n, const char* nd, std::size_t nn,
+                                  std::uint64_t from) noexcept {
+    if (n == 0)
+        return -1;
+    const std::size_t len = from >= n ? n : static_cast<std::size_t>(from) + 1;
+    const auto needle = make_leaf_view(nd, nn);
+    for (std::size_t i = len; i > 0;) {
+        --i;
+        if (d[i].view() == needle)
+            return i > static_cast<std::size_t>(INT32_MAX) ? -1 : static_cast<std::int32_t>(i);
+    }
+    return -1;
+}
+
+std::uint32_t source_arr_count_str(const String* d, std::size_t n, const char* nd, std::size_t nn) noexcept {
+    const auto needle = make_leaf_view(nd, nn);
+    std::uint32_t total = 0;
+    for (std::size_t i = 0; i < n; ++i)
+        if (d[i].view() == needle)
+            ++total;
+    return total;
+}
+
+std::uint32_t source_arr_is_sorted_i32(const std::int32_t* d, std::size_t n) noexcept {
+    return Span<const std::int32_t>{d, n}.is_sorted() ? 1u : 0u;
+}
+
+std::uint32_t source_arr_is_sorted_u32(const std::uint32_t* d, std::size_t n) noexcept {
+    return Span<const std::uint32_t>{d, n}.is_sorted() ? 1u : 0u;
+}
+
+std::uint32_t source_arr_is_sorted_f32(const float* d, std::size_t n) noexcept {
+    std::size_t i = 0;
+    while (n - i >= 8) {
+        const auto v0 = _mm_loadu_ps(d + i);
+        const auto v1 = _mm_loadu_ps(d + i + 4);
+        if (_mm_movemask_ps(_mm_and_ps(_mm_cmpord_ps(v0, v0), _mm_cmpord_ps(v1, v1))) != 0xf)
+            return 2u;
+        i += 8;
+    }
+    for (; i < n; ++i)
+        if (d[i] != d[i])
+            return 2u;
+    return Span<const float>{d, n}.is_sorted() ? 1u : 0u;
+}
+
+std::uint32_t source_arr_is_sorted_f64(const double* d, std::size_t n) noexcept {
+    std::size_t i = 0;
+    while (n - i >= 4) {
+        const auto v0 = _mm_loadu_pd(d + i);
+        const auto v1 = _mm_loadu_pd(d + i + 2);
+        if (_mm_movemask_pd(_mm_and_pd(_mm_cmpord_pd(v0, v0), _mm_cmpord_pd(v1, v1))) != 0x3)
+            return 2u;
+        i += 4;
+    }
+    for (; i < n; ++i)
+        if (d[i] != d[i])
+            return 2u;
+    return Span<const double>{d, n}.is_sorted() ? 1u : 0u;
+}
+
+std::uint32_t source_arr_is_sorted_str(const String* d, std::size_t n) noexcept {
+    for (std::size_t i = 1; i < n; ++i)
+        if (d[i].view() < d[i - 1].view())
+            return 0u;
+    return 1u;
+}
 
 void initialize_fatal_handlers() noexcept {
     // This DLL owns a static CRT; installing in the host cannot reach its abort.
@@ -410,6 +787,8 @@ public:
             return function;
         };
         abi_value_type_ = llvm::StructType::get(*context_, {i32, i32, ir_.getInt64Ty(), i32, ptr});
+        sequence_call_type_ = llvm::StructType::get(
+            *context_, {i32, i32, ir_.getInt64Ty(), ir_.getInt64Ty(), ptr, ir_.getInt64Ty(), ptr, ir_.getInt64Ty(), ptr});
         create_ = declare("business_create", i32, {ptr, i32});
         native_receiver_ = declare("business_native_receiver", i32, {ptr, i32, ptr});
         native_stamp_ = declare("business_native_stamp", ir_.getVoidTy(), {ptr});
@@ -422,6 +801,7 @@ public:
         assign_value_ = declare("business_assign_value", i32, {ptr, i32, ptr, ptr});
         destroy_value_ = declare("business_destroy_value", ir_.getVoidTy(), {ptr, i32, ptr});
         mutate_sequence_ = declare("business_mutate_sequence", i32, {ptr, i32, i32, ptr, ptr, ir_.getInt64Ty()});
+        apply_sequence_ = declare("business_apply_sequence", i32, {ptr, i32, ptr, ptr});
         sample_texture_ = declare("material_sample_texture", i32, {ptr, i32, ptr, ptr});
         sample_orientation_ = declare("material_sample_orientation", i32, {ptr, i32, ptr, ptr});
         parallel_for_ = declare("business_parallel_for", i32, {ir_.getInt64Ty(), ir_.getInt64Ty(), ptr, ptr, ptr, ptr});
@@ -479,6 +859,7 @@ public:
                 temporary_slots_[index] = *slot;
             }
             has_source_calls_ |= node.kind == Kind::source_call;
+            has_sequence_apply_ |= uses_apply_sequence_service(node);
             if (node.kind == Kind::call) {
                 has_native_calls_ = true;
                 has_call_result_ |= node.type != language::ValueType::void_value;
@@ -503,6 +884,12 @@ public:
             prepare_debug_storage();
         uint_result_ = ir_.CreateAlloca(ir_.getInt32Ty());
         uint_result_->setAlignment(llvm::Align(4));
+        if (has_sequence_apply_) {
+            sequence_call_ = ir_.CreateAlloca(sequence_call_type_, nullptr, "sequence.call");
+            sequence_call_->setAlignment(llvm::Align(alignof(SequenceCall)));
+            sequence_result_ = ir_.CreateAlloca(ir_.getInt64Ty(), nullptr, "sequence.result");
+            sequence_result_->setAlignment(llvm::Align(8));
+        }
         native_context_ = ir_.CreateAlloca(ir_.getPtrTy(), nullptr, "native.receiver");
         if (has_native_calls_) {
             native_error_ = ir_.CreateAlloca(llvm::ArrayType::get(ir_.getInt8Ty(), sizeof(NativeFailure)), nullptr,
@@ -897,7 +1284,8 @@ private:
             return DiagnosticCall::value_construct;
         if (function.getCallee() == assign_value_.getCallee())
             return DiagnosticCall::value_assign;
-        if (function.getCallee() == mutate_sequence_.getCallee())
+        if (function.getCallee() == mutate_sequence_.getCallee() ||
+            function.getCallee() == apply_sequence_.getCallee())
             return DiagnosticCall::sequence_mutation;
         fatal("Unclassified source service call.");
     }
@@ -1394,8 +1782,8 @@ private:
                     std::snprintf(text, sizeof(text), "%s.%s: Hard-bounded fields require finite values.",
                                   environment_.object_type_name, field.name);
                 failure.record(ErrorCode::argument_mismatch,
-                               written > 0 ? std::string_view(text, std::min<std::size_t>(written, sizeof(text) - 1))
-                                           : std::string_view{});
+                               written > 0 ? StringView{text, std::min<std::size_t>(written, sizeof(text) - 1)}
+                                           : StringView{});
                 auto* diagnostic =
                     ir_.CreateGlobalString(llvm::StringRef(reinterpret_cast<const char*>(&failure), sizeof(failure)),
                                            "field.failure", 0, module_, false);
@@ -1577,18 +1965,37 @@ private:
         return value_alignment(type, source_.value_layouts);
     }
 
+    bool uses_apply_sequence_service(const language::Expression& node) const {
+        if (node.kind != language::Expression::Kind::sequence_operation ||
+            language::is_readonly_sequence_operation(node.sequence_operation) ||
+            language::is_try_parse_sequence_operation(node.sequence_operation))
+            return false;
+        if (node.sequence_operation == language::SequenceOperation::arr_swap) {
+            const auto seq_type = function_.expressions[node.left].type;
+            return managed_value(source_.value_layouts.at(seq_type.type_index).element);
+        }
+        return true;
+    }
+
     bool caches_sequence_parameter(std::uint32_t parameter) const {
-        if (function_.parameters[parameter].mutates_structure)
+        if (std::ranges::any_of(function_.parameters, [](const auto& p) { return p.mutates_structure; }))
             return false;
         const auto type = function_.parameters[parameter].type;
         if (type.kind != language::ValueType::array && type.kind != language::ValueType::string)
             return false;
+        const auto is_param = [&](language::NodeId id) noexcept {
+            return id != language::no_node && function_.expressions[id].kind == language::Expression::Kind::local &&
+                   function_.expressions[id].value == parameter;
+        };
         return std::ranges::any_of(function_.expressions, [&](const auto& node) {
             using Kind = language::Expression::Kind;
-            if (node.kind != Kind::index && node.kind != Kind::length)
-                return false;
-            const auto& target = function_.expressions[node.left];
-            return target.kind == Kind::local && target.value == parameter;
+            if (node.kind == Kind::index || node.kind == Kind::length)
+                return is_param(node.left);
+            if (node.kind == Kind::binary)
+                return is_param(node.left) || is_param(node.right);
+            if (node.kind == Kind::sequence_operation)
+                return is_param(node.left) || std::ranges::any_of(node.arguments, is_param);
+            return false;
         });
     }
 
@@ -1605,9 +2012,39 @@ private:
             const auto& constant = constant_global(node.value);
             return {constant.data, ir_.getInt64(constant.element_count)};
         }
+        if (node.kind == language::Expression::Kind::string_literal) {
+            const auto& bytes = function_.strings.at(node.value);
+            return {ir_.CreateGlobalString(llvm::StringRef(bytes.data(), bytes.size())), ir_.getInt64(bytes.size())};
+        }
         if (node.kind == language::Expression::Kind::local)
             return local_sequence(node.value);
         return sequence_view(value_address(id, prepared_indices), node.type);
+    }
+
+    Sequence safe_sequence_before(language::NodeId id, bool later_mutates) {
+        const auto& node = function_.expressions[id];
+        if (!later_mutates || in_parallel_context_ || parallel_callee_ ||
+            node.kind == language::Expression::Kind::constant_data ||
+            node.kind == language::Expression::Kind::string_literal ||
+            !source_.value_layouts.at(node.type.type_index).can_own)
+            return sequence(id);
+        auto* snapshot = temporary_value(node.type, value_address(id), "sequence.snapshot");
+        return sequence_view(snapshot, node.type);
+    }
+
+    bool borrows_conditional(language::NodeId id) const noexcept {
+        while (id != language::no_node) {
+            const auto& expr = function_.expressions[id];
+            if (expr.kind == language::Expression::Kind::conditional)
+                return true;
+            if (expr.kind == language::Expression::Kind::value_field ||
+                expr.kind == language::Expression::Kind::index) {
+                id = expr.left;
+                continue;
+            }
+            return false;
+        }
+        return false;
     }
 
     void collect_lvalue_indices(language::NodeId id, llvm::SmallVectorImpl<language::NodeId>& out) const {
@@ -1620,30 +2057,73 @@ private:
         }
     }
 
+    bool has_mutating_index_chain(language::NodeId id) const {
+        while (id != language::no_node) {
+            const auto& expr = function_.expressions[id];
+            if (expr.kind == language::Expression::Kind::value_field) {
+                id = expr.left;
+            } else if (expr.kind == language::Expression::Kind::index) {
+                if (expr.right != language::no_node && may_mutate_sequences(expr.right))
+                    return true;
+                id = expr.left;
+            } else {
+                break;
+            }
+        }
+        return false;
+    }
+
     llvm::SmallVector<std::pair<language::NodeId, llvm::Value*>, 4> prepare_lvalue_indices(language::NodeId id) {
         llvm::SmallVector<language::NodeId, 4> index_nodes;
         collect_lvalue_indices(id, index_nodes);
         llvm::SmallVector<std::pair<language::NodeId, llvm::Value*>, 4> prepared;
         prepared.reserve(index_nodes.size());
-        for (const auto idx_id : index_nodes)
-            prepared.emplace_back(idx_id, expression(function_.expressions[idx_id].right));
+        for (const auto idx_id : index_nodes) {
+            const auto& idx_node = function_.expressions[idx_id];
+            if (idx_node.right != language::no_node) {
+                prepared.emplace_back(idx_id, expression(idx_node.right));
+            } else {
+                PositionScope position(position_, idx_node.position);
+                const Sequence input = sequence(idx_node.left, prepared);
+                check_value(ir_.CreateICmpNE(input.size, ir_.getInt64(0)), EntryFailure::sequence_bounds);
+                auto* back_idx = ir_.CreateTrunc(ir_.CreateSub(input.size, ir_.getInt64(1)), ir_.getInt32Ty());
+                prepared.emplace_back(idx_id, back_idx);
+            }
+        }
         return prepared;
     }
 
-    bool may_mutate_sequences(language::NodeId id) const {
+    static bool may_mutate_sequences_in(const language::Program& prog, const language::Function& fn,
+                                        language::NodeId id) noexcept {
         if (id == language::no_node)
             return false;
-        const auto& expr = function_.expressions[id];
+        const auto& expr = fn.expressions[id];
         if (expr.kind == language::Expression::Kind::sequence_mutation ||
-            expr.kind == language::Expression::Kind::source_call || expr.kind == language::Expression::Kind::call)
+            (expr.kind == language::Expression::Kind::sequence_operation &&
+             language::mutates_sequence_structure(expr.sequence_operation)) ||
+            (expr.kind == language::Expression::Kind::source_call && !prog.functions[expr.value].parallel_safe) ||
+            expr.kind == language::Expression::Kind::call)
             return true;
-        if (may_mutate_sequences(expr.receiver) || may_mutate_sequences(expr.left) || may_mutate_sequences(expr.right))
+        if (may_mutate_sequences_in(prog, fn, expr.receiver) || may_mutate_sequences_in(prog, fn, expr.left) ||
+            may_mutate_sequences_in(prog, fn, expr.right))
             return true;
-        return std::ranges::any_of(expr.arguments, [&](language::NodeId arg) { return may_mutate_sequences(arg); });
+        return std::ranges::any_of(expr.arguments, [&](language::NodeId arg) {
+            return may_mutate_sequences_in(prog, fn, arg);
+        });
+    }
+
+    bool may_mutate_sequences(language::NodeId id) const {
+        if (in_parallel_context_ || parallel_callee_)
+            return false;
+        return may_mutate_sequences_in(source_, function_, id);
     }
 
     llvm::Value* value_address(language::NodeId id,
                                std::span<const std::pair<language::NodeId, llvm::Value*>> prepared_indices = {}) {
+        if (prepared_indices.empty() && has_mutating_index_chain(id)) {
+            const auto local_prepared = prepare_lvalue_indices(id);
+            return value_address(id, local_prepared);
+        }
         const auto& node = function_.expressions[id];
         PositionScope position(position_, node.position);
         if (node.kind == language::Expression::Kind::constant_data) {
@@ -1658,18 +2138,30 @@ private:
             return ir_.CreateInBoundsGEP(ir_.getInt8Ty(), value_address(node.left, prepared_indices),
                                          ir_.getInt64(node.offset));
         if (node.kind == language::Expression::Kind::index) {
+            const Sequence input = sequence(node.left, prepared_indices);
+            llvm::Value* offset = nullptr;
             llvm::Value* pre_index = nullptr;
             for (const auto& [idx_id, idx_val] : prepared_indices)
                 if (idx_id == id) {
                     pre_index = idx_val;
                     break;
                 }
-            const Sequence input = sequence(node.left, prepared_indices);
-            auto* index = pre_index ? pre_index : expression(node.right);
-            auto* offset = function_.expressions[node.right].type == language::ValueType::i32
-                               ? ir_.CreateSExt(index, ir_.getInt64Ty())
-                               : ir_.CreateZExt(index, ir_.getInt64Ty());
-            check_value(ir_.CreateICmpULT(offset, input.size), EntryFailure::sequence_bounds);
+            if (pre_index) {
+                const bool signed_idx =
+                    node.right != language::no_node && function_.expressions[node.right].type == language::ValueType::i32;
+                offset = signed_idx ? ir_.CreateSExt(pre_index, ir_.getInt64Ty())
+                                    : ir_.CreateZExt(pre_index, ir_.getInt64Ty());
+                check_value(ir_.CreateICmpULT(offset, input.size), EntryFailure::sequence_bounds);
+            } else if (node.right == language::no_node) {
+                check_value(ir_.CreateICmpNE(input.size, ir_.getInt64(0)), EntryFailure::sequence_bounds);
+                offset = ir_.CreateSub(input.size, ir_.getInt64(1));
+            } else {
+                auto* index = expression(node.right);
+                offset = function_.expressions[node.right].type == language::ValueType::i32
+                             ? ir_.CreateSExt(index, ir_.getInt64Ty())
+                             : ir_.CreateZExt(index, ir_.getInt64Ty());
+                check_value(ir_.CreateICmpULT(offset, input.size), EntryFailure::sequence_bounds);
+            }
             const auto stride =
                 function_.expressions[node.left].type.kind == language::ValueType::string ? 1 : storage_size(node.type);
             return ir_.CreateInBoundsGEP(ir_.getInt8Ty(), input.data, ir_.CreateMul(offset, ir_.getInt64(stride)));
@@ -1778,6 +2270,8 @@ private:
                 mark_uncaptured_array(call, function_.expressions[node.right].type, {4});
             return nullptr;
         }
+        case Kind::sequence_operation:
+            return lower_sequence_operation(node);
         case Kind::length:
             return ir_.CreateTrunc(sequence(node.left).size, ir_.getInt32Ty());
         case Kind::value_field:
@@ -1872,6 +2366,13 @@ private:
                         std::any_of(node.arguments.begin() + static_cast<std::ptrdiff_t>(i + 1), node.arguments.end(),
                                     [&](language::NodeId later) { return may_mutate_sequences(later); });
                     if (later_mutates) {
+                        if (node.argument_passing[i] == ParameterPassing::read_only && borrows_conditional(id)) {
+                            arguments.push_back(
+                                managed_value(argument.type)
+                                    ? temporary_value(argument.type, value_address(id), "readonly.snapshot")
+                                    : input_address(id));
+                            continue;
+                        }
                         auto prepared = prepare_lvalue_indices(id);
                         if (!prepared.empty()) {
                             deferred_refs.push_back({arguments.size(), id, std::move(prepared)});
@@ -1938,6 +2439,13 @@ private:
                         std::any_of(node.arguments.begin() + static_cast<std::ptrdiff_t>(i + 1), node.arguments.end(),
                                     [&](language::NodeId later) { return may_mutate_sequences(later); });
                     if (later_mutates) {
+                        if (passing == ParameterPassing::read_only && borrows_conditional(id)) {
+                            values.push_back(
+                                {managed_value(argument.type)
+                                     ? temporary_value(argument.type, value_address(id), "readonly.snapshot")
+                                     : input_address(id)});
+                            continue;
+                        }
                         auto prepared = prepare_lvalue_indices(id);
                         if (!prepared.empty()) {
                             values.push_back({nullptr, std::nullopt, id, std::move(prepared)});
@@ -2042,8 +2550,12 @@ private:
             result->addIncoming(else_val, else_end);
             return result;
         }
-        case Kind::binary:
+        case Kind::binary: {
+            const auto left_type = function_.expressions[node.left].type;
+            if (left_type.kind == language::ValueType::string || left_type.kind == language::ValueType::array)
+                return lower_sequence_comparison(node.operation, left_type, node.left, node.right);
             break;
+        }
         }
         auto* left = expression(node.left);
         using Op = language::Operation;
@@ -2071,6 +2583,553 @@ private:
         auto* right = expression(node.right);
         return binary_value(node.operation, function_.expressions[node.left].type,
                             function_.expressions[node.right].type, left, right);
+    }
+
+    llvm::FunctionCallee pure_leaf(const char* name, llvm::Type* result, std::initializer_list<llvm::Type*> params,
+                                   std::initializer_list<unsigned> readonly_ptrs, bool indirect_read = false) {
+        auto callee = module_->getOrInsertFunction(
+            name, llvm::FunctionType::get(result, llvm::ArrayRef(params.begin(), params.size()), false));
+        auto* fn = llvm::cast<llvm::Function>(callee.getCallee());
+        const auto effects =
+            indirect_read ? llvm::MemoryEffects::readOnly() : llvm::MemoryEffects::argMemOnly(llvm::ModRefInfo::Ref);
+        if (fn->getMemoryEffects() != effects) {
+            fn->addFnAttr(llvm::Attribute::NoUnwind);
+            fn->addFnAttr(llvm::Attribute::WillReturn);
+            fn->setMemoryEffects(effects);
+            const auto no_capture = llvm::Attribute::getWithCaptureInfo(*context_, llvm::CaptureInfo::none());
+            for (const unsigned idx : readonly_ptrs) {
+                fn->addParamAttr(idx, llvm::Attribute::ReadOnly);
+                fn->addParamAttr(idx, no_capture);
+            }
+        }
+        return callee;
+    }
+
+    llvm::FunctionCallee try_parse_leaf(const char* name) {
+        auto* ptr = ir_.getPtrTy();
+        auto* i64 = ir_.getInt64Ty();
+        auto callee = module_->getOrInsertFunction(name, llvm::FunctionType::get(ir_.getInt32Ty(), {ptr, i64, ptr}, false));
+        auto* fn = llvm::cast<llvm::Function>(callee.getCallee());
+        if (!fn->doesNotThrow()) {
+            fn->addFnAttr(llvm::Attribute::NoUnwind);
+            fn->addFnAttr(llvm::Attribute::WillReturn);
+            fn->setMemoryEffects(llvm::MemoryEffects::argMemOnly());
+            const auto no_capture = llvm::Attribute::getWithCaptureInfo(*context_, llvm::CaptureInfo::none());
+            fn->addParamAttr(0, llvm::Attribute::ReadOnly);
+            fn->addParamAttr(0, no_capture);
+            fn->addParamAttr(2, no_capture);
+        }
+        return callee;
+    }
+
+    llvm::Value* checked_nonnegative_u64(language::NodeId id, EntryFailure reason) {
+        auto* val = expression(id);
+        if (function_.expressions[id].type == language::ValueType::i32)
+            check_value(ir_.CreateICmpSGE(val, ir_.getInt32(0)), reason);
+        return ir_.CreateZExt(val, ir_.getInt64Ty());
+    }
+
+    llvm::Value* emit_apply_sequence(language::ValueType seq_type, llvm::Value* target, SequenceAlgorithm alg,
+                                     llvm::Value* flags = nullptr, llvm::Value* idx = nullptr,
+                                     llvm::Value* cnt = nullptr, llvm::Value* d1 = nullptr, llvm::Value* n1 = nullptr,
+                                     llvm::Value* d2 = nullptr, llvm::Value* n2 = nullptr, bool wants_result = false) {
+        auto* null_ptr = llvm::ConstantPointerNull::get(ir_.getPtrTy());
+        auto* zero64 = ir_.getInt64(0);
+        ir_.CreateStore(ir_.getInt32(static_cast<std::uint32_t>(alg)),
+                        ir_.CreateStructGEP(sequence_call_type_, sequence_call_, 0));
+        ir_.CreateStore(flags ? flags : ir_.getInt32(0), ir_.CreateStructGEP(sequence_call_type_, sequence_call_, 1));
+        ir_.CreateStore(idx ? idx : zero64, ir_.CreateStructGEP(sequence_call_type_, sequence_call_, 2));
+        ir_.CreateStore(cnt ? cnt : zero64, ir_.CreateStructGEP(sequence_call_type_, sequence_call_, 3));
+        ir_.CreateStore(d1 ? d1 : null_ptr, ir_.CreateStructGEP(sequence_call_type_, sequence_call_, 4));
+        ir_.CreateStore(n1 ? n1 : zero64, ir_.CreateStructGEP(sequence_call_type_, sequence_call_, 5));
+        ir_.CreateStore(d2 ? d2 : null_ptr, ir_.CreateStructGEP(sequence_call_type_, sequence_call_, 6));
+        ir_.CreateStore(n2 ? n2 : zero64, ir_.CreateStructGEP(sequence_call_type_, sequence_call_, 7));
+        ir_.CreateStore(wants_result ? static_cast<llvm::Value*>(sequence_result_) : null_ptr,
+                        ir_.CreateStructGEP(sequence_call_type_, sequence_call_, 8));
+        auto* call = checked_call(apply_sequence_,
+                                  {invocation_, ir_.getInt32(seq_type.type_index), target, sequence_call_});
+        mark_uncaptured_array(call, seq_type, {2});
+        return wants_result ? ir_.CreateLoad(ir_.getInt64Ty(), sequence_result_) : nullptr;
+    }
+
+    llvm::Value* lower_sequence_comparison(language::Operation op, language::ValueType seq_type,
+                                           language::NodeId left_id, language::NodeId right_id) {
+        auto* i32 = ir_.getInt32Ty();
+        auto* i64 = ir_.getInt64Ty();
+        auto* ptr = ir_.getPtrTy();
+        const Sequence lhs = safe_sequence_before(left_id, may_mutate_sequences(right_id));
+        const Sequence rhs = sequence(right_id);
+        using Op = language::Operation;
+        if (seq_type.kind == language::ValueType::string) {
+            if (op == Op::equal || op == Op::not_equal) {
+                auto* eq = ir_.CreateCall(pure_leaf("source_str_eq", i32, {ptr, i64, ptr, i64}, {0, 2}),
+                                          {lhs.data, lhs.size, rhs.data, rhs.size});
+                return op == Op::equal ? ir_.CreateICmpNE(eq, ir_.getInt32(0)) : ir_.CreateICmpEQ(eq, ir_.getInt32(0));
+            }
+            auto* cmp = ir_.CreateCall(pure_leaf("source_str_cmp", i32, {ptr, i64, ptr, i64}, {0, 2}),
+                                       {lhs.data, lhs.size, rhs.data, rhs.size});
+            switch (op) {
+            case Op::less:
+                return ir_.CreateICmpSLT(cmp, ir_.getInt32(0));
+            case Op::less_equal:
+                return ir_.CreateICmpSLE(cmp, ir_.getInt32(0));
+            case Op::greater:
+                return ir_.CreateICmpSGT(cmp, ir_.getInt32(0));
+            case Op::greater_equal:
+                return ir_.CreateICmpSGE(cmp, ir_.getInt32(0));
+            default:
+                fatal("Unsupported String comparison.");
+            }
+        }
+        const auto elem = source_.value_layouts.at(seq_type.type_index).element;
+        llvm::Value* eq = nullptr;
+        if (elem == language::ValueType::boolean) {
+            eq = ir_.CreateCall(pure_leaf("source_arr_eq_u8", i32, {ptr, i64, ptr, i64}, {0, 2}),
+                                {lhs.data, lhs.size, rhs.data, rhs.size});
+        } else if (elem == language::ValueType::i32 || elem == language::ValueType::u32 ||
+                   elem.kind == language::ValueType::enumeration) {
+            eq = ir_.CreateCall(pure_leaf("source_arr_eq_u32", i32, {ptr, i64, ptr, i64}, {0, 2}),
+                                {lhs.data, lhs.size, rhs.data, rhs.size});
+        } else if (elem.kind == language::ValueType::string) {
+            eq = ir_.CreateCall(pure_leaf("source_arr_eq_str", i32, {ptr, i64, ptr, i64}, {0, 2}, true),
+                                {lhs.data, lhs.size, rhs.data, rhs.size});
+        } else if (elem == language::ValueType::f32 || elem == language::ValueType::f64 || math_type(elem)) {
+            const auto mtype = math_type(elem);
+            const bool f64 = elem == language::ValueType::f64 || (mtype && mtype.precision == math::Precision::f64);
+            const auto lanes = static_cast<std::uint32_t>(mtype ? mtype.components() : 1);
+            eq = ir_.CreateCall(pure_leaf(f64 ? "source_arr_eq_f64" : "source_arr_eq_f32", i32,
+                                          {ptr, i64, ptr, i64, i32}, {0, 2}),
+                                {lhs.data, lhs.size, rhs.data, rhs.size, ir_.getInt32(lanes)});
+        } else {
+            fatal("Unsupported Array equality element.");
+        }
+        return op == Op::equal ? ir_.CreateICmpNE(eq, ir_.getInt32(0)) : ir_.CreateICmpEQ(eq, ir_.getInt32(0));
+    }
+
+    llvm::Value* emit_array_search_call(language::SequenceOperation op, const Sequence& seq, language::ValueType elem,
+                                        llvm::Value* needle_val_or_ptr, llvm::Value* needle_size,
+                                        llvm::Value* from64) {
+        auto* i32 = ir_.getInt32Ty();
+        auto* i64 = ir_.getInt64Ty();
+        auto* ptr = ir_.getPtrTy();
+        const bool is_count = op == language::SequenceOperation::arr_count;
+        const bool is_rfind = op == language::SequenceOperation::arr_rfind;
+        if (elem == language::ValueType::boolean || elem == language::ValueType::i32 ||
+            elem == language::ValueType::u32 || elem.kind == language::ValueType::enumeration) {
+            const bool u8 = elem == language::ValueType::boolean;
+            if (is_count) {
+                return ir_.CreateCall(
+                    pure_leaf(u8 ? "source_arr_count_u8" : "source_arr_count_u32", i32, {ptr, i64, i32}, {0}),
+                    {seq.data, seq.size, needle_val_or_ptr});
+            }
+            const char* fn = u8 ? (is_rfind ? "source_arr_rfind_u8" : "source_arr_find_u8")
+                                : (is_rfind ? "source_arr_rfind_u32" : "source_arr_find_u32");
+            return ir_.CreateCall(pure_leaf(fn, i32, {ptr, i64, i32, i64}, {0}),
+                                  {seq.data, seq.size, needle_val_or_ptr, from64});
+        }
+        if (elem.kind == language::ValueType::string) {
+            if (is_count) {
+                return ir_.CreateCall(pure_leaf("source_arr_count_str", i32, {ptr, i64, ptr, i64}, {0, 2}, true),
+                                      {seq.data, seq.size, needle_val_or_ptr, needle_size});
+            }
+            const char* fn = is_rfind ? "source_arr_rfind_str" : "source_arr_find_str";
+            return ir_.CreateCall(pure_leaf(fn, i32, {ptr, i64, ptr, i64, i64}, {0, 2}, true),
+                                  {seq.data, seq.size, needle_val_or_ptr, needle_size, from64});
+        }
+        const auto mtype = math_type(elem);
+        const bool f64 = elem == language::ValueType::f64 || (mtype && mtype.precision == math::Precision::f64);
+        const auto lanes = static_cast<std::uint32_t>(mtype ? mtype.components() : 1);
+        if (is_count) {
+            return ir_.CreateCall(pure_leaf(f64 ? "source_arr_count_f64" : "source_arr_count_f32", i32,
+                                            {ptr, i64, ptr, i32}, {0, 2}),
+                                  {seq.data, seq.size, needle_val_or_ptr, ir_.getInt32(lanes)});
+        }
+        const char* fn = f64 ? (is_rfind ? "source_arr_rfind_f64" : "source_arr_find_f64")
+                             : (is_rfind ? "source_arr_rfind_f32" : "source_arr_find_f32");
+        return ir_.CreateCall(pure_leaf(fn, i32, {ptr, i64, ptr, i32, i64}, {0, 2}),
+                              {seq.data, seq.size, needle_val_or_ptr, ir_.getInt32(lanes), from64});
+    }
+
+    llvm::Value* lower_sequence_operation(const language::Expression& node) {
+        using Op = language::SequenceOperation;
+        const auto seq_type = function_.expressions[node.left].type;
+        auto* i32 = ir_.getInt32Ty();
+        auto* i64 = ir_.getInt64Ty();
+        auto* ptr = ir_.getPtrTy();
+        const bool any_arg_mutates = std::ranges::any_of(
+            node.arguments, [&](language::NodeId arg) { return may_mutate_sequences(arg); });
+
+        switch (node.sequence_operation) {
+        case Op::str_empty:
+        case Op::arr_empty: {
+            const Sequence seq = sequence(node.left);
+            return ir_.CreateICmpEQ(seq.size, ir_.getInt64(0));
+        }
+        case Op::str_is_ascii: {
+            const Sequence seq = sequence(node.left);
+            auto* res = ir_.CreateCall(pure_leaf("source_str_is_ascii", i32, {ptr, i64}, {0}), {seq.data, seq.size});
+            return ir_.CreateICmpNE(res, ir_.getInt32(0));
+        }
+        case Op::str_starts_with:
+        case Op::str_ends_with:
+        case Op::str_contains:
+        case Op::str_equals_ignore_case:
+        case Op::str_starts_with_ignore_case:
+        case Op::str_ends_with_ignore_case: {
+            const Sequence lhs = safe_sequence_before(node.left, any_arg_mutates);
+            const Sequence rhs = sequence(node.arguments[0]);
+            const char* fn = node.sequence_operation == Op::str_starts_with          ? "source_str_starts_with"
+                             : node.sequence_operation == Op::str_ends_with          ? "source_str_ends_with"
+                             : node.sequence_operation == Op::str_contains           ? "source_str_contains"
+                             : node.sequence_operation == Op::str_equals_ignore_case ? "source_str_equals_icase"
+                             : node.sequence_operation == Op::str_starts_with_ignore_case
+                                 ? "source_str_starts_with_icase"
+                                 : "source_str_ends_with_icase";
+            auto* res = ir_.CreateCall(pure_leaf(fn, i32, {ptr, i64, ptr, i64}, {0, 2}),
+                                       {lhs.data, lhs.size, rhs.data, rhs.size});
+            return ir_.CreateICmpNE(res, ir_.getInt32(0));
+        }
+        case Op::str_find:
+        case Op::str_rfind: {
+            const bool arg1_mutates = node.arguments.size() == 2 && may_mutate_sequences(node.arguments[1]);
+            const Sequence lhs = safe_sequence_before(node.left, any_arg_mutates);
+            const Sequence sub = safe_sequence_before(node.arguments[0], arg1_mutates);
+            llvm::Value* from64 = node.arguments.size() == 2
+                                      ? checked_nonnegative_u64(node.arguments[1], EntryFailure::sequence_bounds)
+                                      : ir_.getInt64(node.sequence_operation == Op::str_rfind ? UINT64_MAX : 0);
+            const char* fn = node.sequence_operation == Op::str_rfind ? "source_str_rfind" : "source_str_find";
+            return ir_.CreateCall(pure_leaf(fn, i32, {ptr, i64, ptr, i64, i64}, {0, 2}),
+                                  {lhs.data, lhs.size, sub.data, sub.size, from64});
+        }
+        case Op::str_count:
+        case Op::str_common_prefix_length: {
+            const Sequence lhs = safe_sequence_before(node.left, any_arg_mutates);
+            const Sequence rhs = sequence(node.arguments[0]);
+            const char* fn =
+                node.sequence_operation == Op::str_count ? "source_str_count" : "source_str_common_prefix";
+            return ir_.CreateCall(pure_leaf(fn, i32, {ptr, i64, ptr, i64}, {0, 2}),
+                                  {lhs.data, lhs.size, rhs.data, rhs.size});
+        }
+        case Op::str_try_parse_int:
+        case Op::str_try_parse_uint:
+        case Op::str_try_parse_float:
+        case Op::str_try_parse_double: {
+            const Sequence lhs = safe_sequence_before(node.left, any_arg_mutates);
+            auto* out_addr = value_address(node.arguments[0]);
+            const char* fn = node.sequence_operation == Op::str_try_parse_int     ? "source_str_try_parse_i32"
+                             : node.sequence_operation == Op::str_try_parse_uint  ? "source_str_try_parse_u32"
+                             : node.sequence_operation == Op::str_try_parse_float ? "source_str_try_parse_f32"
+                                                                                  : "source_str_try_parse_f64";
+            auto* ok = ir_.CreateCall(try_parse_leaf(fn), {lhs.data, lhs.size, out_addr});
+            return ir_.CreateICmpNE(ok, ir_.getInt32(0));
+        }
+        case Op::arr_contains:
+        case Op::arr_find:
+        case Op::arr_rfind:
+        case Op::arr_count: {
+            const auto elem = source_.value_layouts.at(seq_type.type_index).element;
+            const bool arg1_mutates = node.arguments.size() == 2 && may_mutate_sequences(node.arguments[1]);
+            const Sequence lhs = safe_sequence_before(node.left, any_arg_mutates);
+            llvm::Value* needle = nullptr;
+            llvm::Value* needle_size = nullptr;
+            if (elem == language::ValueType::boolean) {
+                needle = ir_.CreateZExt(expression(node.arguments[0]), i32);
+            } else if (elem == language::ValueType::i32 || elem == language::ValueType::u32 ||
+                       elem.kind == language::ValueType::enumeration) {
+                needle = expression(node.arguments[0]);
+            } else if (elem.kind == language::ValueType::string) {
+                const Sequence ns = safe_sequence_before(node.arguments[0], arg1_mutates);
+                needle = ns.data;
+                needle_size = ns.size;
+            } else {
+                needle = input_address(node.arguments[0]);
+            }
+            llvm::Value* from64 = node.arguments.size() == 2
+                                      ? checked_nonnegative_u64(node.arguments[1], EntryFailure::sequence_bounds)
+                                      : ir_.getInt64(node.sequence_operation == Op::arr_rfind ? UINT64_MAX : 0);
+            auto* res = emit_array_search_call(node.sequence_operation, lhs, elem, needle, needle_size, from64);
+            return node.sequence_operation == Op::arr_contains ? ir_.CreateICmpSGE(res, ir_.getInt32(0)) : res;
+        }
+        case Op::arr_is_sorted: {
+            const Sequence lhs = sequence(node.left);
+            const auto elem = source_.value_layouts.at(seq_type.type_index).element;
+            if (elem == language::ValueType::f32 || elem == language::ValueType::f64) {
+                const char* fn = elem == language::ValueType::f64 ? "source_arr_is_sorted_f64"
+                                                                  : "source_arr_is_sorted_f32";
+                auto* res = ir_.CreateCall(pure_leaf(fn, i32, {ptr, i64}, {0}), {lhs.data, lhs.size});
+                check_value(ir_.CreateICmpULT(res, ir_.getInt32(2)), EntryFailure::floating_point_order);
+                return ir_.CreateICmpNE(res, ir_.getInt32(0));
+            }
+            const bool signed_ord =
+                elem == language::ValueType::i32 ||
+                (elem.kind == language::ValueType::enumeration &&
+                 environment_.enumerations[elem.type_index].underlying == ValueKind::i32);
+            const char* fn = elem.kind == language::ValueType::string ? "source_arr_is_sorted_str"
+                             : signed_ord                             ? "source_arr_is_sorted_i32"
+                                                                      : "source_arr_is_sorted_u32";
+            auto* res = ir_.CreateCall(
+                pure_leaf(fn, i32, {ptr, i64}, {0}, elem.kind == language::ValueType::string), {lhs.data, lhs.size});
+            return ir_.CreateICmpNE(res, ir_.getInt32(0));
+        }
+        case Op::str_append_scalar: {
+            const auto prepared = prepare_lvalue_indices(node.left);
+            const auto arg_type = function_.expressions[node.arguments[0]].type;
+            auto* bits = encode_bits(expression(node.arguments[0]), arg_type);
+            auto* target = value_address(node.left, prepared);
+            const auto alg = arg_type == language::ValueType::i32       ? SequenceAlgorithm::str_append_i32
+                             : arg_type == language::ValueType::u32     ? SequenceAlgorithm::str_append_u32
+                             : arg_type == language::ValueType::f32     ? SequenceAlgorithm::str_append_f32
+                             : arg_type == language::ValueType::f64     ? SequenceAlgorithm::str_append_f64
+                                                                        : SequenceAlgorithm::str_append_bool;
+            emit_apply_sequence(seq_type, target, alg, nullptr, bits);
+            return nullptr;
+        }
+        case Op::str_append_ascii: {
+            const auto prepared = prepare_lvalue_indices(node.left);
+            auto* ch_val = expression(node.arguments[0]);
+            auto* ch64 = function_.expressions[node.arguments[0]].type == language::ValueType::i32
+                             ? ir_.CreateSExt(ch_val, i64)
+                             : ir_.CreateZExt(ch_val, i64);
+            auto* count64 = node.arguments.size() == 2
+                                ? checked_nonnegative_u64(node.arguments[1], EntryFailure::sequence_size)
+                                : ir_.getInt64(1);
+            auto* target = value_address(node.left, prepared);
+            emit_apply_sequence(seq_type, target, SequenceAlgorithm::str_append_ascii, nullptr, ch64, count64);
+            return nullptr;
+        }
+        case Op::str_append_hex: {
+            const auto prepared = prepare_lvalue_indices(node.left);
+            auto* val64 = ir_.CreateZExt(expression(node.arguments[0]), i64);
+            auto* min_digits = node.arguments.size() >= 2
+                                   ? checked_nonnegative_u64(node.arguments[1], EntryFailure::sequence_size)
+                                   : ir_.getInt64(0);
+            auto* flags = node.arguments.size() == 3 ? ir_.CreateZExt(expression(node.arguments[2]), i32)
+                                                     : ir_.getInt32(0);
+            auto* target = value_address(node.left, prepared);
+            emit_apply_sequence(seq_type, target, SequenceAlgorithm::str_append_hex, flags, val64, min_digits);
+            return nullptr;
+        }
+        case Op::str_append_float_fixed: {
+            const auto prepared = prepare_lvalue_indices(node.left);
+            auto* fval = expression(node.arguments[0]);
+            if (function_.expressions[node.arguments[0]].type == language::ValueType::f32)
+                fval = ir_.CreateFPCast(fval, ir_.getDoubleTy());
+            auto* fbits = ir_.CreateBitCast(fval, i64);
+            auto* prec = checked_nonnegative_u64(node.arguments[1], EntryFailure::sequence_size);
+            auto* target = value_address(node.left, prepared);
+            emit_apply_sequence(seq_type, target, SequenceAlgorithm::str_append_float_fixed, nullptr, fbits, prec);
+            return nullptr;
+        }
+        case Op::str_pad_left:
+        case Op::str_pad_right: {
+            const auto prepared = prepare_lvalue_indices(node.left);
+            auto* width = checked_nonnegative_u64(node.arguments[0], EntryFailure::sequence_size);
+            llvm::Value* fill64 = ir_.getInt64(0x20);
+            if (node.arguments.size() == 2) {
+                auto* ch_val = expression(node.arguments[1]);
+                fill64 = function_.expressions[node.arguments[1]].type == language::ValueType::i32
+                             ? ir_.CreateSExt(ch_val, i64)
+                             : ir_.CreateZExt(ch_val, i64);
+            }
+            auto* target = value_address(node.left, prepared);
+            emit_apply_sequence(seq_type, target,
+                                node.sequence_operation == Op::str_pad_left ? SequenceAlgorithm::str_pad_left
+                                                                            : SequenceAlgorithm::str_pad_right,
+                                nullptr, width, fill64);
+            return nullptr;
+        }
+        case Op::str_trim:
+        case Op::str_trim_start:
+        case Op::str_trim_end:
+        case Op::str_to_lower:
+        case Op::str_to_upper: {
+            auto* target = value_address(node.left);
+            const auto alg = node.sequence_operation == Op::str_trim         ? SequenceAlgorithm::str_trim
+                             : node.sequence_operation == Op::str_trim_start ? SequenceAlgorithm::str_trim_start
+                             : node.sequence_operation == Op::str_trim_end   ? SequenceAlgorithm::str_trim_end
+                             : node.sequence_operation == Op::str_to_lower   ? SequenceAlgorithm::str_to_lower
+                                                                             : SequenceAlgorithm::str_to_upper;
+            emit_apply_sequence(seq_type, target, alg);
+            return nullptr;
+        }
+        case Op::str_strip_prefix:
+        case Op::str_strip_suffix: {
+            const auto prepared = prepare_lvalue_indices(node.left);
+            const Sequence sub = sequence(node.arguments[0]);
+            auto* target = value_address(node.left, prepared);
+            auto* res = emit_apply_sequence(seq_type, target,
+                                            node.sequence_operation == Op::str_strip_prefix
+                                                ? SequenceAlgorithm::str_strip_prefix
+                                                : SequenceAlgorithm::str_strip_suffix,
+                                            nullptr, nullptr, nullptr, sub.data, sub.size, nullptr, nullptr, true);
+            return ir_.CreateICmpNE(res, ir_.getInt64(0));
+        }
+        case Op::str_slice_in_place:
+        case Op::str_erase: {
+            const auto prepared = prepare_lvalue_indices(node.left);
+            auto* first = checked_nonnegative_u64(node.arguments[0], EntryFailure::sequence_bounds);
+            auto* count = node.arguments.size() == 2
+                              ? checked_nonnegative_u64(node.arguments[1], EntryFailure::sequence_bounds)
+                              : ir_.getInt64(0);
+            auto* flags = ir_.getInt32(node.arguments.size() == 1 ? 1u : 0u);
+            auto* target = value_address(node.left, prepared);
+            emit_apply_sequence(seq_type, target,
+                                node.sequence_operation == Op::str_slice_in_place
+                                    ? SequenceAlgorithm::str_slice_in_place
+                                    : SequenceAlgorithm::str_erase,
+                                flags, first, count);
+            return nullptr;
+        }
+        case Op::str_replace: {
+            const auto prepared = prepare_lvalue_indices(node.left);
+            auto* first = checked_nonnegative_u64(node.arguments[0], EntryFailure::sequence_bounds);
+            auto* count = checked_nonnegative_u64(node.arguments[1], EntryFailure::sequence_bounds);
+            const Sequence rep = sequence(node.arguments[2]);
+            auto* target = value_address(node.left, prepared);
+            emit_apply_sequence(seq_type, target, SequenceAlgorithm::str_replace, nullptr, first, count, rep.data,
+                                rep.size);
+            return nullptr;
+        }
+        case Op::str_replace_all: {
+            const auto prepared = prepare_lvalue_indices(node.left);
+            const Sequence search = safe_sequence_before(node.arguments[0], may_mutate_sequences(node.arguments[1]));
+            const Sequence rep = sequence(node.arguments[1]);
+            auto* target = value_address(node.left, prepared);
+            auto* res = emit_apply_sequence(seq_type, target, SequenceAlgorithm::str_replace_all, nullptr, nullptr,
+                                            nullptr, search.data, search.size, rep.data, rep.size, true);
+            return ir_.CreateTrunc(res, i32);
+        }
+        case Op::arr_fill: {
+            const auto prepared = prepare_lvalue_indices(node.left);
+            const auto elem = source_.value_layouts.at(seq_type.type_index).element;
+            auto* val_ptr = input_address(node.arguments[0]);
+            auto* target = value_address(node.left, prepared);
+            emit_apply_sequence(seq_type, target, SequenceAlgorithm::arr_fill, nullptr, nullptr, nullptr, val_ptr,
+                                ir_.getInt64(storage_size(elem)));
+            return nullptr;
+        }
+        case Op::arr_reverse:
+        case Op::arr_sort:
+        case Op::arr_pop: {
+            auto* target = value_address(node.left);
+            const auto alg = node.sequence_operation == Op::arr_reverse ? SequenceAlgorithm::arr_reverse
+                             : node.sequence_operation == Op::arr_sort  ? SequenceAlgorithm::arr_sort
+                                                                        : SequenceAlgorithm::arr_pop;
+            emit_apply_sequence(seq_type, target, alg);
+            return nullptr;
+        }
+        case Op::arr_swap: {
+            const auto prepared = prepare_lvalue_indices(node.left);
+            auto* idx0 = checked_nonnegative_u64(node.arguments[0], EntryFailure::sequence_bounds);
+            auto* idx1 = checked_nonnegative_u64(node.arguments[1], EntryFailure::sequence_bounds);
+            auto* target = value_address(node.left, prepared);
+            const Sequence seq = sequence_view(target, seq_type);
+            check_value(ir_.CreateAnd(ir_.CreateICmpULT(idx0, seq.size), ir_.CreateICmpULT(idx1, seq.size)),
+                        EntryFailure::sequence_bounds);
+            const auto elem = source_.value_layouts.at(seq_type.type_index).element;
+            if (!managed_value(elem)) {
+                const auto stride = storage_size(elem);
+                auto* p0 = ir_.CreateInBoundsGEP(ir_.getInt8Ty(), seq.data, ir_.CreateMul(idx0, ir_.getInt64(stride)));
+                auto* p1 = ir_.CreateInBoundsGEP(ir_.getInt8Ty(), seq.data, ir_.CreateMul(idx1, ir_.getInt64(stride)));
+                auto* v0 = load_value(p0, elem);
+                auto* v1 = load_value(p1, elem);
+                store_value(v1, p0, elem);
+                store_value(v0, p1, elem);
+                return nullptr;
+            }
+            emit_apply_sequence(seq_type, target, SequenceAlgorithm::arr_swap, nullptr, idx0, idx1);
+            return nullptr;
+        }
+        case Op::arr_resize_fill: {
+            const auto prepared = prepare_lvalue_indices(node.left);
+            const auto elem = source_.value_layouts.at(seq_type.type_index).element;
+            auto* count = checked_nonnegative_u64(node.arguments[0], EntryFailure::sequence_size);
+            auto* fill_ptr = input_address(node.arguments[1]);
+            auto* target = value_address(node.left, prepared);
+            emit_apply_sequence(seq_type, target, SequenceAlgorithm::arr_resize_fill, nullptr, count, nullptr,
+                                fill_ptr, ir_.getInt64(storage_size(elem)));
+            return nullptr;
+        }
+        case Op::arr_truncate: {
+            const auto prepared = prepare_lvalue_indices(node.left);
+            auto* count = checked_nonnegative_u64(node.arguments[0], EntryFailure::sequence_size);
+            auto* target = value_address(node.left, prepared);
+            emit_apply_sequence(seq_type, target, SequenceAlgorithm::arr_truncate, nullptr, count);
+            return nullptr;
+        }
+        case Op::arr_insert: {
+            const auto prepared = prepare_lvalue_indices(node.left);
+            const auto elem = source_.value_layouts.at(seq_type.type_index).element;
+            auto* idx = checked_nonnegative_u64(node.arguments[0], EntryFailure::sequence_bounds);
+            auto* val_ptr = input_address(node.arguments[1]);
+            auto* target = value_address(node.left, prepared);
+            emit_apply_sequence(seq_type, target, SequenceAlgorithm::arr_insert, nullptr, idx, nullptr, val_ptr,
+                                ir_.getInt64(storage_size(elem)));
+            return nullptr;
+        }
+        case Op::arr_remove_at: {
+            const auto prepared = prepare_lvalue_indices(node.left);
+            auto* idx = checked_nonnegative_u64(node.arguments[0], EntryFailure::sequence_bounds);
+            auto* count = node.arguments.size() == 2
+                              ? checked_nonnegative_u64(node.arguments[1], EntryFailure::sequence_bounds)
+                              : ir_.getInt64(1);
+            auto* target = value_address(node.left, prepared);
+            emit_apply_sequence(seq_type, target, SequenceAlgorithm::arr_remove_at, nullptr, idx, count);
+            return nullptr;
+        }
+        case Op::arr_remove_at_swap: {
+            const auto prepared = prepare_lvalue_indices(node.left);
+            auto* idx = checked_nonnegative_u64(node.arguments[0], EntryFailure::sequence_bounds);
+            auto* target = value_address(node.left, prepared);
+            emit_apply_sequence(seq_type, target, SequenceAlgorithm::arr_remove_at_swap, nullptr, idx);
+            return nullptr;
+        }
+        case Op::arr_remove:
+        case Op::arr_remove_swap: {
+            const auto prepared = prepare_lvalue_indices(node.left);
+            const auto elem = source_.value_layouts.at(seq_type.type_index).element;
+            llvm::Value* needle = nullptr;
+            llvm::Value* needle_size = nullptr;
+            if (elem == language::ValueType::boolean) {
+                needle = ir_.CreateZExt(expression(node.arguments[0]), i32);
+            } else if (elem == language::ValueType::i32 || elem == language::ValueType::u32 ||
+                       elem.kind == language::ValueType::enumeration) {
+                needle = expression(node.arguments[0]);
+            } else if (elem.kind == language::ValueType::string) {
+                const Sequence ns = sequence(node.arguments[0]);
+                needle = ns.data;
+                needle_size = ns.size;
+            } else {
+                needle = input_address(node.arguments[0]);
+            }
+            auto* target = value_address(node.left, prepared);
+            const Sequence seq = sequence_view(target, seq_type);
+            auto* hit =
+                emit_array_search_call(language::SequenceOperation::arr_find, seq, elem, needle, needle_size,
+                                       ir_.getInt64(0));
+            auto* matched = ir_.CreateICmpSGE(hit, ir_.getInt32(0));
+            const auto saved_self = cached_self_;
+            auto* check_bb = ir_.GetInsertBlock();
+            auto* remove_bb = block("array.remove.hit");
+            auto* done_bb = block("array.remove.done");
+            ir_.CreateCondBr(matched, remove_bb, done_bb);
+            ir_.SetInsertPoint(remove_bb);
+            cached_self_ = saved_self;
+            emit_apply_sequence(seq_type, target,
+                                node.sequence_operation == Op::arr_remove ? SequenceAlgorithm::arr_remove_at
+                                                                          : SequenceAlgorithm::arr_remove_at_swap,
+                                nullptr, ir_.CreateZExt(hit, i64), ir_.getInt64(1));
+            auto* remove_end = ir_.GetInsertBlock();
+            ir_.CreateBr(done_bb);
+            ir_.SetInsertPoint(done_bb);
+            cached_self_ = saved_self;
+            auto* result = ir_.CreatePHI(ir_.getInt1Ty(), 2, "array.removed");
+            result->addIncoming(ir_.getFalse(), check_bb);
+            result->addIncoming(ir_.getTrue(), remove_end);
+            return result;
+        }
+        }
+        fatal("Unhandled sequence operation.");
     }
 
     llvm::Value* binary_value(language::Operation operation, language::ValueType left_type,
@@ -2516,11 +3575,55 @@ private:
                 return;
             case Kind::index: {
                 const auto& seq = function_.expressions[expr.left];
-                const auto& idx = function_.expressions[expr.right];
-                if (seq.kind == Kind::local && seq.value < ivar)
-                    touch_sequence(seq.value, false, idx.kind != Kind::local || idx.value != ivar);
+                if (seq.kind == Kind::local && seq.value < ivar) {
+                    const bool arbitrary = expr.right == language::no_node ||
+                                           function_.expressions[expr.right].kind != Kind::local ||
+                                           function_.expressions[expr.right].value != ivar;
+                    touch_sequence(seq.value, false, arbitrary);
+                }
                 self(self, expr.left);
                 self(self, expr.right);
+                return;
+            }
+            case Kind::binary: {
+                const auto left_type = function_.expressions[expr.left].type;
+                if (left_type.kind == language::ValueType::array || left_type.kind == language::ValueType::string) {
+                    const auto& lhs = function_.expressions[expr.left];
+                    const auto& rhs = function_.expressions[expr.right];
+                    if (lhs.kind == Kind::local && lhs.value < ivar)
+                        touch_sequence(lhs.value, false, true);
+                    if (rhs.kind == Kind::local && rhs.value < ivar)
+                        touch_sequence(rhs.value, false, true);
+                }
+                self(self, expr.left);
+                self(self, expr.right);
+                return;
+            }
+            case Kind::sequence_operation: {
+                const auto& lhs = function_.expressions[expr.left];
+                const bool reads_elems = expr.sequence_operation != language::SequenceOperation::str_empty &&
+                                         expr.sequence_operation != language::SequenceOperation::arr_empty;
+                if (lhs.kind == Kind::local && lhs.value < ivar)
+                    touch_sequence(lhs.value, false, reads_elems);
+                if (language::is_try_parse_sequence_operation(expr.sequence_operation)) {
+                    const auto& base = function_.expressions[unwrap_fields(expr.arguments[0])];
+                    if (base.kind == Kind::index) {
+                        const auto& seq = function_.expressions[base.left];
+                        if (seq.kind == Kind::local && seq.value < ivar)
+                            touch_sequence(seq.value, true, false);
+                    }
+                } else {
+                    for (const auto arg_id : expr.arguments) {
+                        const auto& arg = function_.expressions[arg_id];
+                        if ((arg.type.kind == language::ValueType::array ||
+                             arg.type.kind == language::ValueType::string) &&
+                            arg.kind == Kind::local && arg.value < ivar)
+                            touch_sequence(arg.value, false, true);
+                    }
+                }
+                self(self, expr.left);
+                for (const auto arg : expr.arguments)
+                    self(self, arg);
                 return;
             }
             case Kind::source_call:
@@ -3061,6 +4164,14 @@ private:
 
     bool has_source_calls_{};
 
+    bool has_sequence_apply_{};
+
+    llvm::StructType* sequence_call_type_{};
+
+    llvm::AllocaInst* sequence_call_{};
+
+    llvm::AllocaInst* sequence_result_{};
+
     llvm::FunctionCallee create_;
 
     llvm::FunctionCallee native_receiver_;
@@ -3084,6 +4195,8 @@ private:
     llvm::FunctionCallee destroy_value_;
 
     llvm::FunctionCallee mutate_sequence_;
+
+    llvm::FunctionCallee apply_sequence_;
 
     llvm::FunctionCallee sample_texture_;
 
@@ -3686,6 +4799,49 @@ compile(const BusinessServices& services, const language::Program& program, lang
         bind("business_assign_value", services.assign_value);
         bind("business_destroy_value", services.destroy_value);
         bind("business_mutate_sequence", services.mutate_sequence);
+        bind("business_apply_sequence", services.apply_sequence);
+        bind("source_str_eq", &source_str_eq);
+        bind("source_str_cmp", &source_str_cmp);
+        bind("source_str_is_ascii", &source_str_is_ascii);
+        bind("source_str_starts_with", &source_str_starts_with);
+        bind("source_str_ends_with", &source_str_ends_with);
+        bind("source_str_contains", &source_str_contains);
+        bind("source_str_equals_icase", &source_str_equals_icase);
+        bind("source_str_starts_with_icase", &source_str_starts_with_icase);
+        bind("source_str_ends_with_icase", &source_str_ends_with_icase);
+        bind("source_str_find", &source_str_find);
+        bind("source_str_rfind", &source_str_rfind);
+        bind("source_str_count", &source_str_count);
+        bind("source_str_common_prefix", &source_str_common_prefix);
+        bind("source_str_try_parse_i32", &source_str_try_parse_i32);
+        bind("source_str_try_parse_u32", &source_str_try_parse_u32);
+        bind("source_str_try_parse_f32", &source_str_try_parse_f32);
+        bind("source_str_try_parse_f64", &source_str_try_parse_f64);
+        bind("source_arr_eq_u8", &source_arr_eq_u8);
+        bind("source_arr_eq_u32", &source_arr_eq_u32);
+        bind("source_arr_eq_f32", &source_arr_eq_f32);
+        bind("source_arr_eq_f64", &source_arr_eq_f64);
+        bind("source_arr_eq_str", &source_arr_eq_str);
+        bind("source_arr_find_u8", &source_arr_find_u8);
+        bind("source_arr_rfind_u8", &source_arr_rfind_u8);
+        bind("source_arr_count_u8", &source_arr_count_u8);
+        bind("source_arr_find_u32", &source_arr_find_u32);
+        bind("source_arr_rfind_u32", &source_arr_rfind_u32);
+        bind("source_arr_count_u32", &source_arr_count_u32);
+        bind("source_arr_find_f32", &source_arr_find_f32);
+        bind("source_arr_rfind_f32", &source_arr_rfind_f32);
+        bind("source_arr_count_f32", &source_arr_count_f32);
+        bind("source_arr_find_f64", &source_arr_find_f64);
+        bind("source_arr_rfind_f64", &source_arr_rfind_f64);
+        bind("source_arr_count_f64", &source_arr_count_f64);
+        bind("source_arr_find_str", &source_arr_find_str);
+        bind("source_arr_rfind_str", &source_arr_rfind_str);
+        bind("source_arr_count_str", &source_arr_count_str);
+        bind("source_arr_is_sorted_i32", &source_arr_is_sorted_i32);
+        bind("source_arr_is_sorted_u32", &source_arr_is_sorted_u32);
+        bind("source_arr_is_sorted_f32", &source_arr_is_sorted_f32);
+        bind("source_arr_is_sorted_f64", &source_arr_is_sorted_f64);
+        bind("source_arr_is_sorted_str", &source_arr_is_sorted_str);
         bind("material_sample_texture", services.sample_texture);
         bind("material_sample_orientation", services.sample_orientation);
         bind("business_parallel_for", services.parallel_for);
@@ -3995,6 +5151,7 @@ std::uint32_t compile_business_impl(
     }
     bool owns_values = false;
     bool mutates_sequences = false;
+    bool applies_sequences = false;
     bool uses_parallel_for = false;
     for (std::size_t i = 0; i < program->functions.size(); ++i) {
         if (!program->reachable[i])
@@ -4009,21 +5166,118 @@ std::uint32_t compile_business_impl(
             return (options.diagnostics && !function.used_in_parallel) || type.kind != language::ValueType::record ||
                    !layout.plain_value || (!layout.zero_default && layout.initial_value.empty());
         };
+        std::vector<std::uint8_t> literal_mode(function.expressions.size(), 0); // 0=view, 1=direct_text, 2=materialized
+        const auto mark_mode = [&](language::NodeId id, std::uint8_t mode) noexcept {
+            if (id != language::no_node && id < literal_mode.size() &&
+                function.expressions[id].kind == language::Expression::Kind::string_literal &&
+                literal_mode[id] < mode)
+                literal_mode[id] = mode;
+        };
         for (const auto& statement : function.statements) {
             uses_parallel_for |= statement.kind == language::Statement::Kind::parallel_loop;
             if (statement.kind == language::Statement::Kind::assign)
                 owns_values |= owned_type(function.expressions[statement.target].type);
+            if (statement.kind == language::Statement::Kind::declare ||
+                statement.kind == language::Statement::Kind::assign) {
+                mark_mode(statement.expression, 1);
+            } else {
+                mark_mode(statement.expression, 2);
+            }
+            if (statement.kind == language::Statement::Kind::assign)
+                mark_mode(statement.target, 2);
+            if (statement.kind == language::Statement::Kind::fail)
+                mark_mode(statement.body, 2);
         }
         for (std::size_t local = 0; local < function.locals.size(); ++local)
             owns_values |= owned_type(function.locals[local].type) &&
                            (local >= function.parameters.size() ||
                             (program->exported(static_cast<std::uint32_t>(i)) &&
                              function.parameters[local].passing == ParameterPassing::value));
-        owns_values |= !function.strings.empty();
-        mutates_sequences |= !function.strings.empty();
+        const auto may_mutate_sub = [&](auto&& self, language::NodeId id) noexcept -> bool {
+            if (id == language::no_node)
+                return false;
+            const auto& ex = function.expressions[id];
+            if (ex.kind == language::Expression::Kind::sequence_mutation ||
+                (ex.kind == language::Expression::Kind::sequence_operation &&
+                 language::mutates_sequence_structure(ex.sequence_operation)) ||
+                (ex.kind == language::Expression::Kind::source_call && !program->functions[ex.value].parallel_safe) ||
+                ex.kind == language::Expression::Kind::call)
+                return true;
+            if (self(self, ex.receiver) || self(self, ex.left) || self(self, ex.right))
+                return true;
+            return std::ranges::any_of(ex.arguments, [&](language::NodeId a) { return self(self, a); });
+        };
+        const auto needs_snapshot = [&](language::NodeId id, bool later_mutates) noexcept {
+            if (!later_mutates || function.used_in_parallel || id == language::no_node)
+                return false;
+            const auto& ex = function.expressions[id];
+            return ex.kind != language::Expression::Kind::constant_data &&
+                   ex.kind != language::Expression::Kind::string_literal &&
+                   language::aggregate(ex.type) && program->value_layouts[ex.type.type_index].can_own &&
+                   owned_type(ex.type);
+        };
         for (const auto& expression : function.expressions) {
             using Kind = language::Expression::Kind;
-            mutates_sequences |= expression.kind == Kind::sequence_mutation;
+            mark_mode(expression.receiver, 2);
+            if (expression.kind == Kind::sequence_mutation) {
+                mutates_sequences = true;
+                mark_mode(expression.left, 2);
+                mark_mode(expression.right, expression.mutation == SequenceMutation::append ? 1 : 2);
+            } else if (expression.kind == Kind::sequence_operation) {
+                bool inline_swap = false;
+                if (expression.sequence_operation == language::SequenceOperation::arr_swap) {
+                    const auto elem =
+                        program->value_layouts[function.expressions[expression.left].type.type_index].element;
+                    inline_swap = !language::aggregate(elem) || program->value_layouts[elem.type_index].math;
+                }
+                applies_sequences |= !language::is_readonly_sequence_operation(expression.sequence_operation) &&
+                                     !language::is_try_parse_sequence_operation(expression.sequence_operation) &&
+                                     !inline_swap;
+                if (!language::is_readonly_sequence_operation(expression.sequence_operation) &&
+                    !language::is_try_parse_sequence_operation(expression.sequence_operation))
+                    mark_mode(expression.left, 2);
+                const bool any_arg_mut = std::ranges::any_of(
+                    expression.arguments, [&](language::NodeId a) { return may_mutate_sub(may_mutate_sub, a); });
+                if ((language::is_readonly_sequence_operation(expression.sequence_operation) ||
+                     language::is_try_parse_sequence_operation(expression.sequence_operation)) &&
+                    expression.sequence_operation != language::SequenceOperation::str_empty &&
+                    expression.sequence_operation != language::SequenceOperation::arr_empty &&
+                    expression.sequence_operation != language::SequenceOperation::str_is_ascii &&
+                    expression.sequence_operation != language::SequenceOperation::arr_is_sorted)
+                    owns_values |= needs_snapshot(expression.left, any_arg_mut);
+                if (expression.sequence_operation == language::SequenceOperation::str_replace_all ||
+                    expression.sequence_operation == language::SequenceOperation::str_find ||
+                    expression.sequence_operation == language::SequenceOperation::str_rfind ||
+                    expression.sequence_operation == language::SequenceOperation::arr_find ||
+                    expression.sequence_operation == language::SequenceOperation::arr_rfind) {
+                    if (expression.arguments.size() >= 2)
+                        owns_values |= needs_snapshot(expression.arguments[0],
+                                                      may_mutate_sub(may_mutate_sub, expression.arguments[1]));
+                }
+                for (const auto arg : expression.arguments) {
+                    const bool arg_view = function.expressions[arg].type.kind == language::ValueType::string &&
+                                          expression.sequence_operation != language::SequenceOperation::arr_fill &&
+                                          expression.sequence_operation != language::SequenceOperation::arr_resize_fill &&
+                                          expression.sequence_operation != language::SequenceOperation::arr_insert;
+                    if (!arg_view)
+                        mark_mode(arg, 2);
+                }
+            } else if (expression.kind == Kind::binary &&
+                       (function.expressions[expression.left].type.kind == language::ValueType::string ||
+                        function.expressions[expression.left].type.kind == language::ValueType::array)) {
+                owns_values |= needs_snapshot(expression.left, may_mutate_sub(may_mutate_sub, expression.right));
+                if (function.expressions[expression.left].type.kind != language::ValueType::string) {
+                    mark_mode(expression.left, 2);
+                    mark_mode(expression.right, 2);
+                }
+            } else if (expression.kind != Kind::length && expression.kind != Kind::index) {
+                mark_mode(expression.left, 2);
+                mark_mode(expression.right, 2);
+                for (const auto arg : expression.arguments)
+                    mark_mode(arg, 2);
+            } else {
+                mark_mode(expression.right, 2);
+            }
             const bool call = expression.kind == Kind::call || expression.kind == Kind::source_call;
             owns_values |= owned_type(expression.type) && expression.kind == Kind::call;
             if (call)
@@ -4031,12 +5285,22 @@ std::uint32_t compile_business_impl(
                     owns_values |= expression.argument_passing[argument] == ParameterPassing::value &&
                                    owned_type(function.expressions[expression.arguments[argument]].type);
         }
+        for (std::size_t e = 0; e < function.expressions.size(); ++e) {
+            if (function.expressions[e].kind != language::Expression::Kind::string_literal)
+                continue;
+            if (literal_mode[e] >= 1)
+                mutates_sequences = true;
+            if (literal_mode[e] >= 2)
+                owns_values = true;
+        }
     }
     if (owns_values && (!services->construct_value || !services->assign_value || !services->destroy_value))
         return compilation_failure(error, error_capacity,
                                    "Source-owned values require the native value lifecycle services.");
     if (mutates_sequences && !services->mutate_sequence)
         return compilation_failure(error, error_capacity, "Source sequence mutation requires its native service.");
+    if (applies_sequences && !services->apply_sequence)
+        return compilation_failure(error, error_capacity, "Source sequence algorithm requires its native service.");
     if (uses_parallel_for && !options.debugging && !services->parallel_for)
         return compilation_failure(error, error_capacity,
                                    "Source parallel_for requires its parallel dispatch service.");

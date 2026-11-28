@@ -59,7 +59,7 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, Span<const TypeInfo* co
     kind_by_id.insert_or_assign(binding.boolean, ValueKind::boolean);
     for (const auto* enumeration : catalog) {
         const auto id = enumeration->id;
-        if (!enumeration->enumeration || language::editor_reserved(enumeration->name))
+        if (!enumeration->enumeration || language::editor_reserved(enumeration->name.view().std_view()))
             continue;
         binding.enumerations.add(
             {id, enumeration->name,
@@ -81,7 +81,8 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, Span<const TypeInfo* co
              {},
              value.sequence_view,
              value.value_operations_preserve_borrows && value.copy_constructible && value.copy_assignable,
-             value.sequence_mutate != nullptr || (!value.native_storage && value.kind == TypeKind::array),
+             (value.sequence_mutate != nullptr && value.sequence_apply != nullptr) ||
+                 (!value.native_storage && value.kind == TypeKind::array),
              value.standard_array_layout,
              value.math,
              value.plain_value,
@@ -93,7 +94,7 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, Span<const TypeInfo* co
     };
     Array<const TypeInfo*> pending_arrays;
     for (const auto* value : catalog) {
-        if (value->contains_references || language::editor_reserved(value->name))
+        if (value->contains_references || language::editor_reserved(value->name.view().std_view()))
             continue;
         if (value->kind == TypeKind::record)
             append_value(*value, ValueKind::record);
@@ -165,7 +166,7 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, Span<const TypeInfo* co
     InlineArray<FieldCursor, 8> cursors{{info}};
     InlineArray<FieldId, 8> path;
     InlineArray<BusinessAddressStep, 8> access;
-    std::string prefix;
+    String prefix;
     while (!cursors.empty()) {
         auto& cursor = cursors.back();
         if (cursor.next == cursor.type->fields.size()) {
@@ -173,7 +174,7 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, Span<const TypeInfo* co
             continue;
         }
         path.truncate(cursor.depth);
-        prefix.resize(cursor.prefix_length);
+        (void)prefix.slice_in_place(0, cursor.prefix_length);
         access.truncate(cursor.access_depth);
         const auto& field = cursor.type->fields[cursor.next++];
         if (field.value.form != ValueForm::inline_value)
@@ -199,7 +200,7 @@ Result<Binding> bind_type(Runtime& runtime, TypeId type, Span<const TypeInfo* co
             const auto* nested = describe(field.value.type);
             if (nested->kind != TypeKind::record)
                 continue;
-            prefix += '.';
+            prefix.append_ascii('.');
             cursors.add({nested, 0, path.size(), prefix.size(), constrained, access.size(), range});
         }
     }
@@ -426,7 +427,7 @@ AbiArguments::AbiArguments(const Binding& binding, const FunctionSignature& sign
             if (!matched) {
                 values.clear();
                 status = std::unexpected(
-                    Error{ErrorCode::argument_mismatch, "Argument type does not match parameter " + std::to_string(i)});
+                    Error{ErrorCode::argument_mismatch, String::concat("Argument type does not match parameter ", i)});
                 return;
             }
             values.add(encoded);
@@ -508,8 +509,7 @@ void Invocation::fail(const Error& error) noexcept {
     error_storage.record(error);
 }
 
-void Invocation::fail(ErrorCode code, std::string_view message, std::uint32_t element,
-                      std::string_view layer) noexcept {
+void Invocation::fail(ErrorCode code, StringView message, std::uint32_t element, StringView layer) noexcept {
     if (failed)
         return;
     failed = true;
@@ -543,8 +543,7 @@ void Invocation::fail_native(const NativeFailure& source) noexcept {
     }
 }
 
-void Invocation::fail_view(ErrorCode code, std::string_view message, std::uint32_t element,
-                           std::string_view layer) noexcept {
+void Invocation::fail_view(ErrorCode code, StringView message, std::uint32_t element, StringView layer) noexcept {
     if (failed)
         return;
     failed = true;
@@ -760,6 +759,14 @@ std::uint32_t mutate_sequence(void* context, std::uint32_t type, SequenceMutatio
     });
 }
 
+std::uint32_t apply_sequence(void* context, std::uint32_t type, void* target, const SequenceCall* call) noexcept {
+    auto& invocation = *static_cast<Invocation*>(context);
+    return bridge(invocation, [&]() -> Result<void> {
+        const auto& value = owned_value(invocation, type);
+        return invocation.runtime.apply_sequence(value.type, {static_cast<std::byte*>(target), value.size}, *call);
+    });
+}
+
 std::uint32_t parallel_for_service(std::size_t count, std::size_t grain, const void* capture, ParallelBody body,
                                    BusinessFailure* failure, BusinessTrace* trace) noexcept {
     constexpr auto counter_count = static_cast<std::size_t>(DiagnosticCall::count);
@@ -830,8 +837,9 @@ std::uint32_t parallel_for_service(std::size_t count, std::size_t grain, const v
 
 const BusinessServices services{
     create_slot,   clear_slot,      change_reference, same_reference, construct_value, assign_value,
-    destroy_value, mutate_sequence, debug_enter,      debug_point,    debug_leave,     nullptr,
-    nullptr,       native_receiver, native_stamp,     native_failure, native_segment,  parallel_for_service};
+    destroy_value, mutate_sequence, apply_sequence,   debug_enter,    debug_point,     debug_leave,
+    nullptr,       nullptr,         native_receiver,  native_stamp,   native_failure,  native_segment,
+    parallel_for_service};
 
 bool same_environment(const Binding& binding, const BusinessEnvironment& environment) {
     if (binding.fields.size() != environment.field_count || binding.methods.size() != environment.method_count ||
@@ -927,7 +935,7 @@ Result<void> bind_receiver(Invocation& invocation, bool requires_receiver, Objec
     return {};
 }
 
-std::string_view resolve_failure_layer_view(const Binding& binding, std::uint32_t packed_layer) noexcept {
+StringView resolve_failure_layer_view(const Binding& binding, std::uint32_t packed_layer) noexcept {
     if (packed_layer != no_failure_element) {
         const auto enum_index = packed_layer >> 16;
         const auto item_index = packed_layer & 0xffffu;
@@ -945,16 +953,20 @@ Optional<ErrorElement> resolve_failure_element(const Binding& binding, const Bus
 
 Error execution_error(const Invocation* invocation, const Binding& binding, const BusinessFailure& failure,
                       const BusinessFailureMessage* failure_messages, std::uint32_t failure_message_count,
-                      std::string_view fallback_message) {
+                      StringView fallback_message) {
     if (invocation && invocation->failed) {
-        return Error{invocation->error_code(), std::string(invocation->error_message()), {},
+        return Error{invocation->error_code(),
+                     utf8_or_fallback(invocation->error_message(),
+                                      utf8_or_fallback(fallback_message, "Source execution failed."_s)),
+                     {},
                      invocation->error_storage.element != no_failure_element
                          ? Optional<ErrorElement>{std::in_place, invocation->error_storage.layer,
                                                   invocation->error_storage.element}
                          : Optional<ErrorElement>{}};
     }
     const auto resolved = failure_message(failure.reason, failure_messages, failure_message_count);
-    return Error{ErrorCode::invocation_failed, resolved ? std::string(*resolved) : std::string(fallback_message), {},
+    const auto text = resolved ? StringView{*resolved} : fallback_message;
+    return Error{ErrorCode::invocation_failed, utf8_or_fallback(text, "Source execution failed."_s), {},
                  resolve_failure_element(binding, failure)};
 }
 

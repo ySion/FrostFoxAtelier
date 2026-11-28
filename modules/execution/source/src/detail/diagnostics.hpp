@@ -9,9 +9,9 @@ struct DiagnosticMetadata {
 
     std::uint64_t code_version{};
 
-    std::string entry;
+    String entry;
 
-    std::string source_name;
+    String source_name;
 
     std::shared_ptr<const Array<DiagnosticLocation>> locations;
 };
@@ -94,6 +94,7 @@ public:
                 state_->error_code = ErrorCode::invocation_failed;
                 constexpr char message[] = "Source invocation raised a native exception.";
                 std::copy_n(message, sizeof(message), state_->error);
+                state_->error_size = sizeof(message) - 1;
             }
         }
         DiagnosticAccess::finish(*state_, runtime_, terminal_);

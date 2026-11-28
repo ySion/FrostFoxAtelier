@@ -240,19 +240,19 @@ public:
 
         std::shared_ptr<ModuleRequest> module_;
 
-        std::string source_path_; // Original single-input name, without the compiler's request display suffix.
+        String source_path_; // Original single-input name, without the compiler's request display suffix.
 
         SourceRequest(std::weak_ptr<State>, std::shared_ptr<const Contract>, std::shared_ptr<const Declaration>,
-                      std::uint64_t, std::string, std::string, std::string, CompileOptions);
+                      std::uint64_t, String, String, String, CompileOptions);
 
     public:
         const std::uint64_t sequence;
 
-        const std::string source_name;
+        const String source_name;
 
-        const std::string source;
+        const String source;
 
-        const std::string entry_name;
+        const String entry_name;
 
         const CompileOptions options;
 
@@ -306,7 +306,7 @@ public:
 
         Span<const FunctionInfo> functions() const noexcept;
 
-        Span<const std::string> engine_modules() const noexcept;
+        Span<const String> engine_modules() const noexcept;
     };
 
     class Lease {
@@ -466,11 +466,11 @@ public:
 
     Entry entry() const;
 
-    Result<Entry> entry(std::string_view name) const;
+    Result<Entry> entry(StringView name) const;
 
-    Result<Lease> pin(std::string_view name) const;
+    Result<Lease> pin(StringView name) const;
 
-    Result<FunctionSignature> describe(std::string_view name) const;
+    Result<FunctionSignature> describe(StringView name) const;
 
     // Views remain valid until the next successful publication or close.
     Span<const ClassInfo> classes() const noexcept;
@@ -479,7 +479,7 @@ public:
 
     Span<const FunctionInfo> functions() const noexcept;
 
-    Span<const std::string> engine_modules() const noexcept;
+    Span<const String> engine_modules() const noexcept;
 
     // Counts successful publications; 0 before the first.
     std::uint64_t revision() const noexcept;
@@ -493,10 +493,9 @@ public:
     // Requests own the module source, entry selection and metadata, but no code.
     // Multiple functions require an entry name before
     // first publication; later requests default to the frozen declaration name.
-    Result<Request> request(std::string_view name, std::string_view source, std::string_view entry_name = {},
-                            CompileOptions = {});
+    Result<Request> request(StringView name, StringView source, StringView entry_name = {}, CompileOptions = {});
 
-    Result<Request> request(std::string name, std::uint64_t version, Array<SourceFile> files, CompileOptions = {});
+    Result<Request> request(Utf8Text name, std::uint64_t version, Array<SourceFile> files, CompileOptions = {});
 
     Result<Request> request(SourceSnapshot, CompileOptions = {});
 

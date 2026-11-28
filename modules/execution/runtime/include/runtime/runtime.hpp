@@ -22,8 +22,6 @@
 #include <functional>
 #include <memory>
 #include <new>
-#include <string>
-#include <string_view>
 #include <type_traits>
 #include <variant>
 #include <utility>
@@ -53,7 +51,7 @@ enum class ErrorCode {
 };
 
 struct SourceLocation {
-    std::string path;
+    String path;
 
     std::uint64_t version{};
 
@@ -66,7 +64,14 @@ struct SourceLocation {
     // Optional original absolute disk path. Only a saved-file snapshot supplies
     // this association, in which case version is the saved-byte content hash.
     // Virtual/request-local versions have no implied disk identity.
-    std::string disk_path{};
+    String disk_path{};
+
+    SourceLocation() noexcept = default;
+
+    SourceLocation(Utf8Text file_path, std::uint64_t file_version = 0, std::size_t byte_offset = 0,
+                   std::size_t source_line = 1, std::size_t source_column = 1, Utf8Text original_disk_path = {}) noexcept
+        : path(std::move(file_path).into_string()), version(file_version), offset(byte_offset), line(source_line),
+          column(source_column), disk_path(std::move(original_disk_path).into_string()) {}
 };
 
 class ErrorLayer {
@@ -75,24 +80,24 @@ public:
 
     constexpr ErrorLayer() noexcept = default;
 
-    constexpr ErrorLayer(const char* text) noexcept : ErrorLayer(text ? std::string_view{text} : std::string_view{}) {}
+    constexpr ErrorLayer(const char* text) noexcept : ErrorLayer(StringView{text}) {}
 
-    constexpr ErrorLayer(std::string_view text) noexcept { assign(text); }
+    constexpr ErrorLayer(StringView text) noexcept { assign(text); }
 
-    ErrorLayer(const std::string& text) noexcept : ErrorLayer(std::string_view{text}) {}
+    ErrorLayer(const String& text) noexcept : ErrorLayer(text.view()) {}
 
-    constexpr ErrorLayer& operator=(std::string_view text) noexcept {
+    constexpr ErrorLayer& operator=(StringView text) noexcept {
         assign(text);
         return *this;
     }
 
     constexpr ErrorLayer& operator=(const char* text) noexcept {
-        assign(text ? std::string_view{text} : std::string_view{});
+        assign(StringView{text});
         return *this;
     }
 
-    ErrorLayer& operator=(const std::string& text) noexcept {
-        assign(text);
+    ErrorLayer& operator=(const String& text) noexcept {
+        assign(text.view());
         return *this;
     }
 
@@ -104,25 +109,23 @@ public:
 
     [[nodiscard]] constexpr bool empty() const noexcept { return size_ == 0; }
 
-    [[nodiscard]] constexpr std::string_view view() const noexcept { return {bytes_, size_}; }
+    [[nodiscard]] constexpr StringView view() const noexcept { return {bytes_, size_}; }
 
-    constexpr operator std::string_view() const noexcept { return view(); }
+    constexpr operator StringView() const noexcept { return view(); }
 
     friend constexpr bool operator==(const ErrorLayer& a, const ErrorLayer& b) noexcept { return a.view() == b.view(); }
 
-    friend constexpr bool operator==(const ErrorLayer& a, std::string_view b) noexcept { return a.view() == b; }
+    friend constexpr bool operator==(const ErrorLayer& a, StringView b) noexcept { return a.view() == b; }
 
-    friend constexpr bool operator==(const ErrorLayer& a, const char* b) noexcept {
-        return a.view() == (b ? std::string_view{b} : std::string_view{});
-    }
+    friend constexpr bool operator==(const ErrorLayer& a, const char* b) noexcept { return a.view() == StringView{b}; }
 
-    friend bool operator==(const ErrorLayer& a, const std::string& b) noexcept { return a.view() == b; }
+    friend bool operator==(const ErrorLayer& a, const String& b) noexcept { return a.view() == b.view(); }
 
 private:
-    constexpr void assign(std::string_view text) noexcept {
-        if (const auto nul = text.find('\0'); nul != std::string_view::npos)
-            text = text.substr(0, nul);
-        const auto prefix = StringView{text}.truncate_utf8_or_bytes(capacity);
+    constexpr void assign(StringView text) noexcept {
+        if (const auto nul = text.find('\0'); nul != StringView::npos)
+            text = text.first(nul);
+        const auto prefix = text.truncate_utf8_or_bytes(capacity);
         size_ = static_cast<std::uint8_t>(prefix.size());
         if !consteval {
             if (size_)
@@ -151,13 +154,20 @@ static_assert(std::is_trivially_copyable_v<ErrorElement> && std::is_trivially_de
               sizeof(ErrorElement) == 40);
 
 struct Error {
-    ErrorCode code;
+    ErrorCode code{};
 
-    std::string message;
+    String message;
 
     Optional<SourceLocation> source{};
 
     Optional<ErrorElement> element{};
+
+    Error() noexcept = default;
+
+    Error(ErrorCode error_code, Utf8Text error_message, Optional<SourceLocation> error_source = {},
+          Optional<ErrorElement> error_element = {}) noexcept
+        : code(error_code), message(std::move(error_message).into_string()), source(std::move(error_source)),
+          element(std::move(error_element)) {}
 };
 
 template <class T>
@@ -192,9 +202,9 @@ public:
     // Only for correlation within a process run, not persistence or deserialization.
     // Reads this value alone; does not validate, retain or change object ownership/liveness.
     // Stale identities keep their text, including after Runtime shutdown.
-    [[nodiscard]] std::string diagnostic_identity() const {
+    [[nodiscard]] String diagnostic_identity() const noexcept {
         if (*this == ObjectId{})
-            return "null";
+            return String::literal<"null">();
         // Maximum decimal widths of uint64, uint32, uint64, plus two separators.
         char text[20 + 1 + 10 + 1 + 20];
         auto* next = std::to_chars(text, text + sizeof(text), context_).ptr;
@@ -202,7 +212,7 @@ public:
         next = std::to_chars(next, text + sizeof(text), index_).ptr;
         *next++ = ':';
         next = std::to_chars(next, text + sizeof(text), generation_).ptr;
-        return {text, next};
+        return String::from_utf8_validated({text, static_cast<std::size_t>(next - text)});
     }
 
 private:
@@ -604,7 +614,7 @@ public:
 
     TypeReference(TypeId type) : target_(type) {}
 
-    TypeReference(std::string name) : target_(std::move(name)) {}
+    TypeReference(Utf8Text name) noexcept : target_(std::move(name).into_string()) {}
 
     template <class T>
     static TypeReference native() {
@@ -616,7 +626,7 @@ private:
 
     TypeReference(const void* representation, std::in_place_t) : target_(representation) {}
 
-    std::variant<TypeId, std::string, const void*> target_;
+    std::variant<TypeId, String, const void*> target_;
 };
 
 struct ValueDefinition {
@@ -768,6 +778,8 @@ struct NativeLayout {
 
     Result<void> (*sequence_mutate)(SequenceMutation, void*, const void*, std::size_t) noexcept {};
 
+    Result<void> (*sequence_apply)(void*, const SequenceCall&) noexcept {};
+
     // Trusted promise: value operations may change their destination, but do
     // not invalidate other borrowed storage, retain input addresses or reenter
     // source execution. Array publication also requires this of its element.
@@ -804,13 +816,13 @@ struct FieldRange {
     bool operator==(const FieldRange&) const = default;
 };
 
-using MetadataList = Array<std::pair<std::string, std::string>>;
+using MetadataList = Array<std::pair<String, String>>;
 
 // Shared cold-path normalization for native publication and Source comparisons.
 Result<void> normalize_metadata_entries(MetadataList& metadata);
 
 struct FieldDefinition {
-    std::string name;
+    String name;
 
     ValueDefinition value;
 
@@ -835,13 +847,13 @@ struct FieldDefinition {
 
     // Optional presentation text; never part of field identity or value layout.
     // Empty text leaves display-name/group fallback to the consumer.
-    std::string label{};
+    String label{};
 
-    std::string category{};
+    String category{};
 
     // Owned UTF-8 help text; publication normalizes CRLF/CR to LF.
     // Empty means no description. Only LF and tab are permitted controls.
-    std::string description{};
+    String description{};
 
     // Part of the published definition; checked against the leaf type and default.
     FieldRange range{};
@@ -852,7 +864,7 @@ struct FieldDefinition {
 
     // Described object String fields only. Publication canonicalizes an omitted
     // value to empty text; construction uses one String constructor, not assignment.
-    Optional<std::string> default_text{};
+    Optional<String> default_text{};
 
     // Excluded from scene/document property serialization while remaining in TypeInfo::fields.
     bool transient{};
@@ -865,15 +877,15 @@ struct FieldDefinition {
 };
 
 struct EnumeratorMetadata {
-    std::string label{};
+    String label{};
 
-    std::string description{};
+    String description{};
 
     bool operator==(const EnumeratorMetadata&) const = default;
 };
 
 struct MethodDefinition {
-    std::string name;
+    String name;
 
     SignatureDefinition signature;
 
@@ -883,10 +895,10 @@ struct MethodDefinition {
     // Runtime's existing callback scope also rejects GC/lifecycle reentry.
     bool preserves_borrows{};
 
-    std::string description{};
+    String description{};
 
     // Empty, or one per parameter; an empty name is unnamed. Not part of the signature.
-    Array<std::string> parameter_names{};
+    Array<String> parameter_names{};
 
     // Process-local typed native entry, produced from the same C++ signature as
     // invoke. Zero means dynamic-host-only, never a generated-call fallback.
@@ -902,17 +914,17 @@ struct MethodDefinition {
 
 // Declared method contract of a non-native (described) object type. Execution lives in its code host.
 struct DescribedMethodDefinition {
-    std::string name;
+    String name;
 
     SignatureDefinition signature;
 
-    Array<std::string> parameter_names{};
+    Array<String> parameter_names{};
 
     Array<MetadataList> parameter_metadata{};
 };
 
 struct TypeDefinition {
-    std::string name;
+    String name;
 
     TypeKind kind{TypeKind::object};
 
@@ -928,7 +940,7 @@ struct TypeDefinition {
     struct Enumeration {
         TypeReference underlying;
 
-        Array<std::pair<std::string, std::uint32_t>> values;
+        Array<std::pair<String, std::uint32_t>> values;
 
         bool flags{};
 
@@ -940,7 +952,7 @@ struct TypeDefinition {
 
     Optional<TypeReference> element{};
 
-    std::string description{};
+    String description{};
 
     // Records and objects only. A pure check of one value's bytes, run by Runtime::validate
     // and never on writes; it must not call the Runtime or throw. Rejection uses Result.
@@ -955,7 +967,7 @@ struct TypeDefinition {
 struct FieldInfo {
     FieldId id;
 
-    std::string name;
+    String name;
 
     ValueDescription value;
 
@@ -965,11 +977,11 @@ struct FieldInfo {
     Array<Scalar> default_leaves{};
 
     // Owned by the type descriptor, including inherited field copies.
-    std::string label{};
+    String label{};
 
-    std::string category{};
+    String category{};
 
-    std::string description{};
+    String description{};
 
     FieldRange range{};
 
@@ -982,7 +994,7 @@ struct FieldInfo {
     MetadataList metadata{};
 
     // Owned decoded String default; absent for native fields and other value types.
-    Optional<std::string> default_text{};
+    Optional<String> default_text{};
 
     bool transient{};
 
@@ -992,16 +1004,16 @@ struct FieldInfo {
 struct MethodInfo {
     MethodId id;
 
-    std::string name;
+    String name;
 
     FunctionSignature signature;
 
     bool preserves_borrows{};
 
-    std::string description{};
+    String description{};
 
     // One per signature parameter; empty when the producer gave no name.
-    Array<std::string> parameter_names{};
+    Array<String> parameter_names{};
 
     std::uintptr_t native_entry{};
 
@@ -1013,11 +1025,11 @@ struct MethodInfo {
 };
 
 struct DescribedMethodInfo {
-    std::string name;
+    String name;
 
     FunctionSignature signature;
 
-    Array<std::string> parameter_names{};
+    Array<String> parameter_names{};
 
     Array<MetadataList> parameter_metadata{};
 };
@@ -1025,7 +1037,7 @@ struct DescribedMethodInfo {
 struct TypeInfo {
     TypeId id;
 
-    std::string name;
+    String name;
 
     TypeKind kind;
 
@@ -1053,7 +1065,7 @@ struct TypeInfo {
     struct Enumeration {
         TypeId underlying;
 
-        Array<std::pair<std::string, std::uint32_t>> values;
+        Array<std::pair<String, std::uint32_t>> values;
 
         bool flags{};
 
@@ -1073,6 +1085,8 @@ struct TypeInfo {
 
     Result<void> (*sequence_mutate)(SequenceMutation, void*, const void*, std::size_t) noexcept {};
 
+    Result<void> (*sequence_apply)(void*, const SequenceCall&) noexcept {};
+
     bool value_operations_preserve_borrows{};
 
     // True when `kind == array` uses the standard 3-word {data, size, capacity} storage of Array<T> or DescribedArray.
@@ -1090,7 +1104,7 @@ struct TypeInfo {
     const std::byte* prototype{};
 
     // Help text is presentation metadata, not type identity, layout or call ABI.
-    std::string description{};
+    String description{};
 
     void* (*base_address)(void*) noexcept {};
 
@@ -1110,7 +1124,7 @@ struct TypeInfo {
 struct ValidationFailure {
     Array<FieldId> field;
 
-    Array<std::string> names;
+    Array<String> names;
 
     Optional<Scalar> value{};
 
@@ -1183,13 +1197,13 @@ public:
     // owns its arrays; its TypeIds remain scoped to this Runtime, which it does not own.
     [[nodiscard]] Result<FunctionSignature> resolve_signature(const SignatureDefinition& definition) const;
 
-    [[nodiscard]] Result<TypeId> find_type(std::string_view name) const;
+    [[nodiscard]] Result<TypeId> find_type(StringView name) const;
 
     [[nodiscard]] Result<const TypeInfo*> describe(TypeId type) const;
 
-    [[nodiscard]] Result<FieldId> find_field(TypeId type, std::string_view name) const;
+    [[nodiscard]] Result<FieldId> find_field(TypeId type, StringView name) const;
 
-    [[nodiscard]] Result<MethodId> find_method(TypeId type, std::string_view name) const;
+    [[nodiscard]] Result<MethodId> find_method(TypeId type, StringView name) const;
 
     // Trusted synchronous native storage access. Callback must return Result<R> without throwing;
     // R must own its data. Capturing/returning hidden borrowed addresses is also
@@ -1262,6 +1276,8 @@ public:
     [[nodiscard]] Result<void> mutate_sequence(TypeId type, Span<std::byte> storage, SequenceMutation operation,
                                                TypeId input_type = {}, Span<const std::byte> input = {},
                                                std::size_t count = 0);
+
+    [[nodiscard]] Result<void> apply_sequence(TypeId type, Span<std::byte> storage, const SequenceCall& call);
 
     // Creation publishes an external root before returning. Roots do not prevent
     // explicit destruction or Runtime shutdown, and releasing one never destroys an object.

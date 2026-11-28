@@ -120,7 +120,7 @@ void collect_checked_layout(BusinessType type, const BusinessEnvironment& enviro
                                offset + static_cast<std::uint32_t>(layout.fields[i].offset), out);
 }
 
-void parameter_fields(BusinessType type, const BusinessEnvironment& environment, std::string path, std::size_t offset,
+void parameter_fields(BusinessType type, const BusinessEnvironment& environment, String path, std::size_t offset,
                       Array<MaterialParameter>& fields) {
     if (type == ValueKind::f32) {
         fields.add({std::move(path), 1, offset});
@@ -133,7 +133,8 @@ void parameter_fields(BusinessType type, const BusinessEnvironment& environment,
     }
     for (std::uint32_t i = 0; i < layout.field_count; ++i) {
         const auto& field = layout.fields[i];
-        parameter_fields(field.type, environment, path.empty() ? field.name : path + "." + field.name,
+        const String field_name = utf8_or_fallback(StringView{field.name});
+        parameter_fields(field.type, environment, path.empty() ? field_name : String::concat(path, ".", field_name),
                          offset + field.offset, fields);
     }
 }
@@ -200,34 +201,34 @@ Span<const MaterialTextureInput> MaterialProgram::textures() const noexcept {
 }
 
 namespace {
-Result<std::string> wrap_hlsl(std::string_view name_space, std::string_view body, bool footprint) {
+Result<String> wrap_hlsl(StringView name_space, StringView body, bool footprint) {
     const auto letter = [](char c) { return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); };
     if (name_space.empty() || !letter(name_space.front()) ||
         !std::ranges::all_of(name_space, [&](char c) { return letter(c) || (c >= '0' && c <= '9'); }))
         return std::unexpected(
             Error{ErrorCode::argument_mismatch, "Material HLSL namespace requires an ASCII identifier."});
-    const std::string_view sampling =
+    if (!body.is_valid_utf8())
+        return std::unexpected(Error{ErrorCode::invalid_definition, "Generated material HLSL is not valid UTF-8."});
+    const StringView sampling =
         footprint
             ? "float4 atelier_material_sample_grad(uint environment,uint local_slot,float2 uv,float2 d0,float2 d1);\n"
             : "float4 atelier_material_sample(uint environment,uint local_slot,float2 uv);\n";
-    constexpr std::string_view prefix =
+    constexpr StringView prefix =
         "float2 atelier_material_sample_orientation(uint environment,uint local_slot,float2 uv);\nnamespace ";
-    std::string result;
-    result.reserve(sampling.size() + prefix.size() + name_space.size() + body.size() + 5);
-    result.append(sampling).append(prefix).append(name_space).append(" {\n").append(body).append("}\n");
-    return result;
+    return String::concat(String::validated(sampling), String::validated(prefix), String::validated(name_space),
+                          " {\n", String::validated(body), "}\n");
 }
 }
 
-Result<std::string> MaterialProgram::hlsl(std::string_view name_space) const {
-    return wrap_hlsl(name_space, state_->view.shade_hlsl, false);
+Result<String> MaterialProgram::hlsl(StringView name_space) const {
+    return wrap_hlsl(name_space, StringView{state_->view.shade_hlsl}, false);
 }
 
-Result<std::string> MaterialProgram::hlsl_footprint(std::string_view name_space) const {
-    return wrap_hlsl(name_space, state_->view.footprint_hlsl, true);
+Result<String> MaterialProgram::hlsl_footprint(StringView name_space) const {
+    return wrap_hlsl(name_space, StringView{state_->view.footprint_hlsl}, true);
 }
 
-Result<std::string> MaterialProgram::hlsl_coverage(std::string_view name_space) const {
+Result<String> MaterialProgram::hlsl_coverage(StringView name_space) const {
     using Status = language::MaterialCoverageStatus;
     switch (state_->view.coverage_status) {
     case Status::missing_field:
@@ -239,7 +240,7 @@ Result<std::string> MaterialProgram::hlsl_coverage(std::string_view name_space) 
     case Status::available:
         break;
     }
-    return wrap_hlsl(name_space, state_->view.coverage_hlsl, false);
+    return wrap_hlsl(name_space, StringView{state_->view.coverage_hlsl}, false);
 }
 
 Result<void> MaterialProgram::evaluate(Span<const std::byte> context, Span<const std::byte> parameters,
@@ -265,10 +266,10 @@ Result<void> MaterialProgram::evaluate(Span<const std::byte> context, Span<const
             }
             if (!match || !match->sample)
                 return std::unexpected(
-                    Error{ErrorCode::argument_mismatch, "Missing material texture input: " + input.key});
+                    Error{ErrorCode::argument_mismatch, String::concat("Missing material texture input: ", input.key)});
             if (count != 1)
-                return std::unexpected(
-                    Error{ErrorCode::argument_mismatch, "Duplicate material texture input: " + input.key});
+                return std::unexpected(Error{ErrorCode::argument_mismatch,
+                                             String::concat("Duplicate material texture input: ", input.key)});
             if (input.slot < Samples::fast_slots)
                 samples.indexed[input.slot] = match;
         }
@@ -303,8 +304,10 @@ Result<void> MaterialProgram::evaluate(Span<const std::byte> context, Span<const
         if (samples.error)
             return std::unexpected(std::move(*samples.error));
         const auto reason = failure_message(failure.reason);
-        return std::unexpected(Error{ErrorCode::invocation_failed,
-                                     reason ? std::string(*reason) : std::string("Material evaluation failed.")});
+        return std::unexpected(Error{
+            ErrorCode::invocation_failed,
+            reason ? utf8_or_fallback(StringView{*reason}, "Material evaluation failed."_s)
+                   : "Material evaluation failed."_s});
     }
     if (!state->output_check.valid(output_data))
         return std::unexpected(Error{ErrorCode::invocation_failed, "Material output is not finite."});
@@ -313,20 +316,25 @@ Result<void> MaterialProgram::evaluate(Span<const std::byte> context, Span<const
 }
 
 Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime, TypeId context, TypeId output,
-                                                                TypeId texture_input, std::string_view source_name,
-                                                                std::string_view source) noexcept {
+                                                                TypeId texture_input, StringView source_name,
+                                                                StringView source) noexcept {
+    if (!source_name.is_valid_utf8() || source_name.contains('\0'))
+        return std::unexpected(Error{ErrorCode::invalid_definition,
+                                     "Material source name requires valid UTF-8 without embedded NULs."});
+    const String name = String::from_utf8_validated(source_name);
     const auto fail = [&](Error error) {
-        error.message = std::string(source_name) + ": " + error.message;
+        error.message = String::concat(name, ": ", error.message);
         return std::unexpected(std::move(error));
     };
     if (source.size() > UINT32_MAX)
         return fail(Error{ErrorCode::capacity_exceeded, "Material source is too large."});
-    auto declarations = language::collect_declarations(source);
+    auto declarations = language::collect_declarations(source.std_view());
     if (!declarations) {
         const auto& diagnostic = declarations.error();
-        return std::unexpected(Error{ErrorCode::invalid_definition,
-                                     std::string(source_name) + ":" + std::to_string(diagnostic.position.line) + ":" +
-                                         std::to_string(diagnostic.position.column) + ": " + diagnostic.message});
+        return std::unexpected(Error{
+            ErrorCode::invalid_definition,
+            String::concat(name, ":", diagnostic.position.line, ":", diagnostic.position.column, ": ",
+                           utf8_or_fallback(StringView{diagnostic.message}, "Invalid material declaration."_s))});
     }
     const auto original = bind_type(runtime, {});
     if (!original)
@@ -396,7 +404,6 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
     for (auto& value : environment.values)
         value.can_own = value.plain_value;
     const auto catalog = environment.view(nullptr);
-    std::string name(source_name);
     auto state = std::make_shared<MaterialProgram::State>();
     MaterialCode* code{};
     char error[2048]{};
@@ -406,7 +413,8 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
                                  sizeof(error))) {
         if (defaults.error)
             return std::unexpected(std::move(*defaults.error));
-        return std::unexpected(Error{ErrorCode::invalid_definition, error});
+        return std::unexpected(
+            Error{ErrorCode::invalid_definition, utf8_or_fallback(StringView{error}, "Material compilation failed."_s)});
     }
     state->code.reset(code);
     const auto view = atelier_material_code_view(code);
@@ -424,18 +432,18 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
     const auto& o = binding->values[output_type.type_index];
     const auto& p = binding->values[view.parameters];
     if (!std::ranges::any_of(*declarations, [&](const auto& declaration) {
-            return declaration.name == p.name && !declaration.enumeration;
+            return StringView{declaration.name} == p.name && !declaration.enumeration;
         }))
         return fail(Error{ErrorCode::invalid_definition, "Material Params must be declared by this source."});
     if (view.resources != UINT32_MAX) {
         const auto& resources = binding->values[view.resources];
         if (!std::ranges::any_of(*declarations, [&](const auto& declaration) {
-                return declaration.name == resources.name && !declaration.enumeration;
+                return StringView{declaration.name} == resources.name && !declaration.enumeration;
             }))
             return fail(Error{ErrorCode::invalid_definition, "Material Resources must be declared by this source."});
         state->resource_values.resize(resources.size);
         for (const auto& input : Span{view.textures, view.texture_count}) {
-            state->textures.add({input.key, input.slot});
+            state->textures.add({utf8_or_fallback(StringView{input.key}), input.slot});
             std::memcpy(state->resource_values.data() + input.offset, &input.slot, sizeof(input.slot));
         }
     }
@@ -448,7 +456,8 @@ Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime& runtime
     BusinessValue result{{ValueKind::record, view.parameters}, 0, ArgumentStorage::value, bytes};
     Samples samples{};
     if (atelier_invoke_business(view.defaults, &samples, nullptr, 0, &result, error, sizeof(error)))
-        return fail(Error{ErrorCode::invocation_failed, error});
+        return fail(Error{ErrorCode::invocation_failed,
+                          utf8_or_fallback(StringView{error}, "Material defaults evaluation failed."_s)});
     if (!state->parameter_check.valid(bytes))
         return fail(Error{ErrorCode::invalid_definition, "Material defaults must be finite."});
     state->defaults.assign(bytes, bytes + p.size);

@@ -47,11 +47,11 @@ struct SourceMap {
 
 // Line indexes are optional: eager diagnostic tables pass them, while a single
 // failure scans its file instead of retaining an index.
-bool is_line_break(std::string_view text, std::size_t index) noexcept {
+bool is_line_break(StringView text, std::size_t index) noexcept {
     return text[index] == '\n' || (text[index] == '\r' && (index + 1 == text.size() || text[index + 1] != '\n'));
 }
 
-SourceLocation resolve_location(const SourceMap* map, std::string_view path, std::uint64_t version,
+SourceLocation resolve_location(const SourceMap* map, const String& path, std::uint64_t version,
                                 const BusinessLocation& position,
                                 const Array<Array<std::size_t>>* line_starts = nullptr) {
     const auto offset = static_cast<std::size_t>(position.offset);
@@ -79,13 +79,13 @@ SourceLocation resolve_location(const SourceMap* map, std::string_view path, std
             }
             return {file.path, file.version, mapped, line, column, file.disk_path};
         }
-    return {std::string(path), version, offset, static_cast<std::size_t>(position.line),
+    return {path, version, offset, static_cast<std::size_t>(position.line),
             static_cast<std::size_t>(position.column)};
 }
 
 // Only diagnostic and debug captures need every site resolved up front.
 std::shared_ptr<const Array<DiagnosticLocation>>
-diagnostic_locations(const BusinessCodeInfo& info, const SourceMap* map, std::string_view path, std::uint64_t version,
+diagnostic_locations(const BusinessCodeInfo& info, const SourceMap* map, const String& path, std::uint64_t version,
                      const Array<Array<std::size_t>>* line_starts = nullptr) {
     if (!info.diagnostics && !info.debugging)
         return nullptr;
@@ -93,8 +93,8 @@ diagnostic_locations(const BusinessCodeInfo& info, const SourceMap* map, std::st
     locations->reserve(info.location_count);
     for (std::uint32_t i = 0; i < info.location_count; ++i) {
         const auto& value = info.locations[i];
-        locations->add(
-            {value.function ? value.function : "", resolve_location(map, path, version, value, line_starts)});
+        locations->add({value.function ? utf8_or_fallback(StringView{value.function}) : String{},
+                        resolve_location(map, path, version, value, line_starts)});
     }
     return locations;
 }
@@ -127,10 +127,10 @@ Result<Array<TypeDefinition>> type_definitions(Span<const language::TypeDeclarat
                                                Span<const language::TypeName> array_uses,
                                                const Binding& binding) {
     auto& runtime = *binding.runtime;
-    const auto is_described_element = [&](std::string_view name) {
-        if (language::editor_reserved(name) || language::synthesized_array_name(name))
+    const auto is_described_element = [&](StringView name) {
+        if (language::editor_reserved(name.std_view()) || language::synthesized_array_name(name.std_view()))
             return false;
-        if (std::ranges::any_of(declarations, [&](const auto& value) { return value.name == name; }))
+        if (std::ranges::any_of(declarations, [&](const auto& value) { return StringView{value.name} == name; }))
             return true;
         for (const auto& value : binding.enumerations)
             if (value.name == name)
@@ -141,16 +141,19 @@ Result<Array<TypeDefinition>> type_definitions(Span<const language::TypeDeclarat
         return false;
     };
     Array<TypeDefinition> synthesized;
-    const auto ensure_synthesized_array = [&](std::string_view base_name, std::uint32_t array_depth) {
+    const auto ensure_synthesized_array = [&](StringView base_name, std::uint32_t array_depth) {
         for (std::uint32_t depth = 1; depth <= array_depth; ++depth) {
-            auto arr_name = language::make_synthesized_array_name(base_name, depth);
-            if (std::ranges::any_of(synthesized, [&](const auto& def) { return def.name == arr_name; }))
+            const auto arr_name_std = language::make_synthesized_array_name(base_name.std_view(), depth);
+            const StringView arr_name_view{arr_name_std};
+            if (std::ranges::any_of(synthesized, [&](const auto& def) { return def.name == arr_name_view; }))
                 continue;
             TypeDefinition arr_def;
-            arr_def.name = std::move(arr_name);
+            arr_def.name = utf8_or_fallback(arr_name_view);
             arr_def.kind = TypeKind::array;
-            arr_def.element = TypeReference{depth == 1 ? std::string(base_name)
-                                                       : language::make_synthesized_array_name(base_name, depth - 1)};
+            arr_def.element = TypeReference{
+                depth == 1
+                    ? utf8_or_fallback(base_name)
+                    : utf8_or_fallback(StringView{language::make_synthesized_array_name(base_name.std_view(), depth - 1)})};
             synthesized.add(std::move(arr_def));
         }
     };
@@ -158,35 +161,42 @@ Result<Array<TypeDefinition>> type_definitions(Span<const language::TypeDeclarat
     for (const auto& declaration : declarations) {
         for (const auto& value : binding.values)
             if (value.math && declaration.name == math::short_name(value.math))
-                return std::unexpected(
-                    Error{ErrorCode::invalid_definition,
-                          "Source type declaration conflicts with a builtin math name: " + declaration.name});
+                return std::unexpected(Error{
+                    ErrorCode::invalid_definition,
+                    String::concat("Source type declaration conflicts with a builtin math name: ",
+                                   utf8_or_fallback(StringView{declaration.name}))});
         TypeDefinition definition;
-        definition.name = declaration.name;
-        definition.description = declaration.description;
+        definition.name = utf8_or_fallback(StringView{declaration.name});
+        definition.description = utf8_or_fallback(StringView{declaration.description});
         definition.kind = declaration.enumeration ? TypeKind::enumeration : TypeKind::record;
         if (declaration.enumeration) {
             Array<EnumeratorMetadata> enum_metadata;
             enum_metadata.reserve(declaration.enumerator_attributes.size());
             for (const auto& attr : declaration.enumerator_attributes)
-                enum_metadata.add({attr.label, attr.description});
-            definition.enumeration = TypeDefinition::Enumeration{
-                declaration.signed_enum ? binding.i32 : binding.u32,
-                Array<std::pair<std::string, std::uint32_t>>{declaration.enumerators},
-                declaration.flags, std::move(enum_metadata)};
+                enum_metadata.add(
+                    {utf8_or_fallback(StringView{attr.label}), utf8_or_fallback(StringView{attr.description})});
+            Array<std::pair<String, std::uint32_t>> enum_values;
+            enum_values.reserve(declaration.enumerators.size());
+            for (const auto& [item_name, bits] : declaration.enumerators)
+                enum_values.add({utf8_or_fallback(StringView{item_name}), bits});
+            definition.enumeration =
+                TypeDefinition::Enumeration{declaration.signed_enum ? binding.i32 : binding.u32, std::move(enum_values),
+                                            declaration.flags, std::move(enum_metadata)};
         } else {
             for (std::size_t field_idx = 0; field_idx < declaration.fields.size(); ++field_idx) {
                 const auto& [name, type] = declaration.fields[field_idx];
                 TypeReference reference;
-                if (is_described_element(type.name)) {
+                if (is_described_element(StringView{type.name})) {
                     if (type.array_depth == 0) {
-                        reference = TypeReference{type.name};
+                        reference = TypeReference{utf8_or_fallback(StringView{type.name})};
                     } else {
-                        ensure_synthesized_array(type.name, type.array_depth);
-                        reference = TypeReference{language::make_synthesized_array_name(type.name, type.array_depth)};
+                        ensure_synthesized_array(StringView{type.name}, type.array_depth);
+                        reference = TypeReference{
+                            utf8_or_fallback(StringView{language::make_synthesized_array_name(type.name, type.array_depth)})};
                     }
                 } else {
                     TypeId resolved{};
+                    const StringView type_view{type.name};
                     if (type.name == "float")
                         resolved = binding.f32;
                     else if (type.name == "double")
@@ -198,11 +208,11 @@ Result<Array<TypeDefinition>> type_definitions(Span<const language::TypeDeclarat
                     else if (type.name == "bool")
                         resolved = binding.boolean;
                     for (const auto& value : binding.enumerations)
-                        if (value.name == type.name)
+                        if (value.name == type_view)
                             resolved = value.type;
                     for (const auto& value : binding.values)
-                        if (!language::synthesized_array_name(value.name) &&
-                            (value.name == type.name || (type.name == "String" && value.kind == ValueKind::string) ||
+                        if (!language::synthesized_array_name(value.name.view().std_view()) &&
+                            (value.name == type_view || (type.name == "String" && value.kind == ValueKind::string) ||
                              (value.math && type.name == math::short_name(value.math)))) {
                             resolved = value.type;
                             break;
@@ -210,8 +220,9 @@ Result<Array<TypeDefinition>> type_definitions(Span<const language::TypeDeclarat
                     if (resolved == TypeId{})
                         return std::unexpected(Error{
                             ErrorCode::invalid_definition,
-                            "Source struct field type requires a declared or registered value without GC references: " +
-                                type.name});
+                            String::concat(
+                                "Source struct field type requires a declared or registered value without GC references: ",
+                                utf8_or_fallback(type_view))});
                     for (std::uint32_t depth = 0; depth < type.array_depth; ++depth) {
                         const auto element = value_kind(binding, resolved);
                         const auto array = std::ranges::find_if(binding.values, [&](const auto& value) {
@@ -221,23 +232,24 @@ Result<Array<TypeDefinition>> type_definitions(Span<const language::TypeDeclarat
                         if (array == binding.values.end())
                             return std::unexpected(Error{
                                 ErrorCode::invalid_definition,
-                                "Source struct Array field requires an already registered array for its element: " +
-                                    type.name});
+                                String::concat(
+                                    "Source struct Array field requires an already registered array for its element: ",
+                                    utf8_or_fallback(type_view))});
                         resolved = array->type;
                     }
                     reference = resolved;
                 }
-                FieldDefinition field_def{name, {std::move(reference)}};
+                FieldDefinition field_def{utf8_or_fallback(StringView{name}), {std::move(reference)}};
                 if (field_idx < declaration.field_descriptions.size())
-                    field_def.description = declaration.field_descriptions[field_idx];
+                    field_def.description = utf8_or_fallback(StringView{declaration.field_descriptions[field_idx]});
                 definition.fields.add(std::move(field_def));
             }
         }
         definitions.add(std::move(definition));
     }
     for (const auto& use : array_uses)
-        if (use.array_depth > 0 && is_described_element(use.name))
-            ensure_synthesized_array(use.name, use.array_depth);
+        if (use.array_depth > 0 && is_described_element(StringView{use.name}))
+            ensure_synthesized_array(StringView{use.name}, use.array_depth);
     for (auto& arr : synthesized)
         definitions.add(std::move(arr));
     return definitions;
@@ -245,7 +257,7 @@ Result<Array<TypeDefinition>> type_definitions(Span<const language::TypeDeclarat
 }
 
 struct Program::Declaration {
-    std::string name;
+    String name;
 
     FunctionSignature signature;
 };
@@ -253,14 +265,14 @@ struct Program::Declaration {
 struct Program::Contract {
     Binding binding;
 
-    std::string type_name;
+    String type_name;
 
     BusinessServices actual_services;
 
     Array<language::TypeDeclaration> declarations;
 
     explicit Contract(Binding bound, Array<language::TypeDeclaration> source_types = {}) noexcept
-        : binding(std::move(bound)), type_name(binding.name), actual_services(services),
+        : binding(std::move(bound)), type_name(utf8_or_fallback(binding.name)), actual_services(services),
           declarations(std::move(source_types)) {
         binding.name = type_name;
     }
@@ -308,7 +320,7 @@ struct Program::Contract {
                            : binding.runtime->resolve_signature(definition);
     }
 
-    Result<void> compatible(BusinessCode* code, std::string_view source_name, const Declaration* declaration = nullptr,
+    Result<void> compatible(BusinessCode* code, StringView source_name, const Declaration* declaration = nullptr,
                             bool check_environment = true) const {
         if (!code)
             return std::unexpected(Error{ErrorCode::invalid_definition, "Candidate has no compiled code."});
@@ -552,7 +564,7 @@ struct Program::State {
 
     explicit State(std::shared_ptr<const Contract> bound) : contract(std::move(bound)) {}
 
-    Optional<std::size_t> find(std::string_view name) const {
+    Optional<std::size_t> find(StringView name) const {
         if (!module)
             return {};
         for (std::size_t i = 0; i < module->entries.size(); ++i)
@@ -829,8 +841,8 @@ struct Program::Frame final : CoroutineFrame {
         if (status != 0 || invocation.failed) {
             Error error = execution_error(&invocation, version->contract->binding, failure_detail,
                                           version->info.failure_messages, version->info.failure_message_count,
-                                          message[0] != '\0' ? std::string_view{message}
-                                                             : std::string_view{"Source execution failed."});
+                                          message[0] != '\0' ? StringView{message}
+                                                             : StringView{"Source execution failed."});
             version->locate(error, failure_detail.location);
             return failure(std::move(error));
         }
@@ -862,7 +874,7 @@ struct Program::Prepared {
 
     CodeOwner code;
 
-    std::string source_name;
+    String source_name;
 
     std::shared_ptr<ModuleVersion> module;
 
@@ -894,7 +906,8 @@ Result<Coroutine> Program::Version::start_values(std::shared_ptr<const Version> 
             if (atelier_create_business_coroutine(frame->version->code.get(), &frame->invocation, encoded.values.data(),
                                                   static_cast<std::uint32_t>(encoded.values.size()), &compiled,
                                                   diagnostic, sizeof(diagnostic), frame->invocation.trace) != 0)
-                return std::unexpected(Error{ErrorCode::invocation_failed, diagnostic});
+                return std::unexpected(Error{ErrorCode::invocation_failed,
+                                             utf8_or_fallback(StringView{diagnostic}, "Coroutine creation failed."_s)});
             frame->code_frame.reset(compiled);
             if (frame->diagnostic)
                 frame->invocation.record_resources(frame->invocation.resources_cleared());
@@ -908,7 +921,7 @@ Result<Coroutine> Program::Version::start_values(std::shared_ptr<const Version> 
 
 Program::SourceRequest::SourceRequest(std::weak_ptr<State> owner, std::shared_ptr<const Contract> contract,
                                       std::shared_ptr<const Declaration> declaration, std::uint64_t number,
-                                      std::string name, std::string text, std::string entry, CompileOptions compilation)
+                                      String name, String text, String entry, CompileOptions compilation)
     : owner_(std::move(owner)), contract_(std::move(contract)), compilation_contract_(contract_),
       declaration_(std::move(declaration)), sequence(number), source_name(std::move(name)), source(std::move(text)),
       entry_name(std::move(entry)), options(compilation) {}
@@ -948,10 +961,9 @@ Span<const FunctionInfo> Program::Candidate::functions() const noexcept {
                                           : Span<const FunctionInfo>{};
 }
 
-Span<const std::string> Program::Candidate::engine_modules() const noexcept {
-    return prepared_ && prepared_->module
-               ? Span<const std::string>{prepared_->module->request->source.engine_modules}
-               : Span<const std::string>{};
+Span<const String> Program::Candidate::engine_modules() const noexcept {
+    return prepared_ && prepared_->module ? Span<const String>{prepared_->module->request->source.engine_modules}
+                                          : Span<const String>{};
 }
 
 Program::Lease::Lease(std::shared_ptr<const Version> version) : version_(std::move(version)) {}
@@ -976,12 +988,12 @@ Result<CompilationArtifacts> Program::Lease::artifacts() const {
         return std::unexpected(
             Error{ErrorCode::unsupported_operation, "This source version did not retain compiler artifacts."});
     CompilationArtifacts result;
-    result.entry_symbol = view.entry_symbol;
-    result.target_triple = view.target_triple;
-    result.cpu_features = view.cpu_features;
-    result.original_ir.assign(view.original_ir, view.original_ir_size);
-    result.optimized_ir.assign(view.optimized_ir, view.optimized_ir_size);
-    result.assembly.assign(view.assembly, view.assembly_size);
+    result.entry_symbol = utf8_or_fallback(StringView{view.entry_symbol ? view.entry_symbol : ""});
+    result.target_triple = utf8_or_fallback(StringView{view.target_triple ? view.target_triple : ""});
+    result.cpu_features = utf8_or_fallback(StringView{view.cpu_features ? view.cpu_features : ""});
+    result.original_ir = utf8_or_fallback(StringView{view.original_ir, view.original_ir_size});
+    result.optimized_ir = utf8_or_fallback(StringView{view.optimized_ir, view.optimized_ir_size});
+    result.assembly = utf8_or_fallback(StringView{view.assembly, view.assembly_size});
     result.object_code.assign(view.object_code, view.object_code + view.object_code_size);
     return result;
 }
@@ -1171,7 +1183,7 @@ Result<Program::Lease> Program::pin() const {
     return Lease{state_->current};
 }
 
-Result<Program::Request> Program::request(std::string_view name, std::string_view source, std::string_view entry_name,
+Result<Program::Request> Program::request(StringView name, StringView source, StringView entry_name,
                                           CompileOptions options) {
     atelier::detail::assert_serial_access();
     if (!state_->open)
@@ -1181,38 +1193,45 @@ Result<Program::Request> Program::request(std::string_view name, std::string_vie
             Error{ErrorCode::invalid_definition, "A project program requires a complete source snapshot."});
     if (state_->latest_request == std::numeric_limits<std::uint64_t>::max())
         return std::unexpected(Error{ErrorCode::capacity_exceeded, "Business request sequence exhausted."});
-    if (source.size() > std::numeric_limits<std::uint32_t>::max() || name.find('\0') != std::string_view::npos ||
-        entry_name.find('\0') != std::string_view::npos)
+    if (source.size() > std::numeric_limits<std::uint32_t>::max() || name.contains('\0') ||
+        entry_name.contains('\0') || !name.is_valid_utf8() || !entry_name.is_valid_utf8())
         return std::unexpected(
             Error{ErrorCode::invalid_definition, "Business source/name exceeds its compiler contract."});
     if (entry_name.empty() && state_->declaration)
         entry_name = state_->declaration->name;
     const auto sequence = state_->latest_request + 1;
-    auto result = std::shared_ptr<SourceRequest>{
-        new SourceRequest(state_, state_->contract, state_->declaration, sequence,
-                          std::string(name) + "[request#" + std::to_string(sequence) + "]", std::string(source),
-                          std::string(entry_name), options)};
-    result->source_path_ = name;
+    const bool source_utf8 = source.is_valid_utf8();
+    auto result = std::shared_ptr<SourceRequest>{new SourceRequest(
+        state_, state_->contract, state_->declaration, sequence,
+        String::concat(String::validated(name), "[request#", sequence, "]"),
+        source_utf8 ? String::from_utf8_validated(source) : String{},
+        String::from_utf8_validated(entry_name), options)};
+    result->source_path_ = String::from_utf8_validated(name);
     state_->latest_request = sequence;
-    const auto report = [&](std::string message, language::SourcePosition position = {}) {
-        result->declaration_error_ =
-            Error{ErrorCode::invalid_definition, result->source_name + ":" + std::to_string(position.line) + ":" +
-                                                     std::to_string(position.column) + ": " + std::move(message)};
+    const auto report = [&](StringView message, language::SourcePosition position = {}) {
+        result->declaration_error_ = Error{
+            ErrorCode::invalid_definition,
+            String::concat(result->source_name, ":", position.line, ":", position.column, ": ",
+                           utf8_or_fallback(message, "Invalid source declaration."_s))};
     };
-    auto declarations = language::collect_declarations(source);
+    auto declarations = language::collect_declarations(source.std_view());
     if (!declarations) {
-        report(declarations.error().message, declarations.error().position);
+        report(StringView{declarations.error().message}, declarations.error().position);
         return result;
     }
-    auto array_uses = language::collect_array_types(source);
+    if (!source_utf8) {
+        report("Source files require valid UTF-8.");
+        return result;
+    }
+    auto array_uses = language::collect_array_types(source.std_view());
     if (!array_uses) {
-        report(array_uses.error().message, array_uses.error().position);
+        report(StringView{array_uses.error().message}, array_uses.error().position);
         return result;
     }
     // Published declarations are immutable; new ones publish with the next version.
     const auto& previous = state_->contract->declarations;
-    const auto published = [&](std::string_view name) {
-        return std::ranges::find(previous, name, &language::TypeDeclaration::name) != previous.end();
+    const auto published = [&](StringView type_name) {
+        return std::ranges::any_of(previous, [&](const auto& decl) { return StringView{decl.name} == type_name; });
     };
     for (const auto& type : previous) {
         const auto found = std::ranges::find(*declarations, type.name, &language::TypeDeclaration::name);
@@ -1231,7 +1250,8 @@ Result<Program::Request> Program::request(std::string_view name, std::string_vie
     }
     definitions->remove_if([&](const auto& definition) {
         return published(definition.name) ||
-               (language::synthesized_array_name(definition.name) && runtime.find_type(definition.name).has_value());
+               (language::synthesized_array_name(definition.name.view().std_view()) &&
+                runtime.find_type(definition.name).has_value());
     });
     if (definitions->empty())
         return result;
@@ -1251,13 +1271,9 @@ Result<Program::Request> Program::request(std::string_view name, std::string_vie
     return result;
 }
 
-Result<Program::Request> Program::request(std::string name, std::uint64_t version, Array<SourceFile> files,
+Result<Program::Request> Program::request(Utf8Text name, std::uint64_t version, Array<SourceFile> files,
                                           CompileOptions options) {
-    SourceSnapshot snapshot{std::move(name), version, {}};
-    snapshot.files.reserve(files.size());
-    for (auto& file : files)
-        snapshot.files.push_back(std::move(file));
-    return request(std::move(snapshot), options);
+    return request(SourceSnapshot{std::move(name), version, std::move(files)}, options);
 }
 
 Result<Program::Candidate> Program::prepare(const Request& request, Optional<NeedsCode> needs_code,
@@ -1311,11 +1327,12 @@ Result<Program::Emission> Program::emit_entry(const Request& request, Optional<N
                                     return (*static_cast<decltype(callback)*>(context))({functions, count});
                                 }};
     const auto status = atelier_compile_business(
-        &contract.actual_services, request->source_name.c_str(), request->source.data(),
+        &contract.actual_services, request->source_name.c_str(), request->source.c_str(),
         static_cast<std::uint32_t>(request->source.size()), &environment, &output, diagnostic, sizeof(diagnostic),
         request->entry_name.c_str(), request->options, needs_code ? &selection : nullptr, timing);
     if (status != 0)
-        return std::unexpected(Error{ErrorCode::invalid_definition, diagnostic});
+        return std::unexpected(
+            Error{ErrorCode::invalid_definition, utf8_or_fallback(StringView{diagnostic}, "Source compilation failed."_s)});
     return Emission{request, output};
 }
 
@@ -1337,11 +1354,11 @@ Result<Program::Candidate> Program::finish_entry(Emission emission) {
             Error{ErrorCode::invalid_definition, "Compiler did not produce the selected module entry."});
     auto compatible = contract.compatible(code.get(), request->source_name, request->declaration_.get());
     if (!compatible)
-        return std::unexpected(
-            Error{compatible.error().code, request->source_name + ": " + compatible.error().message});
-    auto metadata = std::make_shared<const DiagnosticMetadata>(
-        DiagnosticMetadata{owner->id, request->sequence, info.function_name, request->source_path_,
-                           diagnostic_locations(info, nullptr, request->source_path_, request->sequence)});
+        return std::unexpected(Error{compatible.error().code,
+                                     String::concat(request->source_name, ": ", compatible.error().message)});
+    auto metadata = std::make_shared<const DiagnosticMetadata>(DiagnosticMetadata{
+        owner->id, request->sequence, utf8_or_fallback(StringView{info.function_name}), request->source_path_,
+        diagnostic_locations(info, nullptr, request->source_path_, request->sequence)});
     auto debug = make_debug_metadata(*metadata, info);
     return Program::Candidate{std::make_unique<Program::Prepared>(
         request->owner_, request->contract_, request->compilation_contract_, request->type_publication_,
@@ -1373,7 +1390,8 @@ Result<void> Program::try_publish(Candidate& candidate) {
         const auto info = atelier_business_info(prepared.code.get());
         ATELIER_TRY_BIND(signature,
                          prepared.compilation_contract->resolve_signature(info, prepared.type_publication.get()));
-        declaration = std::make_shared<const Declaration>(Declaration{info.function_name, std::move(*signature)});
+        declaration = std::make_shared<const Declaration>(
+            Declaration{utf8_or_fallback(StringView{info.function_name}), std::move(*signature)});
     }
     auto version =
         std::shared_ptr<const Version>{new Version(prepared.compilation_contract, declaration, prepared.sequence,

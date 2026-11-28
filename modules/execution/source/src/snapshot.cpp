@@ -10,12 +10,12 @@
 
 namespace atelier::source {
 namespace {
-std::unexpected<Error> fail(std::string message) {
+std::unexpected<Error> fail(Utf8Text message) {
     return std::unexpected(Error{ErrorCode::invalid_definition, std::move(message)});
 }
 }
 
-std::uint64_t content_hash(std::string_view text, std::uint64_t seed) noexcept {
+std::uint64_t content_hash(StringView text, std::uint64_t seed) noexcept {
     for (const auto c : text) {
         seed ^= static_cast<unsigned char>(c);
         seed *= 1099511628211ULL;
@@ -23,7 +23,7 @@ std::uint64_t content_hash(std::string_view text, std::uint64_t seed) noexcept {
     return seed ? seed : 1;
 }
 
-Result<SourceFile> read_source_file(const std::filesystem::path& path, std::string snapshot_path) {
+Result<SourceFile> read_source_file(const std::filesystem::path& path, Utf8Text snapshot_path) {
     constexpr std::uint64_t limit = 1024 * 1024;
     auto native = platform::windows_file_path(path);
     if (!native)
@@ -33,19 +33,21 @@ Result<SourceFile> read_source_file(const std::filesystem::path& path, std::stri
         return fail("Source file path is not valid UTF-16.");
     std::ifstream file(*native, std::ios::binary | std::ios::ate);
     if (!file)
-        return fail("Cannot read " + *name);
+        return fail(String::concat("Cannot read ", *name));
     const auto size = file.tellg();
     if (size < 0 || static_cast<std::uint64_t>(size) > limit)
-        return fail("Source file exceeds the 1 MiB limit: " + *name);
-    std::string text(static_cast<std::size_t>(size), '\0');
+        return fail(String::concat("Source file exceeds the 1 MiB limit: ", *name));
+    Array<char> raw;
+    raw.resize_uninitialized(static_cast<std::size_t>(size));
     file.seekg(0);
-    if (!file.read(text.data(), static_cast<std::streamsize>(text.size())))
-        return fail("Could not read the complete file " + *name);
-    if (!StringView(text).is_valid_utf8())
-        return fail("Source file is not valid UTF-8: " + *name);
-    const auto version = content_hash(text);
-    if (text.starts_with("\xef\xbb\xbf"))
-        text.erase(0, 3);
+    if (!raw.empty() && !file.read(raw.data(), static_cast<std::streamsize>(raw.size())))
+        return fail(String::concat("Could not read the complete file ", *name));
+    StringView view{raw.data(), raw.size()};
+    if (!view.is_valid_utf8())
+        return fail(String::concat("Source file is not valid UTF-8: ", *name));
+    const auto version = content_hash(view);
+    if (view.starts_with("\xef\xbb\xbf"))
+        view.remove_prefix(3);
     std::error_code error;
     const auto absolute = std::filesystem::absolute(path, error);
     if (error)
@@ -53,7 +55,8 @@ Result<SourceFile> read_source_file(const std::filesystem::path& path, std::stri
     auto location = platform::utf16_to_utf8(absolute.lexically_normal().generic_wstring());
     if (!location)
         return fail("Absolute source file path is not valid UTF-16.");
-    return SourceFile{std::move(snapshot_path), version, std::move(text), std::move(*location)};
+    return SourceFile{std::move(snapshot_path).into_string(), version, String::from_utf8_validated(view),
+                      std::move(*location)};
 }
 
 Result<Array<std::filesystem::path>> engine_source_paths(const std::filesystem::path& root) {
@@ -93,7 +96,7 @@ Result<Array<SourceFile>> engine_sources(const std::filesystem::path& root) {
         auto name = platform::utf16_to_utf8(relative.generic_wstring());
         if (!name)
             return fail("Engine source file path is not valid UTF-16.");
-        ATELIER_TRY_BIND(file, read_source_file(root / relative, "engine/" + *name));
+        ATELIER_TRY_BIND(file, read_source_file(root / relative, String::concat("engine/", *name)));
         files.add(std::move(*file));
     }
     return files;
@@ -110,40 +113,41 @@ std::filesystem::path default_engine_root() {
     return std::filesystem::path(executable).parent_path() / L"engine";
 }
 
-Result<std::string> source_type_name(const Runtime& runtime, TypeId id) {
+Result<String> source_type_name(const Runtime& runtime, TypeId id) {
     ATELIER_TRY_BIND(described, runtime.describe(id));
     const TypeInfo& info = **described;
     const auto unprojectable = [&] {
-        return std::unexpected(Error{ErrorCode::invalid_type, "Type has no Source projection: " + info.name});
+        return std::unexpected(
+            Error{ErrorCode::invalid_type, String::concat("Type has no Source projection: ", info.name)});
     };
-    if (language::editor_reserved(info.name) || info.contains_references)
+    if (language::editor_reserved(info.name.view().std_view()) || info.contains_references)
         return unprojectable();
     switch (info.kind) {
     case TypeKind::scalar:
         if (runtime.native_type<bool>() == id)
-            return std::string("bool");
+            return "bool"_s;
         if (runtime.native_type<std::int32_t>() == id)
-            return std::string("int");
+            return "int"_s;
         if (runtime.native_type<std::uint32_t>() == id)
-            return std::string("uint");
+            return "uint"_s;
         if (runtime.native_type<float>() == id)
-            return std::string("float");
+            return "float"_s;
         if (runtime.native_type<double>() == id)
-            return std::string("double");
+            return "double"_s;
         return unprojectable();
     case TypeKind::enumeration:
-        return info.enumeration ? Result<std::string>{info.name} : unprojectable();
+        return info.enumeration ? Result<String>{info.name} : unprojectable();
     case TypeKind::string:
-        return info.sequence_view ? Result<std::string>{"String"} : unprojectable();
+        return info.sequence_view ? Result<String>{"String"_s} : unprojectable();
     case TypeKind::record:
         if (info.math)
-            return std::string(math::short_name(info.math));
+            return String::from_utf8_validated(StringView{math::short_name(info.math)});
         return info.name;
     case TypeKind::array: {
         if (!info.sequence_view || !info.element)
             return unprojectable();
         ATELIER_TRY_BIND(elem, source_type_name(runtime, *info.element));
-        return info.standard_array_layout ? "Array<" + *elem + ">" : info.name;
+        return info.standard_array_layout ? String::concat("Array<", *elem, ">") : info.name;
     }
     case TypeKind::object:
         return unprojectable();

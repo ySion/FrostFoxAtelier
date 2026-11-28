@@ -45,13 +45,13 @@ void verify_reflection() {
         auto derived_def = atelier::reflection::Definition<DerivedCounter>::build(runtime);
         {
             TypeDefinition colliding_described;
-            colliding_described.name = "reflection.CollidingDescribed";
+            colliding_described.name = "reflection.CollidingDescribed"_s;
             colliding_described.kind = TypeKind::object;
-            MethodDefinition callable{"process", {}, {}, true};
+            MethodDefinition callable{"process"_s, {}, {}, true};
             callable.signature.receiver = ReceiverDefinition{TypeReference{"reflection.CollidingDescribed"}, true};
             callable.invoke = [](CallContext&) noexcept -> Result<void> { return {}; };
             colliding_described.methods.add(std::move(callable));
-            DescribedMethodDefinition described{"process", {}};
+            DescribedMethodDefinition described{"process"_s, {}};
             described.signature.receiver = ReceiverDefinition{TypeReference{"reflection.CollidingDescribed"}, false};
             colliding_described.described_methods.add(std::move(described));
             const auto colliding = runtime.register_type(std::move(colliding_described));
@@ -59,7 +59,7 @@ void verify_reflection() {
                     "Runtime accepted same-name callable and described methods on one type.");
         }
         const auto quat_type = take(runtime.native_type<math::Quaternion>());
-        MethodDefinition partial_method{"partial_rotation", {}, {}, true};
+        MethodDefinition partial_method{"partial_rotation"_s, {}, {}, true};
         partial_method.signature.receiver = ReceiverDefinition{TypeReference::native<DerivedCounter>(), true};
         partial_method.signature.result = ValueDefinition{quat_type};
         partial_method.invoke = [](CallContext& ctx) noexcept -> Result<void> {
@@ -117,15 +117,14 @@ void verify_reflection() {
         take(runtime.destroy(object.id()));
         require(Counter::live == 0, "Generated destructor did not run.");
     }
-    const MetadataList expected{{"test.binding", "evaluate.values"},
-                                {"test.note", std::string{"分组\0尾", 10}}};
-    const MetadataList expected_type_meta{{"source.contract_method", "advance"}, {"test.order", "second"}};
-    const MetadataList expected_run_over{{"procedural.role", "run_over"}};
-    const MetadataList expected_param{{"procedural.layer", "point"},
-                                      {"procedural.name", "P"},
-                                      {"procedural.optional", "true"},
-                                      {"procedural.role", "in"},
-                                      {"test.param", "ok"}};
+    const MetadataList expected{{"test.binding"_s, "evaluate.values"_s}, {"test.note"_s, "分组\0尾"_s}};
+    const MetadataList expected_type_meta{{"source.contract_method"_s, "advance"_s}, {"test.order"_s, "second"_s}};
+    const MetadataList expected_run_over{{"procedural.role"_s, "run_over"_s}};
+    const MetadataList expected_param{{"procedural.layer"_s, "point"_s},
+                                      {"procedural.name"_s, "P"_s},
+                                      {"procedural.optional"_s, "true"_s},
+                                      {"procedural.role"_s, "in"_s},
+                                      {"test.param"_s, "ok"_s}};
     require(retained.fields[0].metadata == expected && retained_derived.metadata == expected_type_meta &&
                 retained_derived.fields[1].metadata == expected_run_over &&
                 retained_derived.methods[0].parameter_metadata.size() == 4 &&

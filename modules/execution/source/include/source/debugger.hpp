@@ -23,19 +23,26 @@ struct DebugCommand {
 };
 
 struct DebugBreakpoint {
-    std::string path;
+    String path;
 
     std::uint64_t source_version{}; // Exact source identity, including a literal zero version.
 
     std::size_t line{};
 
     std::size_t column{}; // column == 0 binds every executable site on this exact line.
+
+    DebugBreakpoint() noexcept = default;
+
+    DebugBreakpoint(Utf8Text source_path, std::uint64_t version = 0, std::size_t source_line = 0,
+                    std::size_t source_column = 0) noexcept
+        : path(std::move(source_path).into_string()), source_version(version), line(source_line),
+          column(source_column) {}
 };
 
 struct DebugValue {
-    std::string name;
+    String name;
 
-    std::string type_name;
+    String type_name;
 
     TypeId type;
 
@@ -51,7 +58,7 @@ struct DebugValue {
 
     bool object_live{};
 
-    std::string text;
+    String text;
 
     Array<DebugValue> children;
 

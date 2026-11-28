@@ -6,11 +6,11 @@ struct Program::ModuleRequest {
 
         language::MappedSource source;
 
-        Array<std::string> names;
+        Array<String> names;
 
-        std::string owner; // the class, "" for the project unit, or "engine/<module>"
+        String owner; // the class, "" for the project unit, or "engine/<module>"
 
-        Array<Array<std::string>> parameter_names;
+        Array<Array<String>> parameter_names;
 
         Array<Array<MetadataList>> parameter_metadata;
 

@@ -137,7 +137,7 @@ struct ClassDeclaration {
 // File collection and class structure use the ordinary lexer. Function bodies,
 // signatures and constant expressions are checked by the one typed Source parser.
 struct SourceModule {
-    std::vector<std::string> engine_modules;
+    Array<String> engine_modules;
 
     std::vector<TopLevel> declarations; // snapshot order
 

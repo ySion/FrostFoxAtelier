@@ -4,7 +4,7 @@
 
 namespace atelier::source::detail {
 struct DebugVariableMetadata {
-    std::string name;
+    String name;
 
     BusinessType type;
 
@@ -22,7 +22,7 @@ struct DebugTables {
 
     Array<std::uint32_t> sites;
 
-    Array<std::string> failure_messages;
+    Array<String> failure_messages;
 
     Array<BusinessFailureMessage> failure_message_views;
 };

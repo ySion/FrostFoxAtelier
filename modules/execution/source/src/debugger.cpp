@@ -51,7 +51,9 @@ std::shared_ptr<const DebugTables> copy_debug_tables(const BusinessCodeInfo& inf
         for (std::uint32_t j = 0; j < input.variable_count; ++j) {
             const auto& variable = input.variables[j];
             assert(variable.name);
-            output.variables.add({variable.name, variable.type, variable.storage, variable.passing});
+            auto valid_name = String::from_utf8(StringView{variable.name});
+            output.variables.add(
+                {valid_name ? std::move(*valid_name) : String{}, variable.type, variable.storage, variable.passing});
         }
     }
     if (info.debug_site_count)
@@ -60,12 +62,13 @@ std::shared_ptr<const DebugTables> copy_debug_tables(const BusinessCodeInfo& inf
     tables->failure_messages.reserve(info.failure_message_count);
     tables->failure_message_views.reserve(info.failure_message_count);
     for (std::uint32_t i = 0; i < info.failure_message_count; ++i) {
-        if (info.failure_messages && info.failure_messages[i].data)
-            tables->failure_messages.emplace(info.failure_messages[i].data, info.failure_messages[i].size);
-        else
+        if (info.failure_messages && info.failure_messages[i].data) {
+            auto msg = String::from_utf8(StringView{info.failure_messages[i].data, info.failure_messages[i].size});
+            tables->failure_messages.add(msg ? std::move(*msg) : "Source execution failed."_s);
+        } else
             tables->failure_messages.emplace();
         const auto& stored = tables->failure_messages.back();
-        tables->failure_message_views.add({stored.data(), stored.size()});
+        tables->failure_message_views.add({stored.c_str(), stored.size()});
     }
     return tables;
 }

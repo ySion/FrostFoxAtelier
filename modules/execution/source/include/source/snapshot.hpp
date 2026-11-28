@@ -12,7 +12,7 @@ using SourceFile = language::SourceFile;
 using SourceSnapshot = language::SourceSnapshot;
 
 struct ClassInfo {
-    std::string name;
+    String name;
 
     TypeId type;
 
@@ -22,11 +22,11 @@ struct ClassInfo {
 // parameter_names has one name per signature parameter; neither it nor code is part of entry compatibility.
 // code is process-unique and kept only while the entry's compile unit input is unchanged.
 struct EntryInfo {
-    std::string name;
+    String name;
 
     FunctionSignature signature;
 
-    Array<std::string> parameter_names;
+    Array<String> parameter_names;
 
     std::uint64_t code{};
 
@@ -34,9 +34,9 @@ struct EntryInfo {
 };
 
 struct FunctionParameterInfo {
-    std::string name;
+    String name;
 
-    std::string type;
+    String type;
 
     ParameterPassing passing{ParameterPassing::value};
 
@@ -44,24 +44,24 @@ struct FunctionParameterInfo {
 };
 
 struct FunctionInfo {
-    std::string name;
+    String name;
 
-    std::string engine_module;
+    String engine_module;
 
-    std::string return_type;
+    String return_type;
 
     Array<FunctionParameterInfo> parameters;
 
     bool parallel_safe{};
 
-    std::string description;
+    String description;
 };
 
 // FNV-1a 64; never 0.
-[[nodiscard]] std::uint64_t content_hash(std::string_view, std::uint64_t seed = 14695981039346656037ULL) noexcept;
+[[nodiscard]] std::uint64_t content_hash(StringView, std::uint64_t seed = 14695981039346656037ULL) noexcept;
 
 // A saved source file of at most 1 MiB UTF-8. The version hashes the saved bytes; the text drops a UTF-8 BOM.
-[[nodiscard]] Result<SourceFile> read_source_file(const std::filesystem::path&, std::string snapshot_path);
+[[nodiscard]] Result<SourceFile> read_source_file(const std::filesystem::path&, Utf8Text snapshot_path);
 
 // Engine Source is <root>/<module>/**.source. Paths are relative to root and sorted; a missing root has none.
 [[nodiscard]] Result<Array<std::filesystem::path>> engine_source_paths(const std::filesystem::path& root);
@@ -73,5 +73,5 @@ struct FunctionInfo {
 [[nodiscard]] std::filesystem::path default_engine_root();
 
 // Formats a committed Runtime value or enum TypeId using its canonical Source spelling.
-[[nodiscard]] Result<std::string> source_type_name(const Runtime&, TypeId);
+[[nodiscard]] Result<String> source_type_name(const Runtime&, TypeId);
 }

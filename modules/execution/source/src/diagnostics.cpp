@@ -68,7 +68,8 @@ DiagnosticReport Diagnostics::snapshot() const {
     if (const auto* found = location(state))
         report.location = *found;
     if (state.failed) {
-        report.error = Error{state.error_code, std::string(state.error, state.error_size)};
+        auto msg = String::from_utf8(StringView{state.error, state.error_size});
+        report.error = Error{state.error_code, msg ? std::move(*msg) : "Source execution failed."_s};
         if (report.location)
             report.error->source = report.location->source;
         report.error->element = state.error_element;

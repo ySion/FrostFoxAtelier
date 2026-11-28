@@ -16,7 +16,7 @@ struct DiagnosticOptions {
 enum class DiagnosticStatus { unused, ready, running, suspended, completed, failed, cancelled, rejected };
 
 struct DiagnosticLocation {
-    std::string function;
+    String function;
 
     SourceLocation source;
 };
@@ -36,9 +36,9 @@ struct DiagnosticReport {
 
     std::uint64_t code_version{};
 
-    std::string entry;
+    String entry;
 
-    std::string source_name;
+    String source_name;
 
     DiagnosticStatus status{DiagnosticStatus::unused};
 
@@ -83,17 +83,17 @@ public:
 };
 
 struct CompilationArtifacts {
-    std::string entry_symbol;
+    String entry_symbol;
 
-    std::string target_triple;
+    String target_triple;
 
-    std::string cpu_features;
+    String cpu_features;
 
-    std::string original_ir;
+    String original_ir;
 
-    std::string optimized_ir;
+    String optimized_ir;
 
-    std::string assembly;
+    String assembly;
 
     // Actual compiler output before JIT relocation; section-relative symbols
     // and relocations are included in assembly. These bytes are not executable.

@@ -14,7 +14,7 @@ struct MaterialLayout {
 struct MaterialParameter {
     // Persistent B0 key is the declared field path, never a Runtime FieldId or
     // GPU offset. Changing the path is an explicit parameter-interface change.
-    std::string key;
+    String key;
 
     std::uint32_t components{1}; // float / vector2 / vector3 / vector4
 
@@ -22,7 +22,7 @@ struct MaterialParameter {
 };
 
 struct MaterialTextureInput {
-    std::string key; // Declared field path, sharing the numeric parameter key space.
+    String key; // Declared field path, sharing the numeric parameter key space.
 
     std::uint32_t slot; // Local to this program version; never persisted as identity.
 };
@@ -56,7 +56,7 @@ class MaterialProgram final {
     explicit MaterialProgram(std::shared_ptr<const State>);
 
     friend Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime&, TypeId, TypeId, TypeId,
-                                                                           std::string_view, std::string_view) noexcept;
+                                                                           StringView, StringView) noexcept;
 
 public:
     MaterialLayout context_layout() const noexcept;
@@ -81,7 +81,7 @@ public:
     // Programs using sample_orientation additionally require the global
     // float2 atelier_material_sample_orientation(uint environment,uint local_slot,float2 uv).
     // Each call's environment selects its resource binding base, not global state.
-    Result<std::string> hlsl(std::string_view name_space) const;
+    Result<String> hlsl(StringView name_space) const;
 
     // Same Context/Parameters and loader, with float ms_coverage(uint environment,
     // ms_Context,ms_Parameters). Emits only the data/control dependencies of the
@@ -90,7 +90,7 @@ public:
     // Uses the point sampling/orientation bridges above, never SampleGrad.
     // Returns invalid_type for a missing float coverage field or capacity_exceeded
     // when projection exceeds the node budget. Both failures are local to this variant.
-    Result<std::string> hlsl_coverage(std::string_view name_space) const;
+    Result<String> hlsl_coverage(StringView name_space) const;
 
     // Same plain Context/Params/Output and parameter loader, but the entry is
     // ms_shade_footprint(uint,ms_Context center,ms_Context d0,ms_Context d1,ms_Parameters).
@@ -105,7 +105,7 @@ public:
     // Unavailable changes propagate per component, never via a whole-Context flag.
     // sample_orientation uses the same global bridge as point, evaluated at the
     // center; its two changes are zero (piecewise-constant interval selection).
-    Result<std::string> hlsl_footprint(std::string_view name_space) const;
+    Result<String> hlsl_footprint(StringView name_space) const;
 
     // All required slots must be bound, even if a branch skips sampling. Finite
     // inputs/sample results/outputs only; missing bindings and failures leave
@@ -126,7 +126,7 @@ public:
 // no numeric slots, loops, objects, async or host calls. Resource defaults,
 // sampling and empty values belong to MS author data.
 Result<std::shared_ptr<const MaterialProgram>> compile_material(Runtime&, TypeId context, TypeId output,
-                                                                TypeId texture_input, std::string_view source_name,
-                                                                std::string_view source) noexcept;
+                                                                TypeId texture_input, StringView source_name,
+                                                                StringView source) noexcept;
 
 }

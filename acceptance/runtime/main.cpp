@@ -39,9 +39,9 @@ void native_instance_defaults() {
     };
     const auto sample = take(runtime.register_type(std::move(definition)));
     TypeDefinition holder;
-    holder.name = "gc.SampleHolder";
+    holder.name = "gc.SampleHolder"_s;
     holder.kind = TypeKind::object;
-    holder.fields = {{"sample", {sample}}};
+    holder.fields = {{"sample"_s, {sample}}};
     const auto type = take(runtime.register_type(std::move(holder)));
     const std::array path{take(runtime.describe(type))->fields[0].id, take(runtime.describe(sample))->fields[0].id};
     require(constructions == 0, "Publication ran a per-instance native constructor.");
@@ -54,7 +54,7 @@ void native_instance_defaults() {
 
 void sparse_sweep() {
     Runtime runtime;
-    const auto type = take(runtime.register_type({"gc.Sparse", TypeKind::object, {}, {}, {}}));
+    const auto type = take(runtime.register_type({"gc.Sparse"_s, TypeKind::object, {}, {}, {}}));
     Array<ObjectRoot> survivors;
     survivors.reserve(8192);
     for (unsigned i = 0; i != 8192; ++i)
@@ -81,7 +81,7 @@ void sparse_sweep() {
 
 void runtime_sequence() {
     Runtime runtime;
-    const auto object_type = take(runtime.register_type({"gc.Object", TypeKind::object, {}, {}, {}}));
+    const auto object_type = take(runtime.register_type({"gc.Object"_s, TypeKind::object, {}, {}, {}}));
     auto owner = take(runtime.create(object_type));
     const auto identity = owner.id();
     take(runtime.begin_collection());
@@ -123,21 +123,21 @@ void runtime_sequence() {
 
     // Forward-referenced empty described record embedded inline in outer record and object prototypes.
     const auto f32_type = take(runtime.native_type<float>());
-    FieldDefinition holder_weight{"weight", {f32_type}};
+    FieldDefinition holder_weight{"weight"_s, {f32_type}};
     holder_weight.default_leaves = {Scalar{3.5f}};
     TypeDefinition outer_def;
-    outer_def.name = "gc.OuterRecord";
+    outer_def.name = "gc.OuterRecord"_s;
     outer_def.kind = TypeKind::record;
-    outer_def.fields = {{"marker", {TypeReference{"gc.EmptyRecord"}}}, {"scale", {f32_type}}};
+    outer_def.fields = {{"marker"_s, {TypeReference{"gc.EmptyRecord"}}}, {"scale"_s, {f32_type}}};
     outer_def.fields[1].range = FieldRange{.hard_max = Scalar{2.0f}};
     TypeDefinition holder_def;
-    holder_def.name = "gc.HolderObject";
+    holder_def.name = "gc.HolderObject"_s;
     holder_def.kind = TypeKind::object;
     holder_def.fields = {
-        {"outer", {TypeReference{"gc.OuterRecord"}}}, {"empty", {TypeReference{"gc.EmptyRecord"}}}, holder_weight};
-    holder_def.fields.add({"other", {TypeReference{"gc.OuterRecord"}}});
+        {"outer"_s, {TypeReference{"gc.OuterRecord"}}}, {"empty"_s, {TypeReference{"gc.EmptyRecord"}}}, holder_weight};
+    holder_def.fields.add({"other"_s, {TypeReference{"gc.OuterRecord"}}});
     TypeDefinition empty_def;
-    empty_def.name = "gc.EmptyRecord";
+    empty_def.name = "gc.EmptyRecord"_s;
     empty_def.kind = TypeKind::record;
     const auto empty_batch =
         take(runtime.register_types({std::move(outer_def), std::move(holder_def), std::move(empty_def)}));
@@ -176,13 +176,13 @@ void runtime_sequence() {
     take(runtime.destroy_value(empty_batch[0], outer_bytes));
 
     TypeDefinition desc_arr_def;
-    desc_arr_def.name = "gc.OuterArray";
+    desc_arr_def.name = "gc.OuterArray"_s;
     desc_arr_def.kind = TypeKind::array;
     desc_arr_def.element = TypeReference{empty_batch[0]};
     TypeDefinition arr_owner_def;
-    arr_owner_def.name = "gc.ArrayOwner";
+    arr_owner_def.name = "gc.ArrayOwner"_s;
     arr_owner_def.kind = TypeKind::object;
-    arr_owner_def.fields = {{"items", {TypeReference{"gc.OuterArray"}}}};
+    arr_owner_def.fields = {{"items"_s, {TypeReference{"gc.OuterArray"}}}};
     const auto arr_batch = take(runtime.register_types({std::move(desc_arr_def), std::move(arr_owner_def)}));
     auto arr_owner = take(runtime.create(arr_batch[1]));
     const auto* arr_owner_info = take(runtime.describe(arr_batch[1]));

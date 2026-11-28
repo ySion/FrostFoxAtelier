@@ -12,8 +12,14 @@
 namespace atelier::source::detail {
 using CodeOwner = std::unique_ptr<BusinessCode, decltype(&atelier_destroy_business)>;
 
+[[nodiscard]] inline String utf8_or_fallback(StringView text, String fallback = {}) noexcept {
+    if (auto valid = String::from_utf8(text))
+        return std::move(*valid);
+    return fallback;
+}
+
 struct BoundField {
-    std::string name;
+    String name;
 
     Array<FieldId> path;
 
@@ -34,7 +40,7 @@ struct BoundField {
 };
 
 struct BoundMethod {
-    std::string name;
+    String name;
 
     MethodId id;
 
@@ -56,11 +62,11 @@ struct BoundMethod {
 struct BoundEnum {
     TypeId type;
 
-    std::string name;
+    String name;
 
     ValueKind underlying;
 
-    Array<std::pair<std::string, std::uint32_t>> values;
+    Array<std::pair<String, std::uint32_t>> values;
 
     bool flags{};
 
@@ -68,7 +74,7 @@ struct BoundEnum {
 };
 
 struct BoundValueField {
-    std::string name;
+    String name;
 
     BusinessType type;
 
@@ -80,7 +86,7 @@ struct BoundValueField {
 struct BoundValue {
     TypeId type;
 
-    std::string name;
+    String name;
 
     ValueKind kind;
 
@@ -116,7 +122,7 @@ struct Binding {
 
     TypeId type;
 
-    std::string_view name;
+    StringView name;
 
     Array<BoundField> fields;
 
@@ -245,7 +251,7 @@ struct Invocation {
 
     NativeFailure error_storage;
 
-    Optional<std::string_view> external_error{};
+    Optional<StringView> external_error{};
 
     Invocation(Runtime&, const Binding&, BusinessFrameLayout, BusinessTrace* = nullptr, DebugSessionState* = nullptr,
                ExecutionScope* = nullptr);
@@ -256,20 +262,18 @@ struct Invocation {
 
     void fail(const Error&) noexcept;
 
-    void fail(ErrorCode, std::string_view, std::uint32_t element = no_failure_element,
-              std::string_view layer = {}) noexcept;
+    void fail(ErrorCode, StringView, std::uint32_t element = no_failure_element, StringView layer = {}) noexcept;
 
     void fail_native(const NativeFailure&) noexcept;
 
-    void fail_view(ErrorCode, std::string_view, std::uint32_t element = no_failure_element,
-                   std::string_view layer = {}) noexcept;
+    void fail_view(ErrorCode, StringView, std::uint32_t element = no_failure_element, StringView layer = {}) noexcept;
 
     ErrorCode error_code() const noexcept { return static_cast<ErrorCode>(error_storage.code); }
 
-    std::string_view error_message() const noexcept {
+    StringView error_message() const noexcept {
         if (!failed)
             return {};
-        return external_error ? *external_error : std::string_view(error_storage.message);
+        return external_error ? *external_error : StringView{error_storage.message};
     }
 
     void invalidate_native() noexcept;
@@ -304,13 +308,13 @@ extern const BusinessServices services;
 
 bool same_environment(const Binding&, const BusinessEnvironment&);
 
-std::string_view resolve_failure_layer_view(const Binding&, std::uint32_t packed_layer) noexcept;
+StringView resolve_failure_layer_view(const Binding&, std::uint32_t packed_layer) noexcept;
 
 Optional<ErrorElement> resolve_failure_element(const Binding&, const BusinessFailure&);
 
 Error execution_error(const Invocation*, const Binding&, const BusinessFailure&,
                       const BusinessFailureMessage* failure_messages = nullptr, std::uint32_t failure_message_count = 0,
-                      std::string_view fallback_message = "Source execution failed.");
+                      StringView fallback_message = "Source execution failed.");
 
 bool try_bind_receiver(Invocation&, bool requires_receiver, ObjectId) noexcept;
 

@@ -51,6 +51,8 @@ struct ParameterType {
     std::uint64_t default_bits{};
 
     bool mutates_structure{};
+
+    bool changes_length{};
 };
 
 struct EnumItem {
@@ -237,6 +239,82 @@ enum class MathOperation {
     pow
 };
 
+enum class SequenceOperation : std::uint8_t {
+    str_empty,
+    str_is_ascii,
+    str_starts_with,
+    str_ends_with,
+    str_contains,
+    str_equals_ignore_case,
+    str_starts_with_ignore_case,
+    str_ends_with_ignore_case,
+    str_find,
+    str_rfind,
+    str_count,
+    str_common_prefix_length,
+    str_try_parse_int,
+    str_try_parse_uint,
+    str_try_parse_float,
+    str_try_parse_double,
+    str_append_scalar,
+    str_append_ascii,
+    str_append_hex,
+    str_append_float_fixed,
+    str_pad_left,
+    str_pad_right,
+    str_trim,
+    str_trim_start,
+    str_trim_end,
+    str_to_lower,
+    str_to_upper,
+    str_strip_prefix,
+    str_strip_suffix,
+    str_slice_in_place,
+    str_erase,
+    str_replace,
+    str_replace_all,
+    arr_empty,
+    arr_contains,
+    arr_find,
+    arr_rfind,
+    arr_count,
+    arr_is_sorted,
+    arr_fill,
+    arr_reverse,
+    arr_swap,
+    arr_sort,
+    arr_resize_fill,
+    arr_truncate,
+    arr_pop,
+    arr_insert,
+    arr_remove_at,
+    arr_remove_at_swap,
+    arr_remove,
+    arr_remove_swap
+};
+
+[[nodiscard]] constexpr bool is_try_parse_sequence_operation(SequenceOperation op) noexcept {
+    return op >= SequenceOperation::str_try_parse_int && op <= SequenceOperation::str_try_parse_double;
+}
+
+[[nodiscard]] constexpr bool is_readonly_sequence_operation(SequenceOperation op) noexcept {
+    return (op >= SequenceOperation::str_empty && op <= SequenceOperation::str_common_prefix_length) ||
+           (op >= SequenceOperation::arr_empty && op <= SequenceOperation::arr_is_sorted);
+}
+
+[[nodiscard]] constexpr bool is_length_preserving_array_mutation(SequenceOperation op) noexcept {
+    return op >= SequenceOperation::arr_fill && op <= SequenceOperation::arr_sort;
+}
+
+[[nodiscard]] constexpr bool mutates_sequence_structure(SequenceOperation op) noexcept {
+    return (op >= SequenceOperation::str_append_scalar && op <= SequenceOperation::str_replace_all) ||
+           (op >= SequenceOperation::arr_resize_fill && op <= SequenceOperation::arr_remove_swap);
+}
+
+[[nodiscard]] constexpr bool can_be_statement_sequence_operation(SequenceOperation op) noexcept {
+    return !is_readonly_sequence_operation(op);
+}
+
 struct Expression {
     enum class Kind {
         literal,
@@ -255,6 +333,7 @@ struct Expression {
         length,
         string_literal,
         sequence_mutation,
+        sequence_operation,
         source_call,
         math_construct,
         math_intrinsic,
@@ -288,6 +367,8 @@ struct Expression {
     std::size_t offset{};
 
     SequenceMutation mutation{};
+
+    SequenceOperation sequence_operation{SequenceOperation::str_empty};
 
     std::uint64_t bits{}; // literal payload, including exact double representation
 

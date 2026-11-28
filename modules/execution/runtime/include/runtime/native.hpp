@@ -171,14 +171,14 @@ struct NativeThunk<Pointer, std::tuple<A...>> {
 // Aggregate value inputs cross the generated ABI in independent aligned live
 // storage; only the C++ thunk performs the platform's real by-value call.
 template <auto Pointer>
-MethodDefinition native_method(std::string name, bool preserves_borrows = false, std::string description = {}) {
+MethodDefinition native_method(Utf8Text name, bool preserves_borrows = false, Utf8Text description = {}) {
     using Traits = detail::Method<decltype(Pointer)>;
     using Args = typename Traits::Arguments;
     using Return = typename Traits::Return;
     MethodDefinition method;
-    method.name = std::move(name);
+    method.name = std::move(name).into_string();
     method.preserves_borrows = preserves_borrows;
-    method.description = std::move(description);
+    method.description = std::move(description).into_string();
     method.signature.receiver =
         ReceiverDefinition{TypeReference::native<typename Traits::Owner>(), Traits::receiver_read_only};
     if constexpr (!std::same_as<Return, void>)
@@ -231,11 +231,11 @@ class NativeRegistration {
     static_assert(std::default_initializable<T> && std::is_nothrow_destructible_v<T>);
 
 public:
-    NativeRegistration(Runtime& runtime, std::string name, TypeKind kind, std::string description = {})
+    NativeRegistration(Runtime& runtime, Utf8Text name, TypeKind kind, Utf8Text description = {})
         : runtime_(runtime) {
-        definition_.name = std::move(name);
+        definition_.name = std::move(name).into_string();
         definition_.kind = kind;
-        definition_.description = std::move(description);
+        definition_.description = std::move(description).into_string();
         definition_.native = {sizeof(T), alignof(T), detail::representation<T>(),
                               [](void* address) noexcept -> Result<void> {
                                   std::construct_at(static_cast<T*>(address));
@@ -290,7 +290,7 @@ public:
 
     template <class U = T>
         requires std::is_enum_v<U> && std::same_as<U, T>
-    NativeRegistration& enumerator(std::string name, T value, std::string label = {}, std::string description = {}) {
+    NativeRegistration& enumerator(Utf8Text name, T value, Utf8Text label = {}, Utf8Text description = {}) {
         using Underlying = std::underlying_type_t<T>;
         static_assert(std::same_as<Underlying, std::int32_t> || std::same_as<Underlying, std::uint32_t>,
                       "Reflected enums require an i32/u32 underlying type.");
@@ -299,9 +299,9 @@ public:
         auto& enumeration = *definition_.enumeration;
         if (!label.empty() || !description.empty() || !enumeration.metadata.empty()) {
             enumeration.metadata.resize(enumeration.values.size());
-            enumeration.metadata.add({std::move(label), std::move(description)});
+            enumeration.metadata.add({std::move(label).into_string(), std::move(description).into_string()});
         }
-        enumeration.values.emplace(std::move(name), static_cast<std::uint32_t>(value));
+        enumeration.values.emplace(std::move(name).into_string(), static_cast<std::uint32_t>(value));
         return *this;
     }
 
@@ -323,7 +323,7 @@ public:
     }
 
     template <auto Pointer>
-    NativeRegistration& field(std::string name, std::string description = {}) {
+    NativeRegistration& field(Utf8Text name, Utf8Text description = {}) {
         using Value = typename detail::Member<decltype(Pointer)>::Value;
         return field<Pointer>(std::move(name), {TypeReference::native<Value>()}, {}, {}, {},
                               std::move(description));
@@ -331,30 +331,30 @@ public:
 
     // Explicit descriptions allow references to definitions in the same batch.
     template <auto Pointer>
-    NativeRegistration& field(std::string name, ValueDefinition value, Optional<std::size_t> offset = {},
-                              std::string label = {}, std::string category = {}, std::string description = {}) {
+    NativeRegistration& field(Utf8Text name, ValueDefinition value, Optional<std::size_t> offset = {},
+                              Utf8Text label = {}, Utf8Text category = {}, Utf8Text description = {}) {
         using Traits = detail::Member<decltype(Pointer)>;
         using Value = typename Traits::Value;
         static_assert(std::same_as<typename Traits::Owner, T>);
         static_assert(!std::is_const_v<Value> && !std::is_volatile_v<Value>);
         definition_.fields.add(
-            {std::move(name),
+            {std::move(name).into_string(),
              std::move(value),
              [](void* object) noexcept -> void* { return std::addressof(static_cast<T*>(object)->*Pointer); },
              detail::representation<Value>(),
              true,
              offset,
              {},
-             std::move(label),
-             std::move(category),
-             std::move(description)});
+             std::move(label).into_string(),
+             std::move(category).into_string(),
+             std::move(description).into_string()});
         return *this;
     }
 
     template <auto Pointer>
-    NativeRegistration& hidden_field(std::string name, ValueDefinition value,
-                                     Optional<std::size_t> offset = {}, std::string label = {},
-                                     std::string category = {}, std::string description = {}) {
+    NativeRegistration& hidden_field(Utf8Text name, ValueDefinition value,
+                                     Optional<std::size_t> offset = {}, Utf8Text label = {},
+                                     Utf8Text category = {}, Utf8Text description = {}) {
         field<Pointer>(std::move(name), std::move(value), offset, std::move(label), std::move(category),
                        std::move(description));
         definition_.fields.back().exposed = false;
@@ -362,7 +362,7 @@ public:
     }
 
     template <auto Pointer>
-    NativeRegistration& hidden_field(std::string name, std::string description = {}) {
+    NativeRegistration& hidden_field(Utf8Text name, Utf8Text description = {}) {
         using Value = typename detail::Member<decltype(Pointer)>::Value;
         return hidden_field<Pointer>(std::move(name), {TypeReference::native<Value>()}, {}, {}, {},
                                      std::move(description));
@@ -403,7 +403,7 @@ public:
     }
 
     template <auto Pointer>
-    NativeRegistration& method(std::string name, bool preserves_borrows = false, std::string description = {}) {
+    NativeRegistration& method(Utf8Text name, bool preserves_borrows = false, Utf8Text description = {}) {
         using Traits = detail::Method<decltype(Pointer)>;
         static_assert(std::same_as<typename Traits::Owner, T>);
         definition_.methods.add(
@@ -412,7 +412,7 @@ public:
     }
 
     // Applies to the most recently declared method; one name per parameter.
-    NativeRegistration& parameter_names(Array<std::string> names) {
+    NativeRegistration& parameter_names(Array<String> names) {
         definition_.methods.back().parameter_names = std::move(names);
         return *this;
     }

@@ -31,18 +31,29 @@ class SnapshotBuilder {
 
     std::size_t text_bytes_{};
 
-    std::string text(std::string_view source, bool* truncated = nullptr) {
-        auto count = std::min(source.size(), options_.max_text_bytes - text_bytes_);
-        if (count < source.size()) {
+    String text(StringView source, bool* truncated = nullptr) {
+        const auto budget = options_.max_text_bytes - text_bytes_;
+        auto slice = source;
+        if (budget < source.size()) {
             // Do not split a UTF-8 sequence in either source names or values.
-            while (count && (static_cast<unsigned char>(source[count]) & 0xc0) == 0x80)
-                --count;
+            slice = source.truncate_utf8_or_bytes(budget);
             result_.truncated = true;
             if (truncated)
                 *truncated = true;
         }
-        text_bytes_ += count;
-        return std::string{source.substr(0, count)};
+        if (auto valid = String::from_utf8(slice)) {
+            text_bytes_ += slice.size();
+            return std::move(*valid);
+        }
+        constexpr StringView fallback = "<invalid UTF-8>";
+        const auto fallback_slice = fallback.first(std::min(fallback.size(), budget));
+        if (fallback_slice.size() < fallback.size()) {
+            result_.truncated = true;
+            if (truncated)
+                *truncated = true;
+        }
+        text_bytes_ += fallback_slice.size();
+        return String::from_utf8_validated(fallback_slice);
     }
 
     SourceLocation source_location(const SourceLocation& source) {
@@ -95,8 +106,7 @@ class SnapshotBuilder {
             value.type_name = text((*info)->name, &value.truncated);
     }
 
-    bool append_child(DebugValue& parent, std::string_view name, BusinessType type, const void* data,
-                      std::size_t depth) {
+    bool append_child(DebugValue& parent, StringView name, BusinessType type, const void* data, std::size_t depth) {
         if (elements_ == options_.max_elements || values_ == options_.max_values)
             return false;
         ++elements_;
@@ -115,7 +125,7 @@ class SnapshotBuilder {
         }
     }
 
-    void unavailable(DebugValue& value, std::string_view reason) {
+    void unavailable(DebugValue& value, StringView reason) {
         value.state = DebugValueState::unavailable;
         value.text = text(reason, &value.truncated);
     }
@@ -185,8 +195,12 @@ class SnapshotBuilder {
             }
             if (depth < options_.max_depth) {
                 for (std::size_t i = 0; i < count; ++i) {
-                    if (!append_child(value, "[" + std::to_string(i) + "]", binding->element,
-                                      static_cast<const std::byte*>(elements) + i * size, depth + 1))
+                    char index_name[24];
+                    index_name[0] = '[';
+                    auto* end = std::to_chars(index_name + 1, index_name + sizeof(index_name) - 1, i).ptr;
+                    *end++ = ']';
+                    if (!append_child(value, StringView{index_name, static_cast<std::size_t>(end - index_name)},
+                                      binding->element, static_cast<const std::byte*>(elements) + i * size, depth + 1))
                         break;
                 }
             }
@@ -197,10 +211,12 @@ class SnapshotBuilder {
             const auto scalar = binding->math.precision == math::Precision::f64 ? ValueKind::f64 : ValueKind::f32;
             value.total_children = binding->math.components();
             if (depth < options_.max_depth) {
-                constexpr std::string_view component_names[]{"x", "y", "z", "w"};
+                constexpr StringView component_names[]{"x", "y", "z", "w"};
                 for (std::size_t i = 0; i < value.total_children; ++i) {
-                    const auto name = binding->math.shape == math::Shape::matrix4 ? "[" + std::to_string(i) + "]"
-                                                                                  : std::string{component_names[i]};
+                    const String idx_name =
+                        binding->math.shape == math::Shape::matrix4 ? String::concat("[", i, "]") : String{};
+                    const StringView name =
+                        binding->math.shape == math::Shape::matrix4 ? idx_name.view() : component_names[i];
                     if (!append_child(value, name, scalar,
                                       static_cast<const std::byte*>(data) + i * binding->math.scalar_size(), depth + 1))
                         break;
@@ -384,9 +400,10 @@ std::uint32_t debug_point(void* context, BusinessDebugFrame* frame, std::uint32_
             const auto element = failure ? failure->element : no_failure_element;
             const auto layer = failure && element != no_failure_element
                                    ? resolve_failure_layer_view(invocation.binding, failure->layer)
-                                   : std::string_view{};
+                                   : StringView{};
             invocation.fail_view(ErrorCode::invocation_failed,
-                                 message ? *message : std::string_view("Source execution failed."), element, layer);
+                                 message ? StringView{*message} : StringView{"Source execution failed."}, element,
+                                 layer);
         }
         if (state->error_stopped)
             return 1;

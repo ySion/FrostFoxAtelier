@@ -38,19 +38,19 @@ struct NativeFailure {
 
     char layer[32];
 
-    void record(ErrorCode error_code, std::string_view text, std::uint32_t element_index = 0xffffffffu,
-                std::string_view element_layer = {}) noexcept {
+    void record(ErrorCode error_code, StringView text, std::uint32_t element_index = 0xffffffffu,
+                StringView element_layer = {}) noexcept {
         code = static_cast<std::uint32_t>(error_code);
-        if (const auto nul = text.find('\0'); nul != std::string_view::npos)
-            text = text.substr(0, nul);
-        const auto msg_prefix = StringView{text}.truncate_utf8_or_bytes(sizeof(message) - 1);
+        if (const auto nul = text.find('\0'); nul != StringView::npos)
+            text = text.first(nul);
+        const auto msg_prefix = text.truncate_utf8_or_bytes(sizeof(message) - 1);
         if (!msg_prefix.empty())
             std::memcpy(message, msg_prefix.data(), msg_prefix.size());
         message[msg_prefix.size()] = '\0';
         if (element_index != 0xffffffffu) {
-            if (const auto nul = element_layer.find('\0'); nul != std::string_view::npos)
-                element_layer = element_layer.substr(0, nul);
-            const auto layer_prefix = StringView{element_layer}.truncate_utf8_or_bytes(sizeof(layer) - 1);
+            if (const auto nul = element_layer.find('\0'); nul != StringView::npos)
+                element_layer = element_layer.first(nul);
+            const auto layer_prefix = element_layer.truncate_utf8_or_bytes(sizeof(layer) - 1);
             element = element_index;
             if (!layer_prefix.empty())
                 std::memcpy(layer, layer_prefix.data(), layer_prefix.size());
@@ -62,8 +62,8 @@ struct NativeFailure {
     }
 
     void record(const Error& error) noexcept {
-        record(error.code, error.message, error.element ? error.element->index : 0xffffffffu,
-               error.element ? error.element->layer.view() : std::string_view{});
+        record(error.code, error.message.view(), error.element ? error.element->index : 0xffffffffu,
+               error.element ? error.element->layer.view() : StringView{});
     }
 };
 

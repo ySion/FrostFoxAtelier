@@ -18,7 +18,7 @@ void MappedSource::append(const MappedSource& source) {
 
 void MappedSource::append(const SourceFile& source, std::uint32_t file, std::size_t begin, std::size_t end) {
     const auto base = text.size();
-    text.append(source.source, begin, end - begin);
+    text.append(source.source.c_str() + begin, end - begin);
     pieces.push_back({base, text.size(), begin, file});
     text += '\n';
 }
@@ -196,20 +196,20 @@ std::expected<std::string, Diagnostic> function_signature(Tokens& tokens, const 
 }
 
 // The <module> of a well-formed engine/<module>/<file> path; empty for every other path.
-std::string_view engine_module(std::string_view path) {
-    constexpr std::string_view prefix = "engine/";
+StringView engine_module(StringView path) {
+    constexpr StringView prefix = "engine/";
     if (!path.starts_with(prefix))
         return {};
-    const auto rest = path.substr(prefix.size());
-    const auto name = rest.substr(0, rest.find('/'));
-    if (name.empty() || name.size() == rest.size() || !letter(name.front()) || reserved(name) ||
+    const auto rest = path.slice(prefix.size());
+    const auto name = rest.slice(0, rest.find('/'));
+    if (name.empty() || name.size() == rest.size() || !letter(name.front()) || reserved(name.std_view()) ||
         !std::ranges::all_of(name, [](char c) { return letter(c) || digit(c); }) || name == "core" || name == "math" ||
         name == "editor")
         return {};
     return name;
 }
 
-bool in_namespace(std::string_view name, std::string_view space) {
+bool in_namespace(StringView name, StringView space) {
     return name.size() > space.size() && name.starts_with(space) && name[space.size()] == '.';
 }
 
@@ -279,47 +279,44 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
     if (snapshot.files.size() > 1024)
         return std::unexpected(ModuleDiagnostic{0, {{}, "A source snapshot supports at most 1024 files."}});
     for (const auto& unit : snapshot.files)
-        if (const auto name = engine_module(unit.path);
-            !name.empty() && std::ranges::find(result.engine_modules, name) == result.engine_modules.end())
-            result.engine_modules.emplace_back(name);
+        if (const auto name = engine_module(unit.path.view());
+            !name.empty() && !result.engine_modules.contains(name))
+            result.engine_modules.add(String::from_utf8_validated(name));
+    constexpr ByteSearchSet bad_path_chars{StringView{"\\:\0", 3}};
     for (std::uint32_t file = 0; file < snapshot.files.size(); ++file) {
         const auto& unit = snapshot.files[file];
         const auto collected = [&]() -> std::expected<void, Diagnostic> {
             if (unit.path.empty() || unit.path.front() == '/' || unit.path.back() == '/' ||
-                unit.path.find_first_of("\\:\0", 0, 3) != std::string::npos)
+                unit.path.contains_any(bad_path_chars))
                 return reject({}, "Source paths must be project-relative UTF-8 paths using '/'.");
-            for (std::size_t begin = 0; begin < unit.path.size();) {
-                const auto end = unit.path.find('/', begin);
-                const auto part = std::string_view(unit.path).substr(
-                    begin, end == std::string::npos ? unit.path.size() - begin : end - begin);
+            for (const StringView part : unit.path.view().split("/")) {
                 if (part.empty() || part == "." || part == "..")
                     return reject({}, "Source paths must be normalized project-relative paths.");
-                if (end == std::string::npos)
-                    break;
-                begin = end + 1;
             }
             for (std::uint32_t previous = 0; previous < file; ++previous)
                 if (snapshot.files[previous].path == unit.path)
                     return reject({}, "Duplicate source file path.");
-            const auto own = engine_module(unit.path);
+            const auto own = engine_module(unit.path.view());
             if (own.empty() && unit.path.starts_with("engine/"))
                 return reject(
                     {},
                     "Engine source paths must be engine/<module>/<file>, where <module> is an identifier other than core, math or editor.");
             const auto declare = [&](const std::string& name,
                                      SourcePosition position) -> std::expected<void, Diagnostic> {
-                if (!own.empty() && !in_namespace(name, own))
-                    return reject(position, "Engine sources under engine/" + std::string(own) +
-                                                "/ may only declare names in the " + std::string(own) +
+                if (!own.empty() && !in_namespace(StringView{name}, own))
+                    return reject(position, "Engine sources under engine/" + std::string(own.std_view()) +
+                                                "/ may only declare names in the " + std::string(own.std_view()) +
                                                 ". namespace: " + name);
                 if (own.empty())
                     for (const auto& space : result.engine_modules)
-                        if (in_namespace(name, space))
-                            return reject(position, "Only engine sources under engine/" + space +
-                                                        "/ may declare names in the " + space + ". namespace: " + name);
+                        if (in_namespace(StringView{name}, space.view()))
+                            return reject(position, "Only engine sources under engine/" +
+                                                        std::string(space.view().std_view()) +
+                                                        "/ may declare names in the " +
+                                                        std::string(space.view().std_view()) + ". namespace: " + name);
                 return {};
             };
-            ATELIER_TRY_BIND(created, Tokens::create(unit.source));
+            ATELIER_TRY_BIND(created, Tokens::create(unit.source.view().std_view()));
             auto& tokens = *created;
             while (tokens.token_.kind != Token::Kind::end) {
                 const auto begin = tokens.token_.position;
@@ -334,7 +331,7 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                         return reject(parsed_type->position, "Duplicate source type name.");
                     TopLevel declaration{TopLevel::Kind::type,
                                          parsed_type->name,
-                                         std::string(own),
+                                         std::string(own.std_view()),
                                          file,
                                          parsed_type->position,
                                          {},
@@ -357,7 +354,8 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                 if (!*object) {
                     ATELIER_TRY_BIND(constant, tokens.accept("const"));
                     if (*constant) {
-                        TopLevel declaration{TopLevel::Kind::constant, {}, std::string(own), file, {}, {}, {}, {}};
+                        TopLevel declaration{
+                            TopLevel::Kind::constant, {}, std::string(own.std_view()), file, {}, {}, {}, {}};
                         ATELIER_TRY(parse_type_name(tokens));
                         declaration.position = tokens.token_.position;
                         ATELIER_TRY_BIND(name, tokens.qualified_identifier());
@@ -369,7 +367,8 @@ std::expected<SourceModule, ModuleDiagnostic> collect_module(const SourceSnapsho
                         result.declarations.push_back(std::move(declaration));
                         continue;
                     }
-                    TopLevel declaration{TopLevel::Kind::function, {}, std::string(own), file, {}, {}, {}, {}};
+                    TopLevel declaration{
+                        TopLevel::Kind::function, {}, std::string(own.std_view()), file, {}, {}, {}, {}};
                     ATELIER_TRY_BIND(async, tokens.accept("async"));
                     if (*async)
                         return reject(begin, "Project exports must be synchronous.");

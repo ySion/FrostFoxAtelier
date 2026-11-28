@@ -1,9 +1,13 @@
 #include "business.hpp"
 #include "../helpers.hpp"
+#include "math/math.hpp"
+#include "runtime/foundation.hpp"
 #include "runtime/native.hpp"
 #include "source/detail/bridge.hpp"
 #include "source/program.hpp"
 #include <array>
+#include <cmath>
+#include <limits>
 #include <utility>
 
 namespace atelier::jit_acceptance {
@@ -12,7 +16,7 @@ void verify_math_abi();
 namespace {
 using namespace acceptance::helpers;
 
-void publish(source::Program& program, std::string_view text) {
+void publish(source::Program& program, StringView text) {
     auto candidate = take(source::Program::prepare(take(program.request("abi.source", text))));
     take(program.try_publish(candidate));
 }
@@ -148,7 +152,7 @@ void type_bound_stateless() {
 
 void weak_acquisition_during_mark() {
     Runtime runtime;
-    const auto type = take(runtime.register_type({"abi.Observed", TypeKind::object, {}, {}, {}}));
+    const auto type = take(runtime.register_type({"abi.Observed"_s, TypeKind::object, {}, {}, {}}));
     auto program = take(source::Program::create(runtime, type));
     publish(*program, "bool run() { weak abi.Observed w = observe(self); return try_acquire(w) == self; }");
     const auto typed = take(program->entry().bind<bool>());
@@ -177,6 +181,153 @@ void weak_acquisition_during_mark() {
         require(!take(runtime.try_acquire(weak)), "Synchronous weak acquisition retained a root after return.");
     }
 }
+
+void sequence_stdlib_execution() {
+    Runtime runtime;
+    Array<TypeDefinition> defs;
+    defs.add(string_definition(runtime));
+    defs.add(array_definition<std::int32_t>(runtime, "abi.IntArray"));
+    defs.add(array_definition<std::uint32_t>(runtime, "abi.UintArray"));
+    defs.add(array_definition<float>(runtime, "abi.FloatArray"));
+    defs.add(array_definition<bool>(runtime, "abi.BoolArray"));
+    defs.add(array_definition<String>(runtime, "abi.StringArray"));
+    defs.add(array_definition<math::Vector3>(runtime, "abi.Vec3Array"));
+    take(runtime.register_types(std::move(defs)));
+
+    // 1. Stateless direct String literal & Array<float> swap/query verification:
+    {
+        auto program = take(source::Program::create(runtime));
+        publish(*program, R"(
+            int run(Array<float>& xs) {
+                if ("alpha" >= "beta" || !"Hello".equals_ignore_case("hELLo")) { return -1; }
+                if (xs.empty()) { return 0; }
+                xs.swap(0, int(xs.size()) - 1);
+                return xs.find(xs.back());
+            })");
+        require(source::detail::ProgramAccess::stateless_direct(take(program->pin())),
+                "Pure inline Array.swap + view-only String literal comparisons should remain stateless_typed.");
+        Array<float> xs{1.0f, 2.0f, 3.0f, 4.0f};
+        const auto typed = take(program->entry().bind<std::int32_t, Array<float>&>());
+        require(take(typed.invoke({}, xs)) == 3 && xs[0] == 4.0f && xs[3] == 1.0f,
+                "Stateless Array.swap or Array.find produced wrong result.");
+    }
+
+    // 2. Comprehensive String formatting, parsing, UTF-8 boundary & self-alias safety:
+    {
+        auto program = take(source::Program::create(runtime));
+        auto candidate = take(source::Program::prepare(take(program->request("abi.source", R"(
+            uint grow_pool(Array<String>& pool) {
+                pool[0] = "reallocated_long_heap_string_payload_0123456789";
+                pool.reserve(64);
+                pool.add("tail_element_forcing_array_reallocation_0123456789");
+                return 1u;
+            }
+            uint grow_ints(Array<int>& xs) {
+                xs.reserve(128);
+                return 0u;
+            }
+            int append_and_ret(Array<int>& xs) {
+                xs.add(100);
+                return 5;
+            }
+            bool run(String& out, Array<String>& pool) {
+                // Adversarial UAF check: pool[0] view taken before RHS reallocates both pool[0] and pool itself!
+                const bool snapshot_ok = (pool[0] == pool[grow_pool(pool)]) == false;
+                if (!snapshot_ok) { return false; }
+
+                // Adversarial index-reallocation & .back() compound-assign stability check:
+                Array<int> dyn;
+                dyn.add(10);
+                dyn.add(20);
+                if (!"42".try_parse_int(dyn[grow_ints(dyn)]) || dyn[0] != 42) { return false; }
+                dyn.back() += append_and_ret(dyn); // must update original back (index 1: 20 -> 25), leaving new back = 100
+                if (dyn.size() != 3u || dyn[1] != 25 || dyn.back() != 100) { return false; }
+
+                String s = "  Pt_";
+                s.trim_start();
+                s.to_lower();
+                s.append(-42);
+                s.append_ascii(0x3a); // ':'
+                s.append_hex(255, 4, true);
+                s.append_ascii(0x2f, 2); // "//"
+                s.append_float(3.14159, 2);
+                s += "_ok  ";
+                s.trim_end();
+                if (s != "pt_-42:00FF//3.14_ok") { return false; }
+                if (!s.is_ascii() || !"火花".starts_with("火") || "火花".is_ascii()) { return false; }
+                if (!s.starts_with_ignore_case("PT_") || !s.ends_with_ignore_case("_OK")) { return false; }
+                if (s.find("//") != 11 || s.rfind("_") != 17 || s.find("missing") != -1) { return false; }
+                if (s.count("0") != 2u || s.common_prefix_length("pt_-99") != 4u) { return false; }
+                if (!s.strip_prefix("pt_") || !s.strip_suffix("_ok")) { return false; }
+                s.replace_all("//", "|");
+                s.replace(0, 3, s); // self-alias replace!
+                s.pad_left(int(s.size()) + 2, 0x23); // '#'
+                s.pad_right(int(s.size()) + 1);
+
+                int parsed_i = 77;
+                uint parsed_u = 88u;
+                float parsed_f = 1.0f;
+                if (!"-12345".try_parse_int(parsed_i) || parsed_i != -12345) { return false; }
+                if ("12x".try_parse_int(parsed_i) || parsed_i != -12345) { return false; }
+                if (!"4294967295".try_parse_uint(parsed_u) || parsed_u != 4294967295u) { return false; }
+                if ("-1".try_parse_uint(parsed_u) || parsed_u != 4294967295u) { return false; }
+                if (!"2.5e1".try_parse_float(parsed_f) || parsed_f != 25.0f) { return false; }
+                if ("nan".try_parse_float(parsed_f) || "inf".try_parse_float(parsed_f) || parsed_f != 25.0f) {
+                    return false;
+                }
+
+                out = s;
+                return out.front() == 0x23u && out.back() == 0x20u;
+            })",
+                                                                             "run"))));
+        take(program->try_publish(candidate));
+        String out;
+        Array<String> pool{String::from_utf8_validated("seed"), String::from_utf8_validated("other")};
+        const std::array args{Argument::borrow(out), Argument::borrow(pool)};
+        const auto res = take(program->entry().invoke({}, args));
+        require(res && std::get<bool>(*res), "String stdlib execution returned false.");
+        require(out == "##-42:00FF|3.14:00FF|3.14 ", "String stdlib produced unexpected text.");
+    }
+
+    // 3. UTF-8 mid-codepoint rejection & NaN Array ordering failure checks:
+    {
+        auto p1 = take(source::Program::create(runtime));
+        publish(*p1, "void run(String& s) { s.slice_in_place(1, 2); }");
+        String utf8 = String::from_utf8_validated("a火b");
+        const std::array args{Argument::borrow(utf8)};
+        const auto bad_utf8 = p1->entry().invoke({}, args);
+        require(!bad_utf8 && StringView{bad_utf8.error().message}.contains("UTF-8") && utf8 == "a火b",
+                "Mid-codepoint slice_in_place must fail without corrupting UTF-8 String.");
+
+        auto p2 = take(source::Program::create(runtime));
+        publish(*p2, "bool run(const Array<float>& xs) { return xs.is_sorted(); }");
+        Array<float> nan_arr{1.0f, std::numeric_limits<float>::quiet_NaN(), 0.5f};
+        const std::array nan_args{Argument::borrow(std::as_const(nan_arr))};
+        const auto nan_sorted = p2->entry().invoke({}, nan_args);
+        require(!nan_sorted && StringView{nan_sorted.error().message}.contains("non-NaN"),
+                "Array<float>.is_sorted() with NaN must report floating_point_order failure.");
+
+        auto p3 = take(source::Program::create(runtime));
+        publish(*p3, "void run(Array<float>& xs) { xs.sort(); }");
+        const std::array mut_nan_args{Argument::borrow(nan_arr)};
+        const auto nan_sort = p3->entry().invoke({}, mut_nan_args);
+        require(!nan_sort && StringView{nan_sort.error().message}.contains("non-NaN"),
+                "Array<float>.sort() with NaN must report argument_mismatch failure.");
+
+        // Host-entry aliasing: mutable String& a and const String& b borrowing the same String across reallocation:
+        auto p4 = take(source::Program::create(runtime));
+        publish(*p4, R"(
+            uint run(String& a, const String& b) {
+                a.append("_reallocated_long_heap_suffix_0123456789_abcdef");
+                return b.size();
+            })");
+        String aliased = String::from_utf8_validated("short");
+        const std::array alias_args{Argument::borrow(aliased), Argument::borrow(std::as_const(aliased))};
+        const auto alias_res = take(p4->entry().invoke({}, alias_args));
+        require(alias_res && std::get<std::uint32_t>(*alias_res) == aliased.size(),
+                "Host-entry String& / const String& aliasing cached stale sequence view across reallocation.");
+    }
+}
 }
 
 void verify_business_execution() {
@@ -185,6 +336,7 @@ void verify_business_execution() {
     reference_coroutine();
     type_bound_stateless();
     weak_acquisition_during_mark();
+    sequence_stdlib_execution();
     verify_math_abi();
 }
 }

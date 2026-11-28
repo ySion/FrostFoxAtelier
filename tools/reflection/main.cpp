@@ -52,17 +52,17 @@ std::string quote(llvm::StringRef text) {
     return result;
 }
 
-// Metadata owns decoded bytes, including embedded zeroes. Fixed-width octal
+// Metadata owns decoded UTF-8 bytes, including embedded zeroes. Fixed-width octal
 // escapes avoid C++ literal encoding and escape-boundary ambiguities.
 std::string metadata_text(std::string_view text) {
-    std::string result = "std::string{\"";
+    std::string result = "String::literal<\"";
     for (const unsigned char c : text) {
         result += '\\';
         result += static_cast<char>('0' + (c >> 6));
         result += static_cast<char>('0' + ((c >> 3) & 7));
         result += static_cast<char>('0' + (c & 7));
     }
-    return result + "\", " + std::to_string(text.size()) + "}";
+    return result + "\">()";
 }
 
 llvm::Expected<std::string> required(const llvm::json::Object& object, llvm::StringRef name) {
@@ -355,6 +355,10 @@ struct State {
                         return {};
                     }
                     values[part] = literal.GetString().str();
+                    if (!llvm::json::isUTF8(values[part])) {
+                        error(marker.location, "Meta keys and values require valid UTF-8.");
+                        return {};
+                    }
                     if (i == tokens.size() || !tokens[i++].is(part == 0 ? tok::comma : tok::r_paren)) {
                         error(marker.location, "Meta requires exactly a key and value.");
                         return {};
@@ -378,6 +382,10 @@ struct State {
                             return {};
                         }
                         value = literal.GetString().str();
+                        if (!llvm::json::isUTF8(value)) {
+                            error(marker.location, "Reflection option strings require valid UTF-8.");
+                            return {};
+                        }
                         if (name != "Group" && value.empty()) {
                             error(marker.location, "Reflection option " + name + " requires a nonempty string.");
                             return {};
@@ -410,6 +418,10 @@ struct State {
                                 return {};
                             }
                             auto sub_val = literal.GetString().str();
+                            if (!llvm::json::isUTF8(sub_val)) {
+                                error(marker.location, "Reflection option strings require valid UTF-8.");
+                                return {};
+                            }
                             if (sub_val.empty() || std::any_of(sub_val.begin(), sub_val.end(),
                                                                [](unsigned char c) { return c < 32 || c == 127; })) {
                                 error(marker.location, "Reflection option " + sub +
@@ -469,6 +481,9 @@ struct State {
                               "DESC requires valid UTF-8 without controls other than line breaks and tabs.");
                         return {};
                     }
+                } else if (!llvm::json::isUTF8(value)) {
+                    error(marker.location, "Reflection option strings require valid UTF-8.");
+                    return {};
                 } else if (std::any_of(value.begin(), value.end(), [](unsigned char c) { return c < 32; })) {
                     error(marker.location, "Reflection option strings must contain no control characters.");
                     return {};
@@ -1806,7 +1821,7 @@ llvm::Error emit(const State& state) {
             if (!method.parameters.empty()) {
                 cpp += "\n        .parameter_names({";
                 for (std::size_t i = 0; i < method.parameters.size(); ++i)
-                    cpp += (i ? ", " : "") + quote(method.parameters[i]);
+                    cpp += (i ? ", " : "") + std::string{"String::literal<"} + quote(method.parameters[i]) + ">()";
                 cpp += "})";
             }
             if (std::any_of(method.defaults.begin(), method.defaults.end(),

@@ -30,31 +30,27 @@ constexpr auto no_slot = std::numeric_limits<std::uint32_t>::max();
 
 std::atomic<std::uint64_t> next_context{1};
 
-auto failure(ErrorCode code, std::string message) {
+auto failure(ErrorCode code, Utf8Text message) {
     return std::unexpected(Error{code, std::move(message)});
 }
 
-bool normalize_description(std::string& text) {
-    if (!StringView{text}.is_valid_utf8())
-        return false;
-    for (std::size_t i = 0; i < text.size(); ++i) {
-        const auto c = static_cast<unsigned char>(text[i]);
+[[nodiscard]] String diagnostic_slice(StringView text) noexcept {
+    if (auto valid = String::from_utf8(text))
+        return std::move(*valid);
+    return "<invalid-utf8>"_s;
+}
+
+bool normalize_description(String& text) {
+    const auto view = text.view();
+    for (std::size_t i = 0; i < view.size(); ++i) {
+        const auto c = static_cast<unsigned char>(view[i]);
         if ((c < 32 && c != '\n' && c != '\r' && c != '\t') || c == 127 ||
-            (c == 0xc2 && i + 1 < text.size() && static_cast<unsigned char>(text[i + 1]) >= 0x80 &&
-             static_cast<unsigned char>(text[i + 1]) <= 0x9f))
+            (c == 0xc2 && i + 1 < view.size() && static_cast<unsigned char>(view[i + 1]) >= 0x80 &&
+             static_cast<unsigned char>(view[i + 1]) <= 0x9f))
             return false;
     }
-    // Normalize in place only when needed, without allocating another copy.
-    auto output = text.find('\r');
-    if (output == std::string::npos)
-        return true;
-    for (auto input = output; input < text.size(); ++input) {
-        const char c = text[input];
-        text[output++] = c == '\r' ? '\n' : c;
-        if (c == '\r' && input + 1 < text.size() && text[input + 1] == '\n')
-            ++input;
-    }
-    text.resize(output);
+    if (view.contains('\r'))
+        (void)text.replace_line_endings();
     return true;
 }
 
@@ -130,26 +126,24 @@ bool constrain_storage(const FieldRange& range, void* data, bool write) noexcept
         range.hard_min ? *range.hard_min : *range.hard_max);
 }
 
-std::string scalar_text(const Scalar& value) {
+String scalar_text(const Scalar& value) {
     return std::visit(
-        [](const auto& v) -> std::string {
+        [](const auto& v) -> String {
             using T = std::remove_cvref_t<decltype(v)>;
             if constexpr (std::same_as<T, EnumValue>)
-                return std::to_string(v.bits);
+                return String::from_number(v.bits);
             else if constexpr (std::same_as<T, bool>)
-                return v ? "true" : "false";
-            else {
-                char digits[64];
-                return {digits, std::to_chars(digits, digits + sizeof digits, v).ptr};
-            }
+                return v ? "true"_s : "false"_s;
+            else
+                return String::from_number(v);
         },
         value);
 }
 
 // Why a stored leaf breaks its hard bounds, or empty; `value` receives the leaf either way.
-std::string bound_violation(const FieldRange& range, const void* data, Scalar& value) {
+String bound_violation(const FieldRange& range, const void* data, Scalar& value) {
     return std::visit(
-        [&](const auto& bound) -> std::string {
+        [&](const auto& bound) -> String {
             using T = std::remove_cvref_t<decltype(bound)>;
             if constexpr (RangeLeaf<T>) {
                 T leaf;
@@ -157,11 +151,13 @@ std::string bound_violation(const FieldRange& range, const void* data, Scalar& v
                 value = leaf;
                 if constexpr (std::floating_point<T>)
                     if (!std::isfinite(leaf))
-                        return scalar_text(value) + " is not finite";
+                        return String::concat(scalar_text(value), " is not finite");
                 if (range.hard_min && leaf < std::get<T>(*range.hard_min))
-                    return scalar_text(value) + " is below the hard minimum " + scalar_text(*range.hard_min);
+                    return String::concat(scalar_text(value), " is below the hard minimum ",
+                                          scalar_text(*range.hard_min));
                 if (range.hard_max && leaf > std::get<T>(*range.hard_max))
-                    return scalar_text(value) + " is above the hard maximum " + scalar_text(*range.hard_max);
+                    return String::concat(scalar_text(value), " is above the hard maximum ",
+                                          scalar_text(*range.hard_max));
             }
             return {};
         },
@@ -419,7 +415,7 @@ struct Runtime::Impl {
         // Only fields with hard bounds allocate; the stable address backs Address and leaf pointers.
         std::unique_ptr<const FieldRange> hard{};
 
-        Optional<std::string> default_text{};
+        Optional<String> default_text{};
     };
 
     // A hard-bounded scalar inside a record or object, reached through storage indices
@@ -468,7 +464,7 @@ struct Runtime::Impl {
         std::size_t base_root_offset{};
 
         // Own declarations, including hidden names, for inherited conflict checks.
-        Array<std::string> member_names;
+        Array<String> member_names;
 
         // An internal leading base segment reuses layout/lifetime/trace walkers.
         // Native constructors still own their complete C++ object themselves.
@@ -1070,31 +1066,36 @@ struct Runtime::Impl {
     }
 
     // Hidden fields have no FieldInfo, so names come from the declaration order.
-    std::string member_name(FieldId member) const {
+    String member_name(FieldId member) const {
         const auto& owner = *lookup(member.owner_);
         if (owner.info.kind == TypeKind::array)
-            return "[" + std::to_string(member.index_) + "]";
+            return String::concat("[", member.index_, "]");
         return owner.member_names[member.index_ - (owner.base && owner.base->info.id != object ? 1 : 0)];
     }
 
-    void append_path(std::string& text, Span<const FieldId> path) const {
+    void append_path(String& text, Span<const FieldId> path) const {
         for (const auto id : path) {
-            auto name = member_name(id);
+            const auto name = member_name(id);
             if (name.front() != '[')
-                text += '.';
-            text += name;
+                text.append_ascii('.');
+            text.append(name);
         }
     }
 
     // Names the value as validation failures do: "Type.field[i].leaf: reason".
     auto located(ErrorCode code, TypeId root, Span<const FieldId> path, Span<const FieldId> below,
-                 std::string_view reason) const {
-        std::string text = lookup(root)->info.name;
+                 const String& reason) const {
+        String text = lookup(root)->info.name;
         append_path(text, path);
         append_path(text, below);
-        text += ": ";
-        text += reason;
+        text.append_literal<": ">();
+        text.append(reason);
         return failure(code, std::move(text));
+    }
+
+    auto located(ErrorCode code, TypeId root, Span<const FieldId> path, Span<const FieldId> below,
+                 Utf8Text reason) const {
+        return located(code, root, path, below, std::move(reason).into_string());
     }
 
     static std::pair<std::byte*, std::size_t> elements(const Type& array, void* storage) noexcept {
@@ -1309,13 +1310,14 @@ struct Runtime::Impl {
             return {};
         Array<FieldId> field;
         Optional<ValidationFailure> found;
-        const auto fail = [&](Optional<Scalar> value, std::string reason, Optional<SourceLocation> source = {}) {
+        const auto fail = [&](Optional<Scalar> value, String reason, Optional<SourceLocation> source = {}) {
             found = ValidationFailure{
                 field, {}, std::move(value), {ErrorCode::argument_mismatch, root.info.name, std::move(source)}};
             for (const auto id : field)
                 found->names.add(member_name(id));
             append_path(found->error.message, field);
-            found->error.message += ": " + reason;
+            found->error.message.append_literal<": ">();
+            found->error.message.append(reason);
             return false;
         };
         auto bound = [&](const FieldRange& range, void* data) {
@@ -1336,7 +1338,7 @@ struct Runtime::Impl {
         // Even inside a transaction, explicit IDs name only published types.
         if (const auto* id = std::get_if<TypeId>(&reference.target_))
             return lookup(*id);
-        const auto* name = std::get_if<std::string>(&reference.target_);
+        const auto* name = std::get_if<String>(&reference.target_);
         const auto matches = [&](const auto& type) {
             if (name)
                 return type->info.name == *name;
@@ -1346,12 +1348,12 @@ struct Runtime::Impl {
             if (matches(type))
                 return type.get();
         if (name)
-            return named(*name);
+            return named(name->view());
         return native(std::get<const void*>(reference.target_));
     }
 
-    const Type* named(std::string_view name) const noexcept {
-        const auto* index = names.find(StringView{name});
+    const Type* named(StringView name) const noexcept {
+        const auto* index = names.find(name);
         return index ? types[*index].get() : nullptr;
     }
 
@@ -1433,10 +1435,10 @@ struct Runtime::Impl {
     }
 
     template <class T>
-    TypeId add_scalar(std::string name) {
+    TypeId add_scalar(Utf8Text name) {
         const TypeId id{context, static_cast<std::uint32_t>(types.size())};
         auto type = std::make_unique<Type>();
-        type->info = {id, std::move(name), TypeKind::scalar, sizeof(T), alignof(T), {}, {}, true, true};
+        type->info = {id, std::move(name).into_string(), TypeKind::scalar, sizeof(T), alignof(T), {}, {}, true, true};
         type->info.plain_value = true;
         type->info.zero_default = true;
         type->scalar_leaf = type.get();
@@ -1776,6 +1778,194 @@ struct Runtime::Impl {
         }
     }
 
+    Result<void> apply_described_array(const Type& array_type, void* target, const SequenceCall& call) {
+        auto& arr = *static_cast<DescribedArray*>(target);
+        const auto& element = *lookup(*array_type.info.element);
+        const std::size_t stride = element.info.size;
+        const std::size_t max_elems = (static_cast<std::size_t>(PTRDIFF_MAX)) / std::max(std::size_t{1}, stride);
+        const bool can_reorder =
+            element.info.plain_value || element.info.kind == TypeKind::scalar || !element.swap_parts.empty();
+        const auto swap_one = [&](std::size_t a, std::size_t b) noexcept {
+            auto* first = arr.data + a * stride;
+            auto* second = arr.data + b * stride;
+            if (element.info.plain_value || element.info.kind == TypeKind::scalar)
+                std::swap_ranges(first, first + stride, second);
+            else
+                swap_value(element, first, second);
+        };
+        using Alg = SequenceAlgorithm;
+        switch (call.algorithm) {
+        case Alg::arr_fill: {
+            if (arr.size == 0)
+                return {};
+            if (!element.info.copy_assignable)
+                return failure(ErrorCode::unsupported_operation, "Array element is not copy assignable.");
+            auto* scratch = static_cast<std::byte*>(::operator new(stride, std::align_val_t{element.info.alignment}));
+            if (auto made = construct_elements(element, scratch, static_cast<const std::byte*>(call.first_data), 1);
+                !made) {
+                ::operator delete(scratch, std::align_val_t{element.info.alignment});
+                return made;
+            }
+            prepare_walk(element);
+            Result<void> status{};
+            for (std::size_t i = 0; i < arr.size; ++i) {
+                status = assign(element, arr.data + i * stride, scratch);
+                if (!status)
+                    break;
+            }
+            destroy_elements(element, scratch, 1);
+            ::operator delete(scratch, std::align_val_t{element.info.alignment});
+            return status;
+        }
+        case Alg::arr_reverse: {
+            if (!can_reorder)
+                return failure(ErrorCode::unsupported_operation, "Element type does not support in-place reordering.");
+            std::size_t lo = 0;
+            std::size_t hi = arr.size;
+            while (lo + 1 < hi)
+                swap_one(lo++, --hi);
+            return {};
+        }
+        case Alg::arr_swap: {
+            if (call.index >= arr.size || call.count >= arr.size)
+                return failure(ErrorCode::argument_mismatch, "Array.swap index is out of bounds.");
+            if (!can_reorder)
+                return failure(ErrorCode::unsupported_operation, "Element type does not support in-place reordering.");
+            if (call.index != call.count)
+                swap_one(static_cast<std::size_t>(call.index), static_cast<std::size_t>(call.count));
+            return {};
+        }
+        case Alg::arr_sort: {
+            if (element.scalar_variant_index == 0) {
+                Span<float> values{reinterpret_cast<float*>(arr.data), arr.size};
+                for (const float v : values)
+                    if (v != v)
+                        return failure(ErrorCode::argument_mismatch,
+                                       "Floating-point Array.sort() requires non-NaN elements.");
+                values.sort();
+                return {};
+            }
+            if (element.scalar_variant_index == 4) {
+                Span<double> values{reinterpret_cast<double*>(arr.data), arr.size};
+                for (const double v : values)
+                    if (v != v)
+                        return failure(ErrorCode::argument_mismatch,
+                                       "Floating-point Array.sort() requires non-NaN elements.");
+                values.sort();
+                return {};
+            }
+            if (element.scalar_variant_index == 1) {
+                Span<std::uint32_t>{reinterpret_cast<std::uint32_t*>(arr.data), arr.size}.sort();
+                return {};
+            }
+            if (element.scalar_variant_index == 2) {
+                Span<std::int32_t>{reinterpret_cast<std::int32_t*>(arr.data), arr.size}.sort();
+                return {};
+            }
+            if (element.info.kind == TypeKind::enumeration) {
+                const auto* underlying = lookup(element.info.enumeration->underlying);
+                if (underlying && underlying->scalar_variant_index == 2)
+                    Span<std::int32_t>{reinterpret_cast<std::int32_t*>(arr.data), arr.size}.sort();
+                else
+                    Span<std::uint32_t>{reinterpret_cast<std::uint32_t*>(arr.data), arr.size}.sort();
+                return {};
+            }
+            if (element.info.kind == TypeKind::string) {
+                Span<String>{reinterpret_cast<String*>(arr.data), arr.size}.sort();
+                return {};
+            }
+            return failure(ErrorCode::unsupported_operation, "Array element does not support ordering.");
+        }
+        case Alg::arr_resize_fill: {
+            if (call.index > max_elems)
+                return failure(ErrorCode::capacity_exceeded, "Array size exceeds addressable storage.");
+            const auto target_size = static_cast<std::size_t>(call.index);
+            if (target_size <= arr.size) {
+                destroy_elements(element, arr.data + target_size * stride, arr.size - target_size);
+                arr.size = target_size;
+                return {};
+            }
+            const auto* src_bytes = static_cast<const std::byte*>(call.first_data);
+            if (target_size > arr.capacity) {
+                std::size_t next_cap = arr.capacity ? (arr.capacity > max_elems / 2 ? max_elems : arr.capacity * 2) : 4;
+                if (next_cap < target_size)
+                    next_cap = target_size;
+                auto* buffer =
+                    static_cast<std::byte*>(::operator new(next_cap * stride, std::align_val_t{element.info.alignment}));
+                if (auto moved = construct_elements(element, buffer, arr.data, arr.size); !moved) {
+                    ::operator delete(buffer, std::align_val_t{element.info.alignment});
+                    return moved;
+                }
+                for (std::size_t k = arr.size; k < target_size; ++k) {
+                    if (auto made = construct_elements(element, buffer + k * stride, src_bytes, 1); !made) {
+                        destroy_elements(element, buffer, k);
+                        ::operator delete(buffer, std::align_val_t{element.info.alignment});
+                        return made;
+                    }
+                }
+                if (arr.data) {
+                    destroy_elements(element, arr.data, arr.size);
+                    ::operator delete(arr.data, std::align_val_t{element.info.alignment});
+                }
+                arr.data = buffer;
+                arr.capacity = next_cap;
+                arr.size = target_size;
+                return {};
+            }
+            for (std::size_t k = arr.size; k < target_size; ++k) {
+                if (auto made = construct_elements(element, arr.data + k * stride, src_bytes, 1); !made) {
+                    destroy_elements(element, arr.data + arr.size * stride, k - arr.size);
+                    return made;
+                }
+            }
+            arr.size = target_size;
+            return {};
+        }
+        case Alg::arr_truncate: {
+            if (call.index > arr.size)
+                return failure(ErrorCode::argument_mismatch, "Array.truncate count exceeds current size.");
+            const auto kept = static_cast<std::size_t>(call.index);
+            if (kept < arr.size) {
+                destroy_elements(element, arr.data + kept * stride, arr.size - kept);
+                arr.size = kept;
+            }
+            return {};
+        }
+        case Alg::arr_pop:
+            if (arr.size == 0)
+                return failure(ErrorCode::argument_mismatch, "Array.pop requires a non-empty Array.");
+            destroy_elements(element, arr.data + (arr.size - 1) * stride, 1);
+            --arr.size;
+            return {};
+        case Alg::arr_insert:
+            if (call.index > arr.size)
+                return failure(ErrorCode::argument_mismatch, "Array.insert index is out of bounds.");
+            return mutate_described_array(array_type, SequenceMutation::insert, target, call.first_data,
+                                          static_cast<std::size_t>(call.index));
+        case Alg::arr_remove_at: {
+            if (call.index > arr.size || call.count > arr.size - call.index)
+                return failure(ErrorCode::argument_mismatch, "Array.remove_at range is out of bounds.");
+            const auto rem_count = static_cast<std::size_t>(call.count);
+            return mutate_described_array(array_type, SequenceMutation::remove, target, &rem_count,
+                                          static_cast<std::size_t>(call.index));
+        }
+        case Alg::arr_remove_at_swap: {
+            if (call.index >= arr.size)
+                return failure(ErrorCode::argument_mismatch, "Array.remove_at_swap index is out of bounds.");
+            if (!can_reorder)
+                return failure(ErrorCode::unsupported_operation, "Element type does not support in-place reordering.");
+            const auto idx = static_cast<std::size_t>(call.index);
+            if (idx != arr.size - 1)
+                swap_one(idx, arr.size - 1);
+            destroy_elements(element, arr.data + (arr.size - 1) * stride, 1);
+            --arr.size;
+            return {};
+        }
+        default:
+            return failure(ErrorCode::unsupported_operation, "Unsupported Array sequence operation.");
+        }
+    }
+
     static void apply_default_leaves(std::byte* destination, Span<const Scalar> leaves) noexcept {
         auto* leaf = destination;
         for (const auto& value : leaves)
@@ -1824,13 +2014,9 @@ struct Runtime::Impl {
                 if (field.type->native.construct) {
                     if (origin)
                         result = field.type->native.copy_construct(destination, origin);
-                    else if (field.default_text) {
-                        auto text = String::from_utf8(StringView{*field.default_text});
-                        if (!text)
-                            result = failure(ErrorCode::construction_failed, "Default text is not valid UTF-8.");
-                        else
-                            std::construct_at(reinterpret_cast<String*>(destination), std::move(*text));
-                    } else
+                    else if (field.default_text)
+                        std::construct_at(reinterpret_cast<String*>(destination), *field.default_text);
+                    else
                         result = field.type->native.construct(destination);
                     if (!result)
                         break;
@@ -2234,9 +2420,9 @@ Runtime::Runtime() noexcept {
     impl_->boolean = impl_->add_scalar<bool>("core.bool");
     impl_->object = TypeId{impl_->context, static_cast<std::uint32_t>(impl_->types.size())};
     auto root = std::make_unique<Impl::Type>();
-    root->info = {impl_->object, "core.Object", TypeKind::object, 1, 1, {}, {}};
+    root->info = {impl_->object, "core.Object"_s, TypeKind::object, 1, 1, {}, {}};
     root->ancestors.add(root.get());
-    impl_->names.try_emplace(StringView{root->info.name}, impl_->object.index_);
+    impl_->names.try_emplace(root->info.name.view(), impl_->object.index_);
     impl_->types.add(std::move(root));
     const auto registered = register_types(math::type_definitions(*this));
     if (!registered)
@@ -2421,7 +2607,7 @@ struct detail::TypePublication::State {
     struct AddedMethods {
         std::uint32_t type_index{};
 
-        Array<std::string> names;
+        Array<String> names;
     };
 
     std::uint64_t context{};
@@ -2532,9 +2718,11 @@ Result<Array<TypeId>> Runtime::register_types(Array<TypeDefinition> definitions)
 
 Result<void> normalize_metadata_entries(MetadataList& metadata) {
     for (const auto& [key, value] : metadata) {
+        (void)value;
+        const auto key_view = key.view();
         bool start = true;
-        bool valid = key.find('.') != std::string::npos;
-        for (const char c : key) {
+        bool valid = key_view.contains('.');
+        for (const char c : key_view) {
             if (c == '.') {
                 valid &= !start;
                 start = true;
@@ -2546,13 +2734,11 @@ Result<void> normalize_metadata_entries(MetadataList& metadata) {
         }
         if (!valid || start)
             return failure(ErrorCode::invalid_definition, "Meta keys require dotted ASCII identifiers");
-        if (!StringView{value}.is_valid_utf8())
-            return failure(ErrorCode::invalid_definition, "Meta values require valid UTF-8");
     }
     std::ranges::sort(metadata);
     for (std::size_t i = 1; i < metadata.size(); ++i)
         if (metadata[i - 1].first == metadata[i].first)
-            return failure(ErrorCode::invalid_definition, "Duplicate Meta key: " + metadata[i].first);
+            return failure(ErrorCode::invalid_definition, String::concat("Duplicate Meta key: ", metadata[i].first));
     return {};
 }
 
@@ -2562,26 +2748,25 @@ Result<void> FieldDefinition::normalize_metadata() {
 
 namespace {
 
-Result<void> validate_method_parameters(std::string_view type_name, const std::string& method_name, std::size_t count,
-                                        Array<std::string>& names, Array<MetadataList>& metadata) {
-    const std::string qualified = std::string(type_name) + "." + method_name;
+Result<void> validate_method_parameters(const String& type_name, const String& method_name, std::size_t count,
+                                        Array<String>& names, Array<MetadataList>& metadata) {
+    const String qualified = String::concat(type_name, ".", method_name);
     if (!names.empty() && names.size() != count)
         return failure(ErrorCode::invalid_definition,
-                       "Parameter names must match the parameters of method: " + qualified);
+                       String::concat("Parameter names must match the parameters of method: ", qualified));
     for (std::size_t i = 0; i < names.size(); ++i) {
-        if (!StringView{names[i]}.is_valid_utf8())
-            return failure(ErrorCode::invalid_definition, "Parameter names require valid UTF-8: " + qualified);
         if (!names[i].empty() && std::find(names.begin(), names.begin() + i, names[i]) != names.begin() + i)
-            return failure(ErrorCode::duplicate_name, "Duplicate parameter " + names[i] + " in method: " + qualified);
+            return failure(ErrorCode::duplicate_name,
+                           String::concat("Duplicate parameter ", names[i], " in method: ", qualified));
     }
     names.resize(count);
     if (!metadata.empty() && metadata.size() != count)
         return failure(ErrorCode::invalid_definition,
-                       "Parameter metadata must match the parameters of method: " + qualified);
+                       String::concat("Parameter metadata must match the parameters of method: ", qualified));
     for (auto& entries : metadata) {
         const auto normalized = normalize_metadata_entries(entries);
         if (!normalized)
-            return failure(normalized.error().code, normalized.error().message + ": " + qualified);
+            return failure(normalized.error().code, String::concat(normalized.error().message, ": ", qualified));
     }
     metadata.resize(count);
     return {};
@@ -2608,44 +2793,45 @@ Result<void> detail::TypePublication::validate_methods(Runtime& runtime, TypeId 
     const Span<const std::unique_ptr<Runtime::Impl::Type>> staged =
         publication ? Span<const std::unique_ptr<Runtime::Impl::Type>>{publication->state_->staged}
                     : Span<const std::unique_ptr<Runtime::Impl::Type>>{};
-    Array<std::string> added_names;
+    Array<String> added_names;
     const auto check_descendant = [&](const Runtime::Impl::Type& candidate,
-                                      std::string_view method_name) -> Result<void> {
+                                      const String& method_name) -> Result<void> {
         if (&candidate != type && candidate.info.kind == TypeKind::object &&
             Runtime::Impl::derives_from(candidate, *type) &&
-            std::ranges::find(candidate.member_names, method_name) != candidate.member_names.end())
+            candidate.member_names.contains(method_name))
             return failure(ErrorCode::invalid_definition,
-                           "Member hides an inherited declaration: " + candidate.info.name + "." +
-                               std::string(method_name) + " hides " + type->info.name + "." + std::string(method_name));
+                           String::concat("Member hides an inherited declaration: ", candidate.info.name, ".",
+                                          method_name, " hides ", type->info.name, ".", method_name));
         return {};
     };
     for (std::size_t i = 0; i != methods.size(); ++i) {
         auto& method = methods[i];
         if (method.name.empty())
             return failure(ErrorCode::invalid_definition, "Described methods require a name.");
-        if (!StringView{method.name}.is_valid_utf8())
-            return failure(ErrorCode::invalid_definition, "Method names require valid UTF-8.");
         for (std::size_t f = 0; f != own_fields; ++f)
             if (type->member_names[f] == method.name)
-                return failure(ErrorCode::duplicate_name, "Duplicate member: " + type->info.name + "." + method.name);
+                return failure(ErrorCode::duplicate_name,
+                               String::concat("Duplicate member: ", type->info.name, ".", method.name));
         for (std::size_t c = 0; c != own_callable; ++c)
             if (type->member_names[own_fields + c] == method.name)
-                return failure(ErrorCode::duplicate_name, "Duplicate method: " + type->info.name + "." + method.name);
+                return failure(ErrorCode::duplicate_name,
+                               String::concat("Duplicate method: ", type->info.name, ".", method.name));
         for (std::size_t previous = 0; previous != i; ++previous)
             if (methods[previous].name == method.name)
-                return failure(ErrorCode::duplicate_name, "Duplicate method: " + type->info.name + "." + method.name);
+                return failure(ErrorCode::duplicate_name,
+                               String::concat("Duplicate method: ", type->info.name, ".", method.name));
         for (const auto* ancestor = type->base; ancestor; ancestor = ancestor->base)
-            if (std::ranges::find(ancestor->member_names, method.name) != ancestor->member_names.end())
+            if (ancestor->member_names.contains(method.name))
                 return failure(ErrorCode::invalid_definition,
-                               "Member hides an inherited declaration: " + type->info.name + "." + method.name +
-                                   " hides " + ancestor->info.name + "." + method.name);
+                               String::concat("Member hides an inherited declaration: ", type->info.name, ".",
+                                              method.name, " hides ", ancestor->info.name, ".", method.name));
         auto signature = impl.resolve_signature(method.signature, existing, staged);
         if (!signature)
             return failure(signature.error().code,
-                           signature.error().message + ": " + type->info.name + "." + method.name);
+                           String::concat(signature.error().message, ": ", type->info.name, ".", method.name));
         ATELIER_TRY(validate_method_parameters(type->info.name, method.name, signature->parameters.size(),
                                                method.parameter_names, method.parameter_metadata));
-        if (std::ranges::find(type->member_names, method.name) == type->member_names.end()) {
+        if (!type->member_names.contains(method.name)) {
             for (const auto& candidate : impl.types)
                 ATELIER_TRY(check_descendant(*candidate, method.name));
             for (const auto& candidate : staged)
@@ -2662,7 +2848,7 @@ Result<void> detail::TypePublication::validate_methods(Runtime& runtime, TypeId 
             for (const auto& published : impl.types)
                 publication->state_->catalog.add(&published->info);
         }
-        const std::uint32_t type_index = *impl.names.find(StringView{type->info.name});
+        const std::uint32_t type_index = *impl.names.find(type->info.name.view());
         publication->state_->added_methods.add({type_index, std::move(added_names)});
     }
     return {};
@@ -2691,42 +2877,30 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(Array<Ty
             return failure(ErrorCode::invalid_definition,
                            "A named record, object, enum, string or array type is required.");
         }
-        if (!StringView{definition.name}.is_valid_utf8())
-            return failure(ErrorCode::invalid_definition, "Type names require valid UTF-8.");
-        const auto invalid_description = [](const std::string& owner) {
+        const auto invalid_description = [](const String& owner) {
             return failure(ErrorCode::invalid_definition,
-                           "Description requires valid UTF-8 without controls other than line breaks and tabs: " +
-                               owner);
+                           String::concat("Description requires valid UTF-8 without controls other than line breaks and tabs: ",
+                                          owner));
         };
         if (!normalize_description(definition.description))
             return invalid_description(definition.name);
         if (const auto normalized = normalize_metadata_entries(definition.metadata); !normalized)
-            return failure(normalized.error().code, normalized.error().message + ": " + definition.name);
+            return failure(normalized.error().code, String::concat(normalized.error().message, ": ", definition.name));
         for (auto& field : definition.fields) {
-            if (!StringView{field.name}.is_valid_utf8() || !StringView{field.label}.is_valid_utf8() ||
-                !StringView{field.category}.is_valid_utf8())
-                return failure(ErrorCode::invalid_definition,
-                               "Field names, labels and categories require valid UTF-8.");
             if (!normalize_description(field.description))
-                return invalid_description(definition.name + "." + field.name);
+                return invalid_description(String::concat(definition.name, ".", field.name));
             const auto normalized = field.normalize_metadata();
             if (!normalized)
                 return failure(normalized.error().code,
-                               normalized.error().message + ": " + definition.name + "." + field.name);
+                               String::concat(normalized.error().message, ": ", definition.name, ".", field.name));
         }
         for (auto& method : definition.methods) {
-            if (!StringView{method.name}.is_valid_utf8())
-                return failure(ErrorCode::invalid_definition, "Method names require valid UTF-8.");
             if (!normalize_description(method.description))
-                return invalid_description(definition.name + "." + method.name);
-        }
-        for (auto& method : definition.described_methods) {
-            if (!StringView{method.name}.is_valid_utf8())
-                return failure(ErrorCode::invalid_definition, "Method names require valid UTF-8.");
+                return invalid_description(String::concat(definition.name, ".", method.name));
         }
         const auto same_name = [&](const auto& type) { return type->info.name == definition.name; };
-        if (impl_->named(definition.name) || std::ranges::any_of(staged, same_name)) {
-            return failure(ErrorCode::duplicate_name, "Type already defined: " + definition.name);
+        if (impl_->named(definition.name.view()) || std::ranges::any_of(staged, same_name)) {
+            return failure(ErrorCode::duplicate_name, String::concat("Type already defined: ", definition.name));
         }
         const auto& native = definition.native;
         if (native.representation) {
@@ -2745,7 +2919,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(Array<Ty
         const bool is_native =
             native.size || native.alignment || native.representation || native.construct || native.destroy ||
             native.copy_construct || native.copy_assign || native.swap || native.base_address || native.base_offset ||
-            native.element_representation || native.sequence_view || native.sequence_mutate ||
+            native.element_representation || native.sequence_view || native.sequence_mutate || native.sequence_apply ||
             native.value_operations_preserve_borrows || native.plain_value || native.trivially_destructible ||
             native.standard_array_layout || native.prototype_constructor;
         if (is_native && (!native.size || !std::has_single_bit(native.alignment) || !native.representation ||
@@ -2782,7 +2956,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(Array<Ty
         if (array && is_native && !native.sequence_view)
             return failure(ErrorCode::invalid_definition,
                            "Array types require an element projection for element paths.");
-        if ((native.sequence_view || native.sequence_mutate) && !array && !string)
+        if ((native.sequence_view || native.sequence_mutate || native.sequence_apply) && !array && !string)
             return failure(ErrorCode::invalid_definition, "Only Array/String types can project sequence storage.");
         if (string && (!is_native || !native.copy_construct || !native.copy_assign || !definition.fields.empty()))
             return failure(ErrorCode::invalid_definition,
@@ -2792,7 +2966,8 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(Array<Ty
                            "Foundation values require native ownership operations and no inline fields.");
         if (native.standard_array_layout &&
             (!array || native.size != sizeof(Impl::DescribedArray) ||
-             native.alignment != alignof(Impl::DescribedArray) || !native.sequence_view || !native.sequence_mutate))
+             native.alignment != alignof(Impl::DescribedArray) || !native.sequence_view || !native.sequence_mutate ||
+             !native.sequence_apply))
             return failure(ErrorCode::invalid_definition,
                            "Standard array layout requires a 3-word mutable Array<T> definition.");
         if (string && native.representation != detail::representation<String>())
@@ -2825,6 +3000,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(Array<Ty
         type->info.native_storage = is_native;
         type->info.sequence_view = type->native.sequence_view;
         type->info.sequence_mutate = native.sequence_mutate;
+        type->info.sequence_apply = native.sequence_apply;
         type->info.value_operations_preserve_borrows =
             (array && !is_native) ? true : native.value_operations_preserve_borrows;
         type->info.standard_array_layout = array && (!is_native || native.standard_array_layout);
@@ -2851,26 +3027,24 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(Array<Ty
             auto& enum_metadata = definition.enumeration->metadata;
             if (!enum_metadata.empty() && enum_metadata.size() != values.size())
                 return failure(ErrorCode::invalid_definition,
-                               "Enumerator metadata must match the enumerators of: " + type.info.name);
+                               String::concat("Enumerator metadata must match the enumerators of: ", type.info.name));
             for (std::size_t e = 0; e < values.size(); ++e) {
                 if (values[e].first.empty())
                     return failure(ErrorCode::invalid_definition, "Enum names cannot be empty.");
-                if (!StringView{values[e].first}.is_valid_utf8())
-                    return failure(ErrorCode::invalid_definition, "Enum names require valid UTF-8.");
                 for (std::size_t j = 0; j < e; ++j)
                     if (values[j].first == values[e].first)
-                        return failure(ErrorCode::duplicate_name, "Duplicate enum name: " + values[e].first);
+                        return failure(ErrorCode::duplicate_name, String::concat("Duplicate enum name: ", values[e].first));
                 if (e < enum_metadata.size()) {
-                    if (!StringView{enum_metadata[e].label}.is_valid_utf8() ||
-                        std::ranges::any_of(enum_metadata[e].label, [](unsigned char c) { return c < 32 || c == 127; }))
+                    const auto label_view = enum_metadata[e].label.view();
+                    if (std::ranges::any_of(label_view, [](unsigned char c) { return c < 32 || c == 127; }))
                         return failure(ErrorCode::invalid_definition,
-                                       "Enumerator labels require valid UTF-8 without control characters: " +
-                                           type.info.name + "." + values[e].first);
+                                       String::concat("Enumerator labels require valid UTF-8 without control characters: ",
+                                                      type.info.name, ".", values[e].first));
                     if (!normalize_description(enum_metadata[e].description))
                         return failure(
                             ErrorCode::invalid_definition,
-                            "Description requires valid UTF-8 without controls other than line breaks and tabs: " +
-                                type.info.name + "." + values[e].first);
+                            String::concat("Description requires valid UTF-8 without controls other than line breaks and tabs: ",
+                                           type.info.name, ".", values[e].first));
                 }
             }
             enum_metadata.resize(values.size());
@@ -2926,43 +3100,47 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(Array<Ty
                 return failure(ErrorCode::invalid_definition, "Field name must not be empty.");
             for (std::size_t previous = 0; previous != field_index; ++previous) {
                 if (definition.fields[previous].name == name)
-                    return failure(ErrorCode::duplicate_name, "Duplicate field: " + name);
+                    return failure(ErrorCode::duplicate_name, String::concat("Duplicate field: ", name));
             }
         }
         for (std::size_t method_index = 0; method_index != definition.methods.size(); ++method_index) {
             const auto& name = definition.methods[method_index].name;
             for (const auto& field : definition.fields) {
                 if (field.name == name)
-                    return failure(ErrorCode::duplicate_name, "Duplicate member: " + name);
+                    return failure(ErrorCode::duplicate_name, String::concat("Duplicate member: ", name));
             }
             for (std::size_t previous = 0; previous != method_index; ++previous) {
                 if (definition.methods[previous].name == name)
-                    return failure(ErrorCode::duplicate_name, "Duplicate method: " + name);
+                    return failure(ErrorCode::duplicate_name, String::concat("Duplicate method: ", name));
             }
         }
         for (std::size_t method_index = 0; method_index != definition.described_methods.size(); ++method_index) {
             const auto& name = definition.described_methods[method_index].name;
             for (const auto& field : definition.fields) {
                 if (field.name == name)
-                    return failure(ErrorCode::duplicate_name, "Duplicate member: " + type.info.name + "." + name);
+                    return failure(ErrorCode::duplicate_name,
+                                   String::concat("Duplicate member: ", type.info.name, ".", name));
             }
             for (const auto& callable : definition.methods) {
                 if (callable.name == name)
-                    return failure(ErrorCode::duplicate_name, "Duplicate method: " + type.info.name + "." + name);
+                    return failure(ErrorCode::duplicate_name,
+                                   String::concat("Duplicate method: ", type.info.name, ".", name));
             }
             for (std::size_t previous = 0; previous != method_index; ++previous) {
                 if (definition.described_methods[previous].name == name)
-                    return failure(ErrorCode::duplicate_name, "Duplicate method: " + type.info.name + "." + name);
+                    return failure(ErrorCode::duplicate_name,
+                                   String::concat("Duplicate method: ", type.info.name, ".", name));
             }
         }
         for (auto& field : definition.fields) {
             type.member_names.add(field.name);
             const auto* target = resolve(field.value.type);
             if (!target) {
-                const auto* named = std::get_if<std::string>(&field.value.type.target_);
-                return failure(ErrorCode::invalid_definition, "Unresolved field type" +
-                                                                  (named ? " '" + *named + "'" : std::string{}) + ": " +
-                                                                  type.info.name + "." + field.name);
+                const auto* named = std::get_if<String>(&field.value.type.target_);
+                return failure(ErrorCode::invalid_definition,
+                               named ? String::concat("Unresolved field type '", *named, "': ", type.info.name, ".",
+                                                      field.name)
+                                     : String::concat("Unresolved field type: ", type.info.name, ".", field.name));
             }
             const auto form = field.value.form;
             if (form == ValueForm::inline_value) {
@@ -3000,10 +3178,10 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(Array<Ty
                                     form == ValueForm::inline_value && target->info.kind == TypeKind::string;
             if (text_field && !field.default_text)
                 field.default_text.emplace();
-            if (field.default_text && (!text_field || !StringView{*field.default_text}.is_valid_utf8()))
+            if (field.default_text && !text_field)
                 return failure(ErrorCode::invalid_definition,
-                               "Text defaults require a described object's String field and valid UTF-8: " +
-                                   type.info.name + "." + field.name);
+                               String::concat("Text defaults require a described object's String field and valid UTF-8: ",
+                                              type.info.name, ".", field.name));
             auto published_leaves = field.default_leaves;
             if (!field.default_leaves.empty()) {
                 TypeId leaf{};
@@ -3028,13 +3206,13 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(Array<Ty
                         return std::holds_alternative<EnumValue>(item) || impl_->scalar_type(item) != leaf;
                     }))
                     return failure(ErrorCode::invalid_definition,
-                                   "Default leaves require a described object's scalar, enum or math vector "
-                                   "field, with one leaf of the exact scalar or underlying type per component: " +
-                                       type.info.name + "." + field.name);
+                                   String::concat("Default leaves require a described object's scalar, enum or math vector "
+                                                  "field, with one leaf of the exact scalar or underlying type per component: ",
+                                                  type.info.name, ".", field.name));
                 if (std::ranges::any_of(field.default_leaves,
                                         [](const Scalar& item) { return !std::isfinite(range_value(item)); }))
                     return failure(ErrorCode::invalid_definition,
-                                   "Default leaves must be finite: " + type.info.name + "." + field.name);
+                                   String::concat("Default leaves must be finite: ", type.info.name, ".", field.name));
                 if (target->info.kind == TypeKind::enumeration) {
                     const auto& bits = field.default_leaves.front();
                     published_leaves = {
@@ -3044,9 +3222,10 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(Array<Ty
                 }
             }
             if (const auto& range = field.range; range.ui_min || range.ui_max || range.hard_min || range.hard_max) {
-                const auto invalid = [&](std::string_view reason) {
+                const auto invalid = [&](StringView reason) {
                     return failure(ErrorCode::invalid_definition,
-                                   "Field range " + std::string(reason) + ": " + type.info.name + "." + field.name);
+                                   String::concat("Field range ", String::validated(reason), ": ", type.info.name, ".",
+                                                  field.name));
                 };
                 // An Array range bounds each element; later batch entries have not resolved their element yet.
                 const auto* bounded = target;
@@ -3083,8 +3262,9 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(Array<Ty
                     }
             }
             if (!field.exposed && (field.transient || field.read_only))
-                return failure(ErrorCode::invalid_definition, "Hidden fields cannot declare Transient or ReadOnly: " +
-                                                                  type.info.name + "." + field.name);
+                return failure(ErrorCode::invalid_definition,
+                               String::concat("Hidden fields cannot declare Transient or ReadOnly: ", type.info.name,
+                                              ".", field.name));
             type.fields.add({field.native_offset.value_or(0), field.native_offset ? nullptr : field.native_address,
                              value, nullptr, std::move(field.default_leaves),
                              field.range.constrains() ? std::make_unique<const FieldRange>(field.range) : nullptr,
@@ -3096,8 +3276,8 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(Array<Ty
                                       field.native_address, id, std::move(field.metadata),
                                       std::move(field.default_text), field.transient, field.read_only});
         }
-        const auto validate_parameters = [&](const std::string& method_name, std::size_t count,
-                                             Array<std::string>& names,
+        const auto validate_parameters = [&](const String& method_name, std::size_t count,
+                                             Array<String>& names,
                                              Array<MetadataList>& metadata) -> Result<void> {
             return validate_method_parameters(type.info.name, method_name, count, names, metadata);
         };
@@ -3114,13 +3294,14 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(Array<Ty
             auto& defaults = method.parameter_defaults;
             if (!defaults.empty() && defaults.size() != signature->parameters.size())
                 return failure(ErrorCode::invalid_definition,
-                               "Parameter defaults must match the parameters of method: " + method.name);
+                               String::concat("Parameter defaults must match the parameters of method: ", method.name));
             bool seen_default = false;
             for (std::size_t p = 0; p < defaults.size(); ++p) {
                 if (!defaults[p]) {
                     if (seen_default)
                         return failure(ErrorCode::invalid_definition,
-                                       "Parameter defaults must cover a trailing suffix of method: " + method.name);
+                                       String::concat("Parameter defaults must cover a trailing suffix of method: ",
+                                                      method.name));
                     continue;
                 }
                 seen_default = true;
@@ -3129,20 +3310,21 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(Array<Ty
                 if (!target || parameter.form != ValueForm::inline_value ||
                     parameter.passing == ParameterPassing::reference)
                     return failure(ErrorCode::invalid_definition,
-                                   "Parameter defaults require value or read_only inline parameters: " + method.name);
+                                   String::concat("Parameter defaults require value or read_only inline parameters: ",
+                                                  method.name));
                 if (target->info.kind == TypeKind::scalar) {
                     if (std::holds_alternative<EnumValue>(*defaults[p]) ||
                         impl_->scalar_type(*defaults[p]) != target->info.id ||
                         !std::isfinite(range_value(*defaults[p])))
                         return failure(ErrorCode::invalid_definition,
-                                       "Scalar parameter default must be a finite value of the exact parameter type: " +
-                                           method.name);
+                                       String::concat("Scalar parameter default must be a finite value of the exact parameter type: ",
+                                                      method.name));
                 } else if (target->info.kind == TypeKind::enumeration) {
                     if (const auto* enum_val = std::get_if<EnumValue>(&*defaults[p])) {
                         if (enum_val->type != target->info.id)
                             return failure(ErrorCode::invalid_definition,
-                                           "Enum parameter default does not match the parameter enum type: " +
-                                               method.name);
+                                           String::concat("Enum parameter default does not match the parameter enum type: ",
+                                                          method.name));
                     } else {
                         const auto* underlying =
                             target->info.enumeration
@@ -3150,8 +3332,8 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(Array<Ty
                                 : resolve(definitions[target->info.id.index_ - first_index].enumeration->underlying);
                         if (!underlying || impl_->scalar_type(*defaults[p]) != underlying->info.id)
                             return failure(ErrorCode::invalid_definition,
-                                           "Enum parameter default must match the parameter enum or underlying type: " +
-                                               method.name);
+                                           String::concat("Enum parameter default must match the parameter enum or underlying type: ",
+                                                          method.name));
                         const std::uint32_t bits =
                             std::holds_alternative<std::int32_t>(*defaults[p])
                                 ? std::bit_cast<std::uint32_t>(std::get<std::int32_t>(*defaults[p]))
@@ -3160,7 +3342,8 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(Array<Ty
                     }
                 } else {
                     return failure(ErrorCode::invalid_definition,
-                                   "Parameter defaults support scalar and enum parameters only: " + method.name);
+                                   String::concat("Parameter defaults support scalar and enum parameters only: ",
+                                                  method.name));
                 }
             }
             defaults.resize(signature->parameters.size());
@@ -3177,7 +3360,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(Array<Ty
             auto signature = impl_->resolve_signature(method.signature, id, staged);
             if (!signature)
                 return failure(signature.error().code,
-                               signature.error().message + ": " + type.info.name + "." + method.name);
+                               String::concat(signature.error().message, ": ", type.info.name, ".", method.name));
             auto& names = method.parameter_names;
             auto& metadata = method.parameter_metadata;
             ATELIER_TRY(validate_parameters(method.name, signature->parameters.size(), names, metadata));
@@ -3215,7 +3398,7 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(Array<Ty
                 const auto dependency = value.type.index_ - first_index;
                 if (states[dependency] == LayoutState::active) {
                     return failure(ErrorCode::invalid_definition,
-                                   "Inline layout cycle at type: " + staged[dependency]->info.name);
+                                   String::concat("Inline layout cycle at type: ", staged[dependency]->info.name));
                 }
                 if (states[dependency] == LayoutState::unseen) {
                     states[dependency] = LayoutState::active;
@@ -3230,10 +3413,10 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(Array<Ty
             if (type.base) {
                 for (const auto* ancestor = type.base; ancestor; ancestor = ancestor->base) {
                     for (const auto& name : type.member_names) {
-                        if (std::ranges::find(ancestor->member_names, name) != ancestor->member_names.end())
+                        if (ancestor->member_names.contains(name))
                             return failure(ErrorCode::invalid_definition,
-                                           "Member hides an inherited declaration: " + type.info.name + "." + name +
-                                               " hides " + ancestor->info.name + "." + name);
+                                           String::concat("Member hides an inherited declaration: ", type.info.name, ".",
+                                                          name, " hides ", ancestor->info.name, ".", name));
                     }
                 }
                 type.depth = type.base->depth + 1;
@@ -3366,10 +3549,10 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(Array<Ty
             // Direct offsets are published only after every dependent layout is complete.
             if (is_native && type.base && type.base->info.id != impl_->object &&
                 type.info.alignment < type.base->info.alignment)
-                return failure(ErrorCode::invalid_definition, type.info.name + " guarantees alignment " +
-                                                                  std::to_string(type.info.alignment) + ", but base " +
-                                                                  type.base->info.name + " requires alignment " +
-                                                                  std::to_string(type.base->info.alignment) + ".");
+                return failure(ErrorCode::invalid_definition,
+                               String::concat(type.info.name, " guarantees alignment ", type.info.alignment,
+                                              ", but base ", type.base->info.name, " requires alignment ",
+                                              type.base->info.alignment, "."));
             if (type.native.base_offset && (*type.native.base_offset > type.info.size ||
                                             type.base->info.size > type.info.size - *type.native.base_offset ||
                                             *type.native.base_offset % type.base->info.alignment != 0))
@@ -3542,8 +3725,9 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(Array<Ty
             auto signature =
                 impl_->resolve_signature(definitions[i].described_methods[m].signature, type.info.id, staged);
             if (!signature)
-                return failure(signature.error().code, signature.error().message + ": " + type.info.name + "." +
-                                                           type.info.described_methods[m].name);
+                return failure(signature.error().code,
+                               String::concat(signature.error().message, ": ", type.info.name, ".",
+                                              type.info.described_methods[m].name));
         }
         const std::size_t inherited = type.base ? type.base->info.methods.size() : 0;
         type.compiled_methods.reserve(definitions[i].methods.size());
@@ -3606,10 +3790,10 @@ Result<std::shared_ptr<detail::TypePublication>> Runtime::prepare_types(Array<Ty
     return publication;
 }
 
-Result<TypeId> Runtime::find_type(std::string_view name) const {
+Result<TypeId> Runtime::find_type(StringView name) const {
     if (const auto* type = impl_->named(name))
         return type->info.id;
-    return failure(ErrorCode::invalid_type, "Unknown type: " + std::string{name});
+    return failure(ErrorCode::invalid_type, String::concat("Unknown type: ", diagnostic_slice(name)));
 }
 
 Result<TypeId> Runtime::find_representation(const void* representation) const {
@@ -3673,22 +3857,22 @@ Result<ObjectReference> Runtime::cast_reference(const ObjectReference& reference
     return ObjectReference{{target, reference.description().form}, reference.id()};
 }
 
-Result<FieldId> Runtime::find_field(TypeId type, std::string_view name) const {
+Result<FieldId> Runtime::find_field(TypeId type, StringView name) const {
     const auto* found = impl_->lookup(type);
     if (!found)
         return failure(ErrorCode::invalid_type, "Type does not belong to this runtime.");
-    if (const auto* id = found->field_by_name.find(StringView{name}))
+    if (const auto* id = found->field_by_name.find(name))
         return *id;
-    return failure(ErrorCode::invalid_member, "Unknown field: " + std::string{name});
+    return failure(ErrorCode::invalid_member, String::concat("Unknown field: ", diagnostic_slice(name)));
 }
 
-Result<MethodId> Runtime::find_method(TypeId type, std::string_view name) const {
+Result<MethodId> Runtime::find_method(TypeId type, StringView name) const {
     const auto* found = impl_->lookup(type);
     if (!found)
         return failure(ErrorCode::invalid_type, "Type does not belong to this runtime.");
-    if (const auto* id = found->method_by_name.find(StringView{name}))
+    if (const auto* id = found->method_by_name.find(name))
         return *id;
-    return failure(ErrorCode::invalid_member, "Unknown method: " + std::string{name});
+    return failure(ErrorCode::invalid_member, String::concat("Unknown method: ", diagnostic_slice(name)));
 }
 
 Runtime::NativeBorrow::NativeBorrow(Runtime& owner, void* address) noexcept : runtime(&owner), storage(address) {
@@ -4059,6 +4243,39 @@ Result<void> Runtime::mutate_sequence(TypeId type_id, Span<std::byte> storage, S
     if (described_array)
         return impl_->mutate_described_array(**type, operation, storage.data(), input.data(), count);
     return info.sequence_mutate(operation, storage.data(), input.data(), count);
+}
+
+Result<void> Runtime::apply_sequence(TypeId type_id, Span<std::byte> storage, const SequenceCall& call) {
+    detail::assert_serial_access();
+    if (impl_->roots->traversals != 0 || impl_->changing_references)
+        return failure(ErrorCode::busy, "Sequence mutation is not allowed during traversal or batch preparation.");
+    const auto type = impl_->value_type(type_id, storage);
+    if (!type)
+        return std::unexpected(type.error());
+    const auto& info = (*type)->info;
+    const bool described_array = Impl::is_described_array(**type);
+    if ((!info.sequence_apply && !described_array) || !info.value_operations_preserve_borrows ||
+        info.contains_references)
+        return failure(ErrorCode::unsupported_operation,
+                       "Sequence operations lack a borrow-preserving value contract.");
+    using Alg = SequenceAlgorithm;
+    const bool string_alg = call.algorithm >= Alg::str_append_i32 && call.algorithm <= Alg::str_replace_all;
+    if (string_alg ? (info.kind != TypeKind::string) : (info.kind != TypeKind::array))
+        return failure(ErrorCode::type_mismatch, "Sequence algorithm does not match container kind.");
+    if ((call.algorithm == Alg::str_strip_prefix || call.algorithm == Alg::str_strip_suffix ||
+         call.algorithm == Alg::str_replace_all) &&
+        !call.result)
+        return failure(ErrorCode::invalid_storage, "Sequence operation requires result storage.");
+    if (call.algorithm == Alg::arr_fill || call.algorithm == Alg::arr_resize_fill ||
+        call.algorithm == Alg::arr_insert) {
+        const auto elem_id = info.element.value_or(TypeId{});
+        ATELIER_TRY_BIND(valid_elem,
+                         impl_->value_type(elem_id, {static_cast<const std::byte*>(call.first_data), call.first_size}));
+    }
+    CallbackScope scope{impl_->callbacks};
+    if (described_array)
+        return impl_->apply_described_array(**type, storage.data(), call);
+    return info.sequence_apply(storage.data(), call);
 }
 
 std::uint32_t Runtime::try_resolve_object(ObjectId object) const noexcept {
@@ -4488,15 +4705,15 @@ Result<Runtime::Address> Runtime::resolve_path(TypeId type, void* storage, Span<
             if (owner != actual)
                 return failure(ErrorCode::invalid_member,
                                actual->info.kind == TypeKind::array
-                                   ? "An Array value takes only element selectors of its own type."
-                                   : "An element selector requires a value of its Array type.");
+                                   ? "An Array value takes only element selectors of its own type."_s
+                                   : "An element selector requires a value of its Array type."_s);
             const auto& element = *impl_->lookup(*actual->info.element);
             if (result.data) {
                 const auto [items, count] = Impl::elements(*actual, result.data);
                 if (field.index_ >= count)
                     return impl_->located(ErrorCode::invalid_member, type, path.first(depth + 1), {},
-                                          "Array element index " + std::to_string(field.index_) +
-                                              " is out of range of " + std::to_string(count) + " elements.");
+                                          String::concat("Array element index ", field.index_, " is out of range of ",
+                                                         count, " elements."));
                 result.data = items + std::size_t{field.index_} * element.info.size;
             }
             // A ranged Array bounds each scalar or vector element; the range carries forward.
@@ -4804,11 +5021,13 @@ Result<void> Runtime::mutate_elements(ObjectId object, Span<const FieldId> path,
         : operation == SequenceMutation::remove ? position > size || operand > size - position
                                                 : position >= size || operand >= size)
         return impl_->located(ErrorCode::argument_mismatch, address->root, path, {},
-                              (operation == SequenceMutation::insert ? "Insertion at " + std::to_string(position)
-                               : operation == SequenceMutation::remove
-                                   ? "Removal of " + std::to_string(operand) + " at " + std::to_string(position)
-                                   : "Move from " + std::to_string(position) + " to " + std::to_string(operand)) +
-                                  " is out of range of " + std::to_string(size) + " elements.");
+                              operation == SequenceMutation::insert
+                                  ? String::concat("Insertion at ", position, " is out of range of ", size, " elements.")
+                              : operation == SequenceMutation::remove
+                                  ? String::concat("Removal of ", operand, " at ", position, " is out of range of ",
+                                                   size, " elements.")
+                                  : String::concat("Move from ", position, " to ", operand, " is out of range of ",
+                                                   size, " elements."));
     if (copy && value.type != element.info.id)
         return failure(ErrorCode::type_mismatch, "Inserted value must have the Array's element type.");
     if (copy && (!value.data || reinterpret_cast<std::uintptr_t>(value.data) % element.info.alignment != 0))
@@ -5066,7 +5285,8 @@ Result<void> Runtime::prepare_arguments(const FunctionSignature& signature, Span
             actual = impl_->lookup(impl_->scalar_type(argument.value_));
         if (actual != expected || (std::holds_alternative<EnumValue>(argument.value_) && !data &&
                                    expected->info.kind != TypeKind::enumeration))
-            return failure(ErrorCode::argument_mismatch, "Argument type does not match parameter " + std::to_string(i));
+            return failure(ErrorCode::argument_mismatch,
+                           String::concat("Argument type does not match parameter ", i));
         if (data &&
             (reinterpret_cast<std::uintptr_t>(data) % expected->info.alignment != 0 || (writable && data != writable)))
             return failure(ErrorCode::invalid_storage, "Borrowed argument storage is invalid or misaligned.");
@@ -5146,7 +5366,8 @@ Result<void> Runtime::call_scalars(ObjectId object, MethodId method, Span<const 
         const Scalar& arg = i < arguments.size() ? arguments[i] : *method_info.parameter_defaults[i];
         if (arg.index() != param.scalar_variant ||
             (param.scalar_variant == 3 && std::get<EnumValue>(arg).type != param.type->info.id)) [[unlikely]]
-            return failure(ErrorCode::argument_mismatch, "Argument type does not match parameter " + std::to_string(i));
+            return failure(ErrorCode::argument_mismatch,
+                           String::concat("Argument type does not match parameter ", i));
         if (param.passing == ParameterPassing::reference) [[unlikely]]
             return failure(ErrorCode::argument_mismatch, "Writable reference requires mutable lvalue storage.");
         auto* destination = scratch + param.scratch_offset;
@@ -5211,7 +5432,7 @@ Result<void> Runtime::call_arguments(ObjectId object, MethodId method, Span<cons
                     type_matches = (impl_->lookup(argument.type_) == param.type);
                 if (!type_matches) [[unlikely]]
                     return failure(ErrorCode::argument_mismatch,
-                                   "Argument type does not match parameter " + std::to_string(i));
+                                   String::concat("Argument type does not match parameter ", i));
                 if ((reinterpret_cast<std::uintptr_t>(data) & (param.type->info.alignment - 1)) != 0 ||
                     (writable && data != writable)) [[unlikely]]
                     return failure(ErrorCode::invalid_storage, "Borrowed argument storage is invalid or misaligned.");
@@ -5230,7 +5451,7 @@ Result<void> Runtime::call_arguments(ObjectId object, MethodId method, Span<cons
                 if (val.index() != param.scalar_variant ||
                     (param.scalar_variant == 3 && std::get<EnumValue>(val).type != param.type->info.id)) [[unlikely]]
                     return failure(ErrorCode::argument_mismatch,
-                                   "Argument type does not match parameter " + std::to_string(i));
+                                   String::concat("Argument type does not match parameter ", i));
                 if (param.passing == ParameterPassing::reference) [[unlikely]]
                     return failure(ErrorCode::argument_mismatch, "Writable reference requires mutable lvalue storage.");
                 auto* destination = scratch + param.scratch_offset;

@@ -8,7 +8,8 @@ namespace detail {
 
 template <class T>
 TypeDefinition components(Runtime& runtime) {
-    NativeRegistration<T> registration(runtime, std::string(name(type_of<T>)), TypeKind::record);
+    NativeRegistration<T> registration(runtime, String::from_utf8_validated(StringView{name(type_of<T>)}),
+                                       TypeKind::record);
     using Scalar = typename T::Scalar;
     const ValueDefinition scalar{TypeReference::native<Scalar>()};
     registration.template field<&T::x>("x", scalar, offsetof(T, x));
@@ -27,14 +28,14 @@ TypeDefinition components(Runtime& runtime) {
 
 template <class T, std::size_t... I>
 TypeDefinition matrix(Runtime& runtime, std::index_sequence<I...>) {
-    auto definition = NativeRegistration<T>(runtime, std::string(name(type_of<T>)), TypeKind::record).build();
+    auto definition =
+        NativeRegistration<T>(runtime, String::from_utf8_validated(StringView{name(type_of<T>)}), TypeKind::record)
+            .build();
     using Scalar = typename T::Scalar;
     const auto add = [&]<std::size_t Index>() {
-        std::string field{"m00"};
-        field[1] += static_cast<char>(Index / 4);
-        field[2] += static_cast<char>(Index % 4);
+        char field[3]{'m', static_cast<char>('0' + (Index / 4)), static_cast<char>('0' + (Index % 4))};
         definition.fields.add(
-            {std::move(field),
+            {String::from_utf8_validated({field, 3}),
              {TypeReference::native<Scalar>()},
              [](void* storage) noexcept -> void* { return &static_cast<T*>(storage)->elements[Index]; },
              atelier::detail::representation<Scalar>(),

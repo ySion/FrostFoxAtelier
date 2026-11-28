@@ -524,10 +524,72 @@ private:
             function.parameters[*root].mutates_structure = true;
     }
 
+    static void mark_length_change(Function& function, NodeId id) noexcept {
+        const auto& expr = function.expressions[id];
+        if (expr.kind == Expression::Kind::local && expr.value < function.parameters.size() &&
+            function.parameters[expr.value].passing == ParameterPassing::reference)
+            function.parameters[expr.value].changes_length = true;
+    }
+
     bool parallel_outer_sequence(const Expression& seq, std::uint32_t local_limit) const noexcept {
         return (seq.kind == Expression::Kind::constant_data ||
                 (seq.kind == Expression::Kind::local && seq.value < local_limit)) &&
                parallel_sequence_type(seq.type);
+    }
+
+    bool element_equatable(ValueType elem) const noexcept {
+        return scalar(elem) || bool(math_type(elem)) || (elem.kind == ValueType::string && supported_value(elem));
+    }
+
+    bool element_ordered(ValueType elem) const noexcept {
+        return elem == ValueType::i32 || elem == ValueType::u32 || elem == ValueType::f32 || elem == ValueType::f64 ||
+               (elem.kind == ValueType::enumeration && elem.type_index < environment_.enumerations.size()) ||
+               (elem.kind == ValueType::string && supported_value(elem));
+    }
+
+    static std::vector<bool> compute_view_only_string_literals(const Function& function) {
+        std::vector<bool> view_only(function.expressions.size(), false);
+        for (std::size_t i = 0; i < function.expressions.size(); ++i)
+            view_only[i] = function.expressions[i].kind == Expression::Kind::string_literal;
+        const auto clear = [&](NodeId id) noexcept {
+            if (id != no_node && id < view_only.size())
+                view_only[id] = false;
+        };
+        for (const auto& stmt : function.statements) {
+            if (stmt.kind == Statement::Kind::assign)
+                clear(stmt.target);
+            clear(stmt.expression);
+            if (stmt.kind == Statement::Kind::fail)
+                clear(stmt.body);
+        }
+        for (const auto& expr : function.expressions) {
+            using Kind = Expression::Kind;
+            clear(expr.receiver);
+            const bool left_is_view =
+                expr.kind == Kind::length || expr.kind == Kind::index ||
+                (expr.kind == Kind::binary && expr.left != no_node &&
+                 function.expressions[expr.left].type.kind == ValueType::string) ||
+                (expr.kind == Kind::sequence_operation &&
+                 (is_readonly_sequence_operation(expr.sequence_operation) ||
+                  is_try_parse_sequence_operation(expr.sequence_operation)));
+            if (!left_is_view)
+                clear(expr.left);
+            const bool right_is_view = expr.kind == Kind::binary && expr.right != no_node &&
+                                       function.expressions[expr.right].type.kind == ValueType::string;
+            if (!right_is_view)
+                clear(expr.right);
+            for (const auto arg : expr.arguments) {
+                const bool arg_is_view =
+                    expr.kind == Kind::sequence_operation && arg != no_node &&
+                    function.expressions[arg].type.kind == ValueType::string &&
+                    expr.sequence_operation != SequenceOperation::arr_fill &&
+                    expr.sequence_operation != SequenceOperation::arr_resize_fill &&
+                    expr.sequence_operation != SequenceOperation::arr_insert;
+                if (!arg_is_view)
+                    clear(arg);
+            }
+        }
+        return view_only;
     }
 
     std::expected<void, Diagnostic> analyze_calls() {
@@ -538,18 +600,36 @@ private:
             std::vector<bool> allowed(function.expressions.size());
             std::vector<bool> blocked(function.expressions.size());
             std::vector<bool> stored(function.expressions.size());
+            const auto view_only_literals = compute_view_only_string_literals(function);
             function.preserves_borrows = true;
             for (const auto& statement : function.statements) {
                 if (statement.kind == Statement::Kind::assign) {
                     stored[statement.target] = true;
                     const auto target_type = function.expressions[statement.target].type;
-                    if (aggregate(target_type) && !plain_record(target_type))
+                    if (aggregate(target_type) && !plain_record(target_type)) {
                         mark_structure_mutation(function, statement.target);
+                        mark_length_change(function, statement.target);
+                    }
                 }
             }
             for (const auto& node : function.expressions) {
-                if (node.kind == Expression::Kind::sequence_mutation)
+                if (node.kind == Expression::Kind::sequence_mutation) {
                     mark_structure_mutation(function, node.left);
+                    mark_length_change(function, node.left);
+                }
+                if (node.kind == Expression::Kind::sequence_operation) {
+                    if (mutates_sequence_structure(node.sequence_operation)) {
+                        mark_structure_mutation(function, node.left);
+                        mark_length_change(function, node.left);
+                    } else if (is_length_preserving_array_mutation(node.sequence_operation)) {
+                        const auto seq_type = function.expressions[node.left].type;
+                        const auto elem = environment_.values[seq_type.type_index].element;
+                        if (aggregate(elem) && !plain_record(elem))
+                            mark_structure_mutation(function, node.left);
+                    }
+                    if (is_try_parse_sequence_operation(node.sequence_operation) && !node.arguments.empty())
+                        stored[node.arguments[0]] = true;
+                }
                 if (node.kind == Expression::Kind::call)
                     for (std::size_t i = 0; i < node.arguments.size(); ++i) {
                         const auto arg_type = function.expressions[node.arguments[i]].type;
@@ -558,8 +638,10 @@ private:
                              arg_type.kind != ValueType::string))
                             stored[node.arguments[i]] = true;
                         if (node.argument_passing[i] == ParameterPassing::reference && aggregate(arg_type) &&
-                            !plain_record(arg_type))
+                            !plain_record(arg_type)) {
                             mark_structure_mutation(function, node.arguments[i]);
+                            mark_length_change(function, node.arguments[i]);
+                        }
                     }
             }
             for (std::size_t i = 0; i < function.expressions.size(); ++i) {
@@ -605,23 +687,51 @@ private:
                          !parallel_value_type(function.expressions[stmt.target].type))
                     function.parallel_safe = false;
             }
+            const auto local_limit = static_cast<std::uint32_t>(function.locals.size());
+            const auto valid_parallel_seq_view = [&](NodeId seq_id) noexcept {
+                const auto& seq = function.expressions[seq_id];
+                return parallel_outer_sequence(seq, local_limit) ||
+                       (seq.kind == Expression::Kind::string_literal && view_only_literals[seq_id]);
+            };
             for (std::size_t e = 0; function.parallel_safe && e < function.expressions.size(); ++e) {
                 const auto& expr = function.expressions[e];
                 using Kind = Expression::Kind;
                 if (expr.kind == Kind::call || expr.kind == Kind::receiver || expr.kind == Kind::field ||
                     expr.kind == Kind::null_reference || expr.kind == Kind::create_reference ||
                     expr.kind == Kind::observe_reference || expr.kind == Kind::acquire_reference ||
-                    expr.kind == Kind::string_literal || expr.kind == Kind::sequence_mutation ||
-                    expr.kind == Kind::texture_sample || expr.kind == Kind::texture_orientation)
+                    expr.kind == Kind::sequence_mutation || expr.kind == Kind::texture_sample ||
+                    expr.kind == Kind::texture_orientation)
+                    function.parallel_safe = false;
+                else if (expr.kind == Kind::string_literal && !view_only_literals[e])
                     function.parallel_safe = false;
                 else if (expr.kind == Kind::value_field &&
                          (expr.type.kind == ValueType::array || expr.type.kind == ValueType::string))
                     function.parallel_safe = false;
                 else if ((expr.kind == Kind::index || expr.kind == Kind::length) &&
-                         !parallel_outer_sequence(function.expressions[expr.left],
-                                                  static_cast<std::uint32_t>(function.locals.size())))
+                         !valid_parallel_seq_view(expr.left))
                     function.parallel_safe = false;
-                else if (expr.kind == Kind::source_call) {
+                else if (expr.kind == Kind::binary &&
+                         (function.expressions[expr.left].type.kind == ValueType::array ||
+                          function.expressions[expr.left].type.kind == ValueType::string) &&
+                         (!valid_parallel_seq_view(expr.left) || !valid_parallel_seq_view(expr.right)))
+                    function.parallel_safe = false;
+                else if (expr.kind == Kind::sequence_operation) {
+                    if (!is_readonly_sequence_operation(expr.sequence_operation) &&
+                        !is_try_parse_sequence_operation(expr.sequence_operation)) {
+                        function.parallel_safe = false;
+                    } else if (!valid_parallel_seq_view(expr.left)) {
+                        function.parallel_safe = false;
+                    } else {
+                        for (const auto arg_id : expr.arguments) {
+                            const auto& arg = function.expressions[arg_id];
+                            if ((arg.type.kind == ValueType::array || arg.type.kind == ValueType::string) &&
+                                !valid_parallel_seq_view(arg_id)) {
+                                function.parallel_safe = false;
+                                break;
+                            }
+                        }
+                    }
+                } else if (expr.kind == Kind::source_call) {
                     for (const auto arg_id : expr.arguments) {
                         const auto& arg = function.expressions[arg_id];
                         if ((arg.type.kind == ValueType::array || arg.type.kind == ValueType::string) &&
@@ -667,9 +777,12 @@ private:
                     function.preserves_borrows &= callee.preserves_borrows;
                     function.parallel_safe &= callee.parallel_safe;
                     for (std::size_t a = 0; a < call.arguments.size(); ++a)
-                        if (call.argument_passing[a] == ParameterPassing::reference &&
-                            callee.parameters[a].mutates_structure)
-                            mark_structure_mutation(function, call.arguments[a]);
+                        if (call.argument_passing[a] == ParameterPassing::reference) {
+                            if (callee.parameters[a].mutates_structure)
+                                mark_structure_mutation(function, call.arguments[a]);
+                            if (callee.parameters[a].changes_length)
+                                mark_length_change(function, call.arguments[a]);
+                        }
                     ++cursor.next;
                 } else {
                     if (function.uses_scoped_values && (function.is_coroutine || !function.preserves_borrows))
@@ -689,7 +802,16 @@ private:
                 for (std::size_t i = 0; i < call.arguments.size(); ++i) {
                     if (call.argument_passing[i] != ParameterPassing::reference)
                         continue;
-                    const auto arg_type = function.expressions[call.arguments[i]].type;
+                    const auto& arg_expr = function.expressions[call.arguments[i]];
+                    const auto arg_type = arg_expr.type;
+                    const bool changes_len = call.kind == Expression::Kind::source_call
+                                                 ? module_.functions[call.value].parameters[i].changes_length
+                                                 : (aggregate(arg_type) && !plain_record(arg_type));
+                    if (changes_len && arg_expr.kind == Expression::Kind::local &&
+                        function.locals[arg_expr.value].fixed_length)
+                        return reject(
+                            arg_expr.position,
+                            "SOP [InOut] and [Out] attribute columns have fixed element count and cannot change structure.");
                     const bool mutates = call.kind == Expression::Kind::source_call
                                              ? module_.functions[call.value].parameters[i].mutates_structure
                                              : (aggregate(arg_type) && !plain_record(arg_type));
@@ -698,10 +820,6 @@ private:
                     const auto root = root_local(function, call.arguments[i]);
                     if (!root)
                         continue;
-                    if (function.locals[*root].fixed_length)
-                        return reject(
-                            function.expressions[call.arguments[i]].position,
-                            "SOP [InOut] and [Out] attribute columns have fixed element count and cannot change structure.");
                     for (std::size_t j = 0; j < call.arguments.size(); ++j) {
                         if (j == i || call.argument_passing[j] == ParameterPassing::value)
                             continue;
@@ -733,6 +851,11 @@ private:
 
     std::expected<void, Diagnostic> validate_parallel_loops() {
         for (auto& function : module_.functions) {
+            const bool has_parallel_loop = std::ranges::any_of(
+                function.statements, [](const auto& s) { return s.kind == Statement::Kind::parallel_loop; });
+            if (!has_parallel_loop)
+                continue;
+            const auto view_only_literals = compute_view_only_string_literals(function);
             const auto unwrap_value_fields = [&](NodeId id) noexcept {
                 while (function.expressions[id].kind == Expression::Kind::value_field)
                     id = function.expressions[id].left;
@@ -761,12 +884,14 @@ private:
                         return {};
                     if (base.kind == Expression::Kind::index) {
                         const auto& seq = function.expressions[base.left];
-                        const auto& idx = function.expressions[base.right];
                         if (seq.kind == Expression::Kind::local && seq.value < ivar &&
                             seq.type.kind == ValueType::array && parallel_sequence_type(seq.type) &&
                             !function.locals[seq.value].read_only) {
-                            if (idx.kind != Expression::Kind::local || idx.value != ivar)
-                                return reject(idx.position,
+                            if (base.right == no_node ||
+                                function.expressions[base.right].kind != Expression::Kind::local ||
+                                function.expressions[base.right].value != ivar)
+                                return reject(base.right == no_node ? base.position
+                                                                    : function.expressions[base.right].position,
                                               "parallel_for element writes must index directly by the loop variable.");
                             mark_unique(written_arrays, seq.value);
                             return {};
@@ -781,10 +906,27 @@ private:
                         return {};
                     const auto& expr = function.expressions[id];
                     using Kind = Expression::Kind;
+                    const auto check_seq_view = [&](NodeId seq_id, SourcePosition pos,
+                                                    bool reads_elements) -> std::expected<void, Diagnostic> {
+                        const auto& seq = function.expressions[seq_id];
+                        if (seq.kind == Kind::string_literal && view_only_literals[seq_id])
+                            return {};
+                        if (!parallel_outer_sequence(seq, ivar))
+                            return reject(pos, "parallel_for sequence access requires a top-level outer Array or String.");
+                        if (reads_elements && seq.kind == Kind::local)
+                            mark_unique(arbitrary_sequences, seq.value);
+                        return self(self, seq_id);
+                    };
                     switch (expr.kind) {
                     case Kind::literal:
                     case Kind::constant_data:
                         return {};
+                    case Kind::string_literal:
+                        if (view_only_literals[id])
+                            return {};
+                        return reject(
+                            expr.position,
+                            "parallel_for does not allow native calls, object operations, String literals or sequence structural mutations.");
                     case Kind::local: {
                         const auto type = function.locals[expr.value].type;
                         if (expr.value < ivar && !parallel_value_type(type) && type.kind != ValueType::record &&
@@ -806,8 +948,15 @@ private:
                             return reject(expr.position,
                                           "parallel_for cannot access Array or String fields inside a record.");
                         return self(self, expr.left);
-                    case Kind::unary:
                     case Kind::binary:
+                        if (function.expressions[expr.left].type.kind == ValueType::array ||
+                            function.expressions[expr.left].type.kind == ValueType::string) {
+                            ATELIER_TRY(check_seq_view(expr.left, expr.position, true));
+                            return check_seq_view(expr.right, expr.position, true);
+                        }
+                        ATELIER_TRY(self(self, expr.left));
+                        return self(self, expr.right);
+                    case Kind::unary:
                     case Kind::scalar_cast:
                     case Kind::conditional:
                         ATELIER_TRY(self(self, expr.receiver));
@@ -815,6 +964,8 @@ private:
                         return self(self, expr.right);
                     case Kind::length: {
                         const auto& seq = function.expressions[expr.left];
+                        if (seq.kind == Kind::string_literal && view_only_literals[expr.left])
+                            return {};
                         if (!parallel_outer_sequence(seq, ivar))
                             return reject(expr.position,
                                           "parallel_for sequence size requires a top-level outer Array or String.");
@@ -822,15 +973,41 @@ private:
                     }
                     case Kind::index: {
                         const auto& seq = function.expressions[expr.left];
-                        const auto& idx = function.expressions[expr.right];
-                        if (!parallel_outer_sequence(seq, ivar))
+                        if (!(seq.kind == Kind::string_literal && view_only_literals[expr.left]) &&
+                            !parallel_outer_sequence(seq, ivar))
                             return reject(expr.position,
                                           "parallel_for indexing requires a top-level outer Array or String.");
-                        if (seq.kind == Kind::local && (idx.kind != Kind::local || idx.value != ivar))
+                        if (seq.kind == Kind::local &&
+                            (expr.right == no_node || function.expressions[expr.right].kind != Kind::local ||
+                             function.expressions[expr.right].value != ivar))
                             mark_unique(arbitrary_sequences, seq.value);
                         ATELIER_TRY(self(self, expr.left));
                         return self(self, expr.right);
                     }
+                    case Kind::sequence_operation:
+                        if (is_readonly_sequence_operation(expr.sequence_operation)) {
+                            const bool reads_elems = expr.sequence_operation != SequenceOperation::str_empty &&
+                                                     expr.sequence_operation != SequenceOperation::arr_empty;
+                            ATELIER_TRY(check_seq_view(expr.left, expr.position, reads_elems));
+                            for (const auto arg_id : expr.arguments) {
+                                const auto& arg = function.expressions[arg_id];
+                                if (arg.type.kind == ValueType::array || arg.type.kind == ValueType::string) {
+                                    ATELIER_TRY(check_seq_view(arg_id, arg.position, true));
+                                } else {
+                                    ATELIER_TRY(self(self, arg_id));
+                                }
+                            }
+                            return {};
+                        }
+                        if (is_try_parse_sequence_operation(expr.sequence_operation)) {
+                            ATELIER_TRY(check_seq_view(expr.left, expr.position, true));
+                            const NodeId out_id = expr.arguments[0];
+                            ATELIER_TRY(check_mutable_lvalue(out_id, function.expressions[out_id].position));
+                            return self(self, out_id);
+                        }
+                        return reject(
+                            expr.position,
+                            "parallel_for does not allow native calls, object operations, String literals or sequence structural mutations.");
                     case Kind::math_construct:
                     case Kind::math_intrinsic:
                         for (const auto arg : expr.arguments) {
@@ -1659,14 +1836,22 @@ private:
             const auto& seq = function_.expressions[node.left];
             if (seq.kind != Expression::Kind::constant_data)
                 return reject(node.position, "Module constant initializers require compile-time constant expressions.");
-            ATELIER_TRY_BIND(idx_bits, fold_constant(node.right));
-            const auto idx_type = function_.expressions[node.right].type;
-            if (idx_type == ValueType::i32 && std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(*idx_bits)) < 0)
-                return reject(node.position, "Constant array index is out of bounds.");
-            const auto idx = static_cast<std::size_t>(static_cast<std::uint32_t>(*idx_bits));
             const auto& constant = module_.constants[seq.value];
-            if (idx >= constant.element_count)
-                return reject(node.position, "Constant array index is out of bounds.");
+            std::size_t idx = 0;
+            if (node.right == no_node) {
+                if (constant.element_count == 0)
+                    return reject(node.position, "Constant array index is out of bounds.");
+                idx = constant.element_count - 1;
+            } else {
+                ATELIER_TRY_BIND(idx_bits, fold_constant(node.right));
+                const auto idx_type = function_.expressions[node.right].type;
+                if (idx_type == ValueType::i32 &&
+                    std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(*idx_bits)) < 0)
+                    return reject(node.position, "Constant array index is out of bounds.");
+                idx = static_cast<std::size_t>(static_cast<std::uint32_t>(*idx_bits));
+                if (idx >= constant.element_count)
+                    return reject(node.position, "Constant array index is out of bounds.");
+            }
             const std::size_t elem_size = value_size(node.type);
             return std::span<const std::byte>{constant.bytes}.subspan(idx * elem_size, elem_size);
         }
@@ -1701,14 +1886,22 @@ private:
             const auto& seq = function_.expressions[node.left];
             if (seq.kind != Expression::Kind::constant_data)
                 return reject(node.position, "Module constant initializers require compile-time constant expressions.");
-            ATELIER_TRY_BIND(idx_bits, fold_constant(node.right));
-            const auto idx_type = function_.expressions[node.right].type;
-            if (idx_type == ValueType::i32 && std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(*idx_bits)) < 0)
-                return reject(node.position, "Constant array index is out of bounds.");
-            const auto idx = static_cast<std::size_t>(static_cast<std::uint32_t>(*idx_bits));
             const auto& constant = module_.constants[seq.value];
-            if (idx >= constant.element_count)
-                return reject(node.position, "Constant array index is out of bounds.");
+            std::size_t idx = 0;
+            if (node.right == no_node) {
+                if (constant.element_count == 0)
+                    return reject(node.position, "Constant array index is out of bounds.");
+                idx = constant.element_count - 1;
+            } else {
+                ATELIER_TRY_BIND(idx_bits, fold_constant(node.right));
+                const auto idx_type = function_.expressions[node.right].type;
+                if (idx_type == ValueType::i32 &&
+                    std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(*idx_bits)) < 0)
+                    return reject(node.position, "Constant array index is out of bounds.");
+                idx = static_cast<std::size_t>(static_cast<std::uint32_t>(*idx_bits));
+                if (idx >= constant.element_count)
+                    return reject(node.position, "Constant array index is out of bounds.");
+            }
             std::memcpy(out.data(), constant.bytes.data() + idx * out.size(), out.size());
             return {};
         }
@@ -1731,6 +1924,13 @@ private:
             if (seq.kind != Expression::Kind::constant_data)
                 return reject(node.position, "Module constant initializers require compile-time constant expressions.");
             return static_cast<std::uint32_t>(module_.constants[seq.value].element_count);
+        }
+        if (node.kind == Expression::Kind::sequence_operation &&
+            node.sequence_operation == SequenceOperation::arr_empty) {
+            const auto& seq = function_.expressions[node.left];
+            if (seq.kind != Expression::Kind::constant_data)
+                return reject(node.position, "Module constant initializers require compile-time constant expressions.");
+            return module_.constants[seq.value].element_count == 0 ? 1u : 0u;
         }
         if (node.kind == Expression::Kind::value_field || node.kind == Expression::Kind::index ||
             node.kind == Expression::Kind::math_intrinsic) {
@@ -2589,9 +2789,27 @@ private:
             if (std::ranges::find(property_uses_, target, &PropertyUse::node) != property_uses_.end())
                 return reject(symbol->position,
                               "Compound assignment is not supported on Get/Set properties; use explicit assignment.");
+            const auto target_type = function_.expressions[target].type;
+            if (target_type.kind == ValueType::string && *compound == Operation::add) {
+                if (const auto& tnode = function_.expressions[target];
+                    tnode.kind == Expression::Kind::local && function_.locals[tnode.value].fixed_length)
+                    return reject(
+                        symbol->position,
+                        "SOP [InOut] and [Out] attribute columns have fixed element count and cannot change structure.");
+                if (!mutable_local_storage(target) || !environment_.values[target_type.type_index].can_own ||
+                    !environment_.values[target_type.type_index].can_mutate)
+                    return reject(symbol->position, "Structural mutation requires a mutable owned or borrowed sequence.");
+                ATELIER_TRY_BIND(parsed_rhs, expression());
+                ATELIER_TRY_BIND(rhs, converted(*parsed_rhs, target_type));
+                ATELIER_TRY(expect(terminator));
+                Expression mutation{Expression::Kind::sequence_mutation, ValueType::void_value, symbol->position,
+                                    target, *rhs};
+                mutation.mutation = SequenceMutation::append;
+                ATELIER_TRY_BIND(mutated, add(std::move(mutation)));
+                return add(Statement{Statement::Kind::call, position, no_node, *mutated, no_node, no_node, {}});
+            }
             if (!writable(target))
                 return reject(position, "Assignment requires a writable local or field.");
-            const auto target_type = function_.expressions[target].type;
             ATELIER_TRY_BIND(parsed_rhs, expression());
             auto rhs = *parsed_rhs;
             const bool shift = *compound == Operation::shift_left || *compound == Operation::shift_right;
@@ -2606,9 +2824,11 @@ private:
             stmt.compound = *compound;
             return add(std::move(stmt));
         }
-        if (function_.expressions[target].kind != Expression::Kind::call &&
-            function_.expressions[target].kind != Expression::Kind::source_call &&
-            function_.expressions[target].kind != Expression::Kind::sequence_mutation)
+        const auto& target_expr = function_.expressions[target];
+        if (target_expr.kind != Expression::Kind::call && target_expr.kind != Expression::Kind::source_call &&
+            target_expr.kind != Expression::Kind::sequence_mutation &&
+            !(target_expr.kind == Expression::Kind::sequence_operation &&
+              can_be_statement_sequence_operation(target_expr.sequence_operation)))
             return reject(position, "Only calls and sequence modifications can be used as expression statements.");
         ATELIER_TRY(expect(terminator));
         return add(Statement{Statement::Kind::call, position, no_node, target, no_node, no_node, {}});
@@ -2821,6 +3041,18 @@ private:
             if (!reference_type(type) || !reference_type(right_type) ||
                 (op != Operation::equal && op != Operation::not_equal))
                 return reject(position, "References support only == and != with another reference or null.");
+        } else if (type.kind == ValueType::string || right_type.kind == ValueType::string) {
+            if (type != right_type || !comparison)
+                return reject(
+                    position,
+                    "Strings support ==, !=, <, <=, >, >= comparisons; use += or .append(...) for concatenation.");
+            result_type = ValueType::boolean;
+        } else if (type.kind == ValueType::array || right_type.kind == ValueType::array) {
+            if (type != right_type || (op != Operation::equal && op != Operation::not_equal))
+                return reject(position, "Arrays support == and != with a matching Array type.");
+            if (!element_equatable(environment_.values[type.type_index].element))
+                return reject(position, "Array equality requires scalar, enum, built-in math or String elements.");
+            result_type = ValueType::boolean;
         } else if (math_type(type) || math_type(right_type)) {
             const auto left_math = math_type(type);
             const auto right_math = math_type(right_type);
@@ -2955,6 +3187,390 @@ private:
         return postfix(*receiver);
     }
 
+    std::expected<NodeId, Diagnostic> sequence_method(NodeId receiver, ValueType type, const Token& member,
+                                                      SourcePosition position) {
+        std::vector<NodeId> args;
+        ATELIER_TRY_BIND(empty_args, accept(")"));
+        if (!*empty_args) {
+            for (;;) {
+                if (args.size() >= 4)
+                    return reject(token_.position, "Sequence method argument count mismatch.");
+                ATELIER_TRY_BIND(parsed_arg, expression());
+                args.push_back(*parsed_arg);
+                ATELIER_TRY_BIND(more, accept(","));
+                if (!*more)
+                    break;
+            }
+            ATELIER_TRY(expect(")"));
+        }
+        const auto expect_arity = [&](std::size_t min_n, std::size_t max_n) -> std::expected<void, Diagnostic> {
+            if (args.size() < min_n || args.size() > max_n)
+                return reject(member.position, "Sequence method argument count mismatch.");
+            return {};
+        };
+        const auto check_index_or_size = [&](NodeId arg, const char* what) -> std::expected<void, Diagnostic> {
+            const auto t = function_.expressions[arg].type;
+            if (t != ValueType::u32 && t != ValueType::i32)
+                return reject(function_.expressions[arg].position, std::string(what) + " requires uint or int.");
+            return {};
+        };
+        const auto check_mutable_sequence = [&](bool allow_fixed_length) -> std::expected<void, Diagnostic> {
+            if (!allow_fixed_length) {
+                if (const auto& rnode = function_.expressions[receiver];
+                    rnode.kind == Expression::Kind::local && function_.locals[rnode.value].fixed_length)
+                    return reject(
+                        member.position,
+                        "SOP [InOut] and [Out] attribute columns have fixed element count and cannot change structure.");
+            }
+            if (!mutable_local_storage(receiver) || !environment_.values[type.type_index].can_own ||
+                !environment_.values[type.type_index].can_mutate)
+                return reject(member.position, "Structural mutation requires a mutable owned or borrowed sequence.");
+            return {};
+        };
+        const auto make_seq_op = [&](SequenceOperation op, ValueType result_type) -> std::expected<NodeId, Diagnostic> {
+            Expression node{Expression::Kind::sequence_operation, result_type, position, receiver};
+            node.sequence_operation = op;
+            node.arguments = std::move(args);
+            return add(std::move(node));
+        };
+        const bool is_string = type.kind == ValueType::string;
+        const ValueType element = is_string ? ValueType{ValueType::u32} : environment_.values[type.type_index].element;
+        if (member.text == "size") {
+            ATELIER_TRY(expect_arity(0, 0));
+            return add(Expression{Expression::Kind::length, ValueType::u32, position, receiver});
+        }
+        if (member.text == "empty") {
+            ATELIER_TRY(expect_arity(0, 0));
+            return make_seq_op(is_string ? SequenceOperation::str_empty : SequenceOperation::arr_empty,
+                               ValueType::boolean);
+        }
+        if (member.text == "front") {
+            ATELIER_TRY(expect_arity(0, 0));
+            ATELIER_TRY_BIND(zero, literal(ValueType::u32, member.position, 0));
+            return add(Expression{Expression::Kind::index, element, member.position, receiver, *zero});
+        }
+        if (member.text == "back") {
+            ATELIER_TRY(expect_arity(0, 0));
+            return add(Expression{Expression::Kind::index, element, member.position, receiver, no_node});
+        }
+        if (is_string) {
+            if (member.text == "is_ascii") {
+                ATELIER_TRY(expect_arity(0, 0));
+                return make_seq_op(SequenceOperation::str_is_ascii, ValueType::boolean);
+            }
+            if (member.text == "starts_with" || member.text == "ends_with" || member.text == "contains" ||
+                member.text == "equals_ignore_case" || member.text == "starts_with_ignore_case" ||
+                member.text == "ends_with_ignore_case") {
+                ATELIER_TRY(expect_arity(1, 1));
+                ATELIER_TRY_BIND(sub, converted(args[0], type));
+                args[0] = *sub;
+                const auto op = member.text == "starts_with"        ? SequenceOperation::str_starts_with
+                                : member.text == "ends_with"        ? SequenceOperation::str_ends_with
+                                : member.text == "contains"         ? SequenceOperation::str_contains
+                                : member.text == "equals_ignore_case" ? SequenceOperation::str_equals_ignore_case
+                                : member.text == "starts_with_ignore_case"
+                                    ? SequenceOperation::str_starts_with_ignore_case
+                                    : SequenceOperation::str_ends_with_ignore_case;
+                return make_seq_op(op, ValueType::boolean);
+            }
+            if (member.text == "find" || member.text == "rfind") {
+                ATELIER_TRY(expect_arity(1, 2));
+                ATELIER_TRY_BIND(sub, converted(args[0], type));
+                args[0] = *sub;
+                if (args.size() == 2)
+                    ATELIER_TRY(check_index_or_size(args[1], "String search start offset"));
+                return make_seq_op(member.text == "find" ? SequenceOperation::str_find : SequenceOperation::str_rfind,
+                                   ValueType::i32);
+            }
+            if (member.text == "count" || member.text == "common_prefix_length") {
+                ATELIER_TRY(expect_arity(1, 1));
+                ATELIER_TRY_BIND(sub, converted(args[0], type));
+                args[0] = *sub;
+                return make_seq_op(member.text == "count" ? SequenceOperation::str_count
+                                                          : SequenceOperation::str_common_prefix_length,
+                                   ValueType::u32);
+            }
+            if (member.text == "try_parse_int" || member.text == "try_parse_uint" || member.text == "try_parse_float" ||
+                member.text == "try_parse_double") {
+                ATELIER_TRY(expect_arity(1, 1));
+                const ValueType expected_out = member.text == "try_parse_int"     ? ValueType{ValueType::i32}
+                                               : member.text == "try_parse_uint"  ? ValueType{ValueType::u32}
+                                               : member.text == "try_parse_float" ? ValueType{ValueType::f32}
+                                                                                  : ValueType{ValueType::f64};
+                const auto& out_expr = function_.expressions[args[0]];
+                if (out_expr.type != expected_out || !mutable_local_storage(args[0]))
+                    return reject(out_expr.position,
+                                  "String." + std::string(member.text) +
+                                      " requires a writable local, reference parameter, struct field or Array element of matching numeric type.");
+                const auto op = member.text == "try_parse_int"     ? SequenceOperation::str_try_parse_int
+                                : member.text == "try_parse_uint"  ? SequenceOperation::str_try_parse_uint
+                                : member.text == "try_parse_float" ? SequenceOperation::str_try_parse_float
+                                                                   : SequenceOperation::str_try_parse_double;
+                return make_seq_op(op, ValueType::boolean);
+            }
+            ATELIER_TRY(check_mutable_sequence(false));
+            if (member.text == "clear") {
+                ATELIER_TRY(expect_arity(0, 0));
+                Expression mutation{Expression::Kind::sequence_mutation, ValueType::void_value, position, receiver,
+                                    no_node};
+                mutation.mutation = SequenceMutation::clear;
+                return add(std::move(mutation));
+            }
+            if (member.text == "reserve") {
+                ATELIER_TRY(expect_arity(1, 1));
+                ATELIER_TRY(check_index_or_size(args[0], "Sequence capacity"));
+                Expression mutation{Expression::Kind::sequence_mutation, ValueType::void_value, position, receiver,
+                                    args[0]};
+                mutation.mutation = SequenceMutation::reserve;
+                return add(std::move(mutation));
+            }
+            if (member.text == "append") {
+                ATELIER_TRY(expect_arity(1, 1));
+                const auto arg_type = function_.expressions[args[0]].type;
+                if (arg_type == type) {
+                    Expression mutation{Expression::Kind::sequence_mutation, ValueType::void_value, position, receiver,
+                                        args[0]};
+                    mutation.mutation = SequenceMutation::append;
+                    return add(std::move(mutation));
+                }
+                if (arg_type == ValueType::i32 || arg_type == ValueType::u32 || arg_type == ValueType::f32 ||
+                    arg_type == ValueType::f64 || arg_type == ValueType::boolean)
+                    return make_seq_op(SequenceOperation::str_append_scalar, ValueType::void_value);
+                return reject(function_.expressions[args[0]].position,
+                              "String.append requires String, int, uint, float, double or bool.");
+            }
+            if (member.text == "append_ascii") {
+                ATELIER_TRY(expect_arity(1, 2));
+                ATELIER_TRY(check_index_or_size(args[0], "ASCII byte value"));
+                if (args.size() == 2)
+                    ATELIER_TRY(check_index_or_size(args[1], "Repeat count"));
+                return make_seq_op(SequenceOperation::str_append_ascii, ValueType::void_value);
+            }
+            if (member.text == "append_hex") {
+                ATELIER_TRY(expect_arity(1, 3));
+                ATELIER_TRY_BIND(val, converted(args[0], ValueType::u32));
+                args[0] = *val;
+                if (args.size() >= 2)
+                    ATELIER_TRY(check_index_or_size(args[1], "Hex minimum digit count"));
+                if (args.size() == 3) {
+                    ATELIER_TRY_BIND(upper, converted(args[2], ValueType::boolean));
+                    args[2] = *upper;
+                }
+                return make_seq_op(SequenceOperation::str_append_hex, ValueType::void_value);
+            }
+            if (member.text == "append_float") {
+                ATELIER_TRY(expect_arity(2, 2));
+                const auto val_type = function_.expressions[args[0]].type;
+                if (!floating(val_type))
+                    return reject(function_.expressions[args[0]].position,
+                                  "String.append_float requires float or double.");
+                ATELIER_TRY(check_index_or_size(args[1], "Fixed float precision"));
+                return make_seq_op(SequenceOperation::str_append_float_fixed, ValueType::void_value);
+            }
+            if (member.text == "pad_left" || member.text == "pad_right") {
+                ATELIER_TRY(expect_arity(1, 2));
+                ATELIER_TRY(check_index_or_size(args[0], "Padding width"));
+                if (args.size() == 2)
+                    ATELIER_TRY(check_index_or_size(args[1], "Padding ASCII byte"));
+                return make_seq_op(member.text == "pad_left" ? SequenceOperation::str_pad_left
+                                                             : SequenceOperation::str_pad_right,
+                                   ValueType::void_value);
+            }
+            if (member.text == "trim" || member.text == "trim_start" || member.text == "trim_end" ||
+                member.text == "to_lower" || member.text == "to_upper") {
+                ATELIER_TRY(expect_arity(0, 0));
+                const auto op = member.text == "trim"         ? SequenceOperation::str_trim
+                                : member.text == "trim_start" ? SequenceOperation::str_trim_start
+                                : member.text == "trim_end"   ? SequenceOperation::str_trim_end
+                                : member.text == "to_lower"   ? SequenceOperation::str_to_lower
+                                                              : SequenceOperation::str_to_upper;
+                return make_seq_op(op, ValueType::void_value);
+            }
+            if (member.text == "strip_prefix" || member.text == "strip_suffix") {
+                ATELIER_TRY(expect_arity(1, 1));
+                ATELIER_TRY_BIND(sub, converted(args[0], type));
+                args[0] = *sub;
+                return make_seq_op(member.text == "strip_prefix" ? SequenceOperation::str_strip_prefix
+                                                                 : SequenceOperation::str_strip_suffix,
+                                   ValueType::boolean);
+            }
+            if (member.text == "slice_in_place" || member.text == "erase") {
+                ATELIER_TRY(expect_arity(1, 2));
+                ATELIER_TRY(check_index_or_size(args[0], "String byte offset"));
+                if (args.size() == 2)
+                    ATELIER_TRY(check_index_or_size(args[1], "String byte count"));
+                return make_seq_op(member.text == "slice_in_place" ? SequenceOperation::str_slice_in_place
+                                                                   : SequenceOperation::str_erase,
+                                   ValueType::void_value);
+            }
+            if (member.text == "insert") {
+                ATELIER_TRY(expect_arity(2, 2));
+                ATELIER_TRY(check_index_or_size(args[0], "String byte offset"));
+                ATELIER_TRY_BIND(rep, converted(args[1], type));
+                ATELIER_TRY_BIND(zero, literal(ValueType::u32, member.position, 0));
+                args = {args[0], *zero, *rep};
+                return make_seq_op(SequenceOperation::str_replace, ValueType::void_value);
+            }
+            if (member.text == "replace") {
+                ATELIER_TRY(expect_arity(3, 3));
+                ATELIER_TRY(check_index_or_size(args[0], "String byte offset"));
+                ATELIER_TRY(check_index_or_size(args[1], "String byte count"));
+                ATELIER_TRY_BIND(rep, converted(args[2], type));
+                args[2] = *rep;
+                return make_seq_op(SequenceOperation::str_replace, ValueType::void_value);
+            }
+            if (member.text == "replace_all") {
+                ATELIER_TRY(expect_arity(2, 2));
+                ATELIER_TRY_BIND(search, converted(args[0], type));
+                ATELIER_TRY_BIND(rep, converted(args[1], type));
+                args[0] = *search;
+                args[1] = *rep;
+                return make_seq_op(SequenceOperation::str_replace_all, ValueType::u32);
+            }
+            return reject(member.position, "Unknown native String operation.");
+        }
+        if (member.text == "contains" || member.text == "count") {
+            ATELIER_TRY(expect_arity(1, 1));
+            if (!element_equatable(element))
+                return reject(member.position,
+                              "Array." + std::string(member.text) +
+                                  " requires scalar, enum, built-in math or String elements.");
+            ATELIER_TRY_BIND(val, converted(args[0], element));
+            args[0] = *val;
+            return make_seq_op(member.text == "contains" ? SequenceOperation::arr_contains
+                                                         : SequenceOperation::arr_count,
+                               member.text == "contains" ? ValueType::boolean : ValueType::u32);
+        }
+        if (member.text == "find" || member.text == "rfind") {
+            ATELIER_TRY(expect_arity(1, 2));
+            if (!element_equatable(element))
+                return reject(member.position,
+                              "Array." + std::string(member.text) +
+                                  " requires scalar, enum, built-in math or String elements.");
+            ATELIER_TRY_BIND(val, converted(args[0], element));
+            args[0] = *val;
+            if (args.size() == 2)
+                ATELIER_TRY(check_index_or_size(args[1], "Array search start index"));
+            return make_seq_op(member.text == "find" ? SequenceOperation::arr_find : SequenceOperation::arr_rfind,
+                               ValueType::i32);
+        }
+        if (member.text == "is_sorted") {
+            ATELIER_TRY(expect_arity(0, 0));
+            if (!element_ordered(element))
+                return reject(member.position,
+                              "Array.is_sorted requires int, uint, float, double, enum or String elements.");
+            return make_seq_op(SequenceOperation::arr_is_sorted, ValueType::boolean);
+        }
+        if (member.text == "fill" || member.text == "reverse" || member.text == "swap" || member.text == "sort") {
+            ATELIER_TRY(check_mutable_sequence(true));
+            if (member.text == "fill") {
+                ATELIER_TRY(expect_arity(1, 1));
+                ATELIER_TRY_BIND(val, converted(args[0], element));
+                args[0] = *val;
+                return make_seq_op(SequenceOperation::arr_fill, ValueType::void_value);
+            }
+            if (member.text == "reverse") {
+                ATELIER_TRY(expect_arity(0, 0));
+                return make_seq_op(SequenceOperation::arr_reverse, ValueType::void_value);
+            }
+            if (member.text == "swap") {
+                ATELIER_TRY(expect_arity(2, 2));
+                ATELIER_TRY(check_index_or_size(args[0], "Array index"));
+                ATELIER_TRY(check_index_or_size(args[1], "Array index"));
+                return make_seq_op(SequenceOperation::arr_swap, ValueType::void_value);
+            }
+            ATELIER_TRY(expect_arity(0, 0));
+            if (!element_ordered(element))
+                return reject(member.position,
+                              "Array.sort requires int, uint, float, double, enum or String elements.");
+            return make_seq_op(SequenceOperation::arr_sort, ValueType::void_value);
+        }
+        ATELIER_TRY(check_mutable_sequence(false));
+        if (member.text == "clear") {
+            ATELIER_TRY(expect_arity(0, 0));
+            Expression mutation{Expression::Kind::sequence_mutation, ValueType::void_value, position, receiver,
+                                no_node};
+            mutation.mutation = SequenceMutation::clear;
+            return add(std::move(mutation));
+        }
+        if (member.text == "reserve") {
+            ATELIER_TRY(expect_arity(1, 1));
+            ATELIER_TRY(check_index_or_size(args[0], "Sequence capacity"));
+            Expression mutation{Expression::Kind::sequence_mutation, ValueType::void_value, position, receiver,
+                                args[0]};
+            mutation.mutation = SequenceMutation::reserve;
+            return add(std::move(mutation));
+        }
+        if (member.text == "resize") {
+            ATELIER_TRY(expect_arity(1, 2));
+            ATELIER_TRY(check_index_or_size(args[0], "Sequence size"));
+            if (args.size() == 1) {
+                Expression mutation{Expression::Kind::sequence_mutation, ValueType::void_value, position, receiver,
+                                    args[0]};
+                mutation.mutation = SequenceMutation::resize;
+                return add(std::move(mutation));
+            }
+            ATELIER_TRY_BIND(fill_val, converted(args[1], element));
+            args[1] = *fill_val;
+            return make_seq_op(SequenceOperation::arr_resize_fill, ValueType::void_value);
+        }
+        if (member.text == "truncate") {
+            ATELIER_TRY(expect_arity(1, 1));
+            ATELIER_TRY(check_index_or_size(args[0], "Array truncate size"));
+            return make_seq_op(SequenceOperation::arr_truncate, ValueType::void_value);
+        }
+        if (member.text == "pop") {
+            ATELIER_TRY(expect_arity(0, 0));
+            return make_seq_op(SequenceOperation::arr_pop, ValueType::void_value);
+        }
+        if (member.text == "add") {
+            ATELIER_TRY(expect_arity(1, 1));
+            ATELIER_TRY_BIND(val, converted(args[0], element));
+            Expression mutation{Expression::Kind::sequence_mutation, ValueType::void_value, position, receiver, *val};
+            mutation.mutation = SequenceMutation::add;
+            return add(std::move(mutation));
+        }
+        if (member.text == "append") {
+            ATELIER_TRY(expect_arity(1, 1));
+            ATELIER_TRY_BIND(other, converted(args[0], type));
+            Expression mutation{Expression::Kind::sequence_mutation, ValueType::void_value, position, receiver, *other};
+            mutation.mutation = SequenceMutation::append;
+            return add(std::move(mutation));
+        }
+        if (member.text == "insert") {
+            ATELIER_TRY(expect_arity(2, 2));
+            ATELIER_TRY(check_index_or_size(args[0], "Array insert index"));
+            ATELIER_TRY_BIND(val, converted(args[1], element));
+            args[1] = *val;
+            return make_seq_op(SequenceOperation::arr_insert, ValueType::void_value);
+        }
+        if (member.text == "remove_at") {
+            ATELIER_TRY(expect_arity(1, 2));
+            ATELIER_TRY(check_index_or_size(args[0], "Array remove index"));
+            if (args.size() == 2)
+                ATELIER_TRY(check_index_or_size(args[1], "Array remove count"));
+            return make_seq_op(SequenceOperation::arr_remove_at, ValueType::void_value);
+        }
+        if (member.text == "remove_at_swap") {
+            ATELIER_TRY(expect_arity(1, 1));
+            ATELIER_TRY(check_index_or_size(args[0], "Array remove index"));
+            return make_seq_op(SequenceOperation::arr_remove_at_swap, ValueType::void_value);
+        }
+        if (member.text == "remove" || member.text == "remove_swap") {
+            ATELIER_TRY(expect_arity(1, 1));
+            if (!element_equatable(element))
+                return reject(member.position,
+                              "Array." + std::string(member.text) +
+                                  " requires scalar, enum, built-in math or String elements.");
+            ATELIER_TRY_BIND(val, converted(args[0], element));
+            args[0] = *val;
+            return make_seq_op(member.text == "remove" ? SequenceOperation::arr_remove
+                                                       : SequenceOperation::arr_remove_swap,
+                               ValueType::boolean);
+        }
+        return reject(member.position, "Unknown native Array operation.");
+    }
+
     std::expected<NodeId, Diagnostic> postfix(NodeId receiver) {
         while (token_.text == "." || token_.text == "[") {
             const auto position = function_.expressions[receiver].position;
@@ -2980,59 +3596,8 @@ private:
                 ATELIER_TRY_BIND(member, identifier());
                 if (type.kind == ValueType::array || type.kind == ValueType::string) {
                     ATELIER_TRY(expect("("));
-                    if (member->text == "size") {
-                        ATELIER_TRY(expect(")"));
-                        ATELIER_TRY_BIND(length,
-                                         add(Expression{Expression::Kind::length, ValueType::u32, position, receiver}));
-                        receiver = *length;
-                    } else {
-                        if (const auto root = root_local(function_, receiver);
-                            root && function_.locals[*root].fixed_length)
-                            return reject(
-                                member->position,
-                                "SOP [InOut] and [Out] attribute columns have fixed element count and cannot change structure.");
-                        if (!mutable_local_storage(receiver) || !environment_.values[type.type_index].can_own ||
-                            !environment_.values[type.type_index].can_mutate)
-                            return reject(member->position,
-                                          "Structural mutation requires a mutable owned or borrowed sequence.");
-                        SequenceMutation operation;
-                        if (member->text == "reserve")
-                            operation = SequenceMutation::reserve;
-                        else if (member->text == "resize" && type.kind == ValueType::array)
-                            operation = SequenceMutation::resize;
-                        else if (member->text == "clear")
-                            operation = SequenceMutation::clear;
-                        else if (member->text == "add" && type.kind == ValueType::array)
-                            operation = SequenceMutation::add;
-                        else if (member->text == "append")
-                            operation = SequenceMutation::append;
-                        else
-                            return reject(member->position, "Unknown native sequence operation.");
-                        NodeId input = no_node;
-                        if (operation != SequenceMutation::clear) {
-                            ATELIER_TRY_BIND(parsed_input, expression());
-                            input = *parsed_input;
-                            if (operation == SequenceMutation::reserve || operation == SequenceMutation::resize) {
-                                const auto input_type = function_.expressions[input].type;
-                                if (input_type != ValueType::u32 && input_type != ValueType::i32)
-                                    return reject(member->position, "Sequence capacity requires uint or int.");
-                            } else {
-                                auto converted_input =
-                                    converted(input, operation == SequenceMutation::add
-                                                         ? environment_.values[type.type_index].element
-                                                         : type);
-                                if (!converted_input)
-                                    return std::unexpected(std::move(converted_input).error());
-                                input = *converted_input;
-                            }
-                        }
-                        ATELIER_TRY(expect(")"));
-                        Expression mutation{Expression::Kind::sequence_mutation, ValueType::void_value, position,
-                                            receiver, input};
-                        mutation.mutation = operation;
-                        ATELIER_TRY_BIND(mutated, add(std::move(mutation)));
-                        receiver = *mutated;
-                    }
+                    ATELIER_TRY_BIND(updated, sequence_method(receiver, type, *member, position));
+                    receiver = *updated;
                 } else {
                     if (environment_.material && type == environment_.texture_input)
                         return reject(member->position,

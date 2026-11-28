@@ -301,6 +301,7 @@ enum class EntryFailure : std::uint32_t {
     integer_shift,
     integer_conversion,
     integer_overflow,
+    floating_point_order,
     parallel_alias,
     parallel_cancelled,
     parallel_failed,
@@ -337,6 +338,8 @@ inline std::optional<std::string_view> failure_message(EntryFailure reason,
             "Integer conversion requires a finite value representable after truncation toward zero.");
     case EntryFailure::integer_overflow:
         return std::string_view("Signed integer abs overflows on INT_MIN (-2147483648).");
+    case EntryFailure::floating_point_order:
+        return std::string_view("Floating-point Array ordering requires non-NaN elements.");
     case EntryFailure::parallel_alias:
         return std::string_view(
             "Parallel loop writable Array overlaps another captured sequence or borrowed argument.");
@@ -437,6 +440,8 @@ struct BusinessServices {
 
     std::uint32_t (*mutate_sequence)(void*, std::uint32_t, SequenceMutation, void*, const void*,
                                      std::uint64_t) noexcept {};
+
+    std::uint32_t (*apply_sequence)(void*, std::uint32_t, void*, const SequenceCall*) noexcept {};
 
     std::uint32_t (*debug_enter)(void*, BusinessDebugFrame*) noexcept {};
 
