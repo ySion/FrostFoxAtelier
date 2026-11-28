@@ -17,19 +17,21 @@ using atelier::acceptance::helpers::require;
 
 using atelier::acceptance::helpers::take;
 
-inline log::Entry entry(std::string code, std::string message, std::uint64_t context = 71) {
+using namespace atelier::literals;
+
+inline log::Entry entry(atelier::StringView code, atelier::StringView message, std::uint64_t context = 71) {
     log::Entry value;
-    value.category = "acceptance.cpu";
-    value.event_code = std::move(code);
-    value.message = std::move(message);
-    value.fields = {{"phase", std::string{"validation"}}, {"context", context}};
+    value.category = "acceptance.cpu"_s;
+    value.event_code = atelier::String::from_utf8_validated(code);
+    value.message = atelier::String::from_utf8_validated(message);
+    value.fields = {{"phase"_s, "validation"_s}, {"context"_s, context}};
     return value;
 }
 
 inline std::unique_ptr<log::Run> start(const fs::path& directory) {
     log::RunOptions options;
     options.directory = fs::absolute(directory);
-    options.process_name = "logging-acceptance";
+    options.process_name = "logging-acceptance"_s;
     return take(log::start_run(std::move(options)));
 }
 
@@ -81,11 +83,18 @@ inline log::ReadBatch read_finished(const fs::path& directory) {
     return drain(*reader);
 }
 
-inline std::string read_bytes(const fs::path& path) {
-    std::ifstream input(path, std::ios::binary);
+inline atelier::Array<char> read_bytes(const fs::path& path) {
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
     require(input.is_open(), "Cannot open acceptance evidence.");
-    std::string bytes{std::istreambuf_iterator<char>{input}, {}};
-    require(!input.bad(), "Cannot read acceptance evidence.");
+    const auto end = input.tellg();
+    require(end >= 0, "Cannot size acceptance evidence.");
+    atelier::Array<char> bytes;
+    bytes.resize_uninitialized(static_cast<std::size_t>(end));
+    input.seekg(0);
+    if (!bytes.empty())
+        input.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    require(!input.bad() && (!bytes.size() || input.gcount() == static_cast<std::streamsize>(bytes.size())),
+            "Cannot read acceptance evidence.");
     return bytes;
 }
 

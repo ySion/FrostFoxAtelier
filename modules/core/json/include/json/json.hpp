@@ -4,12 +4,13 @@
 #include "foundation/optional.hpp"
 #include "foundation/result.hpp"
 #include "foundation/string.hpp"
+#include <concepts>
 #include <expected>
 #include <initializer_list>
 #include <memory>
 #include <ranges>
-#include <string>
-#include <string_view>
+#include <type_traits>
+#include <utility>
 
 namespace atelier::json {
 
@@ -18,9 +19,9 @@ enum class Fault { syntax, depth, duplicate_key, type, missing, range, members, 
 struct Error {
     Fault fault;
 
-    std::string message;
+    String message;
 
-    std::string path;
+    String path;
 
     Optional<std::size_t> offset;
 
@@ -28,7 +29,7 @@ struct Error {
 
     std::size_t column{};
 
-    [[nodiscard]] std::string describe() const;
+    [[nodiscard]] String describe() const;
 };
 
 template <class T>
@@ -55,37 +56,37 @@ public:
 
     [[nodiscard]] Result<Value> at(std::size_t index) const;
 
-    [[nodiscard]] Result<Value> at(std::string_view key) const;
+    [[nodiscard]] Result<Value> at(StringView key) const;
 
-    [[nodiscard]] Result<Optional<Value>> find(std::string_view key) const;
+    [[nodiscard]] Result<Optional<Value>> find(StringView key) const;
 
-    [[nodiscard]] Result<Value> path(std::initializer_list<std::string_view> keys) const;
+    [[nodiscard]] Result<Value> path(std::initializer_list<StringView> keys) const;
 
-    [[nodiscard]] Result<void> members(std::initializer_list<std::string_view> keys) const;
+    [[nodiscard]] Result<void> members(std::initializer_list<StringView> keys) const;
 
     // Reject unknown fields, but do not require optional fields to be present.
-    [[nodiscard]] Result<void> allowed_members(std::initializer_list<std::string_view> keys) const;
+    [[nodiscard]] Result<void> allowed_members(std::initializer_list<StringView> keys) const;
 
-    [[nodiscard]] Result<std::string_view> string(std::initializer_list<std::string_view> keys = {}) const;
+    [[nodiscard]] Result<StringView> string(std::initializer_list<StringView> keys = {}) const;
 
-    [[nodiscard]] Result<bool> boolean(std::initializer_list<std::string_view> keys = {}) const;
+    [[nodiscard]] Result<bool> boolean(std::initializer_list<StringView> keys = {}) const;
 
-    [[nodiscard]] Result<std::uint32_t> u32(std::initializer_list<std::string_view> keys = {}) const;
+    [[nodiscard]] Result<std::uint32_t> u32(std::initializer_list<StringView> keys = {}) const;
 
-    [[nodiscard]] Result<std::uint64_t> u64(std::initializer_list<std::string_view> keys = {}) const;
+    [[nodiscard]] Result<std::uint64_t> u64(std::initializer_list<StringView> keys = {}) const;
 
-    [[nodiscard]] Result<std::int64_t> i64(std::initializer_list<std::string_view> keys = {}) const;
+    [[nodiscard]] Result<std::int64_t> i64(std::initializer_list<StringView> keys = {}) const;
 
-    [[nodiscard]] Result<float> f32(std::initializer_list<std::string_view> keys = {}) const;
+    [[nodiscard]] Result<float> f32(std::initializer_list<StringView> keys = {}) const;
 
-    [[nodiscard]] Result<double> number(std::initializer_list<std::string_view> keys = {}) const;
+    [[nodiscard]] Result<double> number(std::initializer_list<StringView> keys = {}) const;
 
     [[nodiscard]] Result<ArrayView> array() const;
 
     // Member references in bytewise key order; never copies subtrees or keys.
-    [[nodiscard]] Result<Array<std::pair<std::string_view, Value>>> object_items() const;
+    [[nodiscard]] Result<Array<std::pair<StringView, Value>>> object_items() const;
 
-    [[nodiscard]] Error error(Fault fault, std::string_view message) const;
+    [[nodiscard]] Error error(Fault fault, StringView message) const;
 
     [[nodiscard]] bool operator==(Value other) const;
 
@@ -167,11 +168,11 @@ public:
 
     explicit Document(Value source);
 
-    [[nodiscard]] static Result<Document> parse(std::string_view bytes, ParseOptions options);
+    [[nodiscard]] static Result<Document> parse(StringView bytes, ParseOptions options);
 
     // glTF import only: strict JSON with BOM allowed and last decoded key wins.
     // No nesting cap; normalization and destruction do not recurse.
-    [[nodiscard]] static Result<Document> parse_gltf(std::string_view bytes);
+    [[nodiscard]] static Result<Document> parse_gltf(StringView bytes);
 
     // Startup table data, parsed once and shared immutably. Referencing modules
     // must remain loaded while references or copies survive. Runtime input uses parse().
@@ -184,9 +185,10 @@ public:
                                 {std::numeric_limits<std::size_t>::max(), DepthPolicy::containers});
             if (!parsed) {
                 const auto& error = parsed.error();
-                const auto diagnostic = "Invalid JSON literal: " + std::string(Text.bytes, sizeof(Text.bytes) - 1) +
-                                        " (offset " + (error.offset ? std::to_string(*error.offset) : "unavailable") +
-                                        "): " + error.describe();
+                const auto offset_text = error.offset ? String::from_number(*error.offset) : "unavailable"_s;
+                const auto diagnostic = String::concat(
+                    "Invalid JSON literal: "_s, String::validated({Text.bytes, sizeof(Text.bytes) - 1}),
+                    " (offset "_s, offset_text, "): "_s, error.describe());
                 fatal(diagnostic);
             }
             return std::move(*parsed);
@@ -239,9 +241,9 @@ public:
     // Freezes a copied immutable snapshot; subsequent edits cannot affect it.
     [[nodiscard]] Document finish() const;
 
-    [[nodiscard]] Result<Value> object(Value parent, std::string_view key);
+    [[nodiscard]] Result<Value> object(Value parent, StringView key);
 
-    [[nodiscard]] Result<Value> array(Value parent, std::string_view key);
+    [[nodiscard]] Result<Value> array(Value parent, StringView key);
 
     // Typed contiguous numeric fields (vectors, matrices, histograms). Integers
     // keep their signedness and never pass through double.
@@ -254,7 +256,7 @@ public:
                  (!std::is_same_v<std::remove_cvref_t<std::ranges::range_value_t<R>>, char8_t>) &&
                  (!std::is_same_v<std::remove_cvref_t<std::ranges::range_value_t<R>>, char16_t>) &&
                  (!std::is_same_v<std::remove_cvref_t<std::ranges::range_value_t<R>>, char32_t>)
-    [[nodiscard]] Result<void> numbers(Value parent, std::string_view key, R&& values) {
+    [[nodiscard]] Result<void> numbers(Value parent, StringView key, R&& values) {
         using Elem = std::remove_cvref_t<std::ranges::range_value_t<R>>;
         ATELIER_TRY_BIND(items, array(parent, key));
         const Span<const Elem> span{std::ranges::data(values), std::ranges::size(values)};
@@ -274,7 +276,7 @@ public:
     [[nodiscard]] Value append_array(Value parent);
 
     // Cross-owner values are copied, never attached by borrowing their nodes.
-    [[nodiscard]] Result<void> set(Value parent, std::string_view key, Value source);
+    [[nodiscard]] Result<void> set(Value parent, StringView key, Value source);
 
     // Copies before replacing, so source may belong to the same DOM.
     // All previous views of the replaced subtree are invalid afterwards.
@@ -282,11 +284,21 @@ public:
 
     // Replace an attached node, including the root, with a scalar. String bytes
     // are copied; the validated overload has the same UTF-8 contract as below.
-    [[nodiscard]] Result<void> set(Value target, std::string_view text);
+    [[nodiscard]] Result<void> set(Value target, StringView text);
 
-    void set_validated(Value target, std::string_view text);
+    [[nodiscard]] Result<void> set(Value target, const String& text) {
+        set_validated(target, text.view());
+        return {};
+    }
 
-    void set(Value target, bool value);
+    void set_validated(Value target, StringView text);
+
+    void set_validated(Value target, const String& text) { set_validated(target, text.view()); }
+
+    template <std::same_as<bool> B>
+    void set(Value target, B value) {
+        set_bool(target, value);
+    }
 
     void set(Value target, std::int64_t value);
 
@@ -298,18 +310,30 @@ public:
 
     template <std::size_t N>
     [[nodiscard]] Result<void> set(Value target, const char (&text)[N]) {
-        return set(target, std::string_view{text, N - 1});
+        return set(target, StringView{text, N - 1});
     }
 
     // Parent is an attached object. Removing a member invalidates its subtree
     // views; a missing key leaves the object unchanged and returns false.
-    bool erase(Value parent, std::string_view key);
+    bool erase(Value parent, StringView key);
 
     void append(Value parent, Value source);
 
-    [[nodiscard]] Result<void> append(Value parent, std::string_view text);
+    [[nodiscard]] Result<void> append(Value parent, StringView text);
 
-    void append(Value parent, bool value);
+    [[nodiscard]] Result<void> append(Value parent, const String& text) {
+        append_validated(parent, text.view());
+        return {};
+    }
+
+    void append_validated(Value parent, StringView text);
+
+    void append_validated(Value parent, const String& text) { append_validated(parent, text.view()); }
+
+    template <std::same_as<bool> B>
+    void append(Value parent, B value) {
+        append_bool(parent, value);
+    }
 
     void append(Value parent, std::int64_t value);
 
@@ -323,55 +347,70 @@ public:
 
     template <std::size_t N>
     [[nodiscard]] Result<void> append(Value parent, const char (&text)[N]) {
-        return append(parent, std::string_view{text, N - 1});
+        return append(parent, StringView{text, N - 1});
     }
 
-    [[nodiscard]] Result<void> set(Value parent, std::string_view key, std::string_view text);
+    [[nodiscard]] Result<void> set(Value parent, StringView key, StringView text);
+
+    [[nodiscard]] Result<void> set(Value parent, StringView key, const String& text);
 
     // Both key and text must already be valid UTF-8 and remain unchanged through
     // this call. Neither is rescanned; bytes are copied into this builder.
     // As with other writes, parent must be an attached object of this builder.
     // Violating these preconditions is a contract violation, not a recoverable error;
     // this entry point does not detect arbitrary invalid UTF-8 (in either configuration).
-    void set_validated(Value parent, std::string_view key, std::string_view text);
+    void set_validated(Value parent, StringView key, StringView text);
 
-    void set_validated(Value parent, std::string_view key, Value source);
+    void set_validated(Value parent, StringView key, const String& text) {
+        set_validated(parent, key, text.view());
+    }
+
+    void set_validated(Value parent, StringView key, Value source);
 
     // The same key/parent preconditions apply; used for admitted field names.
-    [[nodiscard]] Value object_validated(Value parent, std::string_view key);
+    [[nodiscard]] Value object_validated(Value parent, StringView key);
 
     // Create missing object prefixes, replacing nonobjects. Names are already
     // validated UTF-8 (schema fields or keys borrowed from a parsed document).
-    [[nodiscard]] Value object_path_validated(Value parent, Span<const std::string> keys);
+    [[nodiscard]] Value object_path_validated(Value parent, Span<const String> keys);
 
     // Prevent string literals selecting the pointer-to-bool conversion.
     template <std::size_t N>
-    [[nodiscard]] Result<void> set(Value parent, std::string_view key, const char (&text)[N]) {
-        return set(parent, key, std::string_view{text, N - 1});
+    [[nodiscard]] Result<void> set(Value parent, StringView key, const char (&text)[N]) {
+        return set(parent, key, StringView{text, N - 1});
     }
 
-    [[nodiscard]] Result<void> set(Value parent, std::string_view key, bool value);
+    template <std::same_as<bool> B>
+    [[nodiscard]] Result<void> set(Value parent, StringView key, B value) {
+        return set_bool(parent, key, value);
+    }
 
-    [[nodiscard]] Result<void> set(Value parent, std::string_view key, std::uint32_t value);
+    [[nodiscard]] Result<void> set(Value parent, StringView key, std::uint32_t value);
 
-    [[nodiscard]] Result<void> set(Value parent, std::string_view key, std::uint64_t value);
+    [[nodiscard]] Result<void> set(Value parent, StringView key, std::uint64_t value);
 
-    [[nodiscard]] Result<void> set(Value parent, std::string_view key, std::int64_t value);
+    [[nodiscard]] Result<void> set(Value parent, StringView key, std::int64_t value);
 
-    [[nodiscard]] Result<void> set(Value parent, std::string_view key, float value);
+    [[nodiscard]] Result<void> set(Value parent, StringView key, float value);
 
-    [[nodiscard]] Result<void> set(Value parent, std::string_view key, double value);
+    [[nodiscard]] Result<void> set(Value parent, StringView key, double value);
 
-    [[nodiscard]] Result<void> set_null(Value parent, std::string_view key);
+    [[nodiscard]] Result<void> set_null(Value parent, StringView key);
 
 private:
+    void set_bool(Value target, bool value);
+
+    void append_bool(Value parent, bool value);
+
+    Result<void> set_bool(Value parent, StringView key, bool value);
+
     void require_writable(Value target) const;
 
     void replace_node(Value target, const void* source);
 
-    Result<void> put(Value parent, std::string_view key, void* value);
+    Result<void> put(Value parent, StringView key, void* value);
 
-    void put_validated(Value parent, std::string_view key, void* value);
+    void put_validated(Value parent, StringView key, void* value);
 
     Value push(Value parent, void* value);
 

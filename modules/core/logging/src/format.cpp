@@ -6,10 +6,11 @@
 #include <array>
 #include <charconv>
 #include <cmath>
+#include <string>
 
 namespace atelier::logging {
-std::string_view name(Severity severity) noexcept {
-    constexpr std::array names{"trace", "debug", "info", "warning", "error", "critical", "off"};
+StringView name(Severity severity) noexcept {
+    constexpr std::array<StringView, 7> names{"trace", "debug", "info", "warning", "error", "critical", "off"};
     const auto index = static_cast<std::size_t>(severity);
     return index < names.size() ? names[index] : "unknown";
 }
@@ -21,22 +22,17 @@ FormatError::FormatError(json::Error error)
                     error.fault == json::Fault::duplicate_key
                 ? ReaderFault::invalid_json
                 : ReaderFault::invalid_record),
-      message(std::move(error.message)) {
-    if (!error.path.empty())
-        message += " at " + error.path;
-    if (error.offset)
-        message += " at byte " + std::to_string(*error.offset);
+      message(error.describe()) {}
+
+bool valid_utf8(StringView value) noexcept {
+    return value.is_valid_utf8();
 }
 
-bool valid_utf8(std::string_view value) noexcept {
-    return StringView{value}.is_valid_utf8();
-}
-
-FormatResult<std::string> path_text(const std::filesystem::path& path) {
+FormatResult<String> path_text(const std::filesystem::path& path) {
     auto value = platform::utf16_to_utf8(path.generic_wstring());
     if (!value)
         return std::unexpected(
-            FormatError{ReaderFault::invalid_record, "Invalid UTF-16 path", value.error().system_code});
+            FormatError{ReaderFault::invalid_record, "Invalid UTF-16 path"_s, value.error().system_code});
     return std::move(*value);
 }
 
@@ -47,27 +43,27 @@ std::uint64_t unix_ns() noexcept {
 }
 
 namespace {
-bool identifier(std::string_view value, std::size_t limit) noexcept {
+bool identifier(StringView value, std::size_t limit) noexcept {
     return !value.empty() && value.size() <= limit && std::ranges::all_of(value, [](unsigned char c) {
         return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '.' ||
                c == '-';
     });
 }
 
-bool bounded(std::string_view value, std::size_t limit, bool nul = false) noexcept {
-    return value.size() <= limit && (nul || value.find('\0') == std::string_view::npos);
+bool bounded(StringView value, std::size_t limit, bool nul = false) noexcept {
+    return value.size() <= limit && (nul || !value.contains('\0'));
 }
 
-std::string_view entry_shape(const Entry& value) {
+StringView entry_shape(const Entry& value) {
     if (value.severity >= Severity::off || !identifier(value.category, 64) || !identifier(value.event_code, 128))
         return "Invalid category, event code or severity";
     const auto& source = value.source;
     if (!bounded(source.file, 4096) || !bounded(source.root, 4096) || !bounded(source.function, 4096) ||
         !bounded(source.disk_path, 4096))
         return "Invalid source text";
-    // UTF-8 was checked by the external Entry boundary or the JSON parser.
-    const auto absolute = [](const std::string& text) {
-        return std::filesystem::path{std::u8string{reinterpret_cast<const char8_t*>(text.data()), text.size()}}
+    // UTF-8 is guaranteed by String and the JSON parser.
+    const auto absolute = [](StringView text) {
+        return std::filesystem::path{std::u8string_view{reinterpret_cast<const char8_t*>(text.data()), text.size()}}
             .is_absolute();
     };
     if ((!source.root.empty() && !absolute(source.root)) || (!source.disk_path.empty() && !absolute(source.disk_path)))
@@ -75,7 +71,7 @@ std::string_view entry_shape(const Entry& value) {
     for (const auto& field : value.fields) {
         if (!identifier(field.key, 48))
             return "Invalid field name";
-        if (const auto* text = std::get_if<std::string>(&field.value); text && !bounded(*text, 4096, true))
+        if (const auto* text = std::get_if<String>(&field.value); text && !bounded(*text, 4096, true))
             return "Invalid string field";
     }
     if (value.repeat &&
@@ -84,23 +80,24 @@ std::string_view entry_shape(const Entry& value) {
     return {};
 }
 
-std::unexpected<FormatError> invalid(std::string_view message) {
-    return std::unexpected(FormatError{ReaderFault::invalid_record, std::string{message}});
+std::unexpected<FormatError> invalid(StringView message) {
+    return std::unexpected(
+        FormatError{ReaderFault::invalid_record, String::from_utf8(message).value_or("Invalid record"_s)});
 }
 
 template <class T>
-FormatResult<T> integer(json::Value value, std::string_view key) {
+FormatResult<T> integer(json::Value value, StringView key) {
     ATELIER_TRY_BIND(node, value.at(key));
     ATELIER_TRY_BIND(encoded, node->string());
     T result{};
     const auto parsed = std::from_chars(encoded->data(), encoded->data() + encoded->size(), result);
     if (parsed.ec != std::errc{} || parsed.ptr != encoded->data() + encoded->size() ||
-        std::to_string(result) != *encoded)
+        String::from_number(result) != *encoded)
         return std::unexpected(node->error(json::Fault::range, "Noncanonical or out-of-range integer"));
     return result;
 }
 
-FormatResult<Optional<std::uint64_t>> optional_integer(json::Value value, std::string_view key) {
+FormatResult<Optional<std::uint64_t>> optional_integer(json::Value value, StringView key) {
     ATELIER_TRY_BIND(node, value.at(key));
     if (node->is_null())
         return Optional<std::uint64_t>{};
@@ -108,10 +105,10 @@ FormatResult<Optional<std::uint64_t>> optional_integer(json::Value value, std::s
     return *number;
 }
 
-FormatResult<void> optional_integer(json::Builder& builder, json::Value parent, std::string_view key,
+FormatResult<void> optional_integer(json::Builder& builder, json::Value parent, StringView key,
                                     const Optional<std::uint64_t>& value) {
     if (value)
-        return builder.set(parent, key, std::to_string(*value));
+        return builder.set(parent, key, String::from_number(*value));
     return builder.set_null(parent, key);
 }
 
@@ -122,7 +119,7 @@ constexpr std::array fault_names{"encoding_failed",   "output_too_large",  "inva
 constexpr std::array state_names{"running", "finishing", "finished"};
 
 template <class T, std::size_t N>
-FormatResult<T> enumeration(json::Value value, std::string_view key, const std::array<const char*, N>& names) {
+FormatResult<T> enumeration(json::Value value, StringView key, const std::array<const char*, N>& names) {
     ATELIER_TRY_BIND(text, value.string({key}));
     for (std::size_t i = 0; i < N; ++i)
         if (*text == names[i])
@@ -136,7 +133,7 @@ FormatResult<void> entry_json(json::Builder& builder, json::Value root, const En
     builder.set_validated(root, "severity", name(value.severity));
     builder.set_validated(root, "category", value.category);
     builder.set_validated(root, "event_code", value.event_code);
-    builder.set_validated(root, "message", omit_message ? std::string_view{} : std::string_view{value.message});
+    builder.set_validated(root, "message", omit_message ? StringView{} : value.message.view());
     ATELIER_TRY_BIND(source, builder.object(root, "source"));
     builder.set_validated(*source, "file", value.source.file);
     builder.set_validated(*source, "root", value.source.root);
@@ -152,7 +149,7 @@ FormatResult<void> entry_json(json::Builder& builder, json::Value root, const En
         const auto result = std::visit(
             [&](const auto& item) -> FormatResult<void> {
                 using T = std::decay_t<decltype(item)>;
-                std::string_view type;
+                StringView type;
                 if constexpr (std::is_same_v<T, bool>)
                     type = "bool";
                 else if constexpr (std::is_same_v<T, std::int64_t>)
@@ -165,9 +162,9 @@ FormatResult<void> entry_json(json::Builder& builder, json::Value root, const En
                     type = "string";
                 builder.set_validated(encoded, "type", type);
                 if constexpr (std::is_same_v<T, std::int64_t> || std::is_same_v<T, std::uint64_t>) {
-                    builder.set_validated(encoded, "value", std::to_string(item));
+                    builder.set_validated(encoded, "value", String::from_number(item));
                     return {};
-                } else if constexpr (std::is_same_v<T, std::string>) {
+                } else if constexpr (std::is_same_v<T, String>) {
                     builder.set_validated(encoded, "value", item);
                     return {};
                 } else
@@ -179,7 +176,7 @@ FormatResult<void> entry_json(json::Builder& builder, json::Value root, const En
     if (value.repeat) {
         ATELIER_TRY_BIND(repeat, builder.object(root, "repeat"));
         builder.set_validated(*repeat, "identity", value.repeat->identity);
-        builder.set_validated(*repeat, "count", std::to_string(value.repeat->count));
+        builder.set_validated(*repeat, "count", String::from_number(value.repeat->count));
     } else
         ATELIER_TRY(builder.set_null(root, "repeat"));
     return {};
@@ -193,11 +190,11 @@ FormatResult<Entry> read_entry_fields(json::Value root) {
         if (name(static_cast<Severity>(i)) == *severity)
             value.severity = static_cast<Severity>(i);
     ATELIER_TRY_BIND(category, root.string({"category"}));
-    value.category = *category;
+    value.category = String::from_utf8_validated(*category);
     ATELIER_TRY_BIND(event, root.string({"event_code"}));
-    value.event_code = *event;
+    value.event_code = String::from_utf8_validated(*event);
     ATELIER_TRY_BIND(message, root.string({"message"}));
-    value.message = *message;
+    value.message = String::from_utf8_validated(*message);
     ATELIER_TRY_BIND(source, root.at("source"));
     ATELIER_TRY(source->members({"file", "root", "function", "line", "column", "version", "offset", "disk_path"}));
     ATELIER_TRY_BIND(file, source->string({"file"}));
@@ -208,8 +205,10 @@ FormatResult<Entry> read_entry_fields(json::Value root) {
     ATELIER_TRY_BIND(version, optional_integer(*source, "version"));
     ATELIER_TRY_BIND(offset, optional_integer(*source, "offset"));
     ATELIER_TRY_BIND(disk, source->string({"disk_path"}));
-    value.source = {std::string{*file}, std::string{*origin}, std::string{*function}, *line, *column, *version, *offset,
-                    std::string{*disk}};
+    value.source = {String::from_utf8_validated(*file),     String::from_utf8_validated(*origin),
+                    String::from_utf8_validated(*function), *line,
+                    *column,                                *version,
+                    *offset,                                String::from_utf8_validated(*disk)};
     ATELIER_TRY_BIND(fields, root.at("fields"));
     if (fields->size() > maximum_fields)
         return invalid("Invalid fields object");
@@ -232,10 +231,10 @@ FormatResult<Entry> read_entry_fields(json::Value root) {
             field = *item;
         } else if (*type == "string") {
             ATELIER_TRY_BIND(item, encoded.string({"value"}));
-            field = std::string{*item};
+            field = String::from_utf8_validated(*item);
         } else
             return invalid("Unknown field type");
-        value.fields.add({std::string{key}, std::move(field)});
+        value.fields.add({String::from_utf8_validated(key), std::move(field)});
     }
     // The old ordered DOM exposed fields in byte order, independent of input.
     std::ranges::sort(value.fields, {}, &Field::key);
@@ -244,7 +243,7 @@ FormatResult<Entry> read_entry_fields(json::Value root) {
         ATELIER_TRY(repeat->members({"identity", "count"}));
         ATELIER_TRY_BIND(identity, repeat->string({"identity"}));
         ATELIER_TRY_BIND(count, integer<std::uint64_t>(*repeat, "count"));
-        value.repeat = Repeat{std::string{*identity}, *count};
+        value.repeat = Repeat{String::from_utf8_validated(*identity), *count};
     }
     if (auto problem = entry_shape(value); !problem.empty())
         return invalid(problem);
@@ -276,27 +275,17 @@ FormatResult<void> validate_run(const RunInfo& value) {
 }
 
 namespace atelier::logging {
-std::string_view entry_problem(const Entry& value) {
+StringView entry_problem(const Entry& value) {
     using namespace detail;
     if (value.fields.size() > maximum_fields)
         return "Too many fields";
-    if (!valid_utf8(value.message))
-        return "Invalid UTF-8 message";
-    const auto& source = value.source;
-    if (!valid_utf8(source.file) || !valid_utf8(source.root) || !valid_utf8(source.function) ||
-        !valid_utf8(source.disk_path))
-        return "Invalid source text";
     for (std::size_t i = 0; i < value.fields.size(); ++i) {
         for (std::size_t j = 0; j < i; ++j)
             if (value.fields[j].key == value.fields[i].key)
                 return "Duplicate field name";
-        if (const auto* text = std::get_if<std::string>(&value.fields[i].value); text && !valid_utf8(*text))
-            return "Invalid string field";
         if (const auto* real = std::get_if<double>(&value.fields[i].value); real && !std::isfinite(*real))
             return "Nonfinite field";
     }
-    if (value.repeat && !valid_utf8(value.repeat->identity))
-        return "Invalid repeat group";
     return entry_shape(value);
 }
 }
@@ -309,15 +298,15 @@ FormatResult<json::Builder> record_envelope(const Record& value, const Entry& en
     ATELIER_TRY(builder.set(root, "schema", schema_version));
     ATELIER_TRY(builder.set(root, "run_id", value.run_id));
     ATELIER_TRY(builder.set(root, "process_id", value.process_id));
-    ATELIER_TRY(builder.set(root, "thread_id", std::to_string(value.thread_id)));
-    ATELIER_TRY(builder.set(root, "producer_id", std::to_string(value.producer_id)));
-    ATELIER_TRY(builder.set(root, "producer_sequence", std::to_string(value.producer_sequence)));
-    ATELIER_TRY(builder.set(root, "record_sequence", std::to_string(value.record_sequence)));
-    ATELIER_TRY(builder.set(root, "timestamp_unix_ns", std::to_string(value.timestamp_unix_ns)));
+    ATELIER_TRY(builder.set(root, "thread_id", String::from_number(value.thread_id)));
+    ATELIER_TRY(builder.set(root, "producer_id", String::from_number(value.producer_id)));
+    ATELIER_TRY(builder.set(root, "producer_sequence", String::from_number(value.producer_sequence)));
+    ATELIER_TRY(builder.set(root, "record_sequence", String::from_number(value.record_sequence)));
+    ATELIER_TRY(builder.set(root, "timestamp_unix_ns", String::from_number(value.timestamp_unix_ns)));
     return builder;
 }
 
-FormatResult<Record> read_record(std::string_view bytes) {
+FormatResult<Record> read_record(StringView bytes) {
     ATELIER_TRY_BIND(document, json::Document::parse(bytes, {16}));
     auto root = document->root();
     ATELIER_TRY(root.members({"schema", "run_id", "process_id", "thread_id", "producer_id", "producer_sequence",
@@ -325,10 +314,10 @@ FormatResult<Record> read_record(std::string_view bytes) {
                               "source", "fields", "repeat"}));
     ATELIER_TRY_BIND(schema, root.u32({"schema"}));
     if (*schema != schema_version)
-        return std::unexpected(FormatError{ReaderFault::unsupported_schema, "Unsupported logging schema"});
+        return std::unexpected(FormatError{ReaderFault::unsupported_schema, "Unsupported logging schema"_s});
     Record value;
     ATELIER_TRY_BIND(run, root.string({"run_id"}));
-    value.run_id = *run;
+    value.run_id = String::from_utf8_validated(*run);
     ATELIER_TRY_BIND(process, root.u32({"process_id"}));
     value.process_id = *process;
     ATELIER_TRY_BIND(thread, integer<std::uint64_t>(root, "thread_id"));
@@ -358,7 +347,7 @@ FormatResult<json::Builder> run_json(const RunInfo& value) {
     ATELIER_TRY(builder.set(*run, "run_id", value.run_id));
     ATELIER_TRY(builder.set(*run, "process_name", value.process_name));
     ATELIER_TRY(builder.set(*run, "process_id", value.process_id));
-    ATELIER_TRY(builder.set(*run, "started_unix_ns", std::to_string(value.started_unix_ns)));
+    ATELIER_TRY(builder.set(*run, "started_unix_ns", String::from_number(value.started_unix_ns)));
     ATELIER_TRY_BIND(directory, path_text(value.directory));
     ATELIER_TRY(builder.set(*run, "directory", *directory));
     if (value.parent_run_id)
@@ -368,13 +357,13 @@ FormatResult<json::Builder> run_json(const RunInfo& value) {
     return builder;
 }
 
-FormatResult<RunInfo> read_run(std::string_view bytes) {
+FormatResult<RunInfo> read_run(StringView bytes) {
     ATELIER_TRY_BIND(document, json::Document::parse(bytes, {16}));
     auto root = document->root();
     ATELIER_TRY(root.members({"schema", "run"}));
     ATELIER_TRY_BIND(schema, root.u32({"schema"}));
     if (*schema != schema_version)
-        return std::unexpected(FormatError{ReaderFault::unsupported_schema, "Unsupported run schema"});
+        return std::unexpected(FormatError{ReaderFault::unsupported_schema, "Unsupported run schema"_s});
     ATELIER_TRY_BIND(run, root.at("run"));
     ATELIER_TRY(
         run->members({"run_id", "process_name", "process_id", "started_unix_ns", "directory", "parent_run_id"}));
@@ -383,19 +372,19 @@ FormatResult<RunInfo> read_run(std::string_view bytes) {
     ATELIER_TRY_BIND(process, run->u32({"process_id"}));
     ATELIER_TRY_BIND(start, integer<std::uint64_t>(*run, "started_unix_ns"));
     ATELIER_TRY_BIND(directory, run->string({"directory"}));
-    if (directory->find('\0') != std::string_view::npos)
+    if (directory->contains('\0'))
         return invalid("Invalid UTF-8 path");
     RunInfo value{
-        std::string{*id},
-        std::string{*name},
+        String::from_utf8_validated(*id),
+        String::from_utf8_validated(*name),
         *process,
         *start,
-        std::filesystem::path{std::u8string{reinterpret_cast<const char8_t*>(directory->data()), directory->size()}},
+        std::filesystem::path{std::u8string_view{reinterpret_cast<const char8_t*>(directory->data()), directory->size()}},
         {}};
     ATELIER_TRY_BIND(parent, run->at("parent_run_id"));
     if (!parent->is_null()) {
         ATELIER_TRY_BIND(text, parent->string());
-        value.parent_run_id = *text;
+        value.parent_run_id = String::from_utf8_validated(*text);
     }
     ATELIER_TRY(validate_run(value));
     return value;
@@ -407,7 +396,7 @@ FormatResult<json::Builder> health_json(const RunInfo& info, const PublishedHeal
     ATELIER_TRY(builder.set(root, "schema", schema_version));
     ATELIER_TRY(builder.set(root, "run_id", info.run_id));
     ATELIER_TRY(builder.set(root, "process_id", info.process_id));
-    ATELIER_TRY(builder.set(root, "updated_unix_ns", std::to_string(value.updated_unix_ns)));
+    ATELIER_TRY(builder.set(root, "updated_unix_ns", String::from_number(value.updated_unix_ns)));
     ATELIER_TRY(builder.set(root, "final", value.final));
     ATELIER_TRY_BIND(report, builder.object(root, "report"));
     ATELIER_TRY(builder.set(*report, "backend_acknowledged", value.report.backend_acknowledged));
@@ -415,8 +404,8 @@ FormatResult<json::Builder> health_json(const RunInfo& info, const PublishedHeal
     ATELIER_TRY(builder.set(*report, "summary_published", value.report.summary_published));
     ATELIER_TRY_BIND(state, builder.object(*report, "health"));
     const auto& health = value.report.health;
-    ATELIER_TRY(builder.set(*state, "state", std::string_view{state_names[static_cast<std::size_t>(health.state)]}));
-#define ATELIER_HEALTH_WRITE(member) ATELIER_TRY(builder.set(*state, #member, std::to_string(health.member)))
+    ATELIER_TRY(builder.set(*state, "state", StringView{state_names[static_cast<std::size_t>(health.state)]}));
+#define ATELIER_HEALTH_WRITE(member) ATELIER_TRY(builder.set(*state, #member, String::from_number(health.member)))
     ATELIER_HEALTH_WRITE(accepted);
     ATELIER_HEALTH_WRITE(rejected_queue_full);
     ATELIER_HEALTH_WRITE(rejected_producer_limit);
@@ -433,8 +422,8 @@ FormatResult<json::Builder> health_json(const RunInfo& info, const PublishedHeal
         ATELIER_TRY_BIND(capture, builder.object(*state, "first_error"));
         ATELIER_TRY_BIND(entry, builder.object(*capture, "entry"));
         ATELIER_TRY(entry_json(builder, *entry, first.entry, false));
-        ATELIER_TRY(builder.set(*capture, "producer_id", std::to_string(first.producer_id)));
-        ATELIER_TRY(builder.set(*capture, "producer_sequence", std::to_string(first.producer_sequence)));
+        ATELIER_TRY(builder.set(*capture, "producer_id", String::from_number(first.producer_id)));
+        ATELIER_TRY(builder.set(*capture, "producer_sequence", String::from_number(first.producer_sequence)));
         ATELIER_TRY(builder.set(*capture, "message_is_template", first.message_is_template));
         ATELIER_TRY(builder.set(*capture, "truncated", first.truncated));
     } else
@@ -442,7 +431,7 @@ FormatResult<json::Builder> health_json(const RunInfo& info, const PublishedHeal
     if (health.first_facility_issue) {
         const auto& first = *health.first_facility_issue;
         ATELIER_TRY_BIND(issue, builder.object(*state, "first_facility_issue"));
-        ATELIER_TRY(builder.set(*issue, "fault", std::string_view{fault_names[static_cast<std::size_t>(first.fault)]}));
+        ATELIER_TRY(builder.set(*issue, "fault", StringView{fault_names[static_cast<std::size_t>(first.fault)]}));
         ATELIER_TRY(builder.set(*issue, "message", first.message));
         if (first.native_code)
             ATELIER_TRY(builder.set(*issue, "native_code", *first.native_code));
@@ -453,14 +442,14 @@ FormatResult<json::Builder> health_json(const RunInfo& info, const PublishedHeal
     return builder;
 }
 
-FormatResult<PublishedHealth> read_health(std::string_view bytes, const RunInfo& info) {
+FormatResult<PublishedHealth> read_health(StringView bytes, const RunInfo& info) {
     ATELIER_TRY_BIND(document, json::Document::parse(bytes, {16}));
     auto root = document->root();
     ATELIER_TRY(root.members({"schema", "run_id", "process_id", "updated_unix_ns", "final", "report"}));
     ATELIER_TRY_BIND(schema, root.u32({"schema"}));
     ATELIER_TRY_BIND(run, root.string({"run_id"}));
     ATELIER_TRY_BIND(process, root.u32({"process_id"}));
-    if (*schema != schema_version || *run != info.run_id || *process != info.process_id)
+    if (*schema != schema_version || info.run_id != *run || *process != info.process_id)
         return invalid("Health identity/schema mismatch");
     PublishedHealth value;
     ATELIER_TRY_BIND(time, integer<std::uint64_t>(root, "updated_unix_ns"));
@@ -497,7 +486,7 @@ FormatResult<PublishedHealth> read_health(std::string_view bytes, const RunInfo&
     ATELIER_HEALTH_READ(last_record_sequence);
 #undef ATELIER_HEALTH_READ
     ATELIER_TRY_BIND(notification, state->string({"first_backend_notification"}));
-    health.first_backend_notification = *notification;
+    health.first_backend_notification = String::from_utf8_validated(*notification);
     ATELIER_TRY_BIND(first_error, state->at("first_error"));
     if (!first_error->is_null()) {
         ATELIER_TRY_BIND(capture, read_capture(*first_error));
@@ -508,7 +497,7 @@ FormatResult<PublishedHealth> read_health(std::string_view bytes, const RunInfo&
         ATELIER_TRY(first->members({"fault", "message", "native_code"}));
         ATELIER_TRY_BIND(fault, enumeration<FacilityFault>(*first, "fault", fault_names));
         ATELIER_TRY_BIND(message, first->string({"message"}));
-        health.first_facility_issue = FacilityIssue{*fault, std::string{*message}, {}};
+        health.first_facility_issue = FacilityIssue{*fault, String::from_utf8_validated(*message), {}};
         ATELIER_TRY_BIND(native, first->at("native_code"));
         if (!native->is_null()) {
             ATELIER_TRY_BIND(code, native->u32());

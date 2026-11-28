@@ -21,13 +21,13 @@ void install(std::initializer_list<Span<Marker* const>> modules) noexcept {
         fatal("The frame timing catalog is already installed.");
     // Bounded stack diagnostic: fixed declarations can identify a damaged key
     // without allocating or entering the logger on the fatal path.
-    const auto reject = [](std::string_view reason, std::string_view key) {
+    const auto reject = [](StringView reason, StringView key) {
         char message[256];
         const auto prefix = std::min(reason.size(), sizeof(message));
         std::copy_n(reason.data(), prefix, message);
         const auto suffix = std::min(key.size(), sizeof(message) - prefix);
         std::copy_n(key.data(), suffix, message + prefix);
-        fatal({message, prefix + suffix});
+        fatal(StringView{message, prefix + suffix});
     };
     const auto add = [&](Marker* marker) {
         if (!marker)

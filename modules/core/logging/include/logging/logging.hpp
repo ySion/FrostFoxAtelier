@@ -3,6 +3,7 @@
 #include "foundation/array.hpp"
 #include "foundation/optional.hpp"
 #include "foundation/result.hpp"
+#include "foundation/string.hpp"
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -10,8 +11,6 @@
 #include <filesystem>
 #include <memory>
 #include <source_location>
-#include <string>
-#include <string_view>
 #include <variant>
 
 namespace atelier::logging {
@@ -43,17 +42,17 @@ inline constexpr std::size_t retained_completed_runs = 20;
 
 enum class Severity : std::uint8_t { trace, debug, info, warning, error, critical, off };
 
-[[nodiscard]] std::string_view name(Severity) noexcept;
+[[nodiscard]] StringView name(Severity) noexcept;
 
 // All text is owning UTF-8. Line/column are 1-based; column counts UTF-8 bytes,
 // not UTF-16 units or graphemes. Zero means unknown. Relative file names with
 // no root/disk_path are virtual. Never resolve against a later active project.
 struct SourceLocation {
-    std::string file{};
+    String file{};
 
-    std::string root{};
+    String root{};
 
-    std::string function{};
+    String function{};
 
     std::uint32_t line{};
 
@@ -65,25 +64,36 @@ struct SourceLocation {
 
     // Saved Source snapshots preserve their absolute origin separately from
     // the compiler's file name. Only with this mapping is version a disk hash.
-    std::string disk_path{};
+    String disk_path{};
 };
 
 // At most 64 unique, named scalar fields, also bounded by the record byte budget.
 // No callbacks, pointers, reflection,
 // formatter objects or new object IDs. Producers define keys/units per event code.
-using FieldValue = std::variant<bool, std::int64_t, std::uint64_t, double, std::string>;
+using FieldValue = std::variant<bool, std::int64_t, std::uint64_t, double, String>;
 
 struct Field {
-    std::string key;
+    String key;
 
     FieldValue value;
+
+    Field() noexcept = default;
+
+    template <class V>
+        requires(!std::convertible_to<V, Utf8Text>) && (!std::is_pointer_v<std::remove_cvref_t<V>>) &&
+                std::constructible_from<FieldValue, V>
+    Field(Utf8Text field_key, V&& field_value) noexcept
+        : key(std::move(field_key).into_string()), value(std::forward<V>(field_value)) {}
+
+    Field(Utf8Text field_key, Utf8Text text_value) noexcept
+        : key(std::move(field_key).into_string()), value(std::move(text_value).into_string()) {}
 };
 
 // Explicit domain coalescing, never equality of rendered text. Identity is
 // producer-supplied and scoped by run/process/category/event_code; count is this record's
 // occurrence increment (including its first occurrence), not a lifetime total.
 struct Repeat {
-    std::string identity;
+    String identity;
 
     std::uint64_t count{1};
 };
@@ -91,11 +101,11 @@ struct Repeat {
 struct Entry {
     Severity severity{Severity::info};
 
-    std::string category{};
+    String category{};
 
-    std::string event_code{};
+    String event_code{};
 
-    std::string message{};
+    String message{};
 
     SourceLocation source{};
 
@@ -107,12 +117,12 @@ struct Entry {
 // One schema check for owned producers and standalone projections. Empty means
 // valid; the returned diagnostic is static. Admission separately checks encoded
 // and message byte budgets (native messages may still be format templates).
-[[nodiscard]] std::string_view entry_problem(const Entry&);
+[[nodiscard]] StringView entry_problem(const Entry&);
 
 struct RunInfo {
-    std::string run_id;
+    String run_id;
 
-    std::string process_name;
+    String process_name;
 
     std::uint32_t process_id{};
 
@@ -120,7 +130,7 @@ struct RunInfo {
 
     std::filesystem::path directory;
 
-    Optional<std::string> parent_run_id;
+    Optional<String> parent_run_id;
 };
 
 enum class Persistence : std::uint8_t { not_persisted, jsonl };
@@ -130,7 +140,7 @@ enum class Persistence : std::uint8_t { not_persisted, jsonl };
 struct Record {
     std::uint32_t schema{schema_version};
 
-    std::string run_id;
+    String run_id;
 
     std::uint32_t process_id{};
 
@@ -165,7 +175,7 @@ enum class ErrorCode : std::uint8_t {
 struct Error {
     ErrorCode code{};
 
-    std::string message;
+    String message;
 
     Optional<std::uint32_t> native_code{};
 };
@@ -214,7 +224,7 @@ enum class FacilityFault : std::uint8_t {
 struct FacilityIssue {
     FacilityFault fault{};
 
-    std::string message; // Bounded first-fault detail; not a business result.
+    String message; // Bounded first-fault detail; not a business result.
 
     Optional<std::uint32_t> native_code;
 };
@@ -256,7 +266,7 @@ struct Health {
     // or I/O success from their English text, or silently discard uncertainty.
     std::uint64_t backend_notifications{};
 
-    std::string first_backend_notification;
+    String first_backend_notification;
 
     std::uint64_t last_record_sequence{}; // Assigned by serialization, not durable I/O.
 
@@ -266,7 +276,7 @@ struct Health {
 };
 
 struct CategoryThreshold {
-    std::string category;
+    String category;
 
     Severity minimum{Severity::info};
 };
@@ -277,9 +287,9 @@ struct RunOptions {
     // path chosen by its Editor before launch. Never reuse/truncate an old run.
     std::filesystem::path directory{};
 
-    std::string process_name{"application"};
+    String process_name{"application"_s};
 
-    Optional<std::string> parent_run_id{};
+    Optional<String> parent_run_id{};
 
     Severity minimum{Severity::info};
 
@@ -337,7 +347,7 @@ private:
 // start and after finish. These accessors do not allocate or create a service.
 [[nodiscard]] Run* current_run() noexcept;
 
-[[nodiscard]] bool enabled(Severity severity, std::string_view category) noexcept;
+[[nodiscard]] bool enabled(Severity severity, StringView category) noexcept;
 
 // Stable, non-template host entry for dynamic/JIT/unloadable producers. All
 // encoding and deferred code live in the non-unloadable host. No argument borrow
@@ -373,7 +383,7 @@ enum class ReaderFault : std::uint8_t {
 struct ReaderIssue {
     ReaderFault fault{};
 
-    std::string message;
+    String message;
 
     std::filesystem::path file;
 

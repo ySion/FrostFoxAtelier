@@ -16,4 +16,4 @@ configure_file("${atelier_yyjson_SOURCE_DIR}/LICENSE" "${CMAKE_BINARY_DIR}/LICEN
 add_library(atelier_core_json STATIC "${PROJECT_SOURCE_DIR}/modules/core/json/src/json.cpp")
 atelier_target(atelier_core_json)
 target_include_directories(atelier_core_json PUBLIC "${PROJECT_SOURCE_DIR}/modules/core/json/include")
-target_link_libraries(atelier_core_json PUBLIC atelier_foundation_headers PRIVATE yyjson mimalloc)
+target_link_libraries(atelier_core_json PUBLIC atelier_foundation PRIVATE yyjson mimalloc)

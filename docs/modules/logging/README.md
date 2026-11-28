@@ -15,14 +15,14 @@
 | 宿主 / UI | `const RunInfo& Run::info() const noexcept`；`Health Run::health() const` | 目录、运行身份与拥有型健康快照 |
 | 宿主 | `FlushReport Run::flush() noexcept`；`FlushReport Run::finish() noexcept` | 显式完成应答、sink 检查、健康发布；不能用返回 void 代表成功 |
 | 普通动态文本 / JIT 桥 | `SubmitResult submit(Entry entry) noexcept` | 非模板稳定宿主入口，拥有正文及动态源码信息 |
-| 调用方过滤 | `bool enabled(Severity severity, std::string_view category) noexcept` | 不分配、无 I/O；直接 submit 调用不会阻止实参先求值 |
+| 调用方过滤 | `bool enabled(Severity severity, StringView category) noexcept` | 不分配、无 I/O；直接 submit 调用不会阻止实参先求值 |
 | 稳定原生 | `ATELIER_LOG(level, category, code, format, ...)` | 先过滤后求值，返回 SubmitResult；位置格式编译期校验 |
-| 稳定原生 / 带字段 | `ATELIER_LOG_WITH(level, category, code, context, format, ...)` | context 是 `native::Context { span<const Field>, optional<Repeat> }` |
+| 稳定原生 / 带字段 | `ATELIER_LOG_WITH(level, category, code, context, format, ...)` | context 是 `native::Context { Span<const Field>, Optional<Repeat> }` |
 | Output | `Result<std::unique_ptr<Reader>> Reader::open(std::filesystem::path directory)` | 一目录一 reader，无本进程 Run 也能使用；允许目录尚未出现 |
 | Output | `ReadBatch Reader::poll(ReadBudget budget = {})` | 增量读取、拥有型 Record、累计 Reader 状态与最近健康文件快照 |
 | Application / Output | `void Reader::source_ended() noexcept` | 宿主确认生产进程实际退出后通知；没有正常 final 也能排空并标不完整收尾 |
 
-`native::write` 的签名是 `template<Severity Level, Argument... Args> SubmitResult write(std::string_view category, std::string_view event_code, const Context& context, std::source_location source, std::type_identity_t<native::FormatString<Args...>> format, Args&&... args) noexcept`，要求 `Level != off` 且至多 16 个参数；格式参数不参与类型推导。
+`native::write` 的签名是 `template<Severity Level, Argument... Args> SubmitResult write(StringView category, StringView event_code, const Context& context, std::source_location source, std::type_identity_t<native::FormatString<Args...>> format, Args&&... args) noexcept`，要求 `Level != off` 且至多 16 个参数；格式参数不参与类型推导。
 
 ## 生命周期与目录
 
@@ -51,7 +51,7 @@
 - **不另造 ObjectId**。宿主调用已有 `ObjectId::diagnostic_identity()`，把拥有型 ASCII 结果作为 `object` / `entity` 等 string 字段提交：`null` 或十进制 `context:index:generation`，与记录的 run/process 联合限定进程内诊断关联。它不赋予对象存活性，也不是资产持久身份或反序列化入口。项目文档/资产/scene-local 身份仍可一同保留；不能把地址、ObjectId 哈希、私有内存布局当作无冲突身份。logging 只接收这个值，不依赖 Runtime、不建业务对象注册表。
 - `SourceLocation.file` 保留生产者的原始文件名；原生相对路径可携带当时的绝对 `root`。Source 快照另用 `disk_path` 保留已保存文件的绝对来源，不能把 `engine/...` 快照名拼到工程 root。没有磁盘映射的虚拟来源仍能记录，但不允许按当前工程猜位置。file/root/function/disk_path 各至多 4096 UTF-8 字节且不含 NUL；非空 root/disk_path 必须绝对。
 - line、column 均 **1-based**，column 是 **UTF-8 字节列**；0 表示未知，不表示第一列。version 为原始 Source 版本，offset 为原始文件的 **0-based UTF-8 字节偏移**。桥接若没有可靠列转换应填 0，不能拿 UTF-16 列冒充。native 编译器提供的列也须符合此定义，否则记 0。跳转按记录路径/root 与版本检查，不让切换工程后的同名文件误命中。
-- 正文允许合法 UTF-8、嵌入 NUL 与控制字符，不能用 strlen 保存 `std::string`/string_view 的显式长度。非法 UTF-8 为 `invalid_record`，不悄悄替换为问号或 `\\xNN`。正文超过 128 KiB 明确拒绝；其他输入结构无效也明确返回状态，不静默截断正文。
+- 正文允许合法 UTF-8、嵌入 NUL 与控制字符，不能用 strlen 保存 `String`/`StringView` 的显式长度。非法 UTF-8 为 `invalid_record`，不悄悄替换为问号或 `\\xNN`。正文超过 128 KiB 明确拒绝；其他输入结构无效也明确返回状态，不静默截断正文。
 
 Source 的 `path/version/offset/line/column/disk_path` 完整转入上述对应字段；只有带磁盘映射的 version 才用于文件内容摘要检查，虚拟请求序号不是磁盘摘要。缺失 Source 使用空文本、零行列和 null version/offset，不捏造位置。Source 逐调用 Diagnostics 的桥接是按需能力，**不能为了日志默认打开昂贵的逐 tick / 逐调用诊断或计时**。对象诊断身份由 Runtime 的上述正式接口导出，本模块不规定其私有布局。
 
@@ -65,7 +65,7 @@ Source 的 `path/version/offset/line/column/disk_path` 完整转入上述对应�
 
 **稳定原生**：只有整个 run 生命周期都不卸载、并链接进同一宿主二进制的代码使用 native.hpp（包括宿主链接的静态库）。当前 `atelier_logging` 为静态目标，不能把它另行链接到 DLL 后期待共享同一个进程服务；header-only Quill 的 registry/TLS 也不能在 DLL 中复制。包括常驻 DLL 在内的其他二进制模块，均通过宿主提供的稳定 submit 入口提交。Dev 编译最低级别 trace，Release 为 info；运行时再按 RunOptions.minimum 与最多 64 项 category 精确覆盖过滤，阈值启动后固定。宏只在运行时过滤时计算 category 一次，event code、Context 和格式参数都在过滤通过后求值；编译裁掉的级别不求值 category。每个启用参数求值一次。
 
-`native::FormatString` 只从编译期字符数组构造，内部 `fmtquill::format_string` 仍执行完整类型/语法检查；随后在 consteval 内复用 fmt 的解析器检查本项目政策，不复制语法、不在前台格式化。宏与直接 write 使用同一类型，不接受 runtime format、外部 fmt 格式对象或运行时 string_view。参数仅受约束的算术标量、char 数组、std::string、std::string_view，拒绝任意类/枚举/裸指针/自定义 deferred codec；枚举显式转成稳定数值或名称，char 数组要求有效 NUL 终止，带 NUL 文本用显式长度视图。正文格式化在后台，字符串与 Context 在调用返回前编码复制。source metadata、decoder、内部 envelope codec 都必须驻留。不要为了适配 schema 把所有普通原生正文提前 std::format。
+`native::FormatString` 只从编译期字符数组构造，内部 `fmtquill::format_string` 仍执行完整类型/语法检查；随后在 consteval 内复用 fmt 的解析器检查本项目政策，不复制语法、不在前台格式化。宏与直接 write 使用同一类型，不接受 runtime format、外部 fmt 格式对象或运行时 string_view。参数仅受约束的算术标量、char 数组、`String`、`StringView`、`std::string`、`std::string_view`，拒绝任意类/枚举/裸指针/自定义 deferred codec；枚举显式转成稳定数值或名称，char 数组要求有效 NUL 终止，带 NUL 文本用显式长度视图。正文格式化在后台，字符串与 Context 在调用返回前编码复制。source metadata、decoder、内部 envelope codec 都必须驻留。不要为了适配 schema 把所有普通原生正文提前预拼接成拥有型字符串。
 
 动态宽度、动态精度（包括 `{:{}}`、`{:.{}}`、`{0:{1}}`、`{0:.{1}f}`）一律编译期拒绝，诊断区分宽度和精度。所有浮点格式的静态精度不得超过 `maximum_message_bytes`（131072），超限诊断指出浮点精度；默认精度、字符串精度、静态宽度及转义括号保持 fmt 语义。这是有意的保守收窄：NaN/Inf 和去尾零后原本很短的有限值也受限，例如旧 `{:.131073g}` 配 1.25 可以输出 `1.25`，现在拒绝编译；不是静默截断。精度上限避免 fmt 精度与指数运算溢出，不保证最终正文不超限。允许的精度配 f/e/a 或静态大宽度仍可能展开超过 128 KiB，交由原 sink 记录 `output_too_large`，不输出截断正文。
 
@@ -75,7 +75,7 @@ Entry 的文本在准入边界校验；编码与已准入诊断快照使用 JSON
 
 ```cpp
 namespace log = atelier::logging;
-auto started = log::start_run({.process_name = "editor"});
+auto started = log::start_run({.process_name = "editor"_s});
 // 检查 started；初始化失败走宿主紧急输出，不创建 Application。
 auto run = std::move(started.value());
 
@@ -84,14 +84,14 @@ const auto queued = ATELIER_LOG(log::Severity::info, "application", "application
 
 log::Entry diagnostic;
 diagnostic.severity = log::Severity::error;
-diagnostic.category = "world";
-diagnostic.event_code = "world.behavior_failed";
-diagnostic.message = "行为执行失败：原始诊断正文";
-diagnostic.source.file = "E:/OriginalProject/Source/player.source";
+diagnostic.category = "world"_s;
+diagnostic.event_code = "world.behavior_failed"_s;
+diagnostic.message = "行为执行失败：原始诊断正文"_s;
+diagnostic.source.file = "E:/OriginalProject/Source/player.source"_s;
 diagnostic.source.line = 12;
 diagnostic.source.column = 5;
-diagnostic.fields.push_back({"scene_local_id", std::string{"player"}});
-diagnostic.repeat = log::Repeat{"document-7/world-2/diagnostic-19", 3};
+diagnostic.fields.add({"scene_local_id", "player"_s});
+diagnostic.repeat = log::Repeat{"document-7/world-2/diagnostic-19"_s, 3};
 const auto submitted = log::submit(std::move(diagnostic));
 
 // 正式调用点在业务销毁、join 和宿主首错记录之后：

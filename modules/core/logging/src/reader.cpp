@@ -2,6 +2,7 @@
 #include "detail/io.hpp"
 #include "foundation/ring_deque.hpp"
 #include "foundation/set.hpp"
+#include "platform/utf.hpp"
 
 #include <algorithm>
 #include <array>
@@ -61,7 +62,7 @@ struct Metadata {
 
     Fingerprint reading;
 
-    std::string buffer;
+    Array<char> buffer;
 };
 
 struct Segment {
@@ -94,9 +95,9 @@ struct Reader::Impl {
 
     InlineArray<FileIdentity, retained_rotated_files + 1> pending;
 
-    std::string chunk;
+    Array<char> chunk;
 
-    std::string tail;
+    Array<char> tail;
 
     std::size_t chunk_cursor{};
 
@@ -124,7 +125,7 @@ struct Reader::Impl {
 
     Set<Key> keys;
 
-    void issue(ReaderFault fault, std::string message, const std::filesystem::path& file, std::uint64_t at = 0) {
+    void issue(ReaderFault fault, String message, const std::filesystem::path& file, std::uint64_t at = 0) {
         status.latest_issue = ReaderIssue{fault, std::move(message), file, at};
         status.incomplete = true;
         switch (fault) {
@@ -178,7 +179,7 @@ struct Reader::Impl {
                     item.handle.reset();
                     ++status.invalid_metadata;
                     issue(is_manifest ? ReaderFault::invalid_record : ReaderFault::invalid_summary,
-                          "Metadata exceeds 256 KiB", path);
+                          "Metadata exceeds 256 KiB"_s, path);
                     return true;
                 }
             }
@@ -196,29 +197,30 @@ struct Reader::Impl {
                 budget.bytes += read;
                 budget.worked = true;
                 status.bytes_read += read;
-                item.buffer.append(buffer.data(), read);
+                item.buffer.append({buffer.data(), read});
             }
             if (item.buffer.size() != item.reading.size)
                 return false;
             item.handle.reset();
-            const auto rejected = [&](ReaderFault fault, std::string_view message) {
+            const auto rejected = [&](ReaderFault fault, String message) {
                 ++status.invalid_metadata;
-                issue(is_manifest ? fault : ReaderFault::invalid_summary, std::string{message}, path);
+                issue(is_manifest ? fault : ReaderFault::invalid_summary, std::move(message), path);
             };
+            const StringView buf_view{item.buffer.data(), item.buffer.size()};
             if (is_manifest) {
-                auto decoded = read_run(item.buffer);
+                auto decoded = read_run(buf_view);
                 if (!decoded)
-                    rejected(decoded.error().fault, decoded.error().message);
+                    rejected(decoded.error().fault, std::move(decoded.error().message));
                 else if (run && (decoded->run_id != run->run_id || decoded->process_id != run->process_id))
-                    rejected(ReaderFault::invalid_record, "Run manifest changed identity");
+                    rejected(ReaderFault::invalid_record, "Run manifest changed identity"_s);
                 else
                     run = std::move(*decoded);
             } else if (run) {
-                auto decoded = read_health(item.buffer, *run);
+                auto decoded = read_health(buf_view, *run);
                 if (!decoded)
-                    rejected(decoded.error().fault, decoded.error().message);
+                    rejected(decoded.error().fault, std::move(decoded.error().message));
                 else if (health && health->final && !decoded->final)
-                    rejected(ReaderFault::invalid_summary, "Health regressed after final evidence");
+                    rejected(ReaderFault::invalid_summary, "Health regressed after final evidence"_s);
                 else {
                     // Atomic file replacement orders these snapshots. Wall-clock
                     // corrections must not make a later final snapshot disappear.
@@ -248,7 +250,8 @@ struct Reader::Impl {
     Result<Optional<Segments>> scan() {
         Segments result;
         for (unsigned i = static_cast<unsigned>(retained_rotated_files) + 1; i-- != 0;) {
-            auto path = directory / (i == 0 ? "events.jsonl" : "events." + std::to_string(i) + ".jsonl");
+            const auto seg_name = i == 0 ? "events.jsonl"_s : String::concat("events."_s, i, ".jsonl"_s);
+            auto path = directory / platform::utf8_to_utf16_validated(seg_name);
             auto handle = open_read(path);
             if (!handle) {
                 const auto code = GetLastError();
@@ -260,7 +263,7 @@ struct Reader::Impl {
             if (std::ranges::any_of(result, [&](const auto& item) { return item.identity == *identity; })) {
                 if (!status.source_ended)
                     return Optional<Segments>{};
-                issue(ReaderFault::rotation_loss, "Closed archive aliases two segment names to one file", path);
+                issue(ReaderFault::rotation_loss, "Closed archive aliases two segment names to one file"_s, path);
                 continue;
             }
             result.add({std::move(handle), *identity, std::move(path), i});
@@ -271,7 +274,8 @@ struct Reader::Impl {
         for (unsigned i = 0; i <= retained_rotated_files; ++i) {
             const auto item =
                 std::find_if(result.begin(), result.end(), [&](const auto& value) { return value.index == i; });
-            const auto path = directory / (i == 0 ? "events.jsonl" : "events." + std::to_string(i) + ".jsonl");
+            const auto seg_name = i == 0 ? "events.jsonl"_s : String::concat("events."_s, i, ".jsonl"_s);
+            const auto path = directory / platform::utf8_to_utf16_validated(seg_name);
             auto check = open_read(path);
             if (!check) {
                 const auto code = GetLastError();
@@ -303,7 +307,7 @@ struct Reader::Impl {
 
     void finish_segment() {
         if (!tail.empty() || oversized)
-            issue(ReaderFault::incomplete_line, "Segment ended with an incomplete line", current->path, line_start);
+            issue(ReaderFault::incomplete_line, "Segment ended with an incomplete line"_s, current->path, line_start);
         tail.clear();
         oversized = false;
         chunk.clear();
@@ -317,35 +321,35 @@ struct Reader::Impl {
     }
 
     void line(Array<Record>& records) {
-        auto decoded = read_record(tail);
+        auto decoded = read_record({tail.data(), tail.size()});
         if (!decoded) {
             ++status.invalid_lines;
-            issue(decoded.error().fault, decoded.error().message, current->path, line_start);
+            issue(decoded.error().fault, std::move(decoded.error().message), current->path, line_start);
             return;
         }
         auto& value = *decoded;
         if (value.run_id != run->run_id || value.process_id != run->process_id) {
             ++status.invalid_lines;
-            issue(ReaderFault::invalid_record, "Record identity does not match run manifest", current->path,
+            issue(ReaderFault::invalid_record, "Record identity does not match run manifest"_s, current->path,
                   line_start);
             return;
         }
         const Key key{value.producer_id, value.producer_sequence};
         if (keys.contains(key)) {
-            issue(ReaderFault::duplicate_record, "Duplicate unique record identity", current->path, line_start);
+            issue(ReaderFault::duplicate_record, "Duplicate unique record identity"_s, current->path, line_start);
             return;
         }
         if (value.record_sequence <= high_water) {
-            issue(ReaderFault::out_of_order, "Record precedes output high-water mark", current->path, line_start);
+            issue(ReaderFault::out_of_order, "Record precedes output high-water mark"_s, current->path, line_start);
             return;
         }
         if (value.record_sequence != high_water + 1)
-            issue(ReaderFault::sequence_gap, "Output sequence discontinuity; not a queue drop count", current->path,
+            issue(ReaderFault::sequence_gap, "Output sequence discontinuity; not a queue drop count"_s, current->path,
                   line_start);
         const auto previous =
             std::find_if(recent.rbegin(), recent.rend(), [&](const auto& prior) { return prior.first == key.first; });
         if (previous != recent.rend() && key.second != previous->second + 1)
-            issue(ReaderFault::sequence_gap, "Producer sequence discontinuity; cause is not inferred", current->path,
+            issue(ReaderFault::sequence_gap, "Producer sequence discontinuity; cause is not inferred"_s, current->path,
                   line_start);
         high_water = value.record_sequence;
         recent.emplace_back(key);
@@ -358,23 +362,24 @@ struct Reader::Impl {
     }
 
     void consume(Budget& budget, Array<Record>& records) {
+        const StringView chunk_view{chunk.data(), chunk.size()};
         while (chunk_cursor < chunk.size() && budget.lines < budget.limit.records && !budget.expired()) {
-            const auto newline = chunk.find('\n', chunk_cursor);
-            const auto end = newline == std::string::npos ? chunk.size() : newline;
+            const auto newline = chunk_view.find('\n', chunk_cursor);
+            const auto end = newline == StringView::npos ? chunk.size() : newline;
             const auto count = end - chunk_cursor;
             if (!oversized) {
                 if (tail.size() + count + 1 > maximum_json_line_bytes) {
-                    issue(ReaderFault::oversized_line, "JSONL line exceeds 2 MiB; discarding through LF", current->path,
-                          line_start);
+                    issue(ReaderFault::oversized_line, "JSONL line exceeds 2 MiB; discarding through LF"_s,
+                          current->path, line_start);
                     tail.clear();
                     oversized = true;
                 } else
-                    tail.append(chunk.data() + chunk_cursor, count);
+                    tail.append({chunk.data() + chunk_cursor, count});
             }
             chunk_cursor = end;
             consumed += count;
             budget.worked = true;
-            if (newline != std::string::npos) {
+            if (newline != StringView::npos) {
                 ++budget.lines;
                 if (!oversized)
                     line(records);
@@ -398,13 +403,13 @@ struct Reader::Impl {
         if (current)
             finish_segment();
         if (!status.has_final_summary && !missing_final_reported) {
-            issue(ReaderFault::missing_final_summary, "Input ended without a valid final health summary",
+            issue(ReaderFault::missing_final_summary, "Input ended without a valid final health summary"_s,
                   directory / L"health.json");
             missing_final_reported = true;
         }
         if (health && health->final && high_water != health->report.health.last_record_sequence &&
             !final_gap_reported) {
-            issue(ReaderFault::sequence_gap, "Final output sequence disagrees with retained input", directory);
+            issue(ReaderFault::sequence_gap, "Final output sequence disagrees with retained input"_s, directory);
             final_gap_reported = true;
         }
         status.finished = true;
@@ -437,7 +442,7 @@ struct Reader::Impl {
                     for (std::size_t i = 1; i < files.size(); ++i)
                         gap |= files[i - 1].index != files[i].index + 1;
                     if (gap) {
-                        issue(ReaderFault::rotation_loss, "Closed archive is missing a numbered log segment",
+                        issue(ReaderFault::rotation_loss, "Closed archive is missing a numbered log segment"_s,
                               directory);
                         missing_segment_reported = true;
                     }
@@ -445,7 +450,7 @@ struct Reader::Impl {
                 for (const auto identity : pending) {
                     if ((!current || current->identity != identity) && !was_completed(identity) &&
                         !std::ranges::any_of(files, [&](const auto& item) { return item.identity == identity; }))
-                        issue(ReaderFault::rotation_loss, "Previously observed unread segment disappeared", directory);
+                        issue(ReaderFault::rotation_loss, "Previously observed unread segment disappeared"_s, directory);
                 }
                 pending.clear();
                 for (const auto& item : files)
@@ -468,7 +473,7 @@ struct Reader::Impl {
                         break;
                     ATELIER_TRY_BIND(stamp, fingerprint(current->handle.get()));
                     if (stamp->size < offset) {
-                        issue(ReaderFault::rotation_loss, "Log segment was truncated in place", current->path, offset);
+                        issue(ReaderFault::rotation_loss, "Log segment was truncated in place"_s, current->path, offset);
                         finish_segment();
                         continue;
                     }
@@ -486,7 +491,7 @@ struct Reader::Impl {
                         budget.bytes += read;
                         budget.worked = true;
                         status.bytes_read += read;
-                        chunk.assign(buffer.data(), read);
+                        chunk.assign(Span<const char>{buffer.data(), read});
                         consume(budget, records);
                         continue;
                     }
@@ -497,7 +502,7 @@ struct Reader::Impl {
                         // Our open handle preserves this segment, but arbitrarily many
                         // intervening segments may already have been retained away.
                         issue(ReaderFault::rotation_loss,
-                              "Cursor segment left retention window; intervening loss is unquantified", current->path,
+                              "Cursor segment left retention window; intervening loss is unquantified"_s, current->path,
                               offset);
                         lost_current_reported = true;
                     }
@@ -532,7 +537,7 @@ Reader::~Reader() = default;
 
 Result<std::unique_ptr<Reader>> Reader::open(std::filesystem::path directory) {
     if (directory.empty() || !directory.is_absolute())
-        return std::unexpected(Error{ErrorCode::invalid_options, "Reader directory must be absolute", {}});
+        return std::unexpected(Error{ErrorCode::invalid_options, "Reader directory must be absolute"_s, {}});
     std::error_code error;
     const auto exists = std::filesystem::exists(directory, error);
     if (error)
@@ -544,7 +549,7 @@ Result<std::unique_ptr<Reader>> Reader::open(std::filesystem::path directory) {
             return std::unexpected(
                 Error{ErrorCode::io_failed, platform::error_message(error), static_cast<std::uint32_t>(error.value())});
         if (!is_directory)
-            return std::unexpected(Error{ErrorCode::invalid_options, "Reader input is not a directory", {}});
+            return std::unexpected(Error{ErrorCode::invalid_options, "Reader input is not a directory"_s, {}});
     }
     auto reader = std::unique_ptr<Reader>{new Reader};
     reader->impl_->directory = directory.lexically_normal();

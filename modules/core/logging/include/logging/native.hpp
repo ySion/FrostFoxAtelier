@@ -25,7 +25,7 @@ concept Argument =
     (std::is_arithmetic_v<std::remove_cvref_t<T>> && !std::same_as<std::remove_cvref_t<T>, wchar_t> &&
      !std::same_as<std::remove_cvref_t<T>, char8_t> && !std::same_as<std::remove_cvref_t<T>, char16_t> &&
      !std::same_as<std::remove_cvref_t<T>, char32_t>) ||
-    std::same_as<std::remove_cvref_t<T>, std::string> || std::same_as<std::remove_cvref_t<T>, std::string_view> ||
+    std::same_as<std::remove_cvref_t<T>, String> || std::same_as<std::remove_cvref_t<T>, StringView> ||
     (std::is_array_v<std::remove_reference_t<T>> &&
      std::same_as<std::remove_cv_t<std::remove_extent_t<std::remove_reference_t<T>>>, char>);
 
@@ -87,7 +87,7 @@ class FormatString {
         void on_error(const char* message) { fmtquill::report_error(message); }
     };
 
-    fmtquill::format_string<Args...> format_;
+    fmtquill::format_string<detail::MappedArgument<Args>...> format_;
 
 public:
     template <std::size_t N>
@@ -106,7 +106,7 @@ public:
 // for compile-time/runtime filtering before argument evaluation.
 template <Severity Level, Argument... Args>
     requires(Level != Severity::off && sizeof...(Args) <= 16)
-[[nodiscard]] SubmitResult write(std::string_view category, std::string_view event_code, const Context& context,
+[[nodiscard]] SubmitResult write(StringView category, StringView event_code, const Context& context,
                                  std::source_location source, std::type_identity_t<FormatString<Args...>> format,
                                  Args&&... args) noexcept {
     if constexpr (Level < minimum_severity)
@@ -116,13 +116,18 @@ template <Severity Level, Argument... Args>
     if (!enabled(Level, category))
         return {SubmitStatus::filtered};
     const auto spelling = format.get();
+    const StringView spell_view{spelling.data(), spelling.size()};
+    auto cat = String::from_utf8(category);
+    auto evt = String::from_utf8(event_code);
+    if (!cat || !evt || spell_view.contains('\0') || !detail::valid_utf8(spell_view))
+        return detail::complete({}, SubmitStatus::invalid_record);
+    if (!(detail::valid_input_argument(args) && ...))
+        return detail::complete({}, SubmitStatus::invalid_record);
     Entry entry;
     entry.severity = Level;
-    entry.category = category;
-    entry.event_code = event_code;
-    entry.message.assign(spelling.data(), spelling.size());
-    if (entry.message.find('\0') != std::string::npos)
-        return detail::complete({}, SubmitStatus::invalid_record);
+    entry.category = std::move(*cat);
+    entry.event_code = std::move(*evt);
+    entry.message = String::from_utf8_validated(spell_view);
     auto location = native_source(source);
     if (!location)
         return detail::complete({}, SubmitStatus::invalid_record);
@@ -153,7 +158,7 @@ template <Severity Level, Argument... Args>
                 return {::atelier::logging::SubmitStatus::no_active_run};                                              \
             }                                                                                                          \
             auto&& atelier_log_category_value = (category);                                                            \
-            const std::string_view atelier_log_category = atelier_log_category_value;                                  \
+            const ::atelier::StringView atelier_log_category = atelier_log_category_value;                             \
             if (!::atelier::logging::enabled((level), atelier_log_category)) {                                         \
                 return {::atelier::logging::SubmitStatus::filtered};                                                   \
             }                                                                                                          \

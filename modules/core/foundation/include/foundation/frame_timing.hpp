@@ -1,13 +1,13 @@
 #pragma once
 
 #include "foundation/span.hpp"
+#include "foundation/string.hpp"
 
 #include <array>
 #include <chrono>
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
-#include <string_view>
 
 // Always-on frame phase timing. Modules declare their own phase markers; the
 // host assembles them into one process catalog at startup. A Recorder is bound
@@ -28,16 +28,16 @@ class Recorder;
 // module. install() assigns the catalog index once per process.
 class Marker {
 public:
-    constexpr Marker(std::string_view key, std::string_view title, const Marker* parent) noexcept
+    constexpr Marker(StringView key, StringView title, const Marker* parent) noexcept
         : key_(key), title_(title), parent_(parent) {}
 
     Marker(const Marker&) = delete;
 
     Marker& operator=(const Marker&) = delete;
 
-    [[nodiscard]] constexpr std::string_view key() const noexcept { return key_; }
+    [[nodiscard]] constexpr StringView key() const noexcept { return key_; }
 
-    [[nodiscard]] constexpr std::string_view title() const noexcept { return title_; }
+    [[nodiscard]] constexpr StringView title() const noexcept { return title_; }
 
     [[nodiscard]] constexpr const Marker* parent() const noexcept { return parent_; }
 
@@ -54,9 +54,9 @@ private:
 
     friend void record(const Marker&, std::chrono::nanoseconds, std::uint32_t) noexcept;
 
-    std::string_view key_;
+    StringView key_;
 
-    std::string_view title_;
+    StringView title_;
 
     const Marker* parent_;
 

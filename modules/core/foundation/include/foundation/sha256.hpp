@@ -1,11 +1,11 @@
 #pragma once
 
 #include "foundation/span.hpp"
+#include "foundation/string.hpp"
 
 #include <cstddef>
 #include <expected>
 #include <filesystem>
-#include <string>
 
 namespace atelier::foundation {
 // Streaming SHA-256. Call finish exactly once, after the last add. Memory hashing
@@ -22,14 +22,14 @@ public:
 
     void add(atelier::Span<const std::byte>) noexcept;
 
-    std::string finish() noexcept;
+    String finish() noexcept;
 
 private:
     void* hash_{};
 };
 
-std::string sha256(atelier::Span<const std::byte>) noexcept;
+String sha256(atelier::Span<const std::byte>) noexcept;
 
 // Path, open and read failures return diagnostics; protocol codes belong to callers.
-std::expected<std::string, std::string> sha256_file(const std::filesystem::path&) noexcept;
+std::expected<String, String> sha256_file(const std::filesystem::path&) noexcept;
 }

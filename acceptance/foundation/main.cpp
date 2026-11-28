@@ -12,6 +12,8 @@
 #include "foundation/set.hpp"
 #include "foundation/sha256.hpp"
 #include "foundation/string.hpp"
+#include "platform/error.hpp"
+#include "platform/utf.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -43,34 +45,61 @@ static_assert(std::is_trivially_copyable_v<atelier::Optional<int>> &&
 static_assert(atelier::Optional<int>{7} == 7 && atelier::Optional<int>{} == std::nullopt &&
               atelier::Optional<int>{}.value_or(9) == 9 && atelier::Optional<int>{7}.value_or(9) == 7);
 
-constexpr bool verify_constexpr_views() {
+constexpr int verify_constexpr_views() {
     atelier::StringView path{"project.ui.source"};
     if (!path.strip_prefix("project.") || !path.strip_suffix(".source") || path != "ui")
-        return false;
+        return 1;
     constexpr atelier::StringView sample{"alpha/beta/gamma"};
     if (sample.first(5) != "alpha" || sample.last(5) != "gamma" || sample.rfind('/') != 10)
-        return false;
+        return 2;
     const auto [before, sep, after] = sample.rpartition('/');
-    if (before != "alpha/beta" || sep != "/" || after != "gamma" || !atelier::StringView{"你好"}.is_valid_utf8())
-        return false;
+    if (before != "alpha/beta" || sep != "/" || after != "gamma" || !atelier::StringView{"你好"}.is_valid_utf8() ||
+        atelier::StringView{"你好"}.is_ascii() || !sample.is_ascii())
+        return 3;
+    if (!atelier::StringView{"Hello_World@[`{"}.equals_ascii_case_insensitive("hello_world@[`{") ||
+        atelier::StringView{"@"}.equals_ascii_case_insensitive("`") ||
+        atelier::StringView{"["}.equals_ascii_case_insensitive("{") ||
+        (atelier::StringView{"_a"}.compare_ascii_case_insensitive("AA") >= 0))
+        return 4;
+    if (sample.count('/') != 2 || sample.count("a/") != 2 || sample.count("") != 0)
+        return 5;
+    if (sample.common_prefix_length("alpha/bravo") != 7 || sample.common_suffix_length("delta/gamma") != 8)
+        return 6;
+    if (sample.find_any_in_range('f', 'h') != 3 || sample.find_any_except_range('a', 'z') != 5)
+        return 7;
+    if (atelier::StringView{"  \t hello \r\n "}.trim() != "hello" ||
+        atelier::StringView{"///core///"}.trim('/') != "core")
+        return 8;
+    std::size_t line_count = 0;
+    for (const auto line : atelier::StringView{"v 1 2\r\nv 3 4\n\r"}.lines()) {
+        if (line_count == 0 && line != "v 1 2")
+            return 9;
+        if (line_count == 1 && line != "v 3 4")
+            return 10;
+        if (line_count == 2 && !line.empty())
+            return 11;
+        ++line_count;
+    }
+    if (line_count != 3 || !std::ranges::empty(atelier::StringView{}.lines()))
+        return 12;
     constexpr int numbers[]{2, 4, 6, 4, 8};
     atelier::Span<const int> span{numbers};
     if (span.front() != 2 || span.back() != 8 || span.first(2)[1] != 4 || span.last(2)[0] != 4 ||
         span.size_bytes() != sizeof(numbers) || *span.rbegin() != 8 || span.find(4) != 1 || span.find(4, 2) != 3 ||
         span.find_last(4) != 3 || span.find_last(4, 2) != 1 || !span.contains(6) || span.contains(99))
-        return false;
+        return 13;
     constexpr int prefix[]{2, 4};
     constexpr int suffix[]{4, 8};
     if (!span.starts_with(prefix) || !span.starts_with(2) || !span.ends_with(suffix) || !span.ends_with(8))
-        return false;
+        return 14;
     if (!span.strip_prefix(2) || !span.strip_suffix(8) || span.size() != 3)
-        return false;
+        return 15;
     span.remove_prefix(1);
     span.remove_suffix(1);
-    return span.size() == 1 && span[0] == 6 && (atelier::Span{prefix} <=> atelier::Span{suffix}) < 0;
+    return (span.size() == 1 && span[0] == 6 && (atelier::Span{prefix} <=> atelier::Span{suffix}) < 0) ? 0 : 16;
 }
 
-static_assert(verify_constexpr_views());
+static_assert(verify_constexpr_views() == 0);
 
 static_assert(sizeof(atelier::Span<int>) == 16 && alignof(atelier::Span<int>) == 8 &&
               std::is_trivially_copyable_v<atelier::Span<int>> && std::is_standard_layout_v<atelier::Span<int>> &&
@@ -1104,6 +1133,481 @@ void verify_bit_vector_and_optional() {
             "Reused Array::assign failed to grow geometrically.");
 }
 
+void verify_string_view_simd_and_search_set() {
+    using namespace atelier;
+    using acceptance::helpers::require;
+
+    static_assert(std::ranges::forward_range<StringSplit> && std::ranges::borrowed_range<StringSplit> &&
+                  std::ranges::view<StringSplit> && std::ranges::common_range<StringSplit> &&
+                  std::ranges::forward_range<StringSplitAny> && std::ranges::borrowed_range<StringSplitAny> &&
+                  std::ranges::view<StringSplitAny> && std::ranges::common_range<StringSplitAny> &&
+                  std::ranges::forward_range<StringLines> && std::ranges::borrowed_range<StringLines> &&
+                  std::ranges::view<StringLines> && std::ranges::common_range<StringLines> &&
+                  std::ranges::forward_range<CodePointRange> && std::ranges::borrowed_range<CodePointRange> &&
+                  std::ranges::view<CodePointRange> && std::ranges::common_range<CodePointRange>);
+
+    constexpr ByteSearchSet slash_set{"/\\"};
+    constexpr ByteSearchSet triple_set{"/\\:"};
+    constexpr ByteSearchSet quad_set{" \t\r\n"};
+    constexpr ByteSearchSet bitmap_set{"aeiouAEIOU"};
+    static_assert(slash_set.contains('/') && slash_set.contains('\\') && !slash_set.contains(':') &&
+                  quad_set.contains('\t') && ascii_whitespace_set.contains('\v') && bitmap_set.contains('U') &&
+                  []<class V = StringView> {
+                      return !requires(V sv) { sv.trim(0); } && !requires(V sv) { sv.trim(1); } &&
+                             !requires(V sv) { sv.trim(nullptr); } && !requires(V sv) { sv.find_first_not_of(0); };
+                  }());
+
+    // Empty-brace {} must bind to empty ByteSearchSet{}, never hijack char('\0')!
+    const char nul_padded[]{"\0hello\0"};
+    const StringView nul_view{nul_padded, 7};
+    require(nul_view.trim({}).size() == 7 && nul_view.find_first_not_of({}) == 0 &&
+                nul_view.find_last_not_of({}) == 6 && nul_view.trim('\0') == "hello",
+            "Empty-brace trim({}) or find_*_not_of({}) hijacked char('\\0') overload.");
+
+    // Sweep lengths 0..65 and unaligned offsets 0..3 across SSE2 8B/16B/32B boundaries
+    // (including >255 length count(char) to exercise multi-batch _mm_sad_epu8 saturation guard).
+    const std::string many_hits(600, 'z');
+    require(StringView{many_hits}.count('z') == 600 && StringView{many_hits}.count('a') == 0,
+            "Multi-batch SSE2 StringView::count(char) failed.");
+
+    for (const std::size_t total : {std::size_t{0}, std::size_t{1}, std::size_t{4}, std::size_t{7}, std::size_t{8},
+                                    std::size_t{9}, std::size_t{15}, std::size_t{16}, std::size_t{17}, std::size_t{31},
+                                    std::size_t{32}, std::size_t{33}, std::size_t{65}}) {
+        std::string buf_a(total + 4, 'm');
+        std::string buf_b(total + 4, 'M');
+        std::string buf_c(total + 4, 'm');
+        std::string ws_buf(total + 4, '\t');
+        for (const std::size_t off : {std::size_t{0}, std::size_t{1}, std::size_t{3}}) {
+            char* pa = buf_a.data() + off;
+            char* pb = buf_b.data() + off;
+            char* pc = buf_c.data() + off;
+            char* pws = ws_buf.data() + off;
+            std::memset(pa, 'm', total);
+            std::memset(pb, 'M', total);
+            std::memset(pc, 'm', total);
+            std::memset(pws, '\t', total);
+            // Sprinkle non-letter ASCII boundary bytes '@'(0x40), '['(0x5B), '`'(0x60), '{'(0x7B).
+            if (total >= 4) {
+                pa[0] = pb[0] = pc[0] = '@';
+                pa[1] = pb[1] = pc[1] = '[';
+                pa[total - 2] = pb[total - 2] = pc[total - 2] = '`';
+                pa[total - 1] = pb[total - 1] = pc[total - 1] = '{';
+            }
+            const StringView va{pa, total};
+            const StringView vb{pb, total};
+            const StringView vc{pc, total};
+            const StringView vws{pws, total};
+            require(va.is_ascii() && va.is_valid_utf8() && va.equals_ascii_case_insensitive(vb) &&
+                        va.compare_ascii_case_insensitive(vb) == std::strong_ordering::equal &&
+                        va.common_prefix_length(vc) == total && va.common_suffix_length(vc) == total &&
+                        vws.contains_only(ascii_whitespace_set) && vws.contains_only(quad_set) &&
+                        vws.trim().empty() &&
+                        va.find_any_in_range('z', 'a') == StringView::npos &&
+                        (total == 0 ? va.find_any_except_range('z', 'a') == StringView::npos
+                                    : va.find_any_except_range('z', 'a') == 0) &&
+                        (total == 0 ? va.find_any_in_range('\x00', '\xfe') == StringView::npos
+                                    : va.find_any_in_range('\x00', '\xfe') == 0) &&
+                        va.find_any_except_range('\x00', '\xfe') == StringView::npos &&
+                        (total == 0 ? va.find_any_in_range('\x01', '\xff') == StringView::npos
+                                    : va.find_any_in_range('\x01', '\xff') == 0) &&
+                        va.find_any_except_range('\x01', '\xff') == StringView::npos,
+                    "StringView SIMD baseline ASCII, whitespace, or width-254 range check failed.");
+
+            for (std::size_t pos = 0; pos < total; ++pos) {
+                const char saved_a = pa[pos];
+                const char saved_b = pb[pos];
+
+                // Test non-ASCII byte detection and width == 254 boundary (\xff and \x00) at every lane.
+                pa[pos] = static_cast<char>(0xffu);
+                require(!va.is_ascii() && !va.is_valid_utf8() &&
+                            va.find_any_in_range(static_cast<char>(0x80u), static_cast<char>(0xffu)) == pos &&
+                            va.find_any_except_range('\x00', '\xfe') == pos,
+                        "StringView is_ascii or width-254 [0x00, 0xfe] range search failed.");
+                pa[pos] = '\0';
+                require(va.find_any_except_range('\x01', '\xff') == pos,
+                        "StringView width-254 [0x01, 0xff] range search failed.");
+
+                // Test ASCII case-folding false-positive guard: '@' (0x40) vs '`' (0x60) differ by 0x20!
+                pa[pos] = '@';
+                pb[pos] = '`';
+                require(!va.equals_ascii_case_insensitive(vb) &&
+                            va.compare_ascii_case_insensitive(vb) == std::strong_ordering::less,
+                        "StringView SIMD case-insensitive falsely equated '@' and '`'.");
+
+                // Test '[' (0x5B) vs '{' (0x7B) which also differ by 0x20!
+                pa[pos] = '[';
+                pb[pos] = '{';
+                require(!va.equals_ascii_case_insensitive(vb) &&
+                            va.compare_ascii_case_insensitive(vb) == std::strong_ordering::less,
+                        "StringView SIMD case-insensitive falsely equated '[' and '{'.");
+
+                // Test ByteSearchSet across 1/2/3/4/range+extra(6)/bitmap(10) modes + find_*_not_of.
+                pa[pos] = '\\';
+                pws[pos] = 'X';
+                require(va.find('\\') == pos && va.rfind('\\') == pos && va.find_first_of(slash_set) == pos &&
+                            va.find_last_of(slash_set) == pos && va.find_first_of(triple_set) == pos &&
+                            va.find_last_of(triple_set) == pos && va.count('\\') == 1 &&
+                            vws.find_first_not_of(ascii_whitespace_set) == pos &&
+                            vws.find_last_not_of(ascii_whitespace_set) == pos &&
+                            vws.find_first_not_of(quad_set) == pos && vws.find_last_not_of(quad_set) == pos,
+                        "StringView SIMD ByteSearchSet 1/2/3/4/range+extra or not_of missed hit.");
+                pws[pos] = '\t';
+
+                pa[pos] = 'E';
+                require(va.find_first_of(bitmap_set) == pos && va.find_last_of(bitmap_set) == pos,
+                        "StringView ByteSearchSet bitmap mode missed hit.");
+
+                pa[pos] = saved_a;
+                pb[pos] = saved_b;
+
+                const char saved_c = pc[pos];
+                pc[pos] = '~';
+                require(va.common_prefix_length(vc) == pos && va.common_suffix_length(vc) == total - 1 - pos,
+                        "StringView SIMD common_prefix_length or common_suffix_length on distinct buffer failed.");
+                pc[pos] = saved_c;
+            }
+        }
+    }
+
+    // Substring find / rfind / case-insensitive find / common_prefix_length / common_suffix_length.
+    const StringView hay{"prefix__Needle_and_NEEDLE__suffix__Needle_end"};
+    require(hay.find("Needle") == 8 && hay.find("Needle", 9) == 35 && hay.rfind("Needle") == 35 &&
+                hay.rfind("Needle", 34) == 8 && hay.find_ascii_case_insensitive("needle") == 8 &&
+                hay.find_ascii_case_insensitive("needle", 9) == 19 &&
+                hay.rfind_ascii_case_insensitive("needle") == 35 &&
+                hay.rfind_ascii_case_insensitive("needle", 34) == 19 &&
+                hay.contains_ascii_case_insensitive("AND_needle") && hay.count("_") == 9 && hay.count("__") == 3,
+            "StringView SIMD substring or case-insensitive search failed.");
+
+    // SplitAny (skip_empty false vs true, trailing comma, empty input), SplitAsciiWhitespace, Lines, and multi-pass forward iterators.
+    const Array<StringView> csv_keep(StringView{"a,,b,"}.split_any(",", false));
+    const StringView expected_csv[]{"a", "", "b", ""};
+    const Array<StringView> empty_keep(StringView{""}.split_any(",", false));
+    const StringView expected_empty_keep[]{""};
+    require(csv_keep == expected_csv && empty_keep == expected_empty_keep &&
+                std::ranges::empty(StringView{""}.split_any(",", true)),
+            "StringView::split_any edge cases failed.");
+
+    auto split_view = StringView{"one:two:three"}.split(":");
+    auto it1 = split_view.begin();
+    auto it2 = it1++;
+    require(*it2 == "one" && *it1 == "two", "Forward iterator post-increment or multi-pass independence failed.");
+    const Array<StringView> tokens(StringView{"  v\t1.0  -2.5\r\n3.0  "}.split_ascii_whitespace());
+    const StringView expected_tokens[]{"v", "1.0", "-2.5", "3.0"};
+    require(tokens == expected_tokens, "split_ascii_whitespace failed.");
+
+    const Array<StringView> raw_lines(StringView{"first\r\nsecond\n\nfourth\rfifth\r\n"}.lines());
+    const StringView expected_lines[]{"first", "second", "", "fourth", "fifth"};
+    require(raw_lines == expected_lines && Array<StringView>(StringView{"only"}.lines()) == Span<const StringView>{{"only"}},
+            "StringView::lines CRLF/LF/CR enumeration failed.");
+
+    const auto cps = StringView{"A你𝄞"}.code_points();
+    require(cps.has_value() && std::ranges::distance(*cps) == 3, "CodePointRange forward_range failed.");
+}
+
+void verify_string_enhancements_and_formatting() {
+    using namespace atelier;
+    using acceptance::helpers::require;
+
+    // 1) Infallible decimal from_number + radix from_number + from_hex + from_float_fixed/general + concat.
+    require(String::from_number(-42) == "-42" && String::from_number(UINT64_C(18446744073709551615)) ==
+                                                     "18446744073709551615" &&
+                *String::from_number(255, 16) == "ff" && !String::from_number(10, 99) &&
+                String::from_hex(0u) == "0" && String::from_hex(0x3b5b78u, 6) == "3b5b78" &&
+                String::from_hex(0xabu, 6, true) == "0000AB" && String::from_float_fixed(3.14159, 2) == "3.14" &&
+                String::from_float_fixed(-12.5, 0) == "-12" && String::from_float_general(0.00123456, 4) == "0.001235",
+            "String numeric or hex formatting failed.");
+
+    // Extreme DBL_MAX fixed formatting (>300 integer digits) must never overflow stack buffer.
+    const auto huge_fixed = String::from_float_fixed(1e300, 4);
+    require(huge_fixed.size() > 300 && huge_fixed.ends_with(".0000"), "Large double fixed formatting failed.");
+
+    enum UnscopedConcatProbe { concat_probe_zero = 0 };
+    static_assert(std::convertible_to<bool, String::ConcatPiece> && std::convertible_to<int, String::ConcatPiece> &&
+                  std::convertible_to<double, String::ConcatPiece> &&
+                  std::convertible_to<const char (&)[4], String::ConcatPiece> &&
+                  !std::convertible_to<char (&)[4], String::ConcatPiece> &&
+                  !std::convertible_to<char, String::ConcatPiece> &&
+                  !std::convertible_to<wchar_t, String::ConcatPiece> &&
+                  !std::convertible_to<char8_t, String::ConcatPiece> &&
+                  !std::convertible_to<const char*, String::ConcatPiece> &&
+                  !std::convertible_to<void*, String::ConcatPiece> &&
+                  !std::convertible_to<UnscopedConcatProbe, String::ConcatPiece> &&
+                  !std::convertible_to<StringView, String::ConcatPiece>);
+
+    const auto make_numeric_piece = [](bool positive) noexcept -> String::ConcatPiece {
+        String::ConcatPiece first(-987654);
+        String::ConcatPiece second(123456);
+        return positive ? second : first;
+    };
+    const auto joined_msg =
+        String::concat("Evaluations: ", 12u, " · Cache: ", true, " · Ratio: ", String::validated("100%"),
+                       String::literal<" · Delta: ">(), make_numeric_piece(false));
+    require(joined_msg == "Evaluations: 12 · Cache: true · Ratio: 100% · Delta: -987654" && String::concat().empty(),
+            "String::concat failed.");
+
+    String short_lit_reserve = String::literal<"ui/">();
+    short_lit_reserve.reserve(16);
+    require(short_lit_reserve == "ui/" && short_lit_reserve.capacity() == String::inline_capacity,
+            "Short String::literal reserve(<=30) degraded capacity below inline_capacity.");
+
+    String noop_replace_lit = String::literal<"hello">();
+    const char* noop_lit_addr = noop_replace_lit.c_str();
+    require(noop_replace_lit.replace(2, 0, "").has_value() && noop_replace_lit.c_str() == noop_lit_addr,
+            "No-op String::replace(pos, 0, \"\") detached static literal.");
+
+    // 2) Heap mi_realloc self-aliasing append, ADL swap, repeat, pad_left/pad_right.
+    String growing = String::literal<"0123456789abcdefghijklmnopqrstuvwxyz">();
+    growing.append_literal<"_tail">();
+    for (int step = 0; step < 4; ++step)
+        require(growing.append(growing.slice(2, growing.size() - 3)).has_value(),
+                "Heap mi_realloc self-slice append failed.");
+    require(growing.size() == 611 && growing.starts_with("0123456789") && growing.ends_with("xyz_"),
+            "Heap mi_realloc self-slice append corrupted payload.");
+
+    String swap_a = String::literal<"left">();
+    String swap_b = String::literal<"right">();
+    using std::swap;
+    swap(swap_a, swap_b);
+    require(swap_a == "right" && swap_b == "left", "String ADL swap failed.");
+
+    String padded = String::from_number(7);
+    padded.pad_left(4, '0');
+    padded.pad_right(6, '_');
+    require(padded == "0007__" && String::repeat(String::literal<"ab">(), 4) == "abababab" &&
+                *String::repeat("你", 3) == "你你你" && !String::repeat("\xff", 2),
+            "String pad_left/pad_right or repeat failed.");
+
+    // 3) SIMD to_ascii_lower / to_ascii_upper (preserving literal zero-detachment when unchanged + UTF-8 safety).
+    String unchanged_lit = String::literal<"already_lower_1234567890_你好_abcdefghijklmnopqrstuvwxyz">();
+    const char* lit_addr = unchanged_lit.c_str();
+    unchanged_lit.to_ascii_lower();
+    require(unchanged_lit.c_str() == lit_addr, "Unchanged to_ascii_lower needlessly detached static literal.");
+
+    String mixed_case =
+        String::literal<"@[`{_Hello_World_From_SSE2_Vector_Pipeline_你好_1234567890_End_@[`{">();
+    mixed_case.to_ascii_upper();
+    require(mixed_case == "@[`{_HELLO_WORLD_FROM_SSE2_VECTOR_PIPELINE_你好_1234567890_END_@[`{",
+            "SIMD String::to_ascii_upper corrupted boundary or UTF-8 bytes.");
+    mixed_case.to_ascii_lower();
+    require(mixed_case == "@[`{_hello_world_from_sse2_vector_pipeline_你好_1234567890_end_@[`{",
+            "SIMD String::to_ascii_lower corrupted boundary or UTF-8 bytes.");
+
+    // 4) In-place trim, strip_prefix/suffix (UTF-8 code-point boundary safe), slice_in_place, erase, insert, replace_line_endings.
+    String editable = String::literal<"  \t  prefix/你好世界/suffix \r\n ">();
+    editable.trim_in_place();
+    require(editable == "prefix/你好世界/suffix" && editable.strip_prefix("prefix/") &&
+                editable.strip_suffix("/suffix") && editable == "你好世界",
+            "String trim_in_place or strip_prefix/strip_suffix failed.");
+    // Reject stripping partial multi-byte UTF-8 prefix/suffix ("你" is 3 UTF-8 bytes).
+    require(!editable.strip_prefix(editable.view().first(1)) && !editable.strip_suffix(editable.view().last(1)) &&
+                !editable.slice_in_place(1, 3) && !editable.erase(0, 1) && !editable.insert(1, "x") &&
+                editable == "你好世界",
+            "String allowed mid-code-point strip, slice, erase, or insert.");
+    require(editable.insert(6, String::literal<"·">()).has_value() && editable == "你好·世界" &&
+                editable.insert(0, editable.slice(0, 6)).has_value() && editable == "你好你好·世界" &&
+                editable.erase(0, 6).has_value() && editable == "你好·世界" &&
+                editable.slice_in_place(0, 6).has_value() && editable == "你好",
+            "String UTF-8 boundary insert, self-aliased insert, erase, or slice_in_place failed.");
+
+    String crlf_doc = String::literal<"line1\r\nline2\rline3\n\r\nend">();
+    require(crlf_doc.replace_line_endings().has_value() && crlf_doc == "line1\nline2\nline3\n\nend",
+            "In-place String::replace_line_endings to LF failed.");
+    String clean_lit = String::literal<"already\nlf\nonly">();
+    const char* clean_addr = clean_lit.c_str();
+    require(clean_lit.replace_line_endings().has_value() && clean_lit.c_str() == clean_addr,
+            "Already-LF replace_line_endings detached literal.");
+    require(crlf_doc.replace_line_endings("\r\n").has_value() && crlf_doc == "line1\r\nline2\r\nline3\r\n\r\nend" &&
+                !crlf_doc.replace_line_endings("\xff"),
+            "Custom String::replace_line_endings failed.");
+}
+
+consteval bool verify_constexpr_span_algorithms() {
+    int values[]{5, 1, 4, 1, 3, 2};
+    atelier::Span<int> span{values};
+    if (span.is_sorted())
+        return false;
+    if (span.count(1) != 2 || span.count_if([](int v) { return v >= 3; }) != 3)
+        return false;
+    span.sort();
+    if (!span.is_sorted() || span.lower_bound(1) != 0 || span.upper_bound(1) != 2 || !span.binary_search(4) ||
+        span.binary_search(9))
+        return false;
+    if (span.replace(1, 8) != 2)
+        return false;
+    span.sort();
+    span.reverse();
+    const int expected_desc[]{8, 8, 5, 4, 3, 2};
+    if (span.common_prefix_length(atelier::Span<const int>{expected_desc}) != 6)
+        return false;
+    span.swap_elements(0, 5);
+    if (span.front() != 2 || span.back() != 8)
+        return false;
+    span.fill(7);
+    return span.count(7) == 6;
+}
+
+static_assert(verify_constexpr_span_algorithms());
+
+struct SwappableOnlyProbe {
+    int v;
+
+    explicit SwappableOnlyProbe(int x) noexcept : v(x) {}
+
+    SwappableOnlyProbe(const SwappableOnlyProbe&) = delete;
+
+    SwappableOnlyProbe& operator=(const SwappableOnlyProbe&) = delete;
+
+    friend void swap(SwappableOnlyProbe& a, SwappableOnlyProbe& b) noexcept { std::swap(a.v, b.v); }
+};
+
+void verify_span_and_array_practical_algorithms() {
+    using namespace atelier;
+    using acceptance::helpers::require;
+
+    // 1) Constness gate: Span<const int> rejects mutating element algorithms (even with explicit template args!)
+    //    while prvalue Span<int> allows them.
+    static_assert([]<class CS = Span<const int>, class MS = Span<int>> {
+        return !requires(CS s) { s.fill(0); } && !requires(CS s) { s.template fill<int>(0); } &&
+               !requires(CS s) { s.reverse(); } && !requires(CS s) { s.template reverse<int>(); } &&
+               !requires(CS s) { s.replace(0, 1); } && !requires(CS s) { s.template replace<int>(0, 1); } &&
+               !requires(CS s) { s.swap_elements(0, 0); } && !requires(CS s) { s.template swap_elements<int>(0, 0); } &&
+               !requires(CS s) { s.sort(); } && !requires(CS s) { s.template sort<std::less<>, int>(); } &&
+               requires(MS s) { s.fill(0); } && requires(MS s) { s.sort(); };
+    }());
+
+    // 2) Sweep SIMD count & common_prefix_length across 1B/2B/4B/8B scalars + IEEE-754 float/double (-0.0 & NaN).
+    Array<std::uint8_t> bytes_big(600, 0x5au);
+    bytes_big[17] = 0x11u;
+    bytes_big[513] = 0x11u;
+    require(bytes_big.count(std::uint8_t{0x5au}) == 598 && bytes_big.count(std::uint8_t{0x11u}) == 2,
+            "Multi-batch 1B SIMD Span::count failed.");
+
+    for (const std::size_t n : {std::size_t{0}, std::size_t{1}, std::size_t{3}, std::size_t{4}, std::size_t{7},
+                                std::size_t{8}, std::size_t{9}, std::size_t{15}, std::size_t{16}, std::size_t{17},
+                                std::size_t{33}}) {
+        Array<std::uint16_t> u16_a(n, 0x1234u);
+        Array<std::uint16_t> u16_b(n, 0x1234u);
+        Array<std::uint32_t> u32_a(n, 0x89abcdefu);
+        Array<std::uint32_t> u32_b(n, 0x89abcdefu);
+        Array<std::uint64_t> u64_a(n, UINT64_C(0x0102030405060708));
+        Array<std::uint64_t> u64_b(n, UINT64_C(0x0102030405060708));
+        require(u16_a.count(0x1234u) == n && u32_a.count(0x89abcdefu) == n &&
+                    u64_a.count(UINT64_C(0x0102030405060708)) == n && u16_a.common_prefix_length(u16_b) == n &&
+                    u32_a.common_prefix_length(u32_b) == n && u64_a.common_prefix_length(u64_b) == n,
+                "2B/4B/8B SIMD count or common_prefix_length baseline failed.");
+        for (std::size_t pos = 0; pos < n; ++pos) {
+            u16_b[pos] = 0x9999u;
+            u32_b[pos] = 0x11111111u;
+            u64_b[pos] = 42u;
+            require(u16_b.count(0x9999u) == 1 && u32_b.count(0x11111111u) == 1 && u64_b.count(42u) == 1 &&
+                        u16_a.common_prefix_length(u16_b) == pos && u32_a.common_prefix_length(u32_b) == pos &&
+                        u64_a.common_prefix_length(u64_b) == pos,
+                    "2B/4B/8B SIMD count or common_prefix_length lane mismatch failed.");
+            u16_b[pos] = 0x1234u;
+            u32_b[pos] = 0x89abcdefu;
+            u64_b[pos] = UINT64_C(0x0102030405060708);
+        }
+    }
+
+    const float nan_f = std::numeric_limits<float>::quiet_NaN();
+    const double nan_d = std::numeric_limits<double>::quiet_NaN();
+    Array<float> floats{0.0f, -0.0f, 1.5f, nan_f, -0.0f, 2.0f, 0.0f, -0.0f, 3.0f};
+    Array<float> floats_b{0.0f, 0.0f, 1.5f, nan_f, 0.0f, 2.0f, 0.0f, 0.0f, 3.0f};
+    Array<double> doubles{0.0, -0.0, nan_d, 4.0, -0.0};
+    require(floats.count(0.0f) == 5 && floats.count(-0.0f) == 5 && floats.count(nan_f) == 0 &&
+                floats.common_prefix_length(floats) == 3 && floats.common_prefix_length(floats_b) == 3 &&
+                doubles.count(0.0) == 3 && doubles.count(nan_d) == 0 && doubles.common_prefix_length(doubles) == 2,
+            "Float/double SIMD count or common_prefix_length failed IEEE-754 -0.0 or NaN semantics.");
+
+    // 3) Aliasing-safe fill & replace on both trivial scalars and heap-owning Strings (including sub-slice operations).
+    Array<int> nums{10, 20, 10, 30, 10, 40};
+    require(nums.replace(nums[0], nums[1]) == 3 && nums == Array<int>{20, 20, 20, 30, 20, 40},
+            "Self-aliased Array::replace corrupted old_value during overwrite.");
+    nums.slice(1, 4).fill(nums[5]);
+    require(nums == Array<int>{20, 40, 40, 40, 40, 40}, "Prvalue slice fill or self-aliased fill failed.");
+
+    InlineArray<String, 4> words{String::literal<"beta">(), String::literal<"alpha_long_heap_payload_0123456789">(),
+                                 String::literal<"beta">(), String::literal<"delta">()};
+    require(words.replace(words[0], words[1]) == 2 && words[0] == words[1] && words[2] == words[1],
+            "Self-aliased String replace failed.");
+    words.sort();
+    require(words.is_sorted() && words.front().starts_with("alpha") && words.back() == "delta" &&
+                words.lower_bound(StringView{"delta"}) == 3 && words.upper_bound(StringView{"delta"}) == 4 &&
+                words.binary_search(StringView{"delta"}) && !words.binary_search(StringView{"gamma"}),
+            "InlineArray<String> sort or heterogeneous StringView binary search failed.");
+
+    // 4) Move-only comparator support on sort / is_sorted / lower_bound / binary_search + FixedArray parity.
+    FixedArray<int, 8> fixed_vals{9, 2, 7, 2, 5};
+    auto move_only_gt = [bias = std::make_unique<int>(0)](int a, int b) noexcept { return a + *bias > b; };
+    fixed_vals.sort(move_only_gt);
+    require(fixed_vals == FixedArray<int, 8>{9, 7, 5, 2, 2} && fixed_vals.is_sorted(move_only_gt) &&
+                fixed_vals.lower_bound(5, move_only_gt) == 2 && fixed_vals.upper_bound(2, move_only_gt) == 5 &&
+                fixed_vals.binary_search(7, move_only_gt),
+            "Move-only comparator sort / binary_search on FixedArray failed.");
+    fixed_vals.reverse();
+    fixed_vals.swap_elements(0, 4);
+    require(fixed_vals.front() == 9 && fixed_vals.back() == 2, "FixedArray reverse or swap_elements failed.");
+
+    // 5) Red-team regressions for Step 1.3:
+    //    - size_ == 1 indirect self-aliasing fill (UAF guard)
+    //    - heterogeneous record-by-ID binary_search (std::less<> without common_reference) & operator<-only sort
+    //    - swappable non-move-assignable reverse()
+    //    - symmetric heterogeneous common_prefix_length across Array<String> & Array<StringView> / int* & const int*
+    struct IndirectFillNode {
+        Array<IndirectFillNode> children{};
+
+        String label{};
+    };
+    Array<IndirectFillNode> single_root(1);
+    IndirectFillNode child_node;
+    child_node.label = String::literal<"long_heap_child_payload_0123456789_abcdef">();
+    single_root[0].children.add(std::move(child_node));
+    single_root.fill(single_root[0].children[0]);
+    require(single_root.size() == 1 && single_root[0].children.empty() &&
+                single_root[0].label == "long_heap_child_payload_0123456789_abcdef",
+            "size == 1 indirect self-aliasing Span::fill failed.");
+
+    struct SymbolEntry {
+        std::uint32_t id;
+
+        auto operator<=>(const SymbolEntry&) const noexcept = default;
+
+        auto operator<=>(std::uint32_t rhs) const noexcept { return id <=> rhs; }
+
+        bool operator==(std::uint32_t rhs) const noexcept { return id == rhs; }
+    };
+    const Array<SymbolEntry> symbols{SymbolEntry{10u}, SymbolEntry{20u}, SymbolEntry{30u}};
+    require(symbols.lower_bound(20u) == 1 && symbols.upper_bound(20u) == 2 && symbols.binary_search(20u) &&
+                !symbols.binary_search(25u),
+            "Heterogeneous binary_search without common_reference failed.");
+
+    struct LessOnlyKey {
+        int key;
+
+        bool operator<(const LessOnlyKey& other) const noexcept { return key < other.key; }
+    };
+    Array<LessOnlyKey> less_only{LessOnlyKey{3}, LessOnlyKey{1}, LessOnlyKey{2}};
+    less_only.sort();
+    require(less_only.is_sorted() && less_only.lower_bound(LessOnlyKey{2}) == 1 &&
+                less_only.binary_search(LessOnlyKey{3}),
+            "operator<-only sort / binary_search failed.");
+
+    SwappableOnlyProbe swappable_items[]{SwappableOnlyProbe{1}, SwappableOnlyProbe{2}, SwappableOnlyProbe{3}};
+    Span{swappable_items}.reverse();
+    require(swappable_items[0].v == 3 && swappable_items[2].v == 1,
+            "Swappable non-move-assignable Span::reverse failed.");
+
+    const Array<StringView> sv_prefix{StringView{"alpha_long_heap_payload_0123456789"},
+                                      StringView{"alpha_long_heap_payload_0123456789"}, StringView{"zeta"}};
+    int target_int = 7;
+    Array<int*> mut_ptrs{&target_int};
+    Array<const int*> const_ptrs{&target_int};
+    require(words.common_prefix_length(sv_prefix) == 2 && sv_prefix.common_prefix_length(words) == 2 &&
+                mut_ptrs.common_prefix_length(const_ptrs) == 1 && const_ptrs.common_prefix_length(mut_ptrs) == 1,
+            "Symmetric heterogeneous common_prefix_length failed.");
+}
+
 void verify_tasks();
 
 int main() {
@@ -1133,6 +1637,16 @@ int main() {
     require(foundation::sha256(as_bytes(StringView{"abc"})) ==
                 "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
             "Span sha256 bridge failed.");
+    {
+        String acc = "hello"_s;
+        acc += " · 世界"_s;
+        const auto wtext = platform::utf8_to_utf16(acc);
+        require(wtext.has_value(), "utf8_to_utf16 failed.");
+        const auto roundtrip_utf8 = platform::utf16_to_utf8(*wtext);
+        const auto sys_msg = platform::error_message(std::error_code(2, std::system_category()));
+        require(roundtrip_utf8 && *roundtrip_utf8 == "hello · 世界" && !sys_msg.empty(),
+                "Platform utf8<->utf16 or error_message String bridge failed.");
+    }
     queued_resources();
     borrowed_name_catalog();
     resource_catalog_growth();
@@ -1141,6 +1655,9 @@ int main() {
     verify_span_simd_and_borrows();
     verify_array_family_enhancements();
     verify_bit_vector_and_optional();
+    verify_string_view_simd_and_search_set();
+    verify_string_enhancements_and_formatting();
+    verify_span_and_array_practical_algorithms();
     verify_tasks();
     std::puts("Foundation acceptance: PASS (owning aliases, queued resources and failed join cleanup)");
 }

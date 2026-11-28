@@ -35,20 +35,21 @@ void emergency() noexcept {
     OutputDebugStringA(message);
 }
 
-void copy_detail(std::string& destination, std::string_view input) noexcept {
+void copy_detail(String& destination, StringView input) noexcept {
     if (valid_utf8(input)) {
-        destination.assign(StringView{input}.utf8_prefix(2048).std_view());
+        destination.assign_validated(input.utf8_prefix(2048));
         return;
     }
     // Preserve unclassified bytes in a reversible representation instead of
     // guessing a cause, replacing bytes, or making health.json invalid UTF-8.
-    destination.assign("raw-bytes-hex:");
+    destination.assign_validated("raw-bytes-hex:");
     constexpr char digits[] = "0123456789abcdef";
-    for (const unsigned char byte : input) {
+    for (const char raw_ch : input) {
+        const auto byte = static_cast<unsigned char>(raw_ch);
         if (destination.size() + 2 > 2048)
             break;
-        destination.push_back(digits[byte >> 4]);
-        destination.push_back(digits[byte & 15]);
+        destination.append_ascii(digits[byte >> 4]);
+        destination.append_ascii(digits[byte & 15]);
     }
 }
 
@@ -77,7 +78,7 @@ struct State {
 
     FacilityIssue first_issue;
 
-    std::string first_notice;
+    String first_notice;
 
     CapturedDiagnostic first_error;
 
@@ -111,12 +112,12 @@ struct State {
         entry.fields.resize(maximum_fields);
         for (auto& field : entry.fields) {
             field.key.reserve(48);
-            field.value = std::string{};
-            std::get<std::string>(field.value).reserve(4096);
+            field.value = String{};
+            std::get<String>(field.value).reserve(4096);
         }
     }
 
-    void fault(FacilityFault kind, std::string_view message, Optional<std::uint32_t> code = {}) noexcept {
+    void fault(FacilityFault kind, StringView message, Optional<std::uint32_t> code = {}) noexcept {
         failures.fetch_add(1, std::memory_order_relaxed);
         std::lock_guard lock{first_mutex};
         if (!has_issue) {
@@ -128,7 +129,7 @@ struct State {
         }
     }
 
-    void notice(std::string_view message) noexcept {
+    void notice(StringView message) noexcept {
         notifications.fetch_add(1, std::memory_order_relaxed);
         std::lock_guard lock{first_mutex};
         if (!has_notice) {
@@ -145,9 +146,9 @@ struct State {
             return;
         auto& target = first_error.entry;
         std::size_t remaining = maximum_diagnostic_snapshot_bytes - 128;
-        auto copy = [&](std::string& destination, std::string_view input) {
-            const auto part = StringView{input}.utf8_prefix(remaining).std_view();
-            destination.assign(part);
+        auto copy = [&](String& destination, StringView input) {
+            const auto part = input.utf8_prefix(remaining);
+            destination.assign_validated(part);
             remaining -= part.size();
             first_error.truncated |= part.size() != input.size();
         };
@@ -184,12 +185,12 @@ struct State {
             auto& destination = target.fields[count++];
             remaining -= 32;
             copy(destination.key, field.key);
-            if (const auto* string = std::get_if<std::string>(&field.value))
-                copy(std::get<std::string>(destination.value), *string);
+            if (const auto* string = std::get_if<String>(&field.value))
+                copy(std::get<String>(destination.value), *string);
             else
                 std::visit(
                     [&](const auto& item) {
-                        if constexpr (!std::is_same_v<std::decay_t<decltype(item)>, std::string>)
+                        if constexpr (!std::is_same_v<std::decay_t<decltype(item)>, String>)
                             destination.value = item;
                     },
                     field.value);
@@ -300,8 +301,10 @@ void retire_logger(State& state) noexcept {
 class JsonSink final : public quill::Sink {
 public:
     explicit JsonSink(std::shared_ptr<State> state) : state_(std::move(state)) {
-        for (std::size_t i = 0; i <= retained_rotated_files; ++i)
-            paths_[i] = state_->info.directory / (i == 0 ? "events.jsonl" : "events." + std::to_string(i) + ".jsonl");
+        for (std::size_t i = 0; i <= retained_rotated_files; ++i) {
+            const auto name = i == 0 ? "events.jsonl"_s : String::concat("events."_s, i, ".jsonl"_s);
+            paths_[i] = state_->info.directory / platform::utf8_to_utf16_validated(name);
+        }
     }
 
     Result<void> open() {
@@ -354,11 +357,12 @@ protected:
                    const std::string&, std::string_view, quill::LogLevel, std::string_view, std::string_view,
                    const std::vector<std::pair<std::string, std::string>>*, std::string_view message,
                    std::string_view) override {
-        if (!valid_utf8(message)) {
+        const StringView msg_view{message.data(), message.size()};
+        if (!valid_utf8(msg_view)) {
             state_->fault(FacilityFault::invalid_utf8, "Rendered message is not UTF-8");
             return;
         }
-        if (message.size() > maximum_message_bytes) {
+        if (msg_view.size() > maximum_message_bytes) {
             state_->fault(FacilityFault::output_too_large, "Rendered message exceeds 128 KiB");
             return;
         }
@@ -368,9 +372,9 @@ protected:
             return;
         }
         json::Builder builder{*document};
-        builder.set_validated(builder.root(), "message", message);
+        builder.set_validated(builder.root(), "message", msg_view);
         [[maybe_unused]] const auto sequence =
-            builder.set(builder.root(), "record_sequence", std::to_string(state_->sequence.fetch_add(1) + 1));
+            builder.set(builder.root(), "record_sequence", String::from_number(state_->sequence.fetch_add(1) + 1));
         assert(sequence); // Generated decimal ASCII cannot fail UTF-8 validation.
         auto line = json::write(builder.root(), {.trailing_lf = true});
         if (line.size() > maximum_json_line_bytes) {
@@ -438,18 +442,17 @@ private:
     std::chrono::steady_clock::time_point last_publication_{std::chrono::steady_clock::now()};
 };
 
-Result<std::string> make_run_id() {
+Result<String> make_run_id() {
     std::array<unsigned char, 16> random{};
     if (BCryptGenRandom(nullptr, random.data(), static_cast<ULONG>(random.size()), BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0)
-        return std::unexpected(Error{ErrorCode::invalid_options, "Cannot generate run identity"});
-    std::string result;
-    result.reserve(32);
+        return std::unexpected(Error{ErrorCode::invalid_options, "Cannot generate run identity"_s});
+    char hex[32];
     constexpr char digits[] = "0123456789abcdef";
-    for (auto byte : random) {
-        result.push_back(digits[byte >> 4]);
-        result.push_back(digits[byte & 15]);
+    for (std::size_t i = 0; i < random.size(); ++i) {
+        hex[i * 2] = digits[random[i] >> 4];
+        hex[i * 2 + 1] = digits[random[i] & 15];
     }
-    return result;
+    return String::from_utf8_validated({hex, sizeof(hex)});
 }
 
 Result<std::filesystem::path> default_root() {
@@ -463,7 +466,7 @@ Result<std::filesystem::path> default_root() {
     value.resize(copied);
     auto result = std::filesystem::path{value} / L"FrostFoxAtelier" / L"Logs";
     if (!result.is_absolute())
-        return std::unexpected(Error{ErrorCode::invalid_options, "LOCALAPPDATA must be absolute"});
+        return std::unexpected(Error{ErrorCode::invalid_options, "LOCALAPPDATA must be absolute"_s});
     return result;
 }
 
@@ -491,13 +494,13 @@ void retain_runs(State& state, const std::filesystem::path& root) noexcept {
         const auto manifest = read_small(item.path() / L"run.json");
         if (!manifest)
             continue; // Unknown/incomplete directories are never candidates.
-        const auto info = read_run(*manifest);
+        const auto info = read_run({manifest->data(), manifest->size()});
         if (!info || info->directory != item.path())
             continue;
         const auto summary = read_small(item.path() / L"health.json", 256 * 1024);
         if (!summary)
             continue;
-        const auto health = read_health(*summary, *info);
+        const auto health = read_health({summary->data(), summary->size()}, *info);
         if (health && health->final)
             completed.add({item.path(), info->started_unix_ns});
     }
@@ -569,7 +572,7 @@ Run* current_run() noexcept {
     return active_run.load(std::memory_order_acquire);
 }
 
-bool enabled(Severity severity, std::string_view category) noexcept {
+bool enabled(Severity severity, StringView category) noexcept {
     const auto* state = active_state.load(std::memory_order_acquire);
     if (!state || severity >= Severity::off || state->lifecycle.load() != RunState::running)
         return false;
@@ -583,9 +586,13 @@ bool enabled(Severity severity, std::string_view category) noexcept {
 }
 
 Result<SourceLocation> native_source(std::source_location location) noexcept {
+    auto file_str = String::from_utf8(location.file_name());
+    auto func_str = String::from_utf8(location.function_name());
+    if (!file_str || !func_str)
+        return std::unexpected(Error{ErrorCode::invalid_options, "Invalid UTF-8 source path"_s, {}});
     SourceLocation result;
-    result.file = location.file_name();
-    result.function = location.function_name();
+    result.file = std::move(*file_str);
+    result.function = std::move(*func_str);
     result.line = location.line();
     // Clang's source_location column is not promised to be a UTF-8 byte column.
     result.column = 0;
@@ -593,20 +600,24 @@ Result<SourceLocation> native_source(std::source_location location) noexcept {
         auto path = platform::utf8_to_utf16(result.file);
         if (!path)
             return std::unexpected(
-                Error{ErrorCode::invalid_options, "Invalid UTF-8 source path", path.error().system_code});
-        if (!std::filesystem::path{*path}.is_absolute())
-            result.root = ATELIER_LOGGING_SOURCE_ROOT;
+                Error{ErrorCode::invalid_options, "Invalid UTF-8 source path"_s, path.error().system_code});
+        if (!std::filesystem::path{*path}.is_absolute()) {
+            auto root_str = String::from_utf8(ATELIER_LOGGING_SOURCE_ROOT);
+            if (!root_str)
+                return std::unexpected(Error{ErrorCode::invalid_options, "Invalid UTF-8 source root"_s, {}});
+            result.root = std::move(*root_str);
+        }
     }
     return result;
 }
 
 Result<std::unique_ptr<Run>> start_run(RunOptions options) noexcept {
     if (started_once || current_run())
-        return std::unexpected(Error{ErrorCode::already_started, "A logging run has already started", {}});
+        return std::unexpected(Error{ErrorCode::already_started, "A logging run has already started"_s, {}});
     std::unique_ptr<Run> run;
     bool created{};
     if (options.directory.native().find(L'\0') != std::wstring::npos)
-        return std::unexpected(Error{ErrorCode::invalid_options, "Invalid UTF-8 path", {}});
+        return std::unexpected(Error{ErrorCode::invalid_options, "Invalid UTF-8 path"_s, {}});
     ScopeExit rollback{[&]() noexcept {
         if (run) {
             retire_logger(*run->impl_->state);
@@ -623,23 +634,24 @@ Result<std::unique_ptr<Run>> start_run(RunOptions options) noexcept {
         emergency();
     }};
     Entry probe;
-    probe.category = "logging";
-    probe.event_code = "logging.options";
+    probe.category = "logging"_s;
+    probe.event_code = "logging.options"_s;
     if (options.minimum > Severity::off || options.categories.size() > 64)
-        return std::unexpected(Error{ErrorCode::invalid_options, "Invalid thresholds"});
+        return std::unexpected(Error{ErrorCode::invalid_options, "Invalid thresholds"_s});
     for (std::size_t i = 0; i < options.categories.size(); ++i) {
         const auto& rule = options.categories[i];
         probe.category = rule.category;
         if (const auto problem = entry_problem(probe); !problem.empty())
-            return std::unexpected(Error{ErrorCode::invalid_options, std::string{problem}});
+            return std::unexpected(
+                Error{ErrorCode::invalid_options, String::from_utf8_validated(problem)});
         if (rule.minimum > Severity::off)
-            return std::unexpected(Error{ErrorCode::invalid_options, "Invalid category threshold"});
+            return std::unexpected(Error{ErrorCode::invalid_options, "Invalid category threshold"_s});
         for (std::size_t j = 0; j < i; ++j)
             if (options.categories[j].category == rule.category)
-                return std::unexpected(Error{ErrorCode::invalid_options, "Duplicate category threshold"});
+                return std::unexpected(Error{ErrorCode::invalid_options, "Duplicate category threshold"_s});
     }
     if (!options.directory.empty() && !options.directory.is_absolute())
-        return std::unexpected(Error{ErrorCode::invalid_options, "Run directory must be absolute"});
+        return std::unexpected(Error{ErrorCode::invalid_options, "Run directory must be absolute"_s});
     run.reset(new Run);
     auto& state = *run->impl_->state;
     state.options = std::move(options);
@@ -653,7 +665,7 @@ Result<std::unique_ptr<Run>> start_run(RunOptions options) noexcept {
             root.error().code = ErrorCode::invalid_options;
             return std::unexpected(std::move(root.error()));
         }
-        state.info.directory = *root / state.info.run_id;
+        state.info.directory = *root / platform::utf8_to_utf16_validated(state.info.run_id);
     } else
         state.info.directory = state.options.directory.lexically_normal();
     auto manifest = run_json(state.info);
@@ -682,9 +694,9 @@ Result<std::unique_ptr<Run>> start_run(RunOptions options) noexcept {
         retain_runs(state, state.info.directory.parent_path());
     run->impl_->sink = std::make_shared<JsonSink>(run->impl_->state);
     ATELIER_TRY(run->impl_->sink->open());
-    state.logger =
-        Frontend::create_or_get_logger("atelier-" + state.info.run_id, run->impl_->sink,
-                                       quill::PatternFormatterOptions{"%(message)"}, quill::ClockSourceType::System);
+    state.logger = Frontend::create_or_get_logger(std::string{"atelier-"} + state.info.run_id.c_str(), run->impl_->sink,
+                                                  quill::PatternFormatterOptions{"%(message)"},
+                                                  quill::ClockSourceType::System);
     state.logger->set_log_level(quill::LogLevel::TraceL3);
     // Reserve the owner/control producer before other threads can submit.
     static_cast<void>(admit(state));
@@ -700,7 +712,7 @@ Result<std::unique_ptr<Run>> start_run(RunOptions options) noexcept {
     backend.check_backend_singleton_instance = false;
     backend.check_printable_char = {};
     backend.error_notifier = [state = run->impl_->state](const std::string& message) noexcept {
-        state->notice(message);
+        state->notice(StringView{message.data(), message.size()});
     };
     quill::Backend::start(backend);
     if (!quill::Backend::is_running())
@@ -764,7 +776,7 @@ SubmitResult submit(Entry entry) noexcept {
         return {SubmitStatus::no_active_run};
     if (entry.severity < Severity::off && !enabled(entry.severity, entry.category))
         return {SubmitStatus::filtered};
-    return detail::enqueue(entry, false, "{}", std::string_view{entry.message});
+    return detail::enqueue(entry, false, "{}", entry.message.view().std_view());
 }
 
 namespace detail {
@@ -821,9 +833,8 @@ void prepare(Ticket& ticket, const Entry& entry, bool is_template) {
     // Do not copy the message into the envelope; Quill owns its encoded argument.
     auto envelope = record_envelope(record, entry);
     assert(envelope); // Entry was validated before admission and capture.
-    const auto bytes = json::write(envelope->root());
-    // Quill's tag storage is an owning std::string, not a validated String.
-    ticket.envelope.assign(bytes.data(), bytes.size());
+    ticket.envelope = json::write(envelope->root());
+    ticket.envelope.add('\0');
     ticket.logger = state->logger;
 }
 }

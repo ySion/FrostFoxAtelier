@@ -36,16 +36,38 @@ void release(void*, void* pointer) {
 
 const yyjson_alc allocator{allocate, reallocate, release, nullptr};
 
-std::string child_path(std::string_view parent, std::string_view key) {
-    std::string result{parent};
-    result += '/';
-    for (char c : key) {
-        if (c == '~')
-            result += "~0";
-        else if (c == '/')
-            result += "~1";
-        else
-            result += c;
+String child_path(StringView parent, StringView key) {
+    String result;
+    result.reserve(parent.size() + 1 + key.size());
+    if (parent.is_valid_utf8())
+        result.append_validated(parent);
+    result.append_ascii('/');
+    if (key.is_valid_utf8()) {
+        std::size_t plain = 0;
+        for (std::size_t i = 0; i < key.size(); ++i) {
+            if (key[i] == '~' || key[i] == '/') {
+                if (i > plain)
+                    result.append_validated(key.slice(plain, i - plain));
+                result.append_validated(key[i] == '~' ? "~0" : "~1");
+                plain = i + 1;
+            }
+        }
+        if (plain < key.size())
+            result.append_validated(key.slice(plain));
+    } else {
+        for (std::size_t i = 0; i < key.size(); ++i) {
+            const auto b = static_cast<unsigned char>(key[i]);
+            if (b == '~')
+                result.append_literal<"~0">();
+            else if (b == '/')
+                result.append_literal<"~1">();
+            else if (b >= 0x20 && b < 0x7f)
+                result.append_ascii(key[i]);
+            else {
+                result.append_ascii('%');
+                result.append_hex(b, 2, true);
+            }
+        }
     }
     return result;
 }
@@ -68,13 +90,13 @@ struct Access {
             yyjson_mut_val* key;
             yyjson_mut_val* child;
             yyjson_mut_obj_foreach(mutable_node(value), index, count, key, child)
-                visit(std::string_view{yyjson_mut_get_str(key), yyjson_mut_get_len(key)},
+                visit(StringView{yyjson_mut_get_str(key), yyjson_mut_get_len(key)},
                       Value{child, value.storage_, value.root_});
         } else {
             yyjson_val* key;
             yyjson_val* child;
-            yyjson_obj_foreach(scalar(value), index, count, key, child) visit(
-                std::string_view{yyjson_get_str(key), yyjson_get_len(key)}, Value{child, value.storage_, value.root_});
+            yyjson_obj_foreach(scalar(value), index, count, key, child)
+                visit(StringView{yyjson_get_str(key), yyjson_get_len(key)}, Value{child, value.storage_, value.root_});
         }
     }
 
@@ -93,7 +115,7 @@ struct Access {
         }
     }
 
-    static bool locate(Value current, const void* target, std::string& path) {
+    static bool locate(Value current, const void* target, String& path) {
         if (current.node_ == target)
             return true;
         struct Node {
@@ -101,12 +123,12 @@ struct Access {
 
             std::size_t parent;
 
-            std::string_view key;
+            StringView key;
 
             std::size_t index;
         };
         Array<Node> nodes;
-        nodes.emplace(current, 0, std::string_view{}, 0);
+        nodes.emplace(current, 0, StringView{}, 0);
         for (std::size_t i = 0; i < nodes.size(); ++i) {
             const auto value = nodes[i].value;
             if (value.node_ == target) {
@@ -115,9 +137,12 @@ struct Access {
                     ancestors.emplace(at);
                 while (!ancestors.empty()) {
                     const auto& node = nodes[ancestors.back()];
-                    path += child_path({}, nodes[node.parent].value.kind() == Kind::object
-                                               ? node.key
-                                               : std::string_view{std::to_string(node.index)});
+                    if (nodes[node.parent].value.kind() == Kind::object) {
+                        path = child_path(path, node.key);
+                    } else {
+                        path.append_ascii('/');
+                        path.append_number(node.index);
+                    }
                     ancestors.pop();
                 }
                 return true;
@@ -125,36 +150,47 @@ struct Access {
             if (value.kind() == Kind::object)
                 object(value, [&](auto key, Value child) { nodes.emplace(child, i, key, 0); });
             else if (value.kind() == Kind::array)
-                array(value, [&](auto index, Value child) { nodes.emplace(child, i, std::string_view{}, index); });
+                array(value, [&](auto index, Value child) { nodes.emplace(child, i, StringView{}, index); });
         }
         return false;
     }
 
-    static std::string location(Value value) {
-        std::string path;
+    static String location(Value value) {
+        String path;
         [[maybe_unused]] const bool found = locate({value.root_, value.storage_}, value.node_, path);
         assert(found); // Detached/replaced nodes are invalid borrows.
         return path;
     }
 };
 
-Error Value::error(Fault fault, std::string_view message) const {
-    return {fault, std::string{message}, Access::location(*this), {}};
+Error Value::error(Fault fault, StringView message) const {
+    return {fault, String::from_utf8(message).value_or("JSON error"_s), Access::location(*this), {}};
 }
 
-std::string Error::describe() const {
+String Error::describe() const {
     auto result = message;
-    if (!path.empty())
-        result += " at " + path;
-    if (offset)
-        result += " at byte " + std::to_string(*offset);
+    if (!path.empty()) {
+        result.append_literal<" at ">();
+        result.append(path);
+    }
+    if (offset) {
+        result.append_literal<" at byte ">();
+        result.append_number(*offset);
+    }
     return result;
 }
 
 namespace {
-Error member_error(Value parent, std::string_view key, Fault fault, std::string_view message) {
+Error member_error(Value parent, StringView key, Fault fault, StringView message) {
     auto result = parent.error(fault, message);
     result.path = child_path(result.path, key);
+    return result;
+}
+
+Error index_error(Value parent, std::size_t index, Fault fault, StringView message) {
+    auto result = parent.error(fault, message);
+    result.path.append_ascii('/');
+    result.path.append_number(index);
     return result;
 }
 }
@@ -188,14 +224,14 @@ Result<Value> Value::at(std::size_t index) const {
     if (kind() != Kind::array)
         return std::unexpected(error(Fault::type, "Expected array"));
     if (index >= size())
-        return std::unexpected(member_error(*this, std::to_string(index), Fault::range, "Array index out of range"));
+        return std::unexpected(index_error(*this, index, Fault::range, "Array index out of range"));
     const void* child = Access::mutable_layout(*this)
                             ? static_cast<void*>(yyjson_mut_arr_get(Access::mutable_node(*this), index))
                             : static_cast<void*>(yyjson_arr_get(Access::scalar(*this), index));
     return Value{child, storage_, root_};
 }
 
-Result<Optional<Value>> Value::find(std::string_view key) const {
+Result<Optional<Value>> Value::find(StringView key) const {
     if (!yyjson_is_obj(Access::scalar(*this)))
         return std::unexpected(error(Fault::type, "Expected object"));
     const auto* name = key.empty() ? "" : key.data();
@@ -207,14 +243,14 @@ Result<Optional<Value>> Value::find(std::string_view key) const {
     return Value{child, storage_, root_};
 }
 
-Result<Value> Value::at(std::string_view key) const {
+Result<Value> Value::at(StringView key) const {
     ATELIER_TRY_BIND(child, find(key));
     if (!*child)
         return std::unexpected(member_error(*this, key, Fault::missing, "Missing member"));
     return **child;
 }
 
-Result<Value> Value::path(std::initializer_list<std::string_view> keys) const {
+Result<Value> Value::path(std::initializer_list<StringView> keys) const {
     auto result = *this;
     for (auto key : keys) {
         ATELIER_TRY_BIND(next, result.at(key));
@@ -223,7 +259,7 @@ Result<Value> Value::path(std::initializer_list<std::string_view> keys) const {
     return result;
 }
 
-Result<void> Value::members(std::initializer_list<std::string_view> keys) const {
+Result<void> Value::members(std::initializer_list<StringView> keys) const {
     if (!yyjson_is_obj(Access::scalar(*this)) || size() != keys.size())
         return std::unexpected(error(Fault::members, "Unexpected object members"));
     for (auto key : keys)
@@ -231,7 +267,7 @@ Result<void> Value::members(std::initializer_list<std::string_view> keys) const 
     return {};
 }
 
-Result<void> Value::allowed_members(std::initializer_list<std::string_view> keys) const {
+Result<void> Value::allowed_members(std::initializer_list<StringView> keys) const {
     if (kind() != Kind::object)
         return std::unexpected(error(Fault::type, "Expected object"));
     Optional<Error> failure;
@@ -244,7 +280,7 @@ Result<void> Value::allowed_members(std::initializer_list<std::string_view> keys
     return {};
 }
 
-Result<std::string_view> Value::string(std::initializer_list<std::string_view> keys) const {
+Result<StringView> Value::string(std::initializer_list<StringView> keys) const {
     if (keys.size()) {
         ATELIER_TRY_BIND(node, path(keys));
         return node->string();
@@ -252,10 +288,10 @@ Result<std::string_view> Value::string(std::initializer_list<std::string_view> k
     auto* value = Access::scalar(*this);
     if (!yyjson_is_str(value))
         return std::unexpected(error(Fault::type, "Expected string"));
-    return std::string_view{yyjson_get_str(value), yyjson_get_len(value)};
+    return StringView{yyjson_get_str(value), yyjson_get_len(value)};
 }
 
-Result<bool> Value::boolean(std::initializer_list<std::string_view> keys) const {
+Result<bool> Value::boolean(std::initializer_list<StringView> keys) const {
     if (keys.size()) {
         ATELIER_TRY_BIND(node, path(keys));
         return node->boolean();
@@ -265,7 +301,7 @@ Result<bool> Value::boolean(std::initializer_list<std::string_view> keys) const 
     return yyjson_get_bool(Access::scalar(*this));
 }
 
-Result<std::uint32_t> Value::u32(std::initializer_list<std::string_view> keys) const {
+Result<std::uint32_t> Value::u32(std::initializer_list<StringView> keys) const {
     if (keys.size()) {
         ATELIER_TRY_BIND(node, path(keys));
         return node->u32();
@@ -279,7 +315,7 @@ Result<std::uint32_t> Value::u32(std::initializer_list<std::string_view> keys) c
     return static_cast<std::uint32_t>(yyjson_get_uint(value));
 }
 
-Result<double> Value::number(std::initializer_list<std::string_view> keys) const {
+Result<double> Value::number(std::initializer_list<StringView> keys) const {
     if (keys.size()) {
         ATELIER_TRY_BIND(node, path(keys));
         return node->number();
@@ -290,7 +326,7 @@ Result<double> Value::number(std::initializer_list<std::string_view> keys) const
     return yyjson_get_num(value);
 }
 
-Result<std::uint64_t> Value::u64(std::initializer_list<std::string_view> keys) const {
+Result<std::uint64_t> Value::u64(std::initializer_list<StringView> keys) const {
     if (keys.size()) {
         ATELIER_TRY_BIND(node, path(keys));
         return node->u64();
@@ -303,7 +339,7 @@ Result<std::uint64_t> Value::u64(std::initializer_list<std::string_view> keys) c
     return yyjson_get_uint(value);
 }
 
-Result<std::int64_t> Value::i64(std::initializer_list<std::string_view> keys) const {
+Result<std::int64_t> Value::i64(std::initializer_list<StringView> keys) const {
     if (keys.size()) {
         ATELIER_TRY_BIND(node, path(keys));
         return node->i64();
@@ -316,7 +352,7 @@ Result<std::int64_t> Value::i64(std::initializer_list<std::string_view> keys) co
     return yyjson_get_sint(value);
 }
 
-Result<float> Value::f32(std::initializer_list<std::string_view> keys) const {
+Result<float> Value::f32(std::initializer_list<StringView> keys) const {
     if (keys.size()) {
         ATELIER_TRY_BIND(node, path(keys));
         return node->f32();
@@ -356,10 +392,10 @@ ArrayView::Iterator& ArrayView::Iterator::operator++() {
     return *this;
 }
 
-Result<Array<std::pair<std::string_view, Value>>> Value::object_items() const {
+Result<Array<std::pair<StringView, Value>>> Value::object_items() const {
     if (!yyjson_is_obj(Access::scalar(*this)))
         return std::unexpected(error(Fault::type, "Expected object"));
-    Array<std::pair<std::string_view, Value>> result;
+    Array<std::pair<StringView, Value>> result;
     result.reserve(size());
     Access::object(*this, [&](auto key, Value child) { result.emplace(key, child); });
     if (result.size() > 1)
@@ -444,7 +480,7 @@ Value Document::root() const& {
 }
 
 namespace {
-Result<yyjson_doc*> read_document(std::string_view bytes, bool allow_bom) {
+Result<yyjson_doc*> read_document(StringView bytes, bool allow_bom) {
     yyjson_read_err error{};
     auto* doc = yyjson_read_opts(const_cast<char*>(bytes.data()), bytes.size(), allow_bom ? YYJSON_READ_ALLOW_BOM : 0,
                                  &allocator, &error);
@@ -453,7 +489,8 @@ Result<yyjson_doc*> read_document(std::string_view bytes, bool allow_bom) {
                                    static_cast<unsigned char>(bytes[error.pos]) >= 0x80
                                ? Fault::encoding
                                : Fault::syntax;
-        Error result{fault, error.msg, {}, error.pos};
+        Error result{fault, error.msg ? String::from_utf8(error.msg).value_or("JSON parse error"_s) : "JSON parse error"_s,
+                     {}, error.pos};
         yyjson_locate_pos(bytes.data(), bytes.size(), error.pos, &result.line, &result.column, nullptr);
         return std::unexpected(std::move(result));
     }
@@ -464,24 +501,24 @@ Result<void> validate(Value value, std::size_t depth, ParseOptions options) {
     struct Frame {
         Value value;
 
-        Array<std::pair<std::string_view, Value>> children;
+        Array<std::pair<StringView, Value>> children;
 
         std::size_t next{};
 
-        Set<std::string_view> keys;
+        Set<StringView> keys;
 
         explicit Frame(Value node) : value(node) {
             if (node.kind() == Kind::object) {
                 Access::object(node, [&](auto key, Value child) { children.emplace(key, child); });
                 keys.reserve(children.size());
             } else if (node.kind() == Kind::array) {
-                Access::array(node, [&](auto, Value child) { children.emplace(std::string_view{}, child); });
+                Access::array(node, [&](auto, Value child) { children.emplace(StringView{}, child); });
             }
         }
     };
     const bool events = options.depth_policy == DepthPolicy::events;
     if (events && depth > options.maximum_depth)
-        return std::unexpected(Error{Fault::depth, "JSON event depth exceeded", {}, {}});
+        return std::unexpected(Error{Fault::depth, "JSON event depth exceeded"_s, {}, {}});
     Array<Frame> stack;
     stack.emplace(value);
     while (!stack.empty()) {
@@ -506,7 +543,7 @@ Result<void> validate(Value value, std::size_t depth, ParseOptions options) {
 }
 }
 
-Result<Document> Document::parse(std::string_view bytes, ParseOptions options) {
+Result<Document> Document::parse(StringView bytes, ParseOptions options) {
     // Before allocating the DOM, bound container nesting. Syntax, Unicode and
     // actual event depths remain the parser/validator's responsibility.
     std::size_t depth = 0;
@@ -526,7 +563,7 @@ Result<Document> Document::parse(std::string_view bytes, ParseOptions options) {
         else if (c == '[' || c == '{') {
             if (options.depth_policy == DepthPolicy::events ? depth > options.maximum_depth
                                                             : depth >= options.maximum_depth)
-                return std::unexpected(Error{Fault::depth, "JSON nesting exceeded", {}, i});
+                return std::unexpected(Error{Fault::depth, "JSON nesting exceeded"_s, {}, i});
             ++depth;
         } else if ((c == ']' || c == '}') && depth)
             --depth;
@@ -537,14 +574,14 @@ Result<Document> Document::parse(std::string_view bytes, ParseOptions options) {
     return result;
 }
 
-Result<Document> Document::parse_gltf(std::string_view bytes) {
+Result<Document> Document::parse_gltf(StringView bytes) {
     ATELIER_TRY_BIND(parsed, read_document(bytes, true));
     auto* doc = yyjson_doc_mut_copy(*parsed, &allocator);
     yyjson_doc_free(*parsed);
     Document result{doc, Value::Storage::readonly_mutable};
     Array<yyjson_mut_val*> pending;
     pending.emplace(yyjson_mut_doc_get_root(doc));
-    Map<std::string_view, yyjson_mut_val*> last;
+    Map<StringView, yyjson_mut_val*> last;
     while (!pending.empty()) {
         auto* node = pending.back();
         pending.pop();
@@ -558,10 +595,10 @@ Result<Document> Document::parse_gltf(std::string_view bytes) {
                 last.reserve(count);
                 auto scan = yyjson_mut_obj_iter_with(node);
                 while (auto* key = yyjson_mut_obj_iter_next(&scan))
-                    last.insert_or_assign(std::string_view{yyjson_mut_get_str(key), yyjson_mut_get_len(key)}, key);
+                    last.insert_or_assign(StringView{yyjson_mut_get_str(key), yyjson_mut_get_len(key)}, key);
                 auto iter = yyjson_mut_obj_iter_with(node);
                 while (auto* key = yyjson_mut_obj_iter_next(&iter)) {
-                    if (last.at(std::string_view{yyjson_mut_get_str(key), yyjson_mut_get_len(key)}) != key)
+                    if (last.at(StringView{yyjson_mut_get_str(key), yyjson_mut_get_len(key)}) != key)
                         yyjson_mut_obj_iter_remove(&iter);
                     else
                         pending.emplace(yyjson_mut_obj_iter_get_val(key));
@@ -620,14 +657,14 @@ void Builder::require_writable(Value target) const {
         fatal("JSON write requires a node owned by this Builder");
 }
 
-Result<void> Builder::put(Value parent, std::string_view key, void* value) {
-    if (!StringView{key}.is_valid_utf8())
+Result<void> Builder::put(Value parent, StringView key, void* value) {
+    if (!key.is_valid_utf8())
         return std::unexpected(member_error(parent, key, Fault::encoding, "Invalid UTF-8 key"));
     put_validated(parent, key, value);
     return {};
 }
 
-void Builder::put_validated(Value parent, std::string_view key, void* value) {
+void Builder::put_validated(Value parent, StringView key, void* value) {
     require_writable(parent);
     assert(yyjson_is_obj(Access::scalar(parent)));
     auto* doc = static_cast<yyjson_mut_doc*>(doc_);
@@ -635,19 +672,19 @@ void Builder::put_validated(Value parent, std::string_view key, void* value) {
     yyjson_mut_obj_put(Access::mutable_node(parent), name, static_cast<yyjson_mut_val*>(value));
 }
 
-Result<Value> Builder::object(Value parent, std::string_view key) {
-    if (!StringView{key}.is_valid_utf8())
+Result<Value> Builder::object(Value parent, StringView key) {
+    if (!key.is_valid_utf8())
         return std::unexpected(member_error(parent, key, Fault::encoding, "Invalid UTF-8 key"));
     return object_validated(parent, key);
 }
 
-Value Builder::object_validated(Value parent, std::string_view key) {
+Value Builder::object_validated(Value parent, StringView key) {
     auto* child = yyjson_mut_obj(static_cast<yyjson_mut_doc*>(doc_));
     put_validated(parent, key, child);
     return Value{child, Value::Storage::writable, parent.root_};
 }
 
-Value Builder::object_path_validated(Value parent, Span<const std::string> keys) {
+Value Builder::object_path_validated(Value parent, Span<const String> keys) {
     require_writable(parent);
     for (const auto& key : keys) {
         if (parent.kind() != Kind::object)
@@ -660,37 +697,41 @@ Value Builder::object_path_validated(Value parent, Span<const std::string> keys)
     return parent;
 }
 
-Result<void> Builder::set(Value parent, std::string_view key, std::string_view text) {
-    if (!StringView{text}.is_valid_utf8())
+Result<void> Builder::set(Value parent, StringView key, StringView text) {
+    if (!text.is_valid_utf8())
         return std::unexpected(member_error(parent, key, Fault::encoding, "Invalid UTF-8 string"));
     return put(parent, key,
                yyjson_mut_strncpy(static_cast<yyjson_mut_doc*>(doc_), text.empty() ? "" : text.data(), text.size()));
 }
 
-void Builder::set_validated(Value parent, std::string_view key, std::string_view text) {
+Result<void> Builder::set(Value parent, StringView key, const String& text) {
+    return put(parent, key, yyjson_mut_strncpy(static_cast<yyjson_mut_doc*>(doc_), text.c_str(), text.size()));
+}
+
+void Builder::set_validated(Value parent, StringView key, StringView text) {
     put_validated(parent, key,
                   yyjson_mut_strncpy(static_cast<yyjson_mut_doc*>(doc_), text.empty() ? "" : text.data(), text.size()));
 }
 
-Result<void> Builder::set(Value parent, std::string_view key, bool value) {
+Result<void> Builder::set_bool(Value parent, StringView key, bool value) {
     return put(parent, key, yyjson_mut_bool(static_cast<yyjson_mut_doc*>(doc_), value));
 }
 
-Result<void> Builder::set(Value parent, std::string_view key, std::uint32_t value) {
+Result<void> Builder::set(Value parent, StringView key, std::uint32_t value) {
     return put(parent, key, yyjson_mut_uint(static_cast<yyjson_mut_doc*>(doc_), value));
 }
 
-Result<void> Builder::set(Value parent, std::string_view key, double value) {
+Result<void> Builder::set(Value parent, StringView key, double value) {
     if (!std::isfinite(value))
         return std::unexpected(member_error(parent, key, Fault::range, "Nonfinite JSON number"));
     return put(parent, key, yyjson_mut_real(static_cast<yyjson_mut_doc*>(doc_), value));
 }
 
-Result<void> Builder::set_null(Value parent, std::string_view key) {
+Result<void> Builder::set_null(Value parent, StringView key) {
     return put(parent, key, yyjson_mut_null(static_cast<yyjson_mut_doc*>(doc_)));
 }
 
-Result<Value> Builder::array(Value parent, std::string_view key) {
+Result<Value> Builder::array(Value parent, StringView key) {
     auto* child = yyjson_mut_arr(static_cast<yyjson_mut_doc*>(doc_));
     ATELIER_TRY(put(parent, key, child));
     return Value{child, Value::Storage::writable, parent.root_};
@@ -712,11 +753,11 @@ Value Builder::append_array(Value parent) {
     return push(parent, yyjson_mut_arr(static_cast<yyjson_mut_doc*>(doc_)));
 }
 
-Result<void> Builder::set(Value parent, std::string_view key, Value source) {
+Result<void> Builder::set(Value parent, StringView key, Value source) {
     return put(parent, key, copy(source));
 }
 
-void Builder::set_validated(Value parent, std::string_view key, Value source) {
+void Builder::set_validated(Value parent, StringView key, Value source) {
     put_validated(parent, key, copy(source));
 }
 
@@ -732,19 +773,19 @@ void Builder::replace_node(Value target, const void* source) {
     value->uni = replacement->uni;
 }
 
-Result<void> Builder::set(Value target, std::string_view text) {
-    if (!StringView{text}.is_valid_utf8())
+Result<void> Builder::set(Value target, StringView text) {
+    if (!text.is_valid_utf8())
         return std::unexpected(target.error(Fault::encoding, "Invalid UTF-8 string"));
     set_validated(target, text);
     return {};
 }
 
-void Builder::set_validated(Value target, std::string_view text) {
+void Builder::set_validated(Value target, StringView text) {
     replace_node(target,
                  yyjson_mut_strncpy(static_cast<yyjson_mut_doc*>(doc_), text.empty() ? "" : text.data(), text.size()));
 }
 
-void Builder::set(Value target, bool value) {
+void Builder::set_bool(Value target, bool value) {
     replace_node(target, yyjson_mut_bool(static_cast<yyjson_mut_doc*>(doc_), value));
 }
 
@@ -763,18 +804,18 @@ Result<void> Builder::set(Value target, double value) {
     return {};
 }
 
-bool Builder::erase(Value parent, std::string_view key) {
+bool Builder::erase(Value parent, StringView key) {
     require_writable(parent);
     assert(parent.kind() == Kind::object);
     return yyjson_mut_obj_remove_keyn(Access::mutable_node(parent), key.empty() ? "" : key.data(), key.size()) !=
            nullptr;
 }
 
-Result<void> Builder::set(Value parent, std::string_view key, std::uint64_t value) {
+Result<void> Builder::set(Value parent, StringView key, std::uint64_t value) {
     return put(parent, key, yyjson_mut_uint(static_cast<yyjson_mut_doc*>(doc_), value));
 }
 
-Result<void> Builder::set(Value parent, std::string_view key, std::int64_t value) {
+Result<void> Builder::set(Value parent, StringView key, std::int64_t value) {
     return put(parent, key, yyjson_mut_sint(static_cast<yyjson_mut_doc*>(doc_), value));
 }
 
@@ -794,7 +835,7 @@ yyjson_mut_val* float_value(void* owner, float value) {
 }
 }
 
-Result<void> Builder::set(Value parent, std::string_view key, float value) {
+Result<void> Builder::set(Value parent, StringView key, float value) {
     if (!std::isfinite(value))
         return std::unexpected(member_error(parent, key, Fault::range, "Nonfinite JSON number"));
     return put(parent, key, float_value(doc_, value));
@@ -811,7 +852,7 @@ void Builder::append(Value parent, Value source) {
     push(parent, copy(source));
 }
 
-void Builder::append(Value parent, bool value) {
+void Builder::append_bool(Value parent, bool value) {
     push(parent, yyjson_mut_bool(static_cast<yyjson_mut_doc*>(doc_), value));
 }
 
@@ -827,26 +868,27 @@ Value Builder::append_null(Value parent) {
     return push(parent, yyjson_mut_null(static_cast<yyjson_mut_doc*>(doc_)));
 }
 
-Result<void> Builder::append(Value parent, std::string_view text) {
-    if (!StringView{text}.is_valid_utf8())
-        return std::unexpected(
-            member_error(parent, std::to_string(parent.size()), Fault::encoding, "Invalid UTF-8 string"));
-    push(parent, yyjson_mut_strncpy(static_cast<yyjson_mut_doc*>(doc_), text.empty() ? "" : text.data(), text.size()));
+Result<void> Builder::append(Value parent, StringView text) {
+    if (!text.is_valid_utf8())
+        return std::unexpected(index_error(parent, parent.size(), Fault::encoding, "Invalid UTF-8 string"));
+    append_validated(parent, text);
     return {};
+}
+
+void Builder::append_validated(Value parent, StringView text) {
+    push(parent, yyjson_mut_strncpy(static_cast<yyjson_mut_doc*>(doc_), text.empty() ? "" : text.data(), text.size()));
 }
 
 Result<void> Builder::append(Value parent, double value) {
     if (!std::isfinite(value))
-        return std::unexpected(
-            member_error(parent, std::to_string(parent.size()), Fault::range, "Nonfinite JSON number"));
+        return std::unexpected(index_error(parent, parent.size(), Fault::range, "Nonfinite JSON number"));
     push(parent, yyjson_mut_real(static_cast<yyjson_mut_doc*>(doc_), value));
     return {};
 }
 
 Result<void> Builder::append(Value parent, float value) {
     if (!std::isfinite(value))
-        return std::unexpected(
-            member_error(parent, std::to_string(parent.size()), Fault::range, "Nonfinite JSON number"));
+        return std::unexpected(index_error(parent, parent.size(), Fault::range, "Nonfinite JSON number"));
     push(parent, float_value(doc_, value));
     return {};
 }
@@ -865,12 +907,12 @@ public:
 
 private:
     struct Member {
-        std::string_view key;
+        StringView key;
 
         Value value;
     };
 
-    void append(std::string_view text) { output_.append({text.data(), text.size()}); }
+    void append(StringView text) { output_.append({text.data(), text.size()}); }
 
     void newline(std::size_t depth) {
         if (!options_.pretty)
@@ -879,7 +921,7 @@ private:
         output_.append(depth * 2, ' ');
     }
 
-    void string(std::string_view text) {
+    void string(StringView text) {
         constexpr char hex[] = "0123456789abcdef";
         output_.emplace('"');
         std::size_t plain = 0;
@@ -888,7 +930,7 @@ private:
             if (c >= 0x20 && c != '"' && c != '\\')
                 continue;
             if (i > plain)
-                append(text.substr(plain, i - plain));
+                append(text.slice(plain, i - plain));
             plain = i + 1;
             switch (c) {
             case '"':
@@ -920,7 +962,7 @@ private:
             }
         }
         if (plain < text.size())
-            append(text.substr(plain));
+            append(text.slice(plain));
         output_.emplace('"');
     }
 

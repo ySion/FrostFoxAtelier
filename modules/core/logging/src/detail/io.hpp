@@ -1,5 +1,6 @@
 #pragma once
 
+#include "foundation/array.hpp"
 #include "foundation/inline_array.hpp"
 #include "logging/logging.hpp"
 #include "platform/error.hpp"
@@ -9,8 +10,6 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
-#include <string>
-#include <string_view>
 #include <system_error>
 #include <utility>
 
@@ -53,7 +52,8 @@ private:
 
 inline Error io_failure(const char* operation, DWORD code = GetLastError()) {
     return {ErrorCode::io_failed,
-            std::string{operation} + ": " + platform::error_message({static_cast<int>(code), std::system_category()}),
+            String::concat(String::validated(operation), ": "_s,
+                           platform::error_message({static_cast<int>(code), std::system_category()})),
             code};
 }
 
@@ -62,7 +62,7 @@ inline Handle open_read(const std::filesystem::path& path) {
                               nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr)};
 }
 
-inline Result<void> write_all(HANDLE handle, std::string_view bytes) {
+inline Result<void> write_all(HANDLE handle, StringView bytes) {
     while (!bytes.empty()) {
         const auto count = static_cast<DWORD>((std::min)(bytes.size(), std::size_t{1024 * 1024}));
         DWORD written{};
@@ -75,7 +75,7 @@ inline Result<void> write_all(HANDLE handle, std::string_view bytes) {
     return {};
 }
 
-inline Result<void> atomic_write(const std::filesystem::path& path, std::string_view bytes) {
+inline Result<void> atomic_write(const std::filesystem::path& path, StringView bytes) {
     auto temporary = path;
     temporary += L".tmp";
     Handle file{CreateFileW(temporary.c_str(), GENERIC_WRITE | DELETE,
@@ -104,7 +104,7 @@ inline Result<void> atomic_write(const std::filesystem::path& path, std::string_
     return {};
 }
 
-inline Result<std::string> read_small(const std::filesystem::path& path, std::size_t maximum = 64 * 1024) {
+inline Result<Array<char>> read_small(const std::filesystem::path& path, std::size_t maximum = 64 * 1024) {
     auto file = open_read(path);
     if (!file)
         return std::unexpected(io_failure("Open metadata"));
@@ -112,13 +112,14 @@ inline Result<std::string> read_small(const std::filesystem::path& path, std::si
     if (!GetFileSizeEx(file.get(), &size))
         return std::unexpected(io_failure("Metadata size"));
     if (size.QuadPart < 0 || static_cast<std::uint64_t>(size.QuadPart) > maximum)
-        return std::unexpected(Error{ErrorCode::invalid_manifest, "Metadata exceeds limit"});
-    std::string result(static_cast<std::size_t>(size.QuadPart), '\0');
+        return std::unexpected(Error{ErrorCode::invalid_manifest, "Metadata exceeds limit"_s});
+    Array<char> result;
+    result.resize_uninitialized(static_cast<std::size_t>(size.QuadPart));
     DWORD read{};
     if (!ReadFile(file.get(), result.data(), static_cast<DWORD>(result.size()), &read, nullptr))
         return std::unexpected(io_failure("Read metadata"));
     if (read != result.size())
-        return std::unexpected(Error{ErrorCode::invalid_manifest, "Metadata changed during read"});
+        return std::unexpected(Error{ErrorCode::invalid_manifest, "Metadata changed during read"_s});
     return result;
 }
 

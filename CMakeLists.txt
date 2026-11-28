@@ -57,7 +57,6 @@ function(atelier_target target)
     endif()
 endfunction()
 
-include(cmake/logging.cmake)
 configure_file(third_party/unordered_dense/LICENSE "${CMAKE_BINARY_DIR}/LICENSE.unordered_dense.txt" COPYONLY)
 include(cmake/tbb.cmake)
 add_library(atelier_foundation_headers INTERFACE)
@@ -67,19 +66,26 @@ target_link_libraries(atelier_foundation_headers INTERFACE atelier_memory_header
 add_library(atelier_math INTERFACE)
 target_include_directories(atelier_math INTERFACE modules/core/math/include)
 
-add_library(atelier_platform STATIC modules/core/platform/src/utf.cpp modules/core/platform/src/error.cpp)
-target_include_directories(atelier_platform PUBLIC modules/core/platform/include)
-atelier_target(atelier_platform)
-
 add_library(atelier_execution_contracts INTERFACE)
 target_include_directories(atelier_execution_contracts INTERFACE modules/execution/contracts/include)
 
-add_library(atelier_foundation STATIC modules/core/foundation/src/string.cpp modules/core/foundation/src/frame_timing.cpp
-    modules/core/foundation/src/sha256.cpp modules/core/foundation/src/tasks.cpp)
+add_library(atelier_foundation STATIC
+    modules/core/foundation/src/string.cpp
+    modules/core/foundation/src/frame_timing.cpp
+    modules/core/foundation/src/sha256.cpp
+    modules/core/foundation/src/tasks.cpp
+    modules/core/platform/src/utf.cpp
+    modules/core/platform/src/error.cpp)
+target_include_directories(atelier_foundation PUBLIC modules/core/platform/include)
 target_compile_features(atelier_foundation PUBLIC cxx_std_23)
-target_link_libraries(atelier_foundation PUBLIC atelier_foundation_headers PRIVATE atelier_platform bcrypt TBB::tbb)
+target_link_libraries(atelier_foundation PUBLIC atelier_foundation_headers PRIVATE bcrypt TBB::tbb)
 target_compile_definitions(atelier_foundation PRIVATE TBB_USE_EXCEPTIONS=0)
 atelier_target(atelier_foundation)
+
+add_library(atelier_platform INTERFACE)
+target_link_libraries(atelier_platform INTERFACE atelier_foundation)
+
+include(cmake/logging.cmake)
 
 add_executable(atelier_math_acceptance acceptance/math/main.cpp)
 atelier_target(atelier_math_acceptance)
@@ -153,7 +159,7 @@ include(cmake/geometry.cmake)
 add_library(atelier_rendering STATIC modules/engine/rendering/src/sky_map.cpp)
 atelier_target(atelier_rendering)
 target_include_directories(atelier_rendering PUBLIC modules/engine/rendering/include)
-target_link_libraries(atelier_rendering PUBLIC atelier_math atelier_foundation_headers)
+target_link_libraries(atelier_rendering PUBLIC atelier_math atelier_foundation)
 
 include(cmake/procedural.cmake)
 atelier_add_procedural()

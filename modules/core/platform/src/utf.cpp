@@ -1,4 +1,5 @@
 #include "platform/utf.hpp"
+#include "foundation/array.hpp"
 #include "memory/fatal.hpp"
 #include <Windows.h>
 #include <climits>
@@ -13,7 +14,7 @@ std::unexpected<UtfError> conversion_error() noexcept {
 }
 }
 
-std::expected<std::wstring, UtfError> utf8_to_utf16(std::string_view text, std::size_t maximum_units) noexcept {
+std::expected<std::wstring, UtfError> utf8_to_utf16(StringView text, std::size_t maximum_units) noexcept {
     if (text.empty())
         return std::wstring{};
     if (text.size() > INT_MAX)
@@ -30,16 +31,16 @@ std::expected<std::wstring, UtfError> utf8_to_utf16(std::string_view text, std::
     return result;
 }
 
-std::wstring utf8_to_utf16_validated(std::string_view text) noexcept {
+std::wstring utf8_to_utf16_validated(StringView text) noexcept {
     auto result = utf8_to_utf16(text);
     if (!result)
         fatal("UTF-16 conversion requires validated, representable UTF-8 text.");
     return std::move(*result);
 }
 
-std::expected<std::string, UtfError> utf16_to_utf8(std::wstring_view text) noexcept {
+std::expected<String, UtfError> utf16_to_utf8(std::wstring_view text) noexcept {
     if (text.empty())
-        return std::string{};
+        return String{};
     if (text.size() > INT_MAX)
         return std::unexpected(UtfError{UtfError::Code::input_too_large});
     const auto size = static_cast<int>(text.size());
@@ -47,10 +48,20 @@ std::expected<std::string, UtfError> utf16_to_utf8(std::wstring_view text) noexc
         WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(), size, nullptr, 0, nullptr, nullptr);
     if (!count)
         return conversion_error();
-    std::string result(static_cast<std::size_t>(count), '\0');
-    if (!WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(), size, result.data(), count, nullptr, nullptr))
+    const auto byte_count = static_cast<std::size_t>(count);
+    if (byte_count <= 512) {
+        char stack_bytes[512];
+        if (!WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(), size, stack_bytes, count, nullptr,
+                                 nullptr))
+            return conversion_error();
+        return String::from_utf8_validated({stack_bytes, byte_count});
+    }
+    Array<char> heap_bytes;
+    heap_bytes.resize_uninitialized(byte_count);
+    if (!WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(), size, heap_bytes.data(), count, nullptr,
+                             nullptr))
         return conversion_error();
-    return result;
+    return String::from_utf8_validated({heap_bytes.data(), byte_count});
 }
 
 }
